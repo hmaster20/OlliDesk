@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Проект
+.ollidesk/vector_db/
+.ollidesk/sessions.db
+.ollidesk/logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# LLM-generated (опционально, если хотите трекать)
+# docs/generated/

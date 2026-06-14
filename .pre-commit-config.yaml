@@ -1,0 +1,32 @@
+repos:
+  - repo: local
+    hooks:
+      # Сортировка импортов (isort)
+      - id: isort
+        name: isort
+        entry: isort
+        language: system
+        types: [python]
+
+      # Форматирование кода (black)
+      - id: black
+        name: black
+        entry: black
+        language: system
+        types: [python]
+
+      # Линтер (ruff)
+      - id: ruff
+        name: ruff
+        entry: ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+
+      # Статический анализатор типов (mypy)
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
+        require_serial: true
