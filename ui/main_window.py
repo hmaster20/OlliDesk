@@ -18,7 +18,10 @@ from PySide6.QtWidgets import (
 )
 from typing_extensions import override
 
+from agents.ollama_client import OllamaClient
 from core.config import AppConfig
+from state.session_store import SessionStore
+from ui.chat_panel import ChatPanel
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +40,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OlliDesk — Local AI Coding Assistant")
         self.setMinimumSize(1200, 800)
         self.resize(1600, 1000)
+
+        # Инициализация хранилища сессий
+        db_path = Path.home() / ".ollidesk" / "sessions.db"
+        self.session_store = SessionStore(db_path)
+
+        # Инициализация клиента Ollama
+        self.ollama_client = OllamaClient(
+            base_url="http://localhost:11434",
+        )
+        self._ollama_connected = False
+        self._available_models: list[str] = []
 
         self._setup_ui()
         self._setup_menu()
@@ -91,23 +105,18 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_center_panel(self) -> QWidget:
-        """Создает центральную панель (чат / редактор)."""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        label = QLabel("💬 Чат / Редактор")
-        label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
-        layout.addWidget(label)
-
-        placeholder = QLabel(
-            "Здесь будет чат с LLM\nи Monaco Editor\n(будет реализовано в Фазах 2-4)"
+        """Создает центральную панель (чат)."""
+        default_model = (
+            self.config.default_model
+            if hasattr(self.config, "default_model")
+            else "llama3.2"
         )
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: gray; padding: 20px;")
-        layout.addWidget(placeholder)
-
-        layout.addStretch()
-        return panel
+        self.chat_panel = ChatPanel(
+            session_store=self.session_store,
+            base_url="http://localhost:11434",
+            model=default_model,
+        )
+        return self.chat_panel
 
     def _create_right_panel(self) -> QWidget:
         """Создает правую панель (настройки агента)."""
@@ -177,15 +186,44 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.project_label)
 
     def _check_ollama_connection(self) -> None:
-        """Проверяет подключение к Ollama (заглушка)."""
-        # TODO: Реализовать проверку через OllamaClient в Фазе 2
-        QTimer.singleShot(1000, self._update_ollama_status)
+        """Проверяет подключение к Ollama."""
+        QTimer.singleShot(500, self._do_check_ollama)
 
-    def _update_ollama_status(self) -> None:
-        """Обновляет статус Ollama (заглушка)."""
-        # TODO: Реальная проверка подключения
-        self.ollama_status_label.setText("● Ollama: Не подключен")
-        self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
+    def _do_check_ollama(self) -> None:
+        """Выполняет проверку Ollama."""
+        import asyncio
+
+        async def _check():
+            try:
+                async with self.ollama_client as client:
+                    models = await client.list_models()
+                self._available_models = [m.name for m in models]
+                self._ollama_connected = True
+                return True, self._available_models
+            except Exception:
+                self._ollama_connected = False
+                self._available_models = []
+                return False, []
+
+        loop = asyncio.new_event_loop()
+        try:
+            ok, models = loop.run_until_complete(_check())
+        finally:
+            loop.close()
+
+        self._update_ollama_status(ok, models)
+
+    def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
+        """Обновляет статус Ollama в статус-баре."""
+        if ok and models:
+            self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
+            self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
+            self.chat_panel.update_models(models)
+            if models:
+                self.chat_panel.set_model(models[0])
+        else:
+            self.ollama_status_label.setText("● Ollama: Не подключен")
+            self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
 
     def _open_project(self) -> None:
         """Открывает диалог выбора проекта."""
