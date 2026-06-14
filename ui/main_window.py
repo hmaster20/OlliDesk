@@ -239,7 +239,20 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_center_panel(self) -> QWidget:
-        """Создает центральную панель (чат)."""
+        """Создает центральную панель (вкладки: Чат / Редактор)."""
+        from PySide6.QtWidgets import QTabWidget
+
+        from ui.web_editor.editor_widget import EditorWidget
+
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.setMovable(True)
+        self.tab_widget.tabCloseRequested.connect(self._close_tab)
+
         default_model = (
             self.config.default_model
             if hasattr(self.config, "default_model")
@@ -250,7 +263,53 @@ class MainWindow(QMainWindow):
             base_url="http://localhost:11434",
             model=default_model,
         )
-        return self.chat_panel
+        self.tab_widget.addTab(self.chat_panel, "💬 Чат")
+
+        self.editor_widget = EditorWidget()
+        self.editor_widget.set_file_reader(self._read_file)
+        self.editor_widget.set_file_writer(self._write_file)
+        self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+
+        layout.addWidget(self.tab_widget)
+        return panel
+
+    def _read_file(self, path: str) -> str:
+        """Читает файл (callback для EditorWidget)."""
+        try:
+            file_path = Path(path)
+            if file_path.exists():
+                return file_path.read_text(encoding="utf-8")
+            return ""
+        except Exception as e:
+            logger.error(f"Ошибка чтения файла: {e}")
+            return ""
+
+    def _write_file(self, path: str, content: str) -> bool:
+        """Записывает файл (callback для EditorWidget)."""
+        try:
+            file_path = Path(path)
+            file_path.write_text(content, encoding="utf-8")
+            logger.info(f"Файл сохранен: {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка записи файла: {e}")
+            return False
+
+    def _close_tab(self, index: int):
+        """Закрывает вкладку (кроме чата)."""
+        if index == 0:  # Чат нельзя закрыть
+            return
+        self.tab_widget.removeTab(index)
+
+    def open_file_in_editor(self, file_path: str):
+        """Открывает файл в редакторе."""
+        self.editor_widget.open_file(file_path)
+        # Переключаемся на вкладку редактора
+        self.tab_widget.setCurrentWidget(self.editor_widget)
+        # Обновляем заголовок вкладки
+        index = self.tab_widget.indexOf(self.editor_widget)
+        if index >= 0:
+            self.tab_widget.setTabText(index, f"📝 {Path(file_path).name}")
 
     def _create_right_panel(self) -> QWidget:
         """Создает правую панель (настройки агента)."""
