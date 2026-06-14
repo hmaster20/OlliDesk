@@ -64,6 +64,51 @@ class OllamaChatThread(QThread):
             self.error_occurred.emit(f"Неизвестная ошибка: {e}")
 
 
+class RagSearchThread(QThread):
+    """Поток для асинхронного RAG-поиска."""
+
+    results_ready = Signal(str, str)  # context, sources
+    search_error = Signal(str)
+
+    def __init__(
+        self,
+        vector_store,
+        query: str,
+        n_results: int = 5,
+    ):
+        super().__init__()
+        self.vector_store = vector_store
+        self.query = query
+        self.n_results = n_results
+
+    def run(self):
+        """Запускает асинхронный RAG-поиск."""
+        asyncio.run(self._search())
+
+    async def _search(self):
+        """Выполняет поиск и формирует контекст."""
+        try:
+            results = await self.vector_store.search(self.query, n_results=self.n_results)
+            if results:
+                context_parts = []
+                source_parts = []
+                for r in results[:self.n_results]:
+                    context_parts.append(
+                        f"### Файл: {r.file_path} "
+                        f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"
+                        f"```\n{r.chunk.content}\n```"
+                    )
+                    source_parts.append(f"{r.file_path}:{r.chunk.start_line}-{r.chunk.end_line}")
+
+                context = "\n\n".join(context_parts)
+                sources = ", ".join(source_parts[:3])
+                self.results_ready.emit(context, sources)
+            else:
+                self.results_ready.emit("", "")
+        except Exception as e:
+            self.search_error.emit(str(e))
+
+
 class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате."""
 
@@ -78,17 +123,13 @@ class ChatMessageItem(QWidget):
         role_label = QLabel(
             "🧑 Вы" if role == "user" else "🤖 Ассистент" if role == "assistant" else f"🔧 {role}"
         )
-        role_label.setStyleSheet(
-            "font-weight: bold; font-size: 12px; color: #555;"
-        )
+        role_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #555;")
         layout.addWidget(role_label)
 
         content_label = QLabel(content)
         content_label.setWordWrap(True)
         content_label.setTextFormat(1)  # Qt.PlainText
-        content_label.setStyleSheet(
-            "font-size: 14px; padding: 4px 0; line-height: 1.4;"
-        )
+        content_label.setStyleSheet("font-size: 14px; padding: 4px 0; line-height: 1.4;")
         content_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(content_label)
 
@@ -107,16 +148,19 @@ class ChatPanel(QWidget):
         session_store: SessionStore,
         base_url: str = "http://localhost:11434",
         model: str = "llama3.2",
+        vector_store=None,
     ):
         super().__init__()
         self.session_store = session_store
         self.base_url = base_url
         self.current_model = model
+        self.vector_store = vector_store
 
         self._session_id: str | None = None
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._ollama_thread: OllamaChatThread | None = None
+        self._rag_context: str | None = None
 
         self._setup_ui()
 
@@ -125,7 +169,6 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Верхняя панель с выбором модели и кнопками
         top_bar = QHBoxLayout()
 
         model_label = QLabel("Модель:")
@@ -148,7 +191,6 @@ class ChatPanel(QWidget):
 
         layout.addLayout(top_bar)
 
-        # Список сообщений
         self.message_list = QListWidget()
         self.message_list.setStyleSheet(
             "font-size: 14px; border: 1px solid #ccc; border-radius: 4px;"
@@ -156,7 +198,6 @@ class ChatPanel(QWidget):
         self.message_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         layout.addWidget(self.message_list, stretch=1)
 
-        # Нижняя панель: ввод + кнопка отправки
         input_layout = QHBoxLayout()
 
         self.input_edit = QTextEdit()
@@ -179,7 +220,6 @@ class ChatPanel(QWidget):
 
         layout.addLayout(input_layout)
 
-        # Статусная строка
         self.status_label = QLabel("Готов к работе")
         self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px;")
         layout.addWidget(self.status_label)
@@ -197,6 +237,7 @@ class ChatPanel(QWidget):
         self.message_list.clear()
         self._messages.clear()
         self._current_assistant_content = ""
+        self._rag_context = None
         self._session_id = None
         self.status_label.setText("Чат очищен")
 
@@ -227,13 +268,52 @@ class ChatPanel(QWidget):
 
         self.input_edit.clear()
         self.send_btn.setEnabled(False)
+        self.send_btn.setText("Поиск...")
+        self.status_label.setText("Поиск в кодовой базе...")
+
+        self._rag_context = None
+
+        if self.vector_store:
+            # RAG-поиск перед отправкой
+            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            self._rag_thread.results_ready.connect(self._on_rag_results)
+            self._rag_thread.search_error.connect(self._on_rag_error)
+            self._rag_thread.finished.connect(lambda: self._start_llm_chat(text))
+            self._rag_thread.start()
+        else:
+            # Без RAG — сразу идём в LLM
+            self._start_llm_chat(text)
+
+    @Slot(str, str)
+    def _on_rag_results(self, context: str, sources: str):
+        """Обрабатывает результаты RAG-поиска."""
+        self._rag_context = context
+        if sources:
+            self.status_label.setText(f"📚 Источники: {sources}")
+
+    @Slot(str)
+    def _on_rag_error(self, error_msg: str):
+        """Обрабатывает ошибку RAG-поиска и продолжает без контекста."""
+        logger = __import__("loguru").logger
+        logger.warning(f"Ошибка RAG: {error_msg}; продолжаем без контекста")
+
+    def _start_llm_chat(self, text: str):
+        """Запускает генерацию ответа LLM."""
         self.send_btn.setText("Ожидание...")
         self.status_label.setText("Генерация ответа...")
 
         # Подготовка сообщений для LLM
-        chat_messages = list(self._messages)
+        chat_messages: list[ChatMessage] = list(self._messages)
 
-        # Запуск потока
+        # Добавляем RAG-контекст в system-сообщение (если есть)
+        if self._rag_context:
+            system_msg = ChatMessage(
+                role="system",
+                content=f"Контекст из кодовой базы:\n\n{self._rag_context}",
+            )
+            chat_messages.insert(0, system_msg)
+
+        # Запуск потока генерации
         self._current_assistant_content = ""
         self._ollama_thread = OllamaChatThread(
             model=self.model_combo.currentText(),
@@ -250,7 +330,6 @@ class ChatPanel(QWidget):
         """Обрабатывает полученный токен."""
         self._current_assistant_content += content
 
-        # Обновляем последнее сообщение ассистента
         last_item = self.message_list.item(self.message_list.count() - 1)
         if last_item and hasattr(last_item, "_is_assistant"):
             widget = self.message_list.itemWidget(last_item)
@@ -258,7 +337,6 @@ class ChatPanel(QWidget):
                 widget.content = self._current_assistant_content
                 widget.findChild(QLabel).setText(self._current_assistant_content)
         else:
-            # Первый токен — создаем новое сообщение
             item = QListWidgetItem(self.message_list)
             widget = ChatMessageItem("assistant", content)
             item.setSizeHint(widget.sizeHint())
@@ -311,3 +389,7 @@ class ChatPanel(QWidget):
         index = self.model_combo.findText(current)
         if index >= 0:
             self.model_combo.setCurrentIndex(index)
+
+    def set_vector_store(self, vector_store):
+        """Устанавливает векторное хранилище для RAG."""
+        self.vector_store = vector_store
