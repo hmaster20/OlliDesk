@@ -25,3 +25,6 @@ desktop.ini
 
 # LLM-generated (опционально, если хотите трекать)
 # docs/generated/
+
+ui/web_editor/vendor
+unused
