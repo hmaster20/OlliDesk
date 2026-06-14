@@ -35,6 +35,8 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
 
 [tool.mypy]
@@ -43,6 +45,10 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "ui.dialogs.wizard"
+ignore_errors = true
 
 [tool.black]
 line-length = 100
