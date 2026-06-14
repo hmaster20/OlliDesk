@@ -2,9 +2,10 @@
 
 import sys
 from pathlib import Path
-from core.logger import setup_logger
-from core.config import load_config, AppConfig
+
+from core.config import load_config
 from core.exceptions import ConfigError
+from core.logger import setup_logger
 
 
 def main() -> int:
@@ -14,6 +15,7 @@ def main() -> int:
     setup_logger(log_dir, level="INFO")
 
     from loguru import logger
+
     logger.info("Запуск OlliDesk...")
 
     # Загрузка конфигурации

@@ -1,8 +1,9 @@
 """Настройка логирования через loguru."""
 
-from pathlib import Path
-from loguru import logger
 import sys
+from pathlib import Path
+
+from loguru import logger
 
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:

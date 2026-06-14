@@ -2,8 +2,9 @@
 
 from pathlib import Path
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+
 import yaml
+from pydantic import BaseModel, Field
 
 from core.exceptions import ConfigError
 
