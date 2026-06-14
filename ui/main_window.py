@@ -431,6 +431,7 @@ class MainWindow(QMainWindow):
                 embed_model=self.config.embed_model,
             )
             self.chat_panel.set_vector_store(self.vector_store)
+            self.chat_panel.set_project_root(str(self.project_path))
 
             # Загрузка предыдущего состояния
             self._previous_state = self.project_state.load()

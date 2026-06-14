@@ -1,0 +1,185 @@
+"""Цикл рассуждений и действий (ReAct) агента."""
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
+from loguru import logger
+
+from agents.ollama_client import ChatMessage, OllamaClient
+from agents.tool_registry import ToolRegistry
+from core.config import AgentMode, ToolPolicy
+from core.exceptions import OlliDeskError
+
+
+class AgentIterationLimitError(OlliDeskError):
+    """Достигнут лимит итераций агента."""
+
+
+class AgentError(OlliDeskError):
+    """Общая ошибка агента."""
+
+
+@dataclass
+class AgentContext:
+    """Контекст для запуска агента."""
+    system_prompt: str = ""
+    rag_context: str = ""
+    project_root: str = ""
+    vector_store: object = None
+    extra_rules: str = ""
+    max_tokens: int = 4096
+
+
+def _build_system_prompt(context: AgentContext) -> str:
+    """Собирает system-промпт из контекста."""
+    parts = [
+        "Ты — OlliDesk, автономный AI-ассистент для написания и рефакторинга кода.",
+        "Отвечай на русском языке.",
+        "У тебя есть доступ к инструментам. Используй их, чтобы читать файлы, "
+        "искать в коде и вносить изменения.",
+        "Перед записью в файл сперва прочитай его содержимое, чтобы понять текущее состояние.",
+    ]
+
+    if context.rag_context:
+        parts.append(f"\nКонтекст из кодовой базы:\n{context.rag_context}")
+
+    if context.extra_rules:
+        parts.append(f"\nДополнительные правила:\n{context.extra_rules}")
+
+    if context.project_root:
+        parts.append(
+            f"\nКорень проекта: {context.project_root}\n"
+            f"Все пути к файлам должны быть относительными от корня проекта."
+        )
+
+    return "\n\n".join(parts)
+
+
+def _create_tool_result_message(
+    tool_call_id: str,
+    name: str,
+    content: str,
+    is_error: bool = False,
+) -> ChatMessage:
+    """Создаёт сообщение с результатом выполнения инструмента."""
+    prefix = "❌ Ошибка:\n" if is_error else ""
+    return ChatMessage(
+        role="tool",
+        content=f"{prefix}{content}",
+        tool_call_id=tool_call_id,
+    )
+
+
+class AgentLoop:
+    """Цикл ReAct агента."""
+
+    def __init__(self, client: OllamaClient, registry: ToolRegistry, model: str):
+        """
+        Args:
+            client: Клиент Ollama
+            registry: Реестр инструментов
+            model: Имя модели
+        """
+        self.client = client
+        self.registry = registry
+        self.model = model
+
+    async def run(
+        self,
+        user_message: str,
+        context: AgentContext,
+        messages_history: list[ChatMessage],
+        on_token: Callable[[str], Awaitable[None]],
+        on_tool_request: Callable[[str, str, dict[str, Any]], Awaitable[bool]],
+        max_iterations: int = 10,
+    ) -> str:
+        """Запускает цикл агента.
+
+        Args:
+            user_message: Сообщение пользователя
+            context: Контекст (RAG, project_root, векторное хранилище)
+            messages_history: История сообщений для продолжения диалога
+            on_token: Колбэк для каждого токена стрима
+            on_tool_request: Колбэк запроса подтверждения (name, description, arguments) -> bool
+            max_iterations: Максимальное число итераций
+
+        Returns:
+            Финальный текст ответа
+
+        Raises:
+            AgentIterationLimitError: При превышении лимита итераций
+            AgentError: При других ошибках
+        """
+        messages = [ChatMessage(role="system", content=_build_system_prompt(context))]
+
+        for msg in messages_history:
+            messages.append(msg)
+
+        messages.append(ChatMessage(role="user", content=user_message))
+
+        for iteration in range(max_iterations):
+            logger.debug(f"Агент: итерация {iteration + 1}/{max_iterations}")
+
+            try:
+                stream = self.client.chat(
+                    model=self.model,
+                    messages=messages,
+                    tools=self.registry.get_schemas(AgentMode.AGENT),
+                    stream=True,
+                )
+            except Exception as e:
+                raise AgentError(f"Ошибка вызова LLM: {e}") from e
+
+            current_text = ""
+            pending_tool_calls = []
+
+            async for chunk in stream:
+                if chunk.content:
+                    current_text += chunk.content
+                    await on_token(chunk.content)
+                if chunk.tool_calls:
+                    pending_tool_calls.extend(chunk.tool_calls)
+
+            if pending_tool_calls:
+                messages.append(
+                    ChatMessage(
+                        role="assistant", content=current_text, tool_calls=pending_tool_calls,
+                    )
+                )
+
+                for tc in pending_tool_calls:
+                    policy = self.registry.get_policy(tc.name)
+
+                    if policy == ToolPolicy.ASK_FIRST:
+                        description = self.registry.get_description(tc.name)
+                        approved = await on_tool_request(tc.name, description, tc.arguments)
+                        if not approved:
+                            result_msg = _create_tool_result_message(
+                                tc.id, tc.name, "Отклонено пользователем", is_error=True,
+                            )
+                            messages.append(result_msg)
+                            continue
+
+                    extra: dict[str, object] = {}
+                    if context.project_root:
+                        extra["project_root"] = context.project_root
+                    if context.vector_store:
+                        extra["vector_store"] = context.vector_store
+                    result = await self.registry.execute(tc, **extra)
+                    messages.append(
+                        _create_tool_result_message(
+                            tc.id, result.name, result.content, is_error=result.is_error,
+                        )
+                    )
+
+                continue
+
+            if current_text:
+                messages.append(ChatMessage(role="assistant", content=current_text))
+
+            return current_text
+
+        raise AgentIterationLimitError(
+            f"Агент превысил лимит итераций ({max_iterations})"
+        )
