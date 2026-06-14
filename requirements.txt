@@ -1,0 +1,21 @@
+# Core
+PySide6==6.7.*
+pydantic==2.9.*
+pydantic-settings==2.5.*
+PyYAML==6.0.*
+loguru==0.7.*
+httpx==0.27.*
+
+# AI & RAG
+chromadb==0.5.*
+sentence-transformers==3.0.*
+tokenizers==0.20.*
+
+# Tools
+duckduckgo-search==6.2.*
+rapidocr-onnxruntime==1.4.*
+GitPython==3.1.*
+
+# Utils
+pathspec==0.12.*
+watchdog==5.0.*
