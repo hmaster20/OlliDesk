@@ -75,7 +75,7 @@ class ChatOptions(BaseModel):
 class OllamaClient:
     """Асинхронный клиент Ollama API."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 60.0):
+    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
         """
         Инициализация клиента.
 
@@ -220,13 +220,13 @@ class OllamaClient:
                 )
 
         except httpx.ConnectError as e:
-            logger.error(f"Ollama connection error: {e}")
+            logger.error(f"Ollama ConnectError ({type(e).__name__}): {e!r}")
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama HTTP {e.response.status_code}: {e}")
+            logger.error(f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}")
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
         except httpx.HTTPError as e:
-            logger.error(f"Ollama HTTP error: {e}")
+            logger.error(f"Ollama HTTPError ({type(e).__name__}): {e!r}")
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:

@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
             "font-size: 13px; padding: 8px; margin: 4px 10px;"
         )
         self.reindex_btn.clicked.connect(self._reindex_project)
-        self.reindex_btn.setEnabled(False)
+        self.reindex_btn.setVisible(False)
         layout.addWidget(self.reindex_btn)
 
         # Дерево файлов (пустое до открытия проекта)
@@ -666,6 +666,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_open(True)
         self._previous_state = self.project_state.load(self.project_path)
         self._add_recent_project(str(self.project_path))
+        self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
 
         # Восстанавливаем настройки проекта
