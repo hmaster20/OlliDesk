@@ -225,17 +225,6 @@ class MainWindow(QMainWindow):
         self.main_splitter.setSizes([320, 800])
         layout.addWidget(self.main_splitter, stretch=1)
 
-        # Кнопка сворачивания/разворачивания правой панели
-        self.side_toggle_btn = QPushButton("⚙")
-        self.side_toggle_btn.setFixedWidth(22)
-        self.side_toggle_btn.setToolTip("Показать/скрыть настройки агента")
-        self.side_toggle_btn.setStyleSheet(
-            "QPushButton { font-size: 14px; border: none; background: #3a3a3a; border-radius: 0; padding: 2px 0; }"
-            " QPushButton:hover { background: #555; }"
-        )
-        self.side_toggle_btn.clicked.connect(self._toggle_side_panel)
-        layout.addWidget(self.side_toggle_btn)
-
         # Правая панель (настройки агента)
         self.right_panel = self._create_right_panel()
         layout.addWidget(self.right_panel)
@@ -830,10 +819,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'right_panel'):
             visible = not self.right_panel.isVisible()
             self.right_panel.setVisible(visible)
-            self.side_toggle_btn.setStyleSheet(
-                "QPushButton { font-size: 14px; border: none; background: #3a3a3a; border-radius: 0; padding: 2px 0; }"
-                " QPushButton:hover { background: #555; }"
-            )
 
     def _update_right_panel_for_mode(self, mode: str) -> None:
         """Включает/выключает секции правой панели в зависимости от режима."""
