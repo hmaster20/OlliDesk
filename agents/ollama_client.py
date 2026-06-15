@@ -8,7 +8,7 @@ import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from core.exceptions import ModelNotFoundError, OllamaConnectionError
+from core.exceptions import ModelNotFoundError, OllamaConnectionError, ToolsNotSupportedError
 
 
 class OllamaModelInfo(BaseModel):
@@ -33,6 +33,20 @@ class ChatMessage(BaseModel):
     images: list[str] | None = None  # base64
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    name: str | None = None  # для tool-role (Ollama использует name, не tool_call_id)
+
+    def to_ollama_dict(self) -> dict:
+        data: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.images:
+            data["images"] = self.images
+        if self.tool_calls:
+            data["tool_calls"] = [
+                {"function": {"name": tc.name, "arguments": tc.arguments}}
+                for tc in self.tool_calls
+            ]
+        if self.role == "tool" and self.name:
+            data["name"] = self.name
+        return data
 
 
 class ChatChunk(BaseModel):
@@ -86,7 +100,7 @@ class OllamaClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Возвращает HTTP-клиент (создает при необходимости)."""
-        if not self._client:
+        if not self._client or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self.timeout)
         return self._client
 
@@ -143,7 +157,7 @@ class OllamaClient:
         # Формируем запрос
         request_data = {
             "model": model,
-            "messages": [m.model_dump(exclude_none=True) for m in messages],
+            "messages": [m.to_ollama_dict() for m in messages],
             "stream": stream,
         }
 
@@ -153,6 +167,8 @@ class OllamaClient:
         if options:
             request_data["options"] = options.model_dump()
 
+        req_preview = json.dumps(request_data, default=str, ensure_ascii=False)[:2000]
+        logger.info(f"Ollama request: {req_preview}")
         try:
             if stream:
                 async with client.stream(
@@ -160,7 +176,17 @@ class OllamaClient:
                     f"{self.base_url}/api/chat",
                     json=request_data,
                 ) as response:
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        await response.aread()
+                        body = response.text[:2000]
+                        logger.error(f"Ollama {response.status_code}: {body}")
+                        if response.status_code == 404:
+                            raise ModelNotFoundError(f"Модель '{model}' не найдена")
+                        if "does not support tools" in body:
+                            raise ToolsNotSupportedError(
+                                f"Модель '{model}' не поддерживает вызов инструментов"
+                            )
+                        response.raise_for_status()
                     async for line in response.aiter_lines():
                         if line:
                             chunk_data = json.loads(line)
@@ -169,7 +195,7 @@ class OllamaClient:
                                 content=msg.get("content", ""),
                                 reasoning_content=msg.get("reasoning_content", ""),
                                 tool_calls=[
-                                    ToolCall(**tc)
+                                    ToolCall(**tc["function"])
                                     for tc in msg.get("tool_calls", [])
                                 ] if msg.get("tool_calls") else None,
                                 done=chunk_data.get("done", False),
@@ -187,19 +213,20 @@ class OllamaClient:
                     content=msg.get("content", ""),
                     reasoning_content=msg.get("reasoning_content", ""),
                     tool_calls=[
-                        ToolCall(**tc)
+                        ToolCall(**tc["function"])
                         for tc in msg.get("tool_calls", [])
                     ] if msg.get("tool_calls") else None,
                     done=True,
                 )
 
         except httpx.ConnectError as e:
+            logger.error(f"Ollama connection error: {e}")
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ModelNotFoundError(f"Модель '{model}' не найдена") from e
+            logger.error(f"Ollama HTTP {e.response.status_code}: {e}")
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
         except httpx.HTTPError as e:
+            logger.error(f"Ollama HTTP error: {e}")
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:

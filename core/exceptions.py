@@ -35,3 +35,9 @@ class ToolExecutionError(OlliDeskError):
     """Ошибка выполнения инструмента агента."""
 
     pass
+
+
+class ToolsNotSupportedError(OllamaConnectionError):
+    """Модель не поддерживает вызов инструментов."""
+
+    pass

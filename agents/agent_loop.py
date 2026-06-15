@@ -9,7 +9,7 @@ from loguru import logger
 from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
-from core.exceptions import OlliDeskError
+from core.exceptions import OlliDeskError, ToolsNotSupportedError
 
 
 class AgentIterationLimitError(OlliDeskError):
@@ -68,6 +68,7 @@ def _create_tool_result_message(
         role="tool",
         content=f"{prefix}{content}",
         tool_call_id=tool_call_id,
+        name=name,
     )
 
 
@@ -87,23 +88,23 @@ class AgentLoop:
 
     async def run(
         self,
-        user_message: str,
         context: AgentContext,
         messages_history: list[ChatMessage],
         on_token: Callable[[str], Awaitable[None]],
         on_tool_request: Callable[[str, str, dict[str, Any]], Awaitable[bool]],
         max_iterations: int = 10,
         on_thinking: Callable[[str], Awaitable[None]] | None = None,
+        on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Запускает цикл агента.
 
         Args:
-            user_message: Сообщение пользователя
             context: Контекст (RAG, project_root, векторное хранилище)
-            messages_history: История сообщений для продолжения диалога
+            messages_history: История сообщений для продолжения диалога (включает новое сообщение пользователя)
             on_token: Колбэк для каждого токена стрима
             on_tool_request: Колбэк запроса подтверждения (name, description, arguments) -> bool
             max_iterations: Максимальное число итераций
+            on_tools_disabled: Колбэк при отключении инструментов
 
         Returns:
             Финальный текст ответа
@@ -117,34 +118,41 @@ class AgentLoop:
         for msg in messages_history:
             messages.append(msg)
 
-        messages.append(ChatMessage(role="user", content=user_message))
+        tools_to_send: list | None = self.registry.get_schemas(AgentMode.AGENT)
 
         for iteration in range(max_iterations):
             logger.debug(f"Агент: итерация {iteration + 1}/{max_iterations}")
+
+            current_text = ""
+            pending_tool_calls = []
 
             try:
                 stream = self.client.chat(
                     model=self.model,
                     messages=messages,
-                    tools=self.registry.get_schemas(AgentMode.AGENT),
+                    tools=tools_to_send,
                     stream=True,
                 )
-            except Exception as e:
-                raise AgentError(f"Ошибка вызова LLM: {e}") from e
 
-            current_text = ""
-            pending_tool_calls = []
+                async for chunk in stream:
+                    if chunk.reasoning_content and on_thinking:
+                        await on_thinking(chunk.reasoning_content)
+                    if chunk.content:
+                        current_text += chunk.content
+                        await on_token(chunk.content)
+                    if chunk.tool_calls:
+                        pending_tool_calls.extend(chunk.tool_calls)
 
-            async for chunk in stream:
-                if chunk.reasoning_content and on_thinking:
-                    await on_thinking(chunk.reasoning_content)
-                if chunk.content:
-                    current_text += chunk.content
-                    await on_token(chunk.content)
-                if chunk.tool_calls:
-                    pending_tool_calls.extend(chunk.tool_calls)
+            except ToolsNotSupportedError:
+                logger.warning(f"Модель {self.model} не поддерживает инструменты, повтор без инструментов")
+                tools_to_send = None
+                if on_tools_disabled:
+                    await on_tools_disabled()
+                if current_text:
+                    await on_token("\n\n")
+                continue
 
-            if pending_tool_calls:
+            if pending_tool_calls and tools_to_send:
                 messages.append(
                     ChatMessage(
                         role="assistant", content=current_text, tool_calls=pending_tool_calls,

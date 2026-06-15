@@ -6,17 +6,20 @@ from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtGui import QStandardItemModel
+from PySide6.QtGui import QAction, QCloseEvent, QStandardItemModel
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFileSystemModel,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSlider,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTreeView,
@@ -213,8 +216,8 @@ class MainWindow(QMainWindow):
         center_panel = self._create_center_panel()
         splitter.addWidget(center_panel)
 
-        right_panel = self._create_right_panel()
-        splitter.addWidget(right_panel)
+        self.right_panel = self._create_right_panel()
+        splitter.addWidget(self.right_panel)
 
         splitter.setSizes([320, 800, 480])
         layout.addWidget(splitter)
@@ -313,6 +316,7 @@ class MainWindow(QMainWindow):
             model=default_model,
         )
         self.chat_panel.set_project_open(False)
+        self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
@@ -370,15 +374,94 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
         layout.addWidget(label)
 
-        placeholder = QLabel(
-            "Выбор модели\nРежим (Chat/Plan/Agent)\nTemperature\nTools"
-            "\n(будет реализовано в Фазе 6)"
+        # Temperature
+        temp_label = QLabel("Temperature:")
+        temp_label.setStyleSheet("font-size: 12px; padding: 4px 10px 0;")
+        layout.addWidget(temp_label)
+
+        self.temp_slider = QSlider(Qt.Orientation.Horizontal)
+        self.temp_slider.setRange(0, 100)
+        self.temp_slider.setValue(70)
+        self.temp_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.temp_slider.setStyleSheet("font-size: 12px; padding: 0 10px;")
+        layout.addWidget(self.temp_slider)
+
+        self.temp_value_label = QLabel("0.70")
+        self.temp_value_label.setStyleSheet("font-size: 12px; color: gray; padding: 0 10px;")
+        self.temp_slider.valueChanged.connect(
+            lambda v: self.temp_value_label.setText(f"{v / 100:.2f}")
         )
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: gray; padding: 20px;")
-        layout.addWidget(placeholder)
+        layout.addWidget(self.temp_value_label)
+
+        # Max tokens
+        tokens_label = QLabel("Max tokens:")
+        tokens_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
+        layout.addWidget(tokens_label)
+
+        self.tokens_spin = QSpinBox()
+        self.tokens_spin.setRange(256, 32768)
+        self.tokens_spin.setValue(4096)
+        self.tokens_spin.setSingleStep(256)
+        self.tokens_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        layout.addWidget(self.tokens_spin)
+
+        # Context window
+        ctx_label = QLabel("Context window:")
+        ctx_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
+        layout.addWidget(ctx_label)
+
+        self.context_spin = QSpinBox()
+        self.context_spin.setRange(1024, 128000)
+        self.context_spin.setValue(8192)
+        self.context_spin.setSingleStep(1024)
+        self.context_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        layout.addWidget(self.context_spin)
+
+        # Max iterations (агент)
+        iterations_label = QLabel("Max iterations (агент):")
+        iterations_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
+        layout.addWidget(iterations_label)
+
+        self.iterations_spin = QSpinBox()
+        self.iterations_spin.setRange(1, 50)
+        self.iterations_spin.setValue(10)
+        self.iterations_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        layout.addWidget(self.iterations_spin)
+
+        # Инструменты
+        tools_box = QGroupBox("Инструменты")
+        tools_layout = QVBoxLayout(tools_box)
+        self.tool_checkboxes: dict[str, QCheckBox] = {}
+        tool_names = [
+            ("read_file", "Чтение файлов"),
+            ("list_directory", "Список директории"),
+            ("write_file", "Запись файлов"),
+            ("search_codebase", "Поиск по коду"),
+            ("web_search", "Поиск в интернете"),
+            ("get_git_status", "Статус Git"),
+            ("create_snapshot", "Снапшот Git"),
+            ("undo_last_snapshot", "Откат снапшота"),
+        ]
+        for tool_key, tool_label in tool_names:
+            cb = QCheckBox(tool_label)
+            cb.setChecked(True)
+            cb.setStyleSheet("font-size: 12px; padding: 2px 10px;")
+            cb.toggled.connect(lambda checked, k=tool_key: self._on_tool_toggled(k, checked))
+            tools_layout.addWidget(cb)
+            self.tool_checkboxes[tool_key] = cb
+        tools_box.setStyleSheet("font-size: 12px;")
+        layout.addWidget(tools_box)
+
+        # RAG switch
+        self.rag_check = QCheckBox("Использовать RAG")
+        self.rag_check.setChecked(True)
+        self.rag_check.setStyleSheet("font-size: 12px; padding: 8px 10px;")
+        layout.addWidget(self.rag_check)
 
         layout.addStretch()
+
+        # По умолчанию скрыта (показывается только в режиме Agent)
+        panel.setVisible(False)
         return panel
 
     def _setup_menu(self) -> None:
@@ -680,6 +763,17 @@ class MainWindow(QMainWindow):
         """Скрывает прогресс-бар индексации."""
         self.index_progress.setVisible(False)
         self.index_status_label.setVisible(False)
+
+    def _on_chat_mode_changed(self, mode: str) -> None:
+        """Показывает/скрывает панель настроек агента."""
+        if hasattr(self, 'right_panel'):
+            self.right_panel.setVisible(mode == "agent")
+
+    def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
+        """Обрабатывает переключение инструмента."""
+        from core.config import ToolPolicy
+        policy = ToolPolicy.AUTO if checked else ToolPolicy.EXCLUDED
+        self.chat_panel.set_tool_policy(tool_key, policy)
 
     def _show_chat_tab(self) -> None:
         """Показывает вкладку чата (создаёт если закрыта)."""

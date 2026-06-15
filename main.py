@@ -1,6 +1,11 @@
 """Точка входа в OlliDesk."""
 
+import os
 import sys
+
+# Отключаем телеметрию ChromaDB (posthog)
+os.environ["CHROMA_TELEMETRY_ENABLED"] = "false"
+os.environ["POSTHOG_DISABLED"] = "1"
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication

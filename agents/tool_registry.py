@@ -158,6 +158,19 @@ class ToolRegistry:
         meta = self._tools.get(tool_name)
         return meta.get("description", "") if meta else ""
 
+    def set_policy(self, tool_name: str, policy: ToolPolicy) -> None:
+        """Устанавливает политику для инструмента."""
+        if tool_name in self._tools:
+            self._tools[tool_name]["policy"] = policy
+
+    def get_all_tools(self) -> list[dict[str, Any]]:
+        """Возвращает список всех зарегистрированных инструментов."""
+        return [
+            {"name": name, "description": meta.get("description", ""),
+             "policy": meta.get("policy", ToolPolicy.AUTO)}
+            for name, meta in self._tools.items()
+        ]
+
     async def execute(self, tool_call: ToolCall, **extra_kwargs: Any) -> ToolResult:
         """Асинхронно выполняет инструмент и возвращает результат.
 

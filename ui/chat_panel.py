@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+from typing import Any
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, QThread, Signal, Slot
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 from agents.agent_loop import AgentContext, AgentIterationLimitError, AgentLoop
 from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
-from core.config import AgentMode
+from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
 
 
@@ -82,13 +83,13 @@ class AgentChatThread(QThread):
     finish_received = Signal(str)
     error_occurred = Signal(str)
     iteration_changed = Signal(int, int)
+    tools_status_changed = Signal(bool)  # True = tools active, False = disabled
 
     def __init__(
         self,
         client: OllamaClient,
         registry: ToolRegistry,
         model: str,
-        user_message: str,
         context: AgentContext,
         messages_history: list[ChatMessage],
         agent_mode: AgentMode,
@@ -98,7 +99,6 @@ class AgentChatThread(QThread):
         self.client = client
         self.registry = registry
         self.model = model
-        self.user_message = user_message
         self.context = context
         self.messages_history = messages_history
         self.agent_mode = agent_mode
@@ -137,6 +137,7 @@ class AgentChatThread(QThread):
 
     async def _run_agent(self):
         """Выполняет цикл ReAct агента."""
+        self.tools_status_changed.emit(True)
         loop = AgentLoop(
             client=self.client,
             registry=self.registry,
@@ -144,14 +145,17 @@ class AgentChatThread(QThread):
         )
 
         try:
+            async def _notify_tools_disabled():
+                self.tools_status_changed.emit(False)
+
             result = await loop.run(
-                user_message=self.user_message,
                 context=self.context,
                 messages_history=self.messages_history,
                 on_token=self._on_token,
                 on_tool_request=self._on_tool_request,
                 max_iterations=self.max_iterations,
                 on_thinking=self._on_thinking,
+                on_tools_disabled=_notify_tools_disabled,
             )
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
@@ -272,6 +276,7 @@ class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
 
     tool_requested = Signal(str, str, str)
+    mode_changed = Signal(str)  # "chat", "plan", "agent"
 
     def __init__(
         self,
@@ -297,6 +302,7 @@ class ChatPanel(QWidget):
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
         self._generating = False
+        self.tool_policies: dict[str, ToolPolicy] = {}
 
         self._setup_ui()
 
@@ -331,6 +337,7 @@ class ChatPanel(QWidget):
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
 
         top_bar.addStretch()
@@ -341,6 +348,14 @@ class ChatPanel(QWidget):
         top_bar.addWidget(self.clear_btn)
 
         layout.addLayout(top_bar)
+
+        self.tool_status_label = QLabel("🔧 Инструменты активны")
+        self.tool_status_label.setStyleSheet(
+            "font-size: 12px; padding: 4px 8px; background: #e8f5e9; color: #2e7d32;"
+            " border: 1px solid #a5d6a7; border-radius: 4px; margin: 2px 0;"
+        )
+        self.tool_status_label.setVisible(False)
+        layout.addWidget(self.tool_status_label)
 
         self.message_list = QListWidget()
         self.message_list.setStyleSheet(
@@ -353,14 +368,13 @@ class ChatPanel(QWidget):
 
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
-        self.input_edit.setMaximumHeight(200)
-        self.input_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.input_edit.setFixedHeight(80)
         self.input_edit.setStyleSheet(
             "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
         )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
-        self.input_edit.document().contentsChanged.connect(self._resize_input)
+        self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
         self.send_btn = QPushButton("▶ Отправить")
@@ -377,6 +391,14 @@ class ChatPanel(QWidget):
         self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px;")
         layout.addWidget(self.status_label)
 
+    def eventFilter(self, obj: QWidget, event) -> bool:
+        """Обрабатывает Ctrl+Enter для отправки сообщения."""
+        if obj is self.input_edit and event.type() == event.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                self._toggle_send_stop()
+                return True
+        return super().eventFilter(obj, event)
+
     def _current_mode(self) -> AgentMode:
         """Возвращает текущий режим из комбобокса."""
         mapping = {
@@ -392,7 +414,7 @@ class ChatPanel(QWidget):
         widget = ChatMessageItem(role, content)
         self._resize_message_item(item, widget)
         self.message_list.setItemWidget(item, widget)
-        self.message_list.scrollToBottom()
+        QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
         """Добавляет сообщение о выполнении инструмента."""
@@ -402,14 +424,11 @@ class ChatPanel(QWidget):
             display_text += "\n... (результат обрезан)"
         self._add_message("tool", display_text)
 
-    def _resize_input(self):
-        """Динамически подгоняет высоту поля ввода под содержимое + 1 пустая строка."""
-        doc = self.input_edit.document()
-        doc.setTextWidth(self.input_edit.viewport().width())
-        doc_height = doc.size().height()
-        line_height = self.input_edit.fontMetrics().lineSpacing()
-        desired = min(int(doc_height) + line_height, 200)
-        self.input_edit.setFixedHeight(max(desired, line_height + 16))
+    def _on_mode_changed(self, index: int):
+        """Оповещает MainWindow об изменении режима."""
+        mapping = {0: "chat", 1: "plan", 2: "agent"}
+        mode = mapping.get(index, "chat")
+        self.mode_changed.emit(mode)
 
     def _clear_chat(self):
         """Очищает чат."""
@@ -580,7 +599,6 @@ class ChatPanel(QWidget):
             client=OllamaClient(base_url=self.base_url),
             registry=self._build_registry(),
             model=self.model_combo.currentText(),
-            user_message=text,
             context=context,
             messages_history=list(self._messages),
             agent_mode=mode,
@@ -592,6 +610,7 @@ class ChatPanel(QWidget):
         self._agent_thread.tool_executed.connect(self._on_tool_executed)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
+        self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.start()
 
     def _build_registry(self) -> ToolRegistry:
@@ -610,6 +629,10 @@ class ChatPanel(QWidget):
         registry.register(tool_git_status)
         registry.register(tool_create_snapshot)
         registry.register(tool_undo_snapshot)
+
+        for tool_name, policy in self.tool_policies.items():
+            registry.set_policy(tool_name, policy)
+
         return registry
 
     @Slot(str, str, str)
@@ -697,14 +720,12 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
-        """Подгоняет высоту элемента списка под содержимое виджета (с запасом 2 строки)."""
+        """Подгоняет высоту элемента под содержимое."""
         list_width = self.message_list.viewport().width()
         if list_width > 0:
             widget.setFixedWidth(list_width - 4)
         widget.adjustSize()
         hint = widget.sizeHint()
-        if hint.height() < 60:
-            hint.setHeight(60)
         item.setSizeHint(hint)
 
     @Slot()
@@ -771,6 +792,25 @@ class ChatPanel(QWidget):
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
 
+    @Slot(bool)
+    def _on_tools_status_changed(self, active: bool):
+        """Обновляет индикатор статуса инструментов."""
+        if active:
+            self.tool_status_label.setText("🔧 Инструменты активны")
+            self.tool_status_label.setStyleSheet(
+                "font-size: 12px; padding: 4px 8px; background: #e8f5e9; color: #2e7d32;"
+                " border: 1px solid #a5d6a7; border-radius: 4px; margin: 2px 0;"
+            )
+        else:
+            self.tool_status_label.setText(
+                "⚠️ Инструменты отключены — модель не поддерживает вызов инструментов. "
+                "Доступен только текстовый режим."
+            )
+            self.tool_status_label.setStyleSheet(
+                "font-size: 12px; padding: 4px 8px; background: #fff3e0; color: #e65100;"
+                " border: 1px solid #ffcc80; border-radius: 4px; margin: 2px 0;"
+            )
+        self.tool_status_label.setVisible(True)
 
     def set_model(self, model: str):
         """Устанавливает модель в комбобоксе."""
@@ -783,13 +823,18 @@ class ChatPanel(QWidget):
             self.model_combo.setCurrentIndex(0)
 
     def update_models(self, models: list[str]):
-        """Обновляет список доступных моделей."""
+        """Обновляет список доступных моделей (в алфавитном порядке)."""
         current = self.model_combo.currentText()
         self.model_combo.clear()
-        self.model_combo.addItems(models)
+        for m in sorted(models, key=str.lower):
+            self.model_combo.addItem(m)
         index = self.model_combo.findText(current)
         if index >= 0:
             self.model_combo.setCurrentIndex(index)
+
+    def set_tool_policy(self, tool_name: str, policy: Any) -> None:
+        """Устанавливает политику для инструмента."""
+        self.tool_policies[tool_name] = policy
 
     def set_vector_store(self, vector_store):
         """Устанавливает векторное хранилище для RAG."""
