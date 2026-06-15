@@ -29,6 +29,7 @@ from agents.ollama_client import OllamaClient
 from core.config import AppConfig
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
+from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
@@ -583,6 +584,12 @@ class MainWindow(QMainWindow):
         self._previous_state = self.project_state.load(self.project_path)
         self._add_recent_project(str(self.project_path))
         self.reindex_btn.setEnabled(True)
+
+        # Восстанавливаем настройки проекта
+        project_settings = ProjectSettings.load(self.project_path)
+        if project_settings.model:
+            self.chat_panel.apply_settings(project_settings.model_dump())
+
         self._start_indexing()
 
     def _reindex_project(self) -> None:
@@ -731,8 +738,16 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Обрабатывает закрытие окна."""
         logger.info("Закрытие главного окна")
+        self._save_project_settings()
         self._stop_all_threads()
         event.accept()
+
+    def _save_project_settings(self) -> None:
+        """Сохраняет настройки проекта."""
+        if not self.project_path:
+            return
+        settings = self.chat_panel.get_settings()
+        ProjectSettings(**settings).save(self.project_path)
 
     def _stop_all_threads(self) -> None:
         """Останавливает все фоновые потоки."""

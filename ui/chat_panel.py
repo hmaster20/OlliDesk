@@ -5,7 +5,7 @@ import json
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import QTimer, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -353,12 +353,14 @@ class ChatPanel(QWidget):
 
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
-        self.input_edit.setMaximumHeight(100)
+        self.input_edit.setMaximumHeight(200)
+        self.input_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.input_edit.setStyleSheet(
             "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
         )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
+        self.input_edit.document().contentsChanged.connect(self._resize_input)
         input_layout.addWidget(self.input_edit, stretch=1)
 
         self.send_btn = QPushButton("▶ Отправить")
@@ -399,6 +401,15 @@ class ChatPanel(QWidget):
         if len(content) > 500:
             display_text += "\n... (результат обрезан)"
         self._add_message("tool", display_text)
+
+    def _resize_input(self):
+        """Динамически подгоняет высоту поля ввода под содержимое + 1 пустая строка."""
+        doc = self.input_edit.document()
+        doc.setTextWidth(self.input_edit.viewport().width())
+        doc_height = doc.size().height()
+        line_height = self.input_edit.fontMetrics().lineSpacing()
+        desired = min(int(doc_height) + line_height, 200)
+        self.input_edit.setFixedHeight(max(desired, line_height + 16))
 
     def _clear_chat(self):
         """Очищает чат."""
@@ -644,7 +655,7 @@ class ChatPanel(QWidget):
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
-        self.message_list.scrollToBottom()
+        QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
         """Вставляет QTextEdit для thinking в виджет сообщения."""
@@ -683,7 +694,7 @@ class ChatPanel(QWidget):
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
-        self.message_list.scrollToBottom()
+        QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
         """Подгоняет высоту элемента списка под содержимое виджета (с запасом 2 строки)."""
@@ -787,6 +798,25 @@ class ChatPanel(QWidget):
     def set_project_root(self, project_root: str):
         """Устанавливает корень проекта."""
         self.project_root = project_root
+
+    def get_settings(self) -> dict:
+        """Возвращает текущие настройки панели."""
+        mode_map = {0: "chat", 1: "plan", 2: "agent"}
+        return {
+            "model": self.model_combo.currentText(),
+            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
+        }
+
+    def apply_settings(self, settings: dict) -> None:
+        """Применяет сохранённые настройки к панели."""
+        model = settings.get("model", "")
+        if model:
+            self.set_model(model)
+        mode = settings.get("mode", "chat")
+        mode_map = {"chat": 0, "plan": 1, "agent": 2}
+        idx = mode_map.get(mode, 0)
+        if 0 <= idx < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(idx)
 
     def set_project_open(self, is_open: bool):
         """Блокирует/разблокирует ввод при отсутствии открытого проекта."""
