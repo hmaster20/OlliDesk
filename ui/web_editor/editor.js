@@ -10,6 +10,8 @@ let isDirty = false;
 let originalContent = '';
 let monacoReady = false;
 let pendingFiles = [];
+let requestCounter = 0;
+let pendingRequests = {};
 
 async function initEditor() {
     require.config({
@@ -32,7 +34,7 @@ async function initEditor() {
             insertSpaces: true,
         });
 
-        monacoEditor.onDidChangeModelContent(() => {
+        monacoEditor.onDidChangeModelContent(function() {
             isDirty = true;
             updateStatusBar('Modified');
         });
@@ -49,8 +51,8 @@ async function initEditor() {
 }
 
 async function initPythonBridge() {
-    return new Promise((resolve) => {
-        new QWebChannel(qt.webChannelTransport, (channel) => {
+    return new Promise(function(resolve) {
+        new QWebChannel(qt.webChannelTransport, function(channel) {
             pythonBridge = channel.objects.pythonBridge;
             console.log('Python Bridge connected');
             resolve();
@@ -58,17 +60,46 @@ async function initPythonBridge() {
     });
 }
 
-async function callPython(method, ...args) {
-    if (!pythonBridge) {
-        console.error('Python Bridge not initialized');
-        return null;
-    }
-
-    return new Promise((resolve) => {
-        pythonBridge[method](...args, (result) => {
-            resolve(result);
-        });
+function readFile(path) {
+    var requestId = 'r' + (requestCounter++);
+    return new Promise(function(resolve, reject) {
+        pendingRequests[requestId] = resolve;
+        try {
+            pythonBridge.read_file(requestId, path);
+        } catch (e) {
+            delete pendingRequests[requestId];
+            reject(e);
+        }
     });
+}
+
+function writeFile(path, content) {
+    var requestId = 'w' + (requestCounter++);
+    return new Promise(function(resolve, reject) {
+        pendingRequests[requestId] = resolve;
+        try {
+            pythonBridge.write_file(requestId, path, content);
+        } catch (e) {
+            delete pendingRequests[requestId];
+            reject(e);
+        }
+    });
+}
+
+function onFileContentReady(data) {
+    var resolve = pendingRequests[data.requestId];
+    if (resolve) {
+        delete pendingRequests[data.requestId];
+        resolve(data.content);
+    }
+}
+
+function onFileWriteResult(data) {
+    var resolve = pendingRequests[data.requestId];
+    if (resolve) {
+        delete pendingRequests[data.requestId];
+        resolve(data.success);
+    }
 }
 
 function openFile(filePath) {
@@ -82,7 +113,7 @@ function openFile(filePath) {
 async function _openFile(filePath) {
     try {
         updateStatusBar('Loading...');
-        const content = await callPython('read_file', filePath);
+        var content = await readFile(filePath);
 
         if (content === null || content === undefined) {
             updateStatusBar('Error: file not found');
@@ -93,9 +124,15 @@ async function _openFile(filePath) {
         originalContent = content;
         isDirty = false;
 
-        const language = detectLanguage(filePath);
-        const model = monaco.editor.createModel(content, language);
-        monacoEditor.setModel(model);
+        var language = detectLanguage(filePath);
+        try {
+            var model = monaco.editor.createModel(content, language);
+            monacoEditor.setModel(model);
+        } catch (e) {
+            console.warn('Failed to set language ' + language + ', fallback to plaintext:', e);
+            var model = monaco.editor.createModel(content, 'plaintext');
+            monacoEditor.setModel(model);
+        }
 
         updateStatusBar(filePath);
         console.log('File opened: ' + filePath);
@@ -119,8 +156,8 @@ async function saveFile() {
 
     try {
         updateStatusBar('Saving...');
-        const content = monacoEditor.getValue();
-        const success = await callPython('write_file', currentFilePath, content);
+        var content = monacoEditor.getValue();
+        var success = await writeFile(currentFilePath, content);
 
         if (success) {
             originalContent = content;
@@ -150,8 +187,8 @@ function showDiff(originalText, modifiedText, language) {
         renderSideBySide: true,
     });
 
-    const originalModel = monaco.editor.createModel(originalText, language);
-    const modifiedModel = monaco.editor.createModel(modifiedText, language);
+    var originalModel = monaco.editor.createModel(originalText, language);
+    var modifiedModel = monaco.editor.createModel(modifiedText, language);
 
     diffEditor.setModel({
         original: originalModel,
@@ -165,8 +202,8 @@ async function acceptDiff() {
     if (!diffEditor || !currentFilePath) return;
 
     try {
-        const modifiedContent = diffEditor.getModel().modified.getValue();
-        const success = await callPython('write_file', currentFilePath, modifiedContent);
+        var modifiedContent = diffEditor.getModel().modified.getValue();
+        var success = await writeFile(currentFilePath, modifiedContent);
 
         if (success) {
             updateStatusBar('Changes applied');
@@ -207,7 +244,7 @@ function closeDiff() {
 function setupKeybindings() {
     monacoEditor.addCommand(
         monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-        () => saveFile()
+        function() { saveFile(); }
     );
 }
 
@@ -239,8 +276,8 @@ function updateStatusBar(message) {
     statusBar.textContent = message;
     statusBar.style.display = 'block';
 
-    if (!message.startsWith('Error')) {
-        setTimeout(function () {
+    if (message.indexOf('Error') !== 0) {
+        setTimeout(function() {
             statusBar.style.display = 'none';
         }, 3000);
     }

@@ -11,10 +11,10 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 
 class PythonBridge(QObject):
-    """Мост между Python и JavaScript."""
+    """Мост между Python и JavaScript (сигнальная версия)."""
 
-    file_read = Signal(str, str)  # path, content
-    file_written = Signal(str, bool)  # path, success
+    file_content_ready = Signal(str, str)  # request_id, content
+    file_write_result = Signal(str, bool)  # request_id, success
 
     def __init__(self, parent=None):
         """Инициализация моста."""
@@ -30,46 +30,46 @@ class PythonBridge(QObject):
         """Устанавливает функцию записи файла."""
         self._file_writer = writer
 
-    @Slot(str, "QVariant")
-    def read_file(self, path, callback):
+    @Slot(str, str)
+    def read_file(self, request_id, path):
         """
-        Читает файл и возвращает содержимое в JS.
+        Читает файл и отправляет содержимое через сигнал.
 
         Args:
+            request_id: Идентификатор запроса (из JS)
             path: Путь к файлу
-            callback: JS callback для возврата результата
         """
-        logger.debug(f"PythonBridge.read_file: {path}")
+        logger.debug(f"PythonBridge.read_file: {path} (id={request_id})")
         try:
             if self._file_reader:
                 content = self._file_reader(path)
-                callback(content)
+                self.file_content_ready.emit(request_id, content)
             else:
-                callback("")
+                self.file_content_ready.emit(request_id, "")
         except Exception as e:
             logger.error(f"Ошибка чтения файла: {e}")
-            callback("")
+            self.file_content_ready.emit(request_id, "")
 
-    @Slot(str, str, "QVariant")
-    def write_file(self, path, content, callback):
+    @Slot(str, str, str)
+    def write_file(self, request_id, path, content):
         """
-        Записывает содержимое в файл.
+        Записывает содержимое в файл и отправляет результат через сигнал.
 
         Args:
+            request_id: Идентификатор запроса (из JS)
             path: Путь к файлу
             content: Содержимое
-            callback: JS callback для возврата результата
         """
-        logger.debug(f"PythonBridge.write_file: {path}")
+        logger.debug(f"PythonBridge.write_file: {path} (id={request_id})")
         try:
             if self._file_writer:
                 success = self._file_writer(path, content)
-                callback(success)
+                self.file_write_result.emit(request_id, success)
             else:
-                callback(False)
+                self.file_write_result.emit(request_id, False)
         except Exception as e:
             logger.error(f"Ошибка записи файла: {e}")
-            callback(False)
+            self.file_write_result.emit(request_id, False)
 
 
 class EditorWidget(QWidget):
@@ -103,6 +103,22 @@ class EditorWidget(QWidget):
         channel = QWebChannel(self.web_view.page())
         channel.registerObject("pythonBridge", self.bridge)
         self.web_view.page().setWebChannel(channel)
+
+        # Пробрасываем сигналы в JS
+        self.bridge.file_content_ready.connect(self._on_file_content_ready)
+        self.bridge.file_write_result.connect(self._on_file_write_result)
+
+    @Slot(str, str)
+    def _on_file_content_ready(self, request_id: str, content: str) -> None:
+        """Отправляет содержимое файла в JS."""
+        escaped = json.dumps({"requestId": request_id, "content": content})
+        self.web_view.page().runJavaScript(f"onFileContentReady({escaped})")
+
+    @Slot(str, bool)
+    def _on_file_write_result(self, request_id: str, success: bool) -> None:
+        """Отправляет результат записи в JS."""
+        escaped = json.dumps({"requestId": request_id, "success": success})
+        self.web_view.page().runJavaScript(f"onFileWriteResult({escaped})")
 
     def set_file_reader(self, reader):
         """Устанавливает функцию чтения файла."""
