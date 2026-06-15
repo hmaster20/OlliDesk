@@ -147,30 +147,31 @@ class AgentChatThread(QThread):
     async def _run_agent(self):
         """Выполняет цикл ReAct агента."""
         self.tools_status_changed.emit(True)
-        loop = AgentLoop(
-            client=self.client,
-            registry=self.registry,
-            model=self.model,
-        )
+
+        async def _notify_tools_disabled():
+            self.tools_status_changed.emit(False)
+
+        async def _on_tool_start(name: str, args: dict):
+            args_json = json.dumps(args, ensure_ascii=False)
+            self.tool_started.emit(name, args_json)
 
         try:
-            async def _notify_tools_disabled():
-                self.tools_status_changed.emit(False)
-
-            async def _on_tool_start(name: str, args: dict):
-                args_json = json.dumps(args, ensure_ascii=False)
-                self.tool_started.emit(name, args_json)
-
-            result = await loop.run(
-                context=self.context,
-                messages_history=self.messages_history,
-                on_token=self._on_token,
-                on_tool_request=self._on_tool_request,
-                max_iterations=self.max_iterations,
-                on_thinking=self._on_thinking,
-                on_tools_disabled=_notify_tools_disabled,
-                on_tool_start=_on_tool_start,
-            )
+            async with self.client as client:
+                loop = AgentLoop(
+                    client=client,
+                    registry=self.registry,
+                    model=self.model,
+                )
+                result = await loop.run(
+                    context=self.context,
+                    messages_history=self.messages_history,
+                    on_token=self._on_token,
+                    on_tool_request=self._on_tool_request,
+                    max_iterations=self.max_iterations,
+                    on_thinking=self._on_thinking,
+                    on_tools_disabled=_notify_tools_disabled,
+                    on_tool_start=_on_tool_start,
+                )
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
             self.error_occurred.emit(str(e))
