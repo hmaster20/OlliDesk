@@ -1,8 +1,9 @@
 """Виджет редактора на базе QWebEngineView."""
 
-from pathlib import Path
+import json
 
 from loguru import logger
+from core.utils import get_resource_path
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -90,7 +91,7 @@ class EditorWidget(QWidget):
         self.web_view = QWebEngineView()
         layout.addWidget(self.web_view)
 
-        html_path = Path(__file__).parent / "editor.html"
+        html_path = get_resource_path("ui/web_editor/editor.html")
         self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
 
         logger.info(f"EditorWidget загружен: {html_path}")
@@ -119,8 +120,8 @@ class EditorWidget(QWidget):
             file_path: Путь к файлу
         """
         self.current_file = file_path
-        escaped = file_path.replace("\\", "\\\\").replace("'", "\\'")
-        self.web_view.page().runJavaScript(f"openFile('{escaped}')")
+        escaped = json.dumps(file_path)
+        self.web_view.page().runJavaScript(f"openFile({escaped})")
         logger.info(f"Открыт файл в редакторе: {file_path}")
 
     def show_diff(self, original: str, modified: str, language: str = "plaintext"):

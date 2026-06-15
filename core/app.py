@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from core.config import AppConfig, load_config
 from core.exceptions import ConfigError
 from core.logger import setup_logger
+from core.utils import get_app_data_dir
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
@@ -16,7 +17,7 @@ from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 
 def _check_config_exists() -> bool:
     """Проверяет, существует ли файл конфигурации."""
-    return (Path.home() / ".ollidesk" / "config.yaml").exists()
+    return (get_app_data_dir() / "config.yaml").exists()
 
 
 def _load_config_or_wizard() -> AppConfig | None:
@@ -25,7 +26,7 @@ def _load_config_or_wizard() -> AppConfig | None:
     Returns:
         AppConfig или None, если визард не был завершён
     """
-    config_path = Path.home() / ".ollidesk" / "config.yaml"
+    config_path = get_app_data_dir() / "config.yaml"
 
     try:
         config = load_config()
@@ -76,7 +77,7 @@ class OlliDeskApp:
         Returns:
             int: Код выхода (0 — успех)
         """
-        log_dir = Path.home() / ".ollidesk" / "logs"
+        log_dir = get_app_data_dir() / "logs"
         setup_logger(log_dir, level="INFO")
         logger.info("Запуск OlliDesk...")
 

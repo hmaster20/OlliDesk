@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFileSystemModel,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStatusBar,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +30,7 @@ from core.config import AppConfig
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 from state.session_store import SessionStore
+from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
 
 
@@ -162,23 +166,23 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
 
-        self.setWindowTitle("OlliDesk — Local AI Coding Assistant")
+        # Состояние проекта (должно быть до _update_window_title)
+        self.project_path: Path | None = None
+        self.project_state = ProjectState(get_app_data_dir())
+        self._previous_state: dict = {}
+
+        self._update_window_title()
         self.setMinimumSize(1200, 800)
         self.resize(1600, 1000)
 
         # Инициализация хранилища сессий
-        db_path = Path.home() / ".ollidesk" / "sessions.db"
+        db_path = get_app_data_dir() / "sessions.db"
         self.session_store = SessionStore(db_path)
 
         # Инициализация клиента Ollama
         self.ollama_client = OllamaClient(base_url="http://localhost:11434")
         self._ollama_connected = False
         self._available_models: list[str] = []
-
-        # Состояние проекта
-        self.project_path: Path | None = None
-        self.project_state = ProjectState(Path.home() / ".ollidesk")
-        self._previous_state: dict = {}
 
         # Индексация
         self.indexer = FileIndexer(config)
@@ -215,20 +219,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
 
     def _create_left_panel(self) -> QWidget:
-        """Создает левую панель (проект + индексация)."""
+        """Создает левую панель (дерево файлов проекта + индексация)."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        project_label = QLabel("📁 Проект")
-        project_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
-        layout.addWidget(project_label)
+        # Заголовок
+        header_layout = QHBoxLayout()
+        self.project_icon_label = QLabel("📁")
+        self.project_icon_label.setStyleSheet("font-size: 16px; padding: 8px 0 4px 10px;")
+        header_layout.addWidget(self.project_icon_label)
 
-        self.project_info_label = QLabel("Проект не открыт")
-        self.project_info_label.setStyleSheet("color: gray; padding: 10px;")
-        self.project_info_label.setWordWrap(True)
-        layout.addWidget(self.project_info_label)
+        self.project_title_label = QLabel("Проект")
+        self.project_title_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;"
+        )
+        header_layout.addWidget(self.project_title_label)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
-        # Кнопка Reindex
+        # Кнопка Reindex наверху
         self.reindex_btn = QPushButton("🔄 Переиндексировать")
         self.reindex_btn.setStyleSheet(
             "font-size: 13px; padding: 8px; margin: 4px 10px;"
@@ -236,6 +246,27 @@ class MainWindow(QMainWindow):
         self.reindex_btn.clicked.connect(self._reindex_project)
         self.reindex_btn.setEnabled(False)
         layout.addWidget(self.reindex_btn)
+
+        # Дерево файлов (пустое до открытия проекта)
+        self.file_tree = QTreeView()
+        self.file_tree.setHeaderHidden(True)
+        self.file_tree.setAnimated(True)
+        self.file_tree.setIndentation(16)
+        self.file_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        self.file_tree.setStyleSheet(
+            "font-size: 13px; border: none;"
+        )
+        self.file_tree.doubleClicked.connect(self._on_file_tree_clicked)
+        self.file_tree.clicked.connect(self._on_file_tree_clicked)
+        layout.addWidget(self.file_tree, stretch=1)
+
+        # Пустая модель — никакие диски не показываем
+        self.file_system_model: QFileSystemModel | None = None
+        self._empty_model = QStandardItemModel()
+        self._empty_model.setHorizontalHeaderLabels(["Проект не открыт"])
+        self.file_tree.setModel(self._empty_model)
+        self.file_tree.setRootIndex(QModelIndex())
 
         # Прогресс-бар индексации
         self.index_progress = QProgressBar()
@@ -253,7 +284,6 @@ class MainWindow(QMainWindow):
         self.index_status_label.setVisible(False)
         layout.addWidget(self.index_status_label)
 
-        layout.addStretch()
         return panel
 
     def _create_center_panel(self) -> QWidget:
@@ -361,6 +391,11 @@ class MainWindow(QMainWindow):
         open_project_action.triggered.connect(self._open_project)
         file_menu.addAction(open_project_action)
 
+        # Недавние проекты
+        self._recent_projects_menu = file_menu.addMenu("Recent Projects")
+        self._recent_actions: list[QAction] = []
+        self._update_recent_projects_menu()
+
         file_menu.addSeparator()
 
         settings_action = QAction("&Settings...", self)
@@ -458,32 +493,97 @@ class MainWindow(QMainWindow):
             self.ollama_status_label.setText("● Ollama: Не подключен")
             self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
 
+    def _update_window_title(self) -> None:
+        """Обновляет заголовок окна с именем проекта."""
+        base = "OlliDesk — Local AI Coding Assistant"
+        if self.project_path:
+            self.setWindowTitle(f"{self.project_path.name} — {base}")
+        else:
+            self.setWindowTitle(base)
+
+    def _on_file_tree_clicked(self, index: QModelIndex) -> None:
+        """Открывает файл из дерева проекта в редакторе."""
+        if self.file_system_model is None:
+            return
+        file_path = self.file_system_model.filePath(index)
+        if Path(file_path).is_file():
+            self.open_file_in_editor(file_path)
+
     def _open_project(self) -> None:
         """Открывает диалог выбора проекта."""
         folder = QFileDialog.getExistingDirectory(self, "Выберите папку проекта")
         if folder:
-            self.project_path = Path(folder)
-            logger.info(f"Открыт проект: {self.project_path}")
-            self.project_label.setText(f"Проект: {self.project_path.name}")
-            self.project_info_label.setText(f"Открыт:\n{self.project_path.name}")
+            self._do_open_project(Path(folder))
 
-            # Инициализация VectorStore для проекта
-            persist_dir = self.project_path / ".ollidesk" / "vector_db"
-            self.vector_store = VectorStore(
-                persist_dir=persist_dir,
-                embed_client=self.ollama_client,
-                embed_model=self.config.embed_model,
-            )
-            self.chat_panel.set_vector_store(self.vector_store)
-            self.chat_panel.set_project_root(str(self.project_path))
-            self.chat_panel.set_project_open(True)
+    def _add_recent_project(self, path: str) -> None:
+        """Добавляет проект в список недавних."""
+        from core.config import save_config
 
-            # Загрузка предыдущего состояния
-            self._previous_state = self.project_state.load(self.project_path)
+        projects = self.config.recent_projects
+        if path in projects:
+            projects.remove(path)
+        projects.insert(0, path)
+        self.config.recent_projects = projects[:10]
+        save_config(self.config)
+        self._update_recent_projects_menu()
 
-            # Запуск индексации
-            self.reindex_btn.setEnabled(True)
-            self._start_indexing()
+    def _update_recent_projects_menu(self) -> None:
+        """Обновляет подменю недавних проектов."""
+        self._recent_projects_menu.clear()
+        self._recent_actions.clear()
+        for path in self.config.recent_projects:
+            action = QAction(path, self)
+            action.triggered.connect(lambda checked, p=path: self._open_recent_project(p))
+            self._recent_projects_menu.addAction(action)
+            self._recent_actions.append(action)
+        if not self.config.recent_projects:
+            action = QAction("(no recent projects)", self)
+            action.setEnabled(False)
+            self._recent_projects_menu.addAction(action)
+            self._recent_actions.append(action)
+
+    def _open_recent_project(self, path: str) -> None:
+        """Открывает проект из списка недавних."""
+        folder = Path(path)
+        if folder.exists():
+            self._do_open_project(folder)
+        else:
+            QMessageBox.warning(self, "Project not found", f"Project path does not exist:\n{path}")
+            projects = self.config.recent_projects
+            if path in projects:
+                projects.remove(path)
+                self.config.recent_projects = projects[:10]
+                from core.config import save_config
+                save_config(self.config)
+                self._update_recent_projects_menu()
+
+    def _do_open_project(self, project_path: Path) -> None:
+        """Внутренняя логика открытия проекта (без диалога)."""
+        self.project_path = project_path
+        logger.info(f"Открыт проект: {self.project_path}")
+        self.project_label.setText(f"Проект: {self.project_path.name}")
+        self.file_system_model = QFileSystemModel()
+        self.file_system_model.setRootPath(str(self.project_path))
+        self.file_tree.setModel(self.file_system_model)
+        self.file_tree.setRootIndex(self.file_system_model.index(str(self.project_path)))
+        self.file_tree.hideColumn(1)
+        self.file_tree.hideColumn(2)
+        self.file_tree.hideColumn(3)
+        self.project_title_label.setText(self.project_path.name)
+        self._update_window_title()
+        persist_dir = self.project_path / ".ollidesk" / "vector_db"
+        self.vector_store = VectorStore(
+            persist_dir=persist_dir,
+            embed_client=self.ollama_client,
+            embed_model=self.config.embed_model,
+        )
+        self.chat_panel.set_vector_store(self.vector_store)
+        self.chat_panel.set_project_root(str(self.project_path))
+        self.chat_panel.set_project_open(True)
+        self._previous_state = self.project_state.load(self.project_path)
+        self._add_recent_project(str(self.project_path))
+        self.reindex_btn.setEnabled(True)
+        self._start_indexing()
 
     def _reindex_project(self) -> None:
         """Запускает полную переиндексацию."""
@@ -631,4 +731,22 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Обрабатывает закрытие окна."""
         logger.info("Закрытие главного окна")
+        self._stop_all_threads()
         event.accept()
+
+    def _stop_all_threads(self) -> None:
+        """Останавливает все фоновые потоки."""
+        if self._indexing_thread and self._indexing_thread.isRunning():
+            self._indexing_thread.quit()
+            self._indexing_thread.wait(2000)
+        if hasattr(self, 'chat_panel') and self.chat_panel:
+            self.chat_panel._stop_generation()
+        # Останавливаем клиент Ollama
+        if hasattr(self, 'ollama_client') and self.ollama_client:
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.ollama_client.__aexit__(None, None, None))
+                loop.close()
+            except Exception:
+                pass

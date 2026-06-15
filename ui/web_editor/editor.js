@@ -8,6 +8,8 @@ let pythonBridge = null;
 let currentFilePath = null;
 let isDirty = false;
 let originalContent = '';
+let monacoReady = false;
+let pendingFiles = [];
 
 async function initEditor() {
     require.config({
@@ -36,8 +38,13 @@ async function initEditor() {
         });
 
         setupKeybindings();
-
+        monacoReady = true;
         console.log('Monaco Editor initialized');
+
+        pendingFiles.forEach(function(fp) {
+            _openFile(fp);
+        });
+        pendingFiles = [];
     });
 }
 
@@ -64,7 +71,15 @@ async function callPython(method, ...args) {
     });
 }
 
-async function openFile(filePath) {
+function openFile(filePath) {
+    if (!monacoReady) {
+        pendingFiles.push(filePath);
+        return;
+    }
+    _openFile(filePath);
+}
+
+async function _openFile(filePath) {
     try {
         updateStatusBar('Loading...');
         const content = await callPython('read_file', filePath);
@@ -85,7 +100,8 @@ async function openFile(filePath) {
         updateStatusBar(filePath);
         console.log('File opened: ' + filePath);
     } catch (error) {
-        updateStatusBar('Error: ' + error);
+        var msg = error.message || error.toString();
+        updateStatusBar('Error: ' + msg);
         console.error('Error opening file:', error);
     }
 }

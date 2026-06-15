@@ -135,7 +135,8 @@ class ConfigLoader:
 
     def __init__(self) -> None:
         """Инициализация загрузчика."""
-        self.global_config_path = Path.home() / ".ollidesk" / "config.yaml"
+        from core.utils import get_app_data_dir
+        self.global_config_path = get_app_data_dir() / "config.yaml"
 
     def load_config(self, project_path: Path | None = None) -> AppConfig:
         """
