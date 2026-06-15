@@ -136,16 +136,16 @@ class AgentLoop:
                     stream=True,
                 )
 
-                try:
-                    async for chunk in stream:
-                        if chunk.reasoning_content and on_thinking:
-                            await on_thinking(chunk.reasoning_content)
-                        if chunk.content:
-                            current_text += chunk.content
-                            await on_token(chunk.content)
-                        if chunk.tool_calls:
-                            pending_tool_calls.extend(chunk.tool_calls)
-                except StopAsyncIteration:
+                async for chunk in stream:
+                    if chunk.reasoning_content and on_thinking:
+                        await on_thinking(chunk.reasoning_content)
+                    if chunk.content:
+                        current_text += chunk.content
+                        await on_token(chunk.content)
+                    if chunk.tool_calls:
+                        pending_tool_calls.extend(chunk.tool_calls)
+
+                if self.client.is_cancelled:
                     logger.info("Запрос к Ollama отменён пользователем")
                     return current_text or "Отменено"
 

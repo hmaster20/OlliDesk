@@ -132,10 +132,14 @@ class OllamaClient:
         """Отменяет текущий стриминг-запрос (безопасно из любого потока)."""
         self._cancel_requested = True
 
-    def _check_cancelled(self):
-        """Поднимает StopAsyncIteration если запрос отменён."""
-        if self._cancel_requested:
-            raise StopAsyncIteration()
+    @property
+    def is_cancelled(self) -> bool:
+        """True если запрос отменён."""
+        return self._cancel_requested
+
+    def reset_cancel(self):
+        """Сбрасывает флаг отмены."""
+        self._cancel_requested = False
 
     async def chat(
         self,
@@ -198,7 +202,8 @@ class OllamaClient:
                             )
                         response.raise_for_status()
                     async for line in response.aiter_lines():
-                        self._check_cancelled()
+                        if self._cancel_requested:
+                            return
                         if line:
                             chunk_data = json.loads(line)
                             msg = chunk_data.get("message", {})

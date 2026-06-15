@@ -248,18 +248,18 @@ class ChatMessageItem(QWidget):
 
         # Цвета пузырька
         if is_user:
-            bg = "#1976d2"
+            bg = "#3a5a7a"
             text_color = "white"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 8px 14px; margin: 1px 0;"
+                f" padding: 4px 12px; margin: 1px 0;"
             )
         elif is_assistant:
             bg = "#2d2d2d"
             text_color = "#e0e0e0"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 8px 14px; margin: 1px 0;"
+                f" padding: 4px 12px; margin: 1px 0;"
             )
         else:
             bg = "transparent"
@@ -489,10 +489,7 @@ class ChatPanel(QWidget):
         widget = ChatMessageItem(role, content)
         self._resize_message_item(item, widget)
         self.message_list.setItemWidget(item, widget)
-        def _scroll():
-            self.message_list.scrollToBottom()
-            self.message_list.update()
-        QTimer.singleShot(0, _scroll)
+        QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
         """Добавляет сообщение о выполнении инструмента."""
@@ -855,10 +852,7 @@ class ChatPanel(QWidget):
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
-        def _scroll():
-            self.message_list.scrollToBottom()
-            self.message_list.update()
-        QTimer.singleShot(0, _scroll)
+        QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
         """Подгоняет высоту элемента под содержимое."""
@@ -883,7 +877,7 @@ class ChatPanel(QWidget):
     @Slot(str)
     def _on_agent_finish(self, result: str):
         """Обрабатывает завершение цикла агента."""
-        if result:
+        if result and result != "Отменено":
             assistant_message = ChatMessage(role="assistant", content=result)
             self._messages.append(assistant_message)
             if self._session_id:
@@ -892,7 +886,7 @@ class ChatPanel(QWidget):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-        self.status_label.setText("Готов к работе")
+        self.status_label.setText("Готов к работе" if result != "Отменено" else "⚠️ Остановлено")
 
 
     def _reset_send_button(self):

@@ -31,6 +31,26 @@ class TextChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+BINARY_EXTENSIONS: set[str] = {
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif', '.psd',
+    '.mp3', '.mp4', '.wav', '.ogg', '.flac', '.avi', '.mkv', '.mov', '.wmv', '.webm', '.m4a', '.aac',
+    '.ttf', '.otf', '.woff', '.woff2', '.eot',
+    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz', '.lzma',
+    '.exe', '.dll', '.so', '.dylib', '.o', '.obj', '.lib',
+    '.pyc', '.pyo', '.pyd',
+    '.class', '.jar', '.war',
+    '.bin', '.dat', '.db', '.sqlite', '.sqlite3',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.deb', '.rpm', '.apk', '.ipa',
+    '.iso', '.img',
+    '.pak', '.vpk',
+}
+
+ARCHIVE_EXTENSIONS: set[str] = {
+    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz', '.lzma',
+}
+
+
 class FileIndexer:
     """Индексатор файлов проекта."""
 
@@ -79,6 +99,11 @@ class FileIndexer:
             # Проверка расширения
             if file_path.suffix.lower() not in self.allowed_extensions:
                 logger.debug(f"Неподдерживаемое расширение: {rel_path_str}")
+                continue
+
+            # Пропускаем бинарные файлы и архивы
+            if file_path.suffix.lower() in BINARY_EXTENSIONS:
+                logger.debug(f"Бинарный файл: {rel_path_str}")
                 continue
 
             # Проверка размера

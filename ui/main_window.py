@@ -408,7 +408,13 @@ class MainWindow(QMainWindow):
         self.tokens_spin.setSingleStep(256)
         self.tokens_spin.setStyleSheet(
             "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: #ccc; }"
+            " QSpinBox::up-button, QSpinBox::down-button {"
+            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
+            " QSpinBox::up-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-bottom: 6px solid #ccc; }"
+            " QSpinBox::down-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-top: 6px solid #ccc; }"
             " QSpinBox:hover { border: 1px solid #1976d2; }"
             " QSpinBox:focus { border: 1px solid #42a5f5; }"
         )
@@ -425,7 +431,13 @@ class MainWindow(QMainWindow):
         self.context_spin.setSingleStep(1024)
         self.context_spin.setStyleSheet(
             "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: #ccc; }"
+            " QSpinBox::up-button, QSpinBox::down-button {"
+            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
+            " QSpinBox::up-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-bottom: 6px solid #ccc; }"
+            " QSpinBox::down-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-top: 6px solid #ccc; }"
             " QSpinBox:hover { border: 1px solid #1976d2; }"
             " QSpinBox:focus { border: 1px solid #42a5f5; }"
         )
@@ -441,7 +453,13 @@ class MainWindow(QMainWindow):
         self.iterations_spin.setValue(10)
         self.iterations_spin.setStyleSheet(
             "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: #ccc; }"
+            " QSpinBox::up-button, QSpinBox::down-button {"
+            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
+            " QSpinBox::up-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-bottom: 6px solid #ccc; }"
+            " QSpinBox::down-arrow { image: none; border-left: 4px solid transparent;"
+            "  border-right: 4px solid transparent; border-top: 6px solid #ccc; }"
             " QSpinBox:hover { border: 1px solid #1976d2; }"
             " QSpinBox:focus { border: 1px solid #42a5f5; }"
         )
@@ -835,8 +853,19 @@ class MainWindow(QMainWindow):
             logger.info("Визард отменён пользователем")
 
     def _open_settings(self) -> None:
-        """Открывает настройки (заглушка)."""
-        QMessageBox.information(self, "Settings", "Настройки будут реализованы в Фазе 5")
+        """Открывает диалог настроек."""
+        from ui.dialogs.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(config=self.config, project_path=self.project_path, parent=self)
+        if dlg.exec():
+            # Перезагружаем конфиг
+            from core.config import load_config
+            try:
+                self.config = load_config(self.project_path)
+                # Обновляем индексер с новым конфигом
+                self.indexer = FileIndexer(self.config)
+                logger.info("Настройки сохранены, конфиг перезагружен")
+            except Exception as e:
+                logger.error(f"Ошибка перезагрузки конфига: {e}")
 
     def _toggle_theme(self) -> None:
         """Переключает между тёмной и светлой темой."""
