@@ -279,7 +279,7 @@ class ChatMessageItem(QWidget):
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
-        bubble_layout.setSpacing(2)
+        bubble_layout.setSpacing(1)
 
         if not is_tool:
             role_label = QLabel(
@@ -307,7 +307,6 @@ class ChatMessageItem(QWidget):
             self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setMinimumHeight(16)
-            self._thinking_edit.setMaximumHeight(120)
             self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             bubble_layout.addWidget(self._thinking_edit)
 
@@ -322,13 +321,12 @@ class ChatMessageItem(QWidget):
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setMinimumHeight(20)
-        self._content_edit.setMaximumHeight(600)
         self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         bubble_layout.addWidget(self._content_edit)
 
         # Выравнивание: пользователь справа, ассистент слева
         inner = QHBoxLayout()
-        inner.setContentsMargins(8, 1, 8, 1)
+        inner.setContentsMargins(4, 0, 4, 0)
         if is_user:
             inner.addStretch()
             inner.addWidget(bubble)
@@ -343,6 +341,16 @@ class ChatMessageItem(QWidget):
             inner.setStretchFactor(bubble, 0)
 
         outer.addLayout(inner)
+
+    @staticmethod
+    def _adjust_text_edit_height(edit: QTextEdit, avail_width: int, max_height: int = 10000) -> None:
+        """Подгоняет высоту QTextEdit под содержимое по документу."""
+        doc = edit.document()
+        doc.setTextWidth(max(1, avail_width))
+        doc.adjustSize()
+        height = int(doc.size().height() + 5)
+        edit.setFixedHeight(min(max(20, height), max_height))
+        edit.updateGeometry()
 
 
 class ChatPanel(QWidget):
@@ -517,6 +525,8 @@ class ChatPanel(QWidget):
         self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
+        self.message_list.viewport().installEventFilter(self)
+
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
             "font-size: 14px; padding: 8px 20px; background: #1976d2; color: white;"
@@ -528,11 +538,13 @@ class ChatPanel(QWidget):
         layout.addLayout(input_layout)
 
     def eventFilter(self, obj: QWidget, event) -> bool:
-        """Обрабатывает Ctrl+Enter для отправки сообщения."""
+        """Обрабатывает Ctrl+Enter и ресайз панели чата."""
         if obj is self.input_edit and event.type() == event.Type.KeyPress:
             if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
                 self._toggle_send_stop()
                 return True
+        if obj is self.message_list.viewport() and event.type() == event.Type.Resize:
+            self._relayout_all_items()
         return super().eventFilter(obj, event)
 
     def _current_mode(self) -> AgentMode:
@@ -916,19 +928,30 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
-        """Подгоняет высоту элемента под содержимое, ширина пузырька 85%."""
+        """Подгоняет высоту элемента под содержимое, ширина пузырька 90%."""
         list_width = self.message_list.viewport().width()
         if list_width > 0:
-            bubble_width = int(list_width * 0.85)
+            bubble_width = int(list_width * 0.90)
             widget.setFixedWidth(list_width)
-            # Находим bubble QWidget внутри ChatMessageItem и задаём макс. ширину
             for child in widget.findChildren(QWidget):
                 if child.objectName() == "_bubble":
                     child.setMaximumWidth(bubble_width)
                     break
+            content_width = bubble_width - 24  # padding bubble: 12px*2
+            ChatMessageItem._adjust_text_edit_height(widget._content_edit, content_width)
+            if widget._thinking_edit:
+                ChatMessageItem._adjust_text_edit_height(widget._thinking_edit, content_width, max_height=400)
         widget.adjustSize()
         hint = widget.sizeHint()
         item.setSizeHint(hint)
+
+    def _relayout_all_items(self) -> None:
+        """Пересчитывает размеры всех сообщений при изменении ширины панели."""
+        for i in range(self.message_list.count()):
+            item = self.message_list.item(i)
+            widget = self.message_list.itemWidget(item)
+            if widget:
+                self._resize_message_item(item, widget)
 
     @Slot()
     def _on_finish(self):
