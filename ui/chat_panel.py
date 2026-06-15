@@ -262,25 +262,25 @@ class ChatMessageItem(QWidget):
             text_color = "white"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 4px 12px; margin: 1px 0;"
+                f" padding: 3px 18px 3px 20px; margin: 0;"
             )
         elif is_assistant:
             bg = "#2d2d2d"
             text_color = "#e0e0e0"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 4px 12px; margin: 1px 0;"
+                f" padding: 3px 18px 3px 20px; margin: 0;"
             )
         else:
             bg = "transparent"
             text_color = "#999"
-            bubble_style = "padding: 2px 14px; margin: 1px 0;"
+            bubble_style = "padding: 1px 18px 1px 20px; margin: 0;"
 
         bubble.setStyleSheet(bubble_style)
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
-        bubble_layout.setSpacing(1)
+        bubble_layout.setSpacing(0)
 
         if not is_tool:
             role_label = QLabel(
@@ -316,7 +316,7 @@ class ChatMessageItem(QWidget):
         self._content_edit.setReadOnly(True)
         ChatPanel._render_markdown(self._content_edit, content)
         self._content_edit.setStyleSheet(
-            f"font-size: 14px; padding: 2px 0; border: none; background: transparent;"
+            f"font-size: 14px; padding: 0; border: none; background: transparent;"
             f" color: {text_color};"
         )
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -439,7 +439,7 @@ class ChatPanel(QWidget):
             # Newlines to <br>
             body = body.replace("\n", "<br>")
 
-            html_out = f"<div style='line-height:1.6;'>{body}</div>"
+            html_out = f"<div style='line-height:1.28;'>{body}</div>"
             edit.setHtml(html_out)
         except ImportError:
             edit.setMarkdown(text)
@@ -468,6 +468,9 @@ class ChatPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
+        self.mode_combo.setItemData(0, "Chat — Обычный диалог с LLM. Без инструментов, только текст.", Qt.ToolTipRole)
+        self.mode_combo.setItemData(1, "Plan — Чтение файлов и поиск по коду (read-only). Подготовка к изменениям.", Qt.ToolTipRole)
+        self.mode_combo.setItemData(2, "Agent — Полный доступ: чтение, запись, Git, поиск. Автономные изменения кода.", Qt.ToolTipRole)
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -479,7 +482,6 @@ class ChatPanel(QWidget):
             "QPushButton { font-size: 16px; padding: 2px 8px; border: none; background: transparent; }"
             " QPushButton:hover { background: #555; border-radius: 4px; }"
         )
-        self.gear_btn.setVisible(False)
         self.gear_btn.clicked.connect(self._toggle_agent_panel)
         top_bar.addWidget(self.gear_btn)
 
@@ -503,9 +505,11 @@ class ChatPanel(QWidget):
         self.message_list = QListWidget()
         self.message_list.setStyleSheet(
             "font-size: 14px; border: 1px solid #ccc; border-radius: 4px;"
+            " QListWidget::item { padding: 0px; margin: 0px; border: none; }"
         )
         self.message_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.message_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.message_list.setSpacing(0)
         layout.addWidget(self.message_list, stretch=1)
 
         self.status_label = QLabel("Готов к работе")
@@ -938,7 +942,7 @@ class ChatPanel(QWidget):
                 if child.objectName() == "_bubble":
                     child.setMaximumWidth(bubble_width)
                     break
-            content_width = bubble_width - 24  # padding bubble: 12px*2
+            content_width = bubble_width - 38  # padding: left 20 + right 18
             ChatMessageItem._adjust_text_edit_height(widget._content_edit, content_width)
             if widget._thinking_edit:
                 ChatMessageItem._adjust_text_edit_height(widget._thinking_edit, content_width, max_height=400)
