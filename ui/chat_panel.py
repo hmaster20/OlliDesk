@@ -13,9 +13,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -262,24 +261,24 @@ class ChatMessageItem(QWidget):
             text_color = "white"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 3px 18px 3px 20px; margin: 0;"
+                f" margin: 0;"
             )
         elif is_assistant:
             bg = "#2d2d2d"
             text_color = "#e0e0e0"
             bubble_style = (
                 f"background: {bg}; border-radius: 12px;"
-                f" padding: 3px 18px 3px 20px; margin: 0;"
+                f" margin: 0;"
             )
         else:
             bg = "transparent"
             text_color = "#999"
-            bubble_style = "padding: 1px 18px 1px 20px; margin: 0;"
+            bubble_style = "margin: 0;"
 
         bubble.setStyleSheet(bubble_style)
 
         bubble_layout = QVBoxLayout(bubble)
-        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setContentsMargins(26, 3, 18, 3)
         bubble_layout.setSpacing(0)
 
         if not is_tool:
@@ -299,9 +298,10 @@ class ChatMessageItem(QWidget):
         if thinking:
             self._thinking_edit = QTextEdit()
             self._thinking_edit.setReadOnly(True)
+            self._thinking_edit.document().setDocumentMargin(0)
             self._thinking_edit.setPlainText(thinking)
             self._thinking_edit.setStyleSheet(
-                "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
+                "font-size: 12px; padding: 0; border: none; background: transparent;"
                 f" color: {'rgba(255,255,255,0.5)' if is_user else '#888'};"
                 " font-style: italic;"
             )
@@ -314,6 +314,7 @@ class ChatMessageItem(QWidget):
         # Content
         self._content_edit = QTextEdit()
         self._content_edit.setReadOnly(True)
+        self._content_edit.document().setDocumentMargin(0)
         ChatPanel._render_markdown(self._content_edit, content)
         self._content_edit.setStyleSheet(
             f"font-size: 14px; padding: 0; border: none; background: transparent;"
@@ -385,6 +386,7 @@ class ChatPanel(QWidget):
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
         self._generating = False
+        self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
 
         self._setup_ui()
@@ -408,10 +410,10 @@ class ChatPanel(QWidget):
                     else:
                         lexer = guess_lexer(code)
                     highlighted = pyg_highlight(code, lexer, formatter)
-                    return f'<div style="background:#2d2d2d; padding:8px 12px; border-radius:6px; margin:6px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
+                    return f'<div style="background:#2d2d2d; padding:6px 10px; border-radius:6px; margin:2px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
                 except Exception:
                     escaped = html_mod.escape(code)
-                    return f'<pre style="background:#2d2d2d; padding:8px 12px; border-radius:6px; margin:6px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
+                    return f'<pre style="background:#2d2d2d; padding:6px 10px; border-radius:6px; margin:2px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
 
             pattern = r"```(\w*)\s*\n(.*?)```"
             body = re.sub(pattern, _replace_code_block, text, flags=re.DOTALL)
@@ -436,10 +438,11 @@ class ChatPanel(QWidget):
             body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
             body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
 
-            # Newlines to <br>
+            # Newlines to <br>, collapse multiples
             body = body.replace("\n", "<br>")
+            body = re.sub(r"(<br>\s*){2,}", "<br>", body)
 
-            html_out = f"<div style='line-height:1.28;'>{body}</div>"
+            html_out = f"<div style='line-height:1.2;'>{body}</div>"
             edit.setHtml(html_out)
         except ImportError:
             edit.setMarkdown(text)
@@ -502,15 +505,23 @@ class ChatPanel(QWidget):
         self.tool_status_label.setVisible(False)
         layout.addWidget(self.tool_status_label)
 
-        self.message_list = QListWidget()
-        self.message_list.setStyleSheet(
-            "font-size: 14px; border: 1px solid #ccc; border-radius: 4px;"
-            " QListWidget::item { padding: 0px; margin: 0px; border: none; }"
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet(
+            "QScrollArea { border: 1px solid #ccc; border-radius: 4px; background: transparent; }"
         )
-        self.message_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.message_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.message_list.setSpacing(0)
-        layout.addWidget(self.message_list, stretch=1)
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("_scrollContent")
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll_layout.setSpacing(0)
+        self.scroll_layout.addStretch()
+
+        self.scroll_area.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll_area, stretch=1)
 
         self.status_label = QLabel("Готов к работе")
         self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px 8px; background: #f5f5f5; border-radius: 4px;")
@@ -530,7 +541,7 @@ class ChatPanel(QWidget):
         self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
-        self.message_list.viewport().installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
 
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
@@ -548,7 +559,7 @@ class ChatPanel(QWidget):
             if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
                 self._toggle_send_stop()
                 return True
-        if obj is self.message_list.viewport() and event.type() == event.Type.Resize:
+        if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
             self._relayout_all_items()
         return super().eventFilter(obj, event)
 
@@ -561,13 +572,13 @@ class ChatPanel(QWidget):
         }
         return mapping.get(self.mode_combo.currentIndex(), AgentMode.CHAT)
 
-    def _add_message(self, role: str, content: str):
+    def _add_message(self, role: str, content: str) -> ChatMessageItem:
         """Добавляет сообщение в список."""
-        item = QListWidgetItem(self.message_list)
         widget = ChatMessageItem(role, content)
-        self._resize_message_item(item, widget)
-        self.message_list.setItemWidget(item, widget)
-        QTimer.singleShot(0, self.message_list.scrollToBottom)
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+        self._resize_message_item(widget)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        return widget
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
         """Добавляет сообщение о выполнении инструмента."""
@@ -590,14 +601,22 @@ class ChatPanel(QWidget):
         """Показывает/скрывает панель настроек агента."""
         self.agent_panel_toggle.emit(True)
 
+    def _scroll_to_bottom(self):
+        sb = self.scroll_area.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def _clear_chat(self):
         """Очищает чат."""
-        self.message_list.clear()
+        while self.scroll_layout.count() > 1:
+            item = self.scroll_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._messages.clear()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._rag_context = None
         self._session_id = None
+        self._last_assistant_widget = None
         self.status_label.setText("Чат очищен")
 
     def _create_session(self):
@@ -862,25 +881,22 @@ class ChatPanel(QWidget):
         if not self._current_thinking_content.strip():
             return
 
-        last_item = self.message_list.item(self.message_list.count() - 1)
-        if last_item and hasattr(last_item, "_is_assistant"):
-            widget = self.message_list.itemWidget(last_item)
-            if widget:
-                widget.thinking = self._current_thinking_content
-                if widget._thinking_edit:
-                    widget._thinking_edit.setPlainText(self._current_thinking_content)
-                else:
-                    self._insert_thinking_edit(widget)
-                self._resize_message_item(last_item, widget)
+        if self._last_assistant_widget:
+            widget = self._last_assistant_widget
+            widget.thinking = self._current_thinking_content
+            if widget._thinking_edit:
+                widget._thinking_edit.setPlainText(self._current_thinking_content)
+            else:
+                self._insert_thinking_edit(widget)
+            self._resize_message_item(widget)
         else:
-            item = QListWidgetItem(self.message_list)
             widget = ChatMessageItem("assistant", "", thinking=self._current_thinking_content)
-            self._resize_message_item(item, widget)
-            self.message_list.setItemWidget(item, widget)
-            item._is_assistant = True
+            self._last_assistant_widget = widget
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+            self._resize_message_item(widget)
 
         self.status_label.setText("🧠 Анализирует...")
-        QTimer.singleShot(0, self.message_list.scrollToBottom)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
         """Вставляет QTextEdit для thinking в bubble."""
@@ -910,53 +926,47 @@ class ChatPanel(QWidget):
         """Обрабатывает полученный токен."""
         self._current_assistant_content += content
 
-        # Если статус показывал инструмент — переключаем на генерацию
         status_text = self.status_label.text()
         if any(emoji in status_text for emoji in ("📖", "✏️", "📁", "🔍", "🌐", "🔎", "📸", "⏪", "🛠️")):
             self.status_label.setText("🤖 Генерация ответа...")
 
-        last_item = self.message_list.item(self.message_list.count() - 1)
-        if last_item and hasattr(last_item, "_is_assistant"):
-            widget = self.message_list.itemWidget(last_item)
-            if widget:
-                widget.content = self._current_assistant_content
-                self._render_markdown(widget._content_edit, self._current_assistant_content)
-                self._resize_message_item(last_item, widget)
+        if self._last_assistant_widget:
+            widget = self._last_assistant_widget
+            widget.content = self._current_assistant_content
+            self._render_markdown(widget._content_edit, self._current_assistant_content)
+            self._resize_message_item(widget)
         else:
             thinking = self._current_thinking_content or ""
-            item = QListWidgetItem(self.message_list)
             widget = ChatMessageItem("assistant", content, thinking=thinking)
-            self._resize_message_item(item, widget)
-            self.message_list.setItemWidget(item, widget)
-            item._is_assistant = True
+            self._last_assistant_widget = widget
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+            self._resize_message_item(widget)
 
-        QTimer.singleShot(0, self.message_list.scrollToBottom)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
-    def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
-        """Подгоняет высоту элемента под содержимое, ширина пузырька 90%."""
-        list_width = self.message_list.viewport().width()
-        if list_width > 0:
-            bubble_width = int(list_width * 0.90)
-            widget.setFixedWidth(list_width)
+    def _resize_message_item(self, widget: QWidget) -> None:
+        """Подгоняет высоту элемента под содержимое, ширина пузырька 98%."""
+        scroll_width = self.scroll_area.viewport().width()
+        if scroll_width > 0:
+            bubble_width = int(scroll_width * 0.98)
+            widget.setFixedWidth(scroll_width)
             for child in widget.findChildren(QWidget):
                 if child.objectName() == "_bubble":
-                    child.setMaximumWidth(bubble_width)
+                    child.setFixedWidth(bubble_width)
                     break
-            content_width = bubble_width - 38  # padding: left 20 + right 18
+            content_width = bubble_width - 44  # layout margins: left 26 + right 18
             ChatMessageItem._adjust_text_edit_height(widget._content_edit, content_width)
             if widget._thinking_edit:
                 ChatMessageItem._adjust_text_edit_height(widget._thinking_edit, content_width, max_height=400)
         widget.adjustSize()
-        hint = widget.sizeHint()
-        item.setSizeHint(hint)
+        widget.updateGeometry()
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает размеры всех сообщений при изменении ширины панели."""
-        for i in range(self.message_list.count()):
-            item = self.message_list.item(i)
-            widget = self.message_list.itemWidget(item)
-            if widget:
-                self._resize_message_item(item, widget)
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item and item.widget() and item.widget().objectName() != "_scrollContent":
+                self._resize_message_item(item.widget())
 
     @Slot()
     def _on_finish(self):
@@ -981,8 +991,7 @@ class ChatPanel(QWidget):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-        self.status_label.setText("Готов к работе" if result != "Отменено" else "⚠️ Остановлено")
-
+        self._last_assistant_widget = None
 
     def _reset_send_button(self):
         """Сбрасывает кнопку отправки в исходное состояние."""
@@ -1016,6 +1025,7 @@ class ChatPanel(QWidget):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._last_assistant_widget = None
 
     @Slot(str)
     def _on_agent_error(self, error_msg: str):
