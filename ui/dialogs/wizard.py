@@ -50,6 +50,7 @@ class SetupWizard(QWizard):
     def accept(self) -> None:
         """Принимает визард и сохраняет конфигурацию."""
         try:
+            self._wizard_dismissed = self._read_dismissed()
             config = self._create_config()
             save_config(config)
 
@@ -71,6 +72,12 @@ class SetupWizard(QWizard):
         except Exception as e:
             logger.error(f"Ошибка сохранения конфигурации: {e}")
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфигурацию:\n{e}")
+
+    def _read_dismissed(self) -> bool:
+        """Читает состояние чекбокса 'Не показывать' со страницы подтверждения."""
+        for page in self.findChildren(ConfirmationPage):
+            return page.dismiss_checkbox.isChecked()
+        return False
 
     def _create_config(self) -> AppConfig:
         """Создает конфигурацию на основе выбора пользователя."""
@@ -314,4 +321,3 @@ class ConfirmationPage(QWizardPage):
         • <code>{self.wizard.project_path}/.ollidesk/config.yaml</code> (локально)
         """
         self.summary_label.setText(summary)
-        self.wizard._wizard_dismissed = self.dismiss_checkbox.isChecked()

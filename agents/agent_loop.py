@@ -93,6 +93,7 @@ class AgentLoop:
         on_token: Callable[[str], Awaitable[None]],
         on_tool_request: Callable[[str, str, dict[str, Any]], Awaitable[bool]],
         max_iterations: int = 10,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Запускает цикл агента.
 
@@ -135,6 +136,8 @@ class AgentLoop:
             pending_tool_calls = []
 
             async for chunk in stream:
+                if chunk.reasoning_content and on_thinking:
+                    await on_thinking(chunk.reasoning_content)
                 if chunk.content:
                     current_text += chunk.content
                     await on_token(chunk.content)

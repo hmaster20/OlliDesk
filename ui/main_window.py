@@ -150,6 +150,8 @@ class ProjectState:
 class MainWindow(QMainWindow):
     """Главное окно приложения."""
 
+    theme_changed = Signal(str)
+
     def __init__(self, config: AppConfig):
         """
         Инициализация главного окна.
@@ -372,7 +374,32 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        view_menu = menubar.addMenu("&View")
+
+        self.show_chat_action = QAction("Show &Chat Tab", self)
+        self.show_chat_action.setShortcut("Ctrl+Shift+C")
+        self.show_chat_action.triggered.connect(self._show_chat_tab)
+        view_menu.addAction(self.show_chat_action)
+
+        self.show_editor_action = QAction("Show &Editor Tab", self)
+        self.show_editor_action.setShortcut("Ctrl+Shift+E")
+        self.show_editor_action.triggered.connect(self._show_editor_tab)
+        view_menu.addAction(self.show_editor_action)
+
+        view_menu.addSeparator()
+
+        self.theme_action = QAction("Toggle Dark/Light Theme", self)
+        self.theme_action.setShortcut("Ctrl+T")
+        self.theme_action.triggered.connect(self._toggle_theme)
+        view_menu.addAction(self.theme_action)
+
         help_menu = menubar.addMenu("&Help")
+
+        wizard_action = QAction("Run Setup &Wizard...", self)
+        wizard_action.triggered.connect(self._run_wizard)
+        help_menu.addAction(wizard_action)
+
+        help_menu.addSeparator()
 
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
@@ -547,9 +574,48 @@ class MainWindow(QMainWindow):
         self.index_progress.setVisible(False)
         self.index_status_label.setVisible(False)
 
+    def _show_chat_tab(self) -> None:
+        """Показывает вкладку чата (создаёт если закрыта)."""
+        if self.tab_widget.indexOf(self.chat_panel) < 0:
+            self.tab_widget.insertTab(0, self.chat_panel, "💬 Чат")
+        self.tab_widget.setCurrentWidget(self.chat_panel)
+
+    def _show_editor_tab(self) -> None:
+        """Показывает вкладку редактора (создаёт если закрыта)."""
+        if self.tab_widget.indexOf(self.editor_widget) < 0:
+            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+        self.tab_widget.setCurrentWidget(self.editor_widget)
+
+    def _run_wizard(self) -> None:
+        """Принудительно запускает визард настройки."""
+        from ui.dialogs.wizard import SetupWizard
+        wizard = SetupWizard()
+        if wizard.exec():
+            from core.config import load_config
+            try:
+                self.config = load_config()
+                if self.chat_panel:
+                    models = [m.model for m in self.config.models]
+                    self.chat_panel.update_models(models)
+                    default = self.config.default_model
+                    self.chat_panel.set_model(default)
+                    self.chat_panel.set_project_open(self.project_path is not None)
+                from core.config import save_config
+                save_config(self.config)
+            except Exception as e:
+                logger.error(f"Ошибка загрузки конфига после визарда: {e}")
+        else:
+            logger.info("Визард отменён пользователем")
+
     def _open_settings(self) -> None:
         """Открывает настройки (заглушка)."""
         QMessageBox.information(self, "Settings", "Настройки будут реализованы в Фазе 5")
+
+    def _toggle_theme(self) -> None:
+        """Переключает между тёмной и светлой темой."""
+        new_theme = "dark" if self.config.theme == "light" else "light"
+        self.config.theme = new_theme
+        self.theme_changed.emit(new_theme)
 
     def _show_about(self) -> None:
         """Показывает окно About."""

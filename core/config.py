@@ -113,6 +113,7 @@ class AppConfig(BaseModel):
     rules_file: str = ".ollidesk/rules.md"
     recent_projects: list[str] = Field(default_factory=list)
     wizard_dismissed: bool = False
+    theme: str = "light"
 
     @field_validator("recent_projects")
     @classmethod

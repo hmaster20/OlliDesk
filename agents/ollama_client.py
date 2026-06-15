@@ -38,6 +38,7 @@ class ChatMessage(BaseModel):
 class ChatChunk(BaseModel):
     """Один токен из стрима."""
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] | None = None
     done: bool = False
 
@@ -163,12 +164,14 @@ class OllamaClient:
                     async for line in response.aiter_lines():
                         if line:
                             chunk_data = json.loads(line)
+                            msg = chunk_data.get("message", {})
                             chunk = ChatChunk(
-                                content=chunk_data.get("message", {}).get("content", ""),
+                                content=msg.get("content", ""),
+                                reasoning_content=msg.get("reasoning_content", ""),
                                 tool_calls=[
                                     ToolCall(**tc)
-                                    for tc in chunk_data.get("message", {}).get("tool_calls", [])
-                                ] if chunk_data.get("message", {}).get("tool_calls") else None,
+                                    for tc in msg.get("tool_calls", [])
+                                ] if msg.get("tool_calls") else None,
                                 done=chunk_data.get("done", False),
                             )
                             yield chunk
@@ -179,12 +182,14 @@ class OllamaClient:
                 )
                 response.raise_for_status()
                 data = response.json()
+                msg = data.get("message", {})
                 yield ChatChunk(
-                    content=data.get("message", {}).get("content", ""),
+                    content=msg.get("content", ""),
+                    reasoning_content=msg.get("reasoning_content", ""),
                     tool_calls=[
                         ToolCall(**tc)
-                        for tc in data.get("message", {}).get("tool_calls", [])
-                    ] if data.get("message", {}).get("tool_calls") else None,
+                        for tc in msg.get("tool_calls", [])
+                    ] if msg.get("tool_calls") else None,
                     done=True,
                 )
 

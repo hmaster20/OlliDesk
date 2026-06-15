@@ -30,6 +30,7 @@ class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
 
     chunk_received = Signal(str)
+    thinking_received = Signal(str)
     finish_received = Signal()
     error_occurred = Signal(str)
 
@@ -57,7 +58,10 @@ class OllamaChatThread(QThread):
                     messages=self.messages,
                     stream=True,
                 ):
-                    self.chunk_received.emit(chunk.content)
+                    if chunk.reasoning_content:
+                        self.thinking_received.emit(chunk.reasoning_content)
+                    if chunk.content:
+                        self.chunk_received.emit(chunk.content)
                     if chunk.done:
                         self.finish_received.emit()
         except OllamaConnectionError as e:
@@ -72,6 +76,7 @@ class AgentChatThread(QThread):
     """Поток для выполнения цикла агента (режимы Plan / Agent)."""
 
     chunk_received = Signal(str)
+    thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
     tool_executed = Signal(str, str, bool)
     finish_received = Signal(str)
@@ -146,6 +151,7 @@ class AgentChatThread(QThread):
                 on_token=self._on_token,
                 on_tool_request=self._on_tool_request,
                 max_iterations=self.max_iterations,
+                on_thinking=self._on_thinking,
             )
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
@@ -156,6 +162,10 @@ class AgentChatThread(QThread):
     async def _on_token(self, token: str):
         """Колбэк для каждого токена (вызывается из asyncio, пробрасывает в Qt)."""
         self.chunk_received.emit(token)
+
+    async def _on_thinking(self, token: str):
+        """Колбэк для токенов рассуждения (вызывается из asyncio)."""
+        self.thinking_received.emit(token)
 
 
 class RagSearchThread(QThread):
@@ -206,10 +216,11 @@ class RagSearchThread(QThread):
 class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате."""
 
-    def __init__(self, role: str, content: str, parent: QWidget | None = None):
+    def __init__(self, role: str, content: str, thinking: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.role = role
         self.content = content
+        self.thinking = thinking
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -223,25 +234,37 @@ class ChatMessageItem(QWidget):
         role_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #555;")
         layout.addWidget(role_label)
 
-        content_edit = QTextEdit()
-        content_edit.setReadOnly(True)
-        content_edit.setPlainText(content)
-        content_edit.setStyleSheet(
+        self._thinking_edit: QTextEdit | None = None
+        if thinking:
+            self._thinking_edit = QTextEdit()
+            self._thinking_edit.setReadOnly(True)
+            self._thinking_edit.setPlainText(thinking)
+            self._thinking_edit.setStyleSheet(
+                "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
+                " color: #888; font-style: italic; line-height: 1.3;"
+            )
+            self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._thinking_edit.setMinimumHeight(16)
+            layout.addWidget(self._thinking_edit)
+
+        self._content_edit = QTextEdit()
+        self._content_edit.setReadOnly(True)
+        ChatPanel._render_markdown(self._content_edit, content)
+        self._content_edit.setStyleSheet(
             "font-size: 14px; padding: 4px 0; border: none; background: transparent;"
             " line-height: 1.4;"
         )
-        content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        content_edit.setMinimumHeight(20)
-        layout.addWidget(content_edit)
+        self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content_edit.setMinimumHeight(20)
+        layout.addWidget(self._content_edit)
 
-        self._content_edit = content_edit
-
+        bg = "#f0f0f0" if role == "user" else "#e3f2fd" if role == "assistant" else "#fff3e0"
         self.setStyleSheet(
-            "background: #f0f0f0; border-radius: 6px; margin: 2px 0;"
-            if role == "user"
-            else "background: #e3f2fd; border-radius: 6px; margin: 2px 0;"
+            f"background: {bg}; border-radius: 6px; margin: 2px 0;"
         )
 
 
@@ -268,12 +291,19 @@ class ChatPanel(QWidget):
         self._session_id: str | None = None
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
         self._ollama_thread: OllamaChatThread | None = None
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
+        self._generating = False
 
         self._setup_ui()
+
+    @staticmethod
+    def _render_markdown(edit: QTextEdit, text: str) -> None:
+        """Рендерит markdown в QTextEdit."""
+        edit.setMarkdown(text)
 
     def _setup_ui(self):
         """Настраивает UI компоненты."""
@@ -331,12 +361,12 @@ class ChatPanel(QWidget):
         self.input_edit.installEventFilter(self)
         input_layout.addWidget(self.input_edit, stretch=1)
 
-        self.send_btn = QPushButton("Отправить")
+        self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
             "font-size: 14px; padding: 8px 20px; background: #1976d2; color: white;"
             " border: none; border-radius: 4px;"
         )
-        self.send_btn.clicked.connect(self._send_message)
+        self.send_btn.clicked.connect(self._toggle_send_stop)
         input_layout.addWidget(self.send_btn)
 
         layout.addLayout(input_layout)
@@ -375,6 +405,7 @@ class ChatPanel(QWidget):
         self.message_list.clear()
         self._messages.clear()
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
         self._rag_context = None
         self._session_id = None
         self.status_label.setText("Чат очищен")
@@ -386,14 +417,34 @@ class ChatPanel(QWidget):
                 project_path=str(Path.cwd())
             )
 
+    def _toggle_send_stop(self):
+        """Переключает между отправкой и остановкой генерации."""
+        if self._generating:
+            self._stop_generation()
+        else:
+            self._send_message()
+
+    def _stop_generation(self):
+        """Останавливает текущую генерацию."""
+        self._generating = False
+        if self._ollama_thread and self._ollama_thread.isRunning():
+            self._ollama_thread.terminate()
+            self._ollama_thread.wait(1000)
+        if self._agent_thread and self._agent_thread.isRunning():
+            self._agent_thread.terminate()
+            self._agent_thread.wait(1000)
+        if self._rag_thread and self._rag_thread.isRunning():
+            self._rag_thread.terminate()
+            self._rag_thread.wait(1000)
+        self._reset_send_button()
+        self.status_label.setText("⏹ Остановлено пользователем")
+        self._current_assistant_content = ""
+        self._current_thinking_content = ""
+
     def _send_message(self):
         """Отправляет сообщение в чат (в зависимости от режима)."""
         text = self.input_edit.toPlainText().strip()
         if not text:
-            return
-
-        if self._is_busy():
-            self.status_label.setText("Ожидание завершения...")
             return
 
         self._create_session()
@@ -404,7 +455,6 @@ class ChatPanel(QWidget):
         self._add_message("user", text)
 
         self.input_edit.clear()
-        self.send_btn.setEnabled(False)
         self.status_label.setText("Обработка...")
 
         mode = self._current_mode()
@@ -423,7 +473,9 @@ class ChatPanel(QWidget):
 
     def _start_chat(self, text: str):
         """Запускает обычный чат (режим Chat)."""
-        self.send_btn.setText("Поиск...")
+        self._generating = True
+        self._set_button_stop()
+        self.input_edit.setEnabled(False)
         self.status_label.setText("Поиск в кодовой базе...")
         self._rag_context = None
 
@@ -453,7 +505,6 @@ class ChatPanel(QWidget):
 
     def _do_chat(self, text: str):
         """Запускает LLM-генерацию (режим Chat)."""
-        self.send_btn.setText("Ожидание...")
         self.status_label.setText("Генерация ответа...")
 
         chat_messages: list[ChatMessage] = list(self._messages)
@@ -467,19 +518,23 @@ class ChatPanel(QWidget):
             )
 
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
         self._ollama_thread = OllamaChatThread(
             model=self.model_combo.currentText(),
             messages=chat_messages,
             base_url=self.base_url,
         )
         self._ollama_thread.chunk_received.connect(self._on_chunk)
+        self._ollama_thread.thinking_received.connect(self._on_thinking)
         self._ollama_thread.finish_received.connect(self._on_finish)
         self._ollama_thread.error_occurred.connect(self._on_chat_error)
         self._ollama_thread.start()
 
     def _start_agent(self, text: str, mode: AgentMode):
         """Запускает цикл агента (режимы Plan / Agent)."""
-        self.send_btn.setText("Агент...")
+        self._generating = True
+        self._set_button_stop()
+        self.input_edit.setEnabled(False)
         self.status_label.setText("🤖 Агент думает...")
 
         if self.vector_store:
@@ -509,6 +564,7 @@ class ChatPanel(QWidget):
         )
 
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
         self._agent_thread = AgentChatThread(
             client=OllamaClient(base_url=self.base_url),
             registry=self._build_registry(),
@@ -520,6 +576,7 @@ class ChatPanel(QWidget):
         )
 
         self._agent_thread.chunk_received.connect(self._on_chunk)
+        self._agent_thread.thinking_received.connect(self._on_thinking)
         self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
         self._agent_thread.tool_executed.connect(self._on_tool_executed)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
@@ -566,6 +623,47 @@ class ChatPanel(QWidget):
         self._add_tool_message(name, content, is_error)
 
     @Slot(str)
+    def _on_thinking(self, token: str):
+        """Обрабатывает токен рассуждения от LLM."""
+        self._current_thinking_content += token
+
+        last_item = self.message_list.item(self.message_list.count() - 1)
+        if last_item and hasattr(last_item, "_is_assistant"):
+            widget = self.message_list.itemWidget(last_item)
+            if widget:
+                widget.thinking = self._current_thinking_content
+                if widget._thinking_edit:
+                    widget._thinking_edit.setPlainText(self._current_thinking_content)
+                else:
+                    self._insert_thinking_edit(widget)
+                self._resize_message_item(last_item, widget)
+        else:
+            item = QListWidgetItem(self.message_list)
+            widget = ChatMessageItem("assistant", "", thinking=self._current_thinking_content)
+            self._resize_message_item(item, widget)
+            self.message_list.setItemWidget(item, widget)
+            item._is_assistant = True
+
+        self.message_list.scrollToBottom()
+
+    def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
+        """Вставляет QTextEdit для thinking в виджет сообщения."""
+        thinking_edit = QTextEdit()
+        thinking_edit.setReadOnly(True)
+        thinking_edit.setPlainText(self._current_thinking_content)
+        thinking_edit.setStyleSheet(
+            "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
+            " color: #888; font-style: italic; line-height: 1.3;"
+        )
+        thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        thinking_edit.setMinimumHeight(16)
+        widget._thinking_edit = thinking_edit
+        layout = widget.layout()
+        layout.insertWidget(1, thinking_edit)
+
+    @Slot(str)
     def _on_chunk(self, content: str):
         """Обрабатывает полученный токен."""
         self._current_assistant_content += content
@@ -575,11 +673,12 @@ class ChatPanel(QWidget):
             widget = self.message_list.itemWidget(last_item)
             if widget:
                 widget.content = self._current_assistant_content
-                widget._content_edit.setPlainText(self._current_assistant_content)
+                self._render_markdown(widget._content_edit, self._current_assistant_content)
                 self._resize_message_item(last_item, widget)
         else:
+            thinking = self._current_thinking_content or ""
             item = QListWidgetItem(self.message_list)
-            widget = ChatMessageItem("assistant", content)
+            widget = ChatMessageItem("assistant", content, thinking=thinking)
             self._resize_message_item(item, widget)
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
@@ -587,12 +686,15 @@ class ChatPanel(QWidget):
         self.message_list.scrollToBottom()
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
-        """Подгоняет высоту элемента списка под содержимое виджета."""
+        """Подгоняет высоту элемента списка под содержимое виджета (с запасом 2 строки)."""
         list_width = self.message_list.viewport().width()
         if list_width > 0:
             widget.setFixedWidth(list_width - 4)
         widget.adjustSize()
-        item.setSizeHint(widget.sizeHint())
+        hint = widget.sizeHint()
+        if hint.height() < 60:
+            hint.setHeight(60)
+        item.setSizeHint(hint)
 
     @Slot()
     def _on_finish(self):
@@ -616,12 +718,27 @@ class ChatPanel(QWidget):
 
         self._reset_send_button()
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
 
-    @Slot(str)
-    def _on_agent_error(self, error_msg: str):
-        """Обрабатывает ошибку агента."""
-        self._add_message("system", f"❌ Ошибка агента: {error_msg}")
-        self._reset_send_button()
+
+    def _reset_send_button(self):
+        """Сбрасывает кнопку отправки в исходное состояние."""
+        self._generating = False
+        self.input_edit.setEnabled(True)
+        self.send_btn.setText("▶ Отправить")
+        self.send_btn.setStyleSheet(
+            "font-size: 14px; padding: 8px 20px; background: #1976d2; color: white;"
+            " border: none; border-radius: 4px;"
+        )
+        self.status_label.setText("Готов к работе")
+
+    def _set_button_stop(self) -> None:
+        """Переключает кнопку в режим остановки."""
+        self.send_btn.setText("■")
+        self.send_btn.setStyleSheet(
+            "font-size: 18px; padding: 8px 20px; background: #d32f2f; color: white;"
+            " border: none; border-radius: 4px;"
+        )
 
     def _send_finished(self):
         """Завершает отправку сообщения (режим Chat)."""
@@ -635,12 +752,14 @@ class ChatPanel(QWidget):
 
         self._reset_send_button()
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
 
-    def _reset_send_button(self):
-        """Сбрасывает кнопку отправки в исходное состояние."""
-        self.send_btn.setEnabled(True)
-        self.send_btn.setText("Отправить")
-        self.status_label.setText("Готов к работе")
+    @Slot(str)
+    def _on_agent_error(self, error_msg: str):
+        """Обрабатывает ошибку агента."""
+        self._add_message("system", f"❌ Ошибка агента: {error_msg}")
+        self._reset_send_button()
+
 
     def set_model(self, model: str):
         """Устанавливает модель в комбобоксе."""
@@ -672,10 +791,10 @@ class ChatPanel(QWidget):
     def set_project_open(self, is_open: bool):
         """Блокирует/разблокирует ввод при отсутствии открытого проекта."""
         self.input_edit.setEnabled(is_open)
-        self.send_btn.setEnabled(is_open)
+        self.send_btn.setVisible(is_open)
         if not is_open:
             self.input_edit.setPlaceholderText("Сначала откройте проект (File → Open Project...)")
             self.status_label.setText("Проект не открыт")
         else:
             self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
-            self.status_label.setText("Готов к работе")
+            self._reset_send_button()

@@ -11,6 +11,7 @@ from core.exceptions import ConfigError
 from core.logger import setup_logger
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
+from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 
 
 def _check_config_exists() -> bool:
@@ -89,11 +90,34 @@ class OlliDeskApp:
             logger.error("Визард отменён пользователем")
             return 1
 
+        self._apply_theme(self.config.theme)
+
         self.main_window = MainWindow(self.config)
+        self.main_window.theme_changed.connect(self._on_theme_changed)
         self.main_window.show()
         logger.info("Приложение готово к работе")
 
         return self.app.exec()
+
+    def _apply_theme(self, theme: str) -> None:
+        """Применяет тему к приложению.
+
+        Args:
+            theme: 'light' или 'dark'
+        """
+        stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
+        self.app.setStyleSheet(stylesheet)
+
+    def _on_theme_changed(self, theme: str) -> None:
+        """Обрабатывает смену темы от MainWindow.
+
+        Args:
+            theme: 'light' или 'dark'
+        """
+        self.config.theme = theme
+        self._apply_theme(theme)
+        from core.config import save_config
+        save_config(self.config)
 
 
 def main() -> int:
