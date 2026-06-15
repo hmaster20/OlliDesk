@@ -5,7 +5,7 @@ import json
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -223,12 +223,20 @@ class ChatMessageItem(QWidget):
         role_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #555;")
         layout.addWidget(role_label)
 
-        content_label = QLabel(content)
-        content_label.setWordWrap(True)
-        content_label.setTextFormat(1)
-        content_label.setStyleSheet("font-size: 14px; padding: 4px 0; line-height: 1.4;")
-        content_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout.addWidget(content_label)
+        content_edit = QTextEdit()
+        content_edit.setReadOnly(True)
+        content_edit.setPlainText(content)
+        content_edit.setStyleSheet(
+            "font-size: 14px; padding: 4px 0; border: none; background: transparent;"
+            " line-height: 1.4;"
+        )
+        content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_edit.setMinimumHeight(20)
+        layout.addWidget(content_edit)
+
+        self._content_edit = content_edit
 
         self.setStyleSheet(
             "background: #f0f0f0; border-radius: 6px; margin: 2px 0;"
@@ -262,6 +270,7 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._ollama_thread: OllamaChatThread | None = None
         self._agent_thread: AgentChatThread | None = None
+        self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
 
         self._setup_ui()
@@ -349,7 +358,7 @@ class ChatPanel(QWidget):
         """Добавляет сообщение в список."""
         item = QListWidgetItem(self.message_list)
         widget = ChatMessageItem(role, content)
-        item.setSizeHint(widget.sizeHint())
+        self._resize_message_item(item, widget)
         self.message_list.setItemWidget(item, widget)
         self.message_list.scrollToBottom()
 
@@ -409,6 +418,7 @@ class ChatPanel(QWidget):
         return (
             (self._ollama_thread and self._ollama_thread.isRunning())
             or (self._agent_thread and self._agent_thread.isRunning())
+            or (self._rag_thread and self._rag_thread.isRunning())
         )
 
     def _start_chat(self, text: str):
@@ -418,13 +428,13 @@ class ChatPanel(QWidget):
         self._rag_context = None
 
         if self.vector_store:
-            rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
-            rag_thread.results_ready.connect(
+            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_rag_results(ctx, src)
             )
-            rag_thread.search_error.connect(self._on_rag_error)
-            rag_thread.finished.connect(lambda: self._do_chat(text))
-            rag_thread.start()
+            self._rag_thread.search_error.connect(self._on_rag_error)
+            self._rag_thread.finished.connect(lambda: self._do_chat(text))
+            self._rag_thread.start()
         else:
             self._do_chat(text)
 
@@ -473,14 +483,14 @@ class ChatPanel(QWidget):
         self.status_label.setText("🤖 Агент думает...")
 
         if self.vector_store:
-            rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
-            rag_thread.results_ready.connect(
+            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
             )
-            rag_thread.search_error.connect(
+            self._rag_thread.search_error.connect(
                 lambda err: self._do_agent(text, mode, "")
             )
-            rag_thread.start()
+            self._rag_thread.start()
         else:
             self._do_agent(text, mode, "")
 
@@ -565,15 +575,24 @@ class ChatPanel(QWidget):
             widget = self.message_list.itemWidget(last_item)
             if widget:
                 widget.content = self._current_assistant_content
-                widget.findChild(QLabel).setText(self._current_assistant_content)
+                widget._content_edit.setPlainText(self._current_assistant_content)
+                self._resize_message_item(last_item, widget)
         else:
             item = QListWidgetItem(self.message_list)
             widget = ChatMessageItem("assistant", content)
-            item.setSizeHint(widget.sizeHint())
+            self._resize_message_item(item, widget)
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
         self.message_list.scrollToBottom()
+
+    def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
+        """Подгоняет высоту элемента списка под содержимое виджета."""
+        list_width = self.message_list.viewport().width()
+        if list_width > 0:
+            widget.setFixedWidth(list_width - 4)
+        widget.adjustSize()
+        item.setSizeHint(widget.sizeHint())
 
     @Slot()
     def _on_finish(self):
@@ -649,3 +668,14 @@ class ChatPanel(QWidget):
     def set_project_root(self, project_root: str):
         """Устанавливает корень проекта."""
         self.project_root = project_root
+
+    def set_project_open(self, is_open: bool):
+        """Блокирует/разблокирует ввод при отсутствии открытого проекта."""
+        self.input_edit.setEnabled(is_open)
+        self.send_btn.setEnabled(is_open)
+        if not is_open:
+            self.input_edit.setPlaceholderText("Сначала откройте проект (File → Open Project...)")
+            self.status_label.setText("Проект не открыт")
+        else:
+            self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
+            self.status_label.setText("Готов к работе")

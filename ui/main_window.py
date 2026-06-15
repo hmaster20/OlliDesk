@@ -24,7 +24,7 @@ from typing_extensions import override
 
 from agents.ollama_client import OllamaClient
 from core.config import AppConfig
-from fs.indexer import FileIndexer
+from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 from state.session_store import SessionStore
 from ui.chat_panel import ChatPanel
@@ -97,13 +97,28 @@ class ProjectState:
         self.state_file = state_dir / "project_state.json"
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
-    def load(self) -> dict:
-        """Загружает состояние из файла."""
+    def load(self, project_path: Path | None = None) -> dict:
+        """Загружает состояние из файла.
+
+        Args:
+            project_path: Путь к проекту (нужен для восстановления absolute_path)
+
+        Returns:
+            dict: {file_path: FileMetadata}
+        """
         if self.state_file.exists():
             try:
-                data = json.loads(self.state_file.read_text(encoding="utf-8"))
-                logger.debug(f"Состояние проекта загружено: {len(data)} файлов")
-                return data
+                raw = json.loads(self.state_file.read_text(encoding="utf-8"))
+                result = {}
+                for path_str, meta_dict in raw.items():
+                    if project_path:
+                        abs_path = project_path / meta_dict["path"]
+                    else:
+                        abs_path = Path(meta_dict["path"]).resolve()
+                    meta_dict["absolute_path"] = str(abs_path)
+                    result[path_str] = FileMetadata.model_validate(meta_dict)
+                logger.debug(f"Состояние проекта загружено: {len(result)} файлов")
+                return result
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Ошибка загрузки состояния: {e}")
         return {}
@@ -118,6 +133,7 @@ class ProjectState:
                 "mtime": meta.mtime,
                 "size_bytes": meta.size_bytes,
                 "extension": meta.extension,
+                "absolute_path": str(meta.absolute_path),
             }
         self.state_file.write_text(
             json.dumps(serializable, ensure_ascii=False, indent=2),
@@ -263,6 +279,7 @@ class MainWindow(QMainWindow):
             base_url="http://localhost:11434",
             model=default_model,
         )
+        self.chat_panel.set_project_open(False)
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
@@ -322,7 +339,7 @@ class MainWindow(QMainWindow):
 
         placeholder = QLabel(
             "Выбор модели\nРежим (Chat/Plan/Agent)\nTemperature\nTools"
-            "\n(будет реализовано в Фазе 5)"
+            "\n(будет реализовано в Фазе 6)"
         )
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         placeholder.setStyleSheet("color: gray; padding: 20px;")
@@ -432,9 +449,10 @@ class MainWindow(QMainWindow):
             )
             self.chat_panel.set_vector_store(self.vector_store)
             self.chat_panel.set_project_root(str(self.project_path))
+            self.chat_panel.set_project_open(True)
 
             # Загрузка предыдущего состояния
-            self._previous_state = self.project_state.load()
+            self._previous_state = self.project_state.load(self.project_path)
 
             # Запуск индексации
             self.reindex_btn.setEnabled(True)

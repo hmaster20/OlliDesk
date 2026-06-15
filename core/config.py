@@ -112,6 +112,7 @@ class AppConfig(BaseModel):
     chunk_overlap_tokens: int = 50
     rules_file: str = ".ollidesk/rules.md"
     recent_projects: list[str] = Field(default_factory=list)
+    wizard_dismissed: bool = False
 
     @field_validator("recent_projects")
     @classmethod

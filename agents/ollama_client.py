@@ -81,6 +81,7 @@ class OllamaClient:
         """Контекстный менеджер: выход."""
         if self._client:
             await self._client.aclose()
+            self._client = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Возвращает HTTP-клиент (создает при необходимости)."""

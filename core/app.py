@@ -13,6 +13,52 @@ from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 
 
+def _check_config_exists() -> bool:
+    """Проверяет, существует ли файл конфигурации."""
+    return (Path.home() / ".ollidesk" / "config.yaml").exists()
+
+
+def _load_config_or_wizard() -> AppConfig | None:
+    """Загружает конфиг или показывает визард.
+
+    Returns:
+        AppConfig или None, если визард не был завершён
+    """
+    config_path = Path.home() / ".ollidesk" / "config.yaml"
+
+    try:
+        config = load_config()
+        logger.info(f"Конфигурация загружена: {config.version}")
+        return config
+    except ConfigError as e:
+        logger.warning(f"Конфигурация не найдена или невалидна: {e}")
+
+        if _check_config_exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    import yaml
+                    data = yaml.safe_load(f) or {}
+                if data.get("wizard_dismissed"):
+                    logger.info("Визард отключён пользователем, использую конфиг по умолчанию")
+                    return AppConfig(
+                        default_model="qwen2.5-coder:7b",
+                        embed_model="nomic-embed-text",
+                        wizard_dismissed=True,
+                    )
+            except Exception:
+                pass
+
+        logger.info("Запуск визарда первого запуска...")
+        wizard = SetupWizard()
+        if wizard.exec():
+            try:
+                return load_config()
+            except ConfigError as e2:
+                logger.error(f"Ошибка загрузки конфигурации после визарда: {e2}")
+                return None
+        return None
+
+
 class OlliDeskApp:
     """Главный класс приложения."""
 
@@ -38,40 +84,16 @@ class OlliDeskApp:
         self.app.setApplicationVersion("1.0.0")
         self.app.setOrganizationName("OlliDesk")
 
-        try:
-            self.config = load_config()
-            logger.info(f"Конфигурация загружена: {self.config.version}")
-        except ConfigError as e:
-            logger.warning(f"Конфигурация не найдена или невалидна: {e}")
-            logger.info("Запуск визарда первого запуска...")
-            if not self._run_wizard():
-                logger.error("Визард отменен пользователем")
-                return 1
+        self.config = _load_config_or_wizard()
+        if self.config is None:
+            logger.error("Визард отменён пользователем")
+            return 1
 
-        assert self.config is not None
         self.main_window = MainWindow(self.config)
         self.main_window.show()
         logger.info("Приложение готово к работе")
 
         return self.app.exec()
-
-    def _run_wizard(self) -> bool:
-        """
-        Запускает визард первого запуска.
-
-        Returns:
-            bool: True, если визард успешно завершен
-        """
-        wizard = SetupWizard()
-        if wizard.exec():
-            try:
-                self.config = load_config()
-                logger.info("Конфигурация создана и загружена")
-                return True
-            except ConfigError as e:
-                logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
-                return False
-        return False
 
 
 def main() -> int:

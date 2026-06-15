@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 from loguru import logger
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -110,6 +111,7 @@ class SetupWizard(QWizard):
                 "search_codebase": ToolPolicy.AUTO,
             },
             recent_projects=[str(self.project_path)] if self.project_path else [],
+            wizard_dismissed=getattr(self, "_wizard_dismissed", False),
         )
 
 
@@ -294,6 +296,10 @@ class ConfirmationPage(QWizardPage):
         self.summary_label.setStyleSheet("padding: 10px;")
         layout.addWidget(self.summary_label)
 
+        self.dismiss_checkbox = QCheckBox("Больше не показывать это окно при запуске")
+        self.dismiss_checkbox.setChecked(True)
+        layout.addWidget(self.dismiss_checkbox)
+
     @override
     def initializePage(self) -> None:
         """Инициализирует страницу (показывает сводку)."""
@@ -308,3 +314,4 @@ class ConfirmationPage(QWizardPage):
         • <code>{self.wizard.project_path}/.ollidesk/config.yaml</code> (локально)
         """
         self.summary_label.setText(summary)
+        self.wizard._wizard_dismissed = self.dismiss_checkbox.isChecked()
