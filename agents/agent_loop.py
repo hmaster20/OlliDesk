@@ -95,6 +95,7 @@ class AgentLoop:
         max_iterations: int = 10,
         on_thinking: Callable[[str], Awaitable[None]] | None = None,
         on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
+        on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str:
         """Запускает цикл агента.
 
@@ -105,6 +106,7 @@ class AgentLoop:
             on_tool_request: Колбэк запроса подтверждения (name, description, arguments) -> bool
             max_iterations: Максимальное число итераций
             on_tools_disabled: Колбэк при отключении инструментов
+            on_tool_start: Колбэк при начале выполнения инструмента (name, arguments)
 
         Returns:
             Финальный текст ответа
@@ -177,6 +179,8 @@ class AgentLoop:
                         extra["project_root"] = context.project_root
                     if context.vector_store:
                         extra["vector_store"] = context.vector_store
+                    if on_tool_start:
+                        await on_tool_start(tc.name, tc.arguments)
                     result = await self.registry.execute(tc, **extra)
                     messages.append(
                         _create_tool_result_message(

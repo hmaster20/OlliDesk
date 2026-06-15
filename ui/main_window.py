@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.file_tree_delegate import GitStatusDelegate
 from typing_extensions import override
 
 from agents.ollama_client import OllamaClient
@@ -263,6 +264,8 @@ class MainWindow(QMainWindow):
         )
         self.file_tree.doubleClicked.connect(self._on_file_tree_clicked)
         self.file_tree.clicked.connect(self._on_file_tree_clicked)
+        self._git_delegate = GitStatusDelegate(self.file_tree)
+        self.file_tree.setItemDelegate(self._git_delegate)
         layout.addWidget(self.file_tree, stretch=1)
 
         # Пустая модель — никакие диски не показываем
@@ -581,7 +584,7 @@ class MainWindow(QMainWindow):
         """Обновляет заголовок окна с именем проекта."""
         base = "OlliDesk — Local AI Coding Assistant"
         if self.project_path:
-            self.setWindowTitle(f"{self.project_path.name} — {base}")
+            self.setWindowTitle(f"{base} ———> {self.project_path.name}")
         else:
             self.setWindowTitle(base)
 
@@ -654,6 +657,7 @@ class MainWindow(QMainWindow):
         self.file_tree.hideColumn(2)
         self.file_tree.hideColumn(3)
         self.project_title_label.setText(self.project_path.name)
+        self._git_delegate.set_repo_path(str(self.project_path))
         self._update_window_title()
         persist_dir = self.project_path / ".ollidesk" / "vector_db"
         self.vector_store = VectorStore(

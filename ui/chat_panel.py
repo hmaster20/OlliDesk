@@ -80,6 +80,7 @@ class AgentChatThread(QThread):
     thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
     tool_executed = Signal(str, str, bool)
+    tool_started = Signal(str, str)  # name, arguments_json
     finish_received = Signal(str)
     error_occurred = Signal(str)
     iteration_changed = Signal(int, int)
@@ -148,6 +149,10 @@ class AgentChatThread(QThread):
             async def _notify_tools_disabled():
                 self.tools_status_changed.emit(False)
 
+            async def _on_tool_start(name: str, args: dict):
+                args_json = json.dumps(args, ensure_ascii=False)
+                self.tool_started.emit(name, args_json)
+
             result = await loop.run(
                 context=self.context,
                 messages_history=self.messages_history,
@@ -156,6 +161,7 @@ class AgentChatThread(QThread):
                 max_iterations=self.max_iterations,
                 on_thinking=self._on_thinking,
                 on_tools_disabled=_notify_tools_disabled,
+                on_tool_start=_on_tool_start,
             )
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
@@ -367,7 +373,7 @@ class ChatPanel(QWidget):
         input_layout = QHBoxLayout()
 
         self.input_edit = QTextEdit()
-        self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
+        self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
         self.input_edit.setFixedHeight(80)
         self.input_edit.setStyleSheet(
             "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
@@ -608,6 +614,7 @@ class ChatPanel(QWidget):
         self._agent_thread.thinking_received.connect(self._on_thinking)
         self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
         self._agent_thread.tool_executed.connect(self._on_tool_executed)
+        self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
@@ -656,10 +663,34 @@ class ChatPanel(QWidget):
         """Обрабатывает результат выполнения инструмента."""
         self._add_tool_message(name, content, is_error)
 
+    @Slot(str, str)
+    def _on_tool_started(self, name: str, arguments_json: str):
+        """Обрабатывает начало выполнения инструмента."""
+        try:
+            args = json.loads(arguments_json)
+        except json.JSONDecodeError:
+            args = {}
+        arg_summary = ", ".join(f"{k}={v}" for k, v in args.items())
+        tool_labels = {
+            "read_file": "📖 Чтение файла",
+            "write_file": "✏️ Запись файла",
+            "list_directory": "📁 Просмотр директории",
+            "search_codebase": "🔍 Поиск в кодовой базе",
+            "web_search": "🌐 Поиск в интернете",
+            "get_git_status": "🔎 Проверка Git-статуса",
+            "create_snapshot": "📸 Создание снапшота Git",
+            "undo_last_snapshot": "⏪ Откат снапшота Git",
+        }
+        label = tool_labels.get(name, f"🛠️ {name}")
+        self.status_label.setText(f"{label}: {arg_summary}")
+
     @Slot(str)
     def _on_thinking(self, token: str):
         """Обрабатывает токен рассуждения от LLM."""
         self._current_thinking_content += token
+
+        if not self._current_thinking_content.strip():
+            return
 
         last_item = self.message_list.item(self.message_list.count() - 1)
         if last_item and hasattr(last_item, "_is_assistant"):
@@ -678,6 +709,7 @@ class ChatPanel(QWidget):
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
+        self.status_label.setText("🧠 Анализирует...")
         QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
@@ -871,5 +903,5 @@ class ChatPanel(QWidget):
             self.input_edit.setPlaceholderText("Сначала откройте проект (File → Open Project...)")
             self.status_label.setText("Проект не открыт")
         else:
-            self.input_edit.setPlaceholderText("Введите сообщение... (Enter — отправить)")
+            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
             self._reset_send_button()

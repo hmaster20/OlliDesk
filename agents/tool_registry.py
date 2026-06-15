@@ -191,7 +191,9 @@ class ToolRegistry:
             )
 
         func = meta["func"]
-        merged_args = {**tool_call.arguments, **extra_kwargs}
+        sig = inspect.signature(func)
+        filtered_kwargs = {k: v for k, v in extra_kwargs.items() if k in sig.parameters}
+        merged_args = {**tool_call.arguments, **filtered_kwargs}
         try:
             if inspect.iscoroutinefunction(func):
                 result_content = await func(**merged_args)
