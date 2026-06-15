@@ -199,29 +199,46 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._check_ollama_connection()
 
+        # Правая панель скрыта по умолчанию
+        self.right_panel.setVisible(False)
+
         logger.info("Главное окно создано")
 
     def _setup_ui(self) -> None:
-        """Настраивает UI с тремя панелями."""
+        """Настраивает UI: левая панель + центр + кнопка + правая панель."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
         layout = QHBoxLayout(central_widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Основной сплиттер (левая + центральная панели)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         left_panel = self._create_left_panel()
-        splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(left_panel)
 
         center_panel = self._create_center_panel()
-        splitter.addWidget(center_panel)
+        self.main_splitter.addWidget(center_panel)
 
+        self.main_splitter.setSizes([320, 800])
+        layout.addWidget(self.main_splitter, stretch=1)
+
+        # Кнопка сворачивания/разворачивания правой панели
+        self.side_toggle_btn = QPushButton("⚙")
+        self.side_toggle_btn.setFixedWidth(22)
+        self.side_toggle_btn.setToolTip("Показать/скрыть настройки агента")
+        self.side_toggle_btn.setStyleSheet(
+            "QPushButton { font-size: 14px; border: none; background: #3a3a3a; border-radius: 0; padding: 2px 0; }"
+            " QPushButton:hover { background: #555; }"
+        )
+        self.side_toggle_btn.clicked.connect(self._toggle_side_panel)
+        layout.addWidget(self.side_toggle_btn)
+
+        # Правая панель (настройки агента)
         self.right_panel = self._create_right_panel()
-        splitter.addWidget(self.right_panel)
-
-        splitter.setSizes([320, 800, 480])
-        layout.addWidget(splitter)
+        layout.addWidget(self.right_panel)
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация)."""
@@ -320,7 +337,7 @@ class MainWindow(QMainWindow):
         )
         self.chat_panel.set_project_open(False)
         self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
-        self.chat_panel.agent_panel_toggle.connect(self._on_agent_panel_toggle)
+        self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
@@ -444,9 +461,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.context_spin)
 
         # Max iterations (агент)
-        iterations_label = QLabel("Max iterations (агент):")
-        iterations_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
-        layout.addWidget(iterations_label)
+        self.iterations_label = QLabel("Max iterations (агент):")
+        self.iterations_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
+        layout.addWidget(self.iterations_label)
 
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1, 50)
@@ -466,8 +483,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.iterations_spin)
 
         # Инструменты
-        tools_box = QGroupBox("Инструменты")
-        tools_layout = QVBoxLayout(tools_box)
+        self.tools_box = QGroupBox("Инструменты")
+        tools_layout = QVBoxLayout(self.tools_box)
         self.tool_checkboxes: dict[str, QCheckBox] = {}
         tool_names = [
             ("read_file", "Чтение файлов"),
@@ -486,8 +503,8 @@ class MainWindow(QMainWindow):
             cb.toggled.connect(lambda checked, k=tool_key: self._on_tool_toggled(k, checked))
             tools_layout.addWidget(cb)
             self.tool_checkboxes[tool_key] = cb
-        tools_box.setStyleSheet("font-size: 12px;")
-        layout.addWidget(tools_box)
+        self.tools_box.setStyleSheet("font-size: 12px;")
+        layout.addWidget(self.tools_box)
 
         # RAG switch
         self.rag_check = QCheckBox("Использовать RAG")
@@ -497,7 +514,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # По умолчанию скрыта (показывается только в режиме Agent)
+        # По умолчанию скрыта (показывается только по кнопке)
         panel.setVisible(False)
         return panel
 
@@ -804,14 +821,36 @@ class MainWindow(QMainWindow):
         self.index_status_label.setVisible(False)
 
     def _on_chat_mode_changed(self, mode: str) -> None:
-        """Показывает/скрывает панель настроек агента."""
+        """Настраивает правую панель при смене режима."""
         if hasattr(self, 'right_panel'):
-            self.right_panel.setVisible(False)
+            self._update_right_panel_for_mode(mode)
 
-    def _on_agent_panel_toggle(self, visible: bool) -> None:
-        """Переключает видимость панели настроек агента."""
+    def _toggle_side_panel(self) -> None:
+        """Переключает видимость правой панели."""
         if hasattr(self, 'right_panel'):
-            self.right_panel.setVisible(not self.right_panel.isVisible())
+            visible = not self.right_panel.isVisible()
+            self.right_panel.setVisible(visible)
+            self.side_toggle_btn.setStyleSheet(
+                "QPushButton { font-size: 14px; border: none; background: #3a3a3a; border-radius: 0; padding: 2px 0; }"
+                " QPushButton:hover { background: #555; }"
+            )
+
+    def _update_right_panel_for_mode(self, mode: str) -> None:
+        """Включает/выключает секции правой панели в зависимости от режима."""
+        if not hasattr(self, 'tools_box') or not hasattr(self, 'iterations_spin'):
+            return
+
+        is_chat = mode == "chat"
+        is_plan = mode == "plan"
+        is_agent = mode == "agent"
+
+        self.iterations_label.setVisible(is_agent or is_plan)
+        self.iterations_spin.setVisible(is_agent or is_plan)
+        self.iterations_spin.setEnabled(is_agent)
+
+        self.tools_box.setVisible(is_plan or is_agent)
+        for cb in self.tool_checkboxes.values():
+            cb.setEnabled(is_agent)
 
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""

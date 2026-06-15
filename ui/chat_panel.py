@@ -1,7 +1,9 @@
 """Панель чата с поддержкой режимов Chat / Plan / Agent."""
 
 import asyncio
+import html as html_mod
 import json
+import re
 import threading
 from typing import Any
 from pathlib import Path
@@ -203,7 +205,13 @@ class RagSearchThread(QThread):
 
     def run(self):
         """Запускает асинхронный RAG-поиск."""
-        asyncio.run(self._search())
+        try:
+            asyncio.run(self._search())
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                self.search_error.emit(str(e))
+            else:
+                raise
 
     async def _search(self):
         """Выполняет поиск и формирует контекст."""
@@ -242,6 +250,7 @@ class ChatMessageItem(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         bubble = QWidget()
+        bubble.setObjectName("_bubble")
         is_user = role == "user"
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
@@ -293,12 +302,13 @@ class ChatMessageItem(QWidget):
             self._thinking_edit.setStyleSheet(
                 "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
                 f" color: {'rgba(255,255,255,0.5)' if is_user else '#888'};"
-                " font-style: italic; line-height: 1.3;"
+                " font-style: italic;"
             )
-            self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setMinimumHeight(16)
+            self._thinking_edit.setMaximumHeight(120)
+            self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             bubble_layout.addWidget(self._thinking_edit)
 
         # Content
@@ -307,12 +317,13 @@ class ChatMessageItem(QWidget):
         ChatPanel._render_markdown(self._content_edit, content)
         self._content_edit.setStyleSheet(
             f"font-size: 14px; padding: 2px 0; border: none; background: transparent;"
-            f" color: {text_color}; line-height: 1.4;"
+            f" color: {text_color};"
         )
-        self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content_edit.setMinimumHeight(16)
+        self._content_edit.setMinimumHeight(20)
+        self._content_edit.setMaximumHeight(600)
+        self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         bubble_layout.addWidget(self._content_edit)
 
         # Выравнивание: пользователь справа, ассистент слева
@@ -371,8 +382,58 @@ class ChatPanel(QWidget):
 
     @staticmethod
     def _render_markdown(edit: QTextEdit, text: str) -> None:
-        """Рендерит markdown в QTextEdit."""
-        edit.setMarkdown(text)
+        """Рендерит markdown в QTextEdit с подсветкой синтаксиса."""
+        try:
+            from pygments import highlight as pyg_highlight
+            from pygments.lexers import get_lexer_by_name, guess_lexer
+            from pygments.formatters import HtmlFormatter
+
+            formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+
+            def _replace_code_block(m):
+                lang = m.group(1).strip() or ""
+                code = m.group(2)
+                try:
+                    if lang:
+                        lexer = get_lexer_by_name(lang, stripall=True)
+                    else:
+                        lexer = guess_lexer(code)
+                    highlighted = pyg_highlight(code, lexer, formatter)
+                    return f'<div style="background:#2d2d2d; padding:8px 12px; border-radius:6px; margin:6px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
+                except Exception:
+                    escaped = html_mod.escape(code)
+                    return f'<pre style="background:#2d2d2d; padding:8px 12px; border-radius:6px; margin:6px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
+
+            pattern = r"```(\w*)\s*\n(.*?)```"
+            body = re.sub(pattern, _replace_code_block, text, flags=re.DOTALL)
+
+            # Inline code
+            body = re.sub(
+                r"`([^`]+)`",
+                lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
+                body,
+            )
+
+            # Bold
+            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+            # Italic
+            body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
+
+            # Simple links
+            body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
+
+            # Headings
+            body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
+            body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
+            body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
+
+            # Newlines to <br>
+            body = body.replace("\n", "<br>")
+
+            html_out = f"<div style='line-height:1.6;'>{body}</div>"
+            edit.setHtml(html_out)
+        except ImportError:
+            edit.setMarkdown(text)
 
     def _setup_ui(self):
         """Настраивает UI компоненты."""
@@ -406,7 +467,7 @@ class ChatPanel(QWidget):
         self.gear_btn = QPushButton("⚙")
         self.gear_btn.setToolTip("Настройки агента")
         self.gear_btn.setStyleSheet(
-            "font-size: 16px; padding: 2px 8px; border: none; background: transparent;"
+            "QPushButton { font-size: 16px; padding: 2px 8px; border: none; background: transparent; }"
             " QPushButton:hover { background: #555; border-radius: 4px; }"
         )
         self.gear_btn.setVisible(False)
@@ -855,10 +916,16 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
-        """Подгоняет высоту элемента под содержимое."""
+        """Подгоняет высоту элемента под содержимое, ширина пузырька 85%."""
         list_width = self.message_list.viewport().width()
         if list_width > 0:
-            widget.setFixedWidth(list_width - 4)
+            bubble_width = int(list_width * 0.85)
+            widget.setFixedWidth(list_width)
+            # Находим bubble QWidget внутри ChatMessageItem и задаём макс. ширину
+            for child in widget.findChildren(QWidget):
+                if child.objectName() == "_bubble":
+                    child.setMaximumWidth(bubble_width)
+                    break
         widget.adjustSize()
         hint = widget.sizeHint()
         item.setSizeHint(hint)
