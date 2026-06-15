@@ -46,6 +46,11 @@ class OllamaChatThread(QThread):
         self.messages = messages
         self.base_url = base_url
 
+    def cancel(self):
+        """Отменяет текущий запрос к Ollama."""
+        if hasattr(self, '_client') and self._client:
+            self._client.cancel_request()
+
     def run(self):
         """Запускает асинхронный чат в цикле событий."""
         asyncio.run(self._run_chat())
@@ -53,7 +58,8 @@ class OllamaChatThread(QThread):
     async def _run_chat(self):
         """Выполняет асинхронный запрос к Ollama."""
         try:
-            async with OllamaClient(base_url=self.base_url) as client:
+            self._client = OllamaClient(base_url=self.base_url)
+            async with self._client as client:
                 async for chunk in client.chat(
                     model=self.model,
                     messages=self.messages,
@@ -224,7 +230,7 @@ class RagSearchThread(QThread):
 
 
 class ChatMessageItem(QWidget):
-    """Виджет одного сообщения в чате."""
+    """Виджет одного сообщения в чате (пузырёк как в Telegram)."""
 
     def __init__(self, role: str, content: str, thinking: str = "", parent: QWidget | None = None):
         super().__init__(parent)
@@ -232,18 +238,53 @@ class ChatMessageItem(QWidget):
         self.content = content
         self.thinking = thinking
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        role_label = QLabel(
-            "🧑 Вы" if role == "user"
-            else "🤖 Ассистент" if role == "assistant"
-            else "🔧 Система" if role == "system"
-            else f"🛠 {role}"
-        )
-        role_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #555;")
-        layout.addWidget(role_label)
+        bubble = QWidget()
+        is_user = role == "user"
+        is_assistant = role == "assistant"
+        is_tool = role in ("tool", "system")
 
+        # Цвета пузырька
+        if is_user:
+            bg = "#1976d2"
+            text_color = "white"
+            bubble_style = (
+                f"background: {bg}; border-radius: 12px;"
+                f" padding: 8px 14px; margin: 1px 0;"
+            )
+        elif is_assistant:
+            bg = "#2d2d2d"
+            text_color = "#e0e0e0"
+            bubble_style = (
+                f"background: {bg}; border-radius: 12px;"
+                f" padding: 8px 14px; margin: 1px 0;"
+            )
+        else:
+            bg = "transparent"
+            text_color = "#999"
+            bubble_style = "padding: 2px 14px; margin: 1px 0;"
+
+        bubble.setStyleSheet(bubble_style)
+
+        bubble_layout = QVBoxLayout(bubble)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(2)
+
+        if not is_tool:
+            role_label = QLabel(
+                "Вы" if is_user
+                else "Ассистент" if is_assistant
+                else role
+            )
+            role_label.setStyleSheet(
+                f"font-weight: bold; font-size: 11px; color: {text_color};"
+                f" opacity: 0.7;"
+            )
+            bubble_layout.addWidget(role_label)
+
+        # Reasoning (thinking)
         self._thinking_edit: QTextEdit | None = None
         if thinking:
             self._thinking_edit = QTextEdit()
@@ -251,31 +292,46 @@ class ChatMessageItem(QWidget):
             self._thinking_edit.setPlainText(thinking)
             self._thinking_edit.setStyleSheet(
                 "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
-                " color: #888; font-style: italic; line-height: 1.3;"
+                f" color: {'rgba(255,255,255,0.5)' if is_user else '#888'};"
+                " font-style: italic; line-height: 1.3;"
             )
             self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setMinimumHeight(16)
-            layout.addWidget(self._thinking_edit)
+            bubble_layout.addWidget(self._thinking_edit)
 
+        # Content
         self._content_edit = QTextEdit()
         self._content_edit.setReadOnly(True)
         ChatPanel._render_markdown(self._content_edit, content)
         self._content_edit.setStyleSheet(
-            "font-size: 14px; padding: 4px 0; border: none; background: transparent;"
-            " line-height: 1.4;"
+            f"font-size: 14px; padding: 2px 0; border: none; background: transparent;"
+            f" color: {text_color}; line-height: 1.4;"
         )
         self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content_edit.setMinimumHeight(20)
-        layout.addWidget(self._content_edit)
+        self._content_edit.setMinimumHeight(16)
+        bubble_layout.addWidget(self._content_edit)
 
-        bg = "#f0f0f0" if role == "user" else "#e3f2fd" if role == "assistant" else "#fff3e0"
-        self.setStyleSheet(
-            f"background: {bg}; border-radius: 6px; margin: 2px 0;"
-        )
+        # Выравнивание: пользователь справа, ассистент слева
+        inner = QHBoxLayout()
+        inner.setContentsMargins(8, 1, 8, 1)
+        if is_user:
+            inner.addStretch()
+            inner.addWidget(bubble)
+            inner.setStretchFactor(bubble, 0)
+        elif is_assistant:
+            inner.addWidget(bubble)
+            inner.addStretch()
+            inner.setStretchFactor(bubble, 0)
+        else:
+            inner.addWidget(bubble)
+            inner.addStretch()
+            inner.setStretchFactor(bubble, 0)
+
+        outer.addLayout(inner)
 
 
 class ChatPanel(QWidget):
@@ -283,6 +339,7 @@ class ChatPanel(QWidget):
 
     tool_requested = Signal(str, str, str)
     mode_changed = Signal(str)  # "chat", "plan", "agent"
+    agent_panel_toggle = Signal(bool)  # показать/скрыть панель агента
 
     def __init__(
         self,
@@ -346,6 +403,16 @@ class ChatPanel(QWidget):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
 
+        self.gear_btn = QPushButton("⚙")
+        self.gear_btn.setToolTip("Настройки агента")
+        self.gear_btn.setStyleSheet(
+            "font-size: 16px; padding: 2px 8px; border: none; background: transparent;"
+            " QPushButton:hover { background: #555; border-radius: 4px; }"
+        )
+        self.gear_btn.setVisible(False)
+        self.gear_btn.clicked.connect(self._toggle_agent_panel)
+        top_bar.addWidget(self.gear_btn)
+
         top_bar.addStretch()
 
         self.clear_btn = QPushButton("Очистить")
@@ -368,7 +435,13 @@ class ChatPanel(QWidget):
             "font-size: 14px; border: 1px solid #ccc; border-radius: 4px;"
         )
         self.message_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.message_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self.message_list, stretch=1)
+
+        self.status_label = QLabel("Готов к работе")
+        self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px 8px; background: #f5f5f5; border-radius: 4px;")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
 
         input_layout = QHBoxLayout()
 
@@ -393,10 +466,6 @@ class ChatPanel(QWidget):
 
         layout.addLayout(input_layout)
 
-        self.status_label = QLabel("Готов к работе")
-        self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px;")
-        layout.addWidget(self.status_label)
-
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter для отправки сообщения."""
         if obj is self.input_edit and event.type() == event.Type.KeyPress:
@@ -420,7 +489,10 @@ class ChatPanel(QWidget):
         widget = ChatMessageItem(role, content)
         self._resize_message_item(item, widget)
         self.message_list.setItemWidget(item, widget)
-        QTimer.singleShot(0, self.message_list.scrollToBottom)
+        def _scroll():
+            self.message_list.scrollToBottom()
+            self.message_list.update()
+        QTimer.singleShot(0, _scroll)
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
         """Добавляет сообщение о выполнении инструмента."""
@@ -435,6 +507,13 @@ class ChatPanel(QWidget):
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
         self.mode_changed.emit(mode)
+        self.gear_btn.setVisible(mode == "agent")
+        if mode != "agent":
+            self.agent_panel_toggle.emit(False)
+
+    def _toggle_agent_panel(self):
+        """Показывает/скрывает панель настроек агента."""
+        self.agent_panel_toggle.emit(True)
 
     def _clear_chat(self):
         """Очищает чат."""
@@ -463,17 +542,33 @@ class ChatPanel(QWidget):
     def _stop_generation(self):
         """Останавливает текущую генерацию."""
         self._generating = False
+        # Сначала отменяем HTTP-запрос, чтобы не грузить процессор
         if self._ollama_thread and self._ollama_thread.isRunning():
-            self._ollama_thread.terminate()
-            self._ollama_thread.wait(1000)
-        if self._agent_thread and self._agent_thread.isRunning():
-            self._agent_thread.terminate()
-            self._agent_thread.wait(1000)
+            self._ollama_thread.cancel()
+        if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
+            self._agent_thread.client.cancel_request()
         if self._rag_thread and self._rag_thread.isRunning():
-            self._rag_thread.terminate()
+            self._rag_thread.quit()
             self._rag_thread.wait(1000)
+            if self._rag_thread.isRunning():
+                self._rag_thread.terminate()
+                self._rag_thread.wait(500)
+        # Ждём остановки потоков
+        if self._ollama_thread and self._ollama_thread.isRunning():
+            self._ollama_thread.quit()
+            self._ollama_thread.wait(1000)
+            if self._ollama_thread.isRunning():
+                self._ollama_thread.terminate()
+                self._ollama_thread.wait(500)
+        if self._agent_thread and self._agent_thread.isRunning():
+            self._agent_thread.quit()
+            self._agent_thread.wait(1000)
+            if self._agent_thread.isRunning():
+                self._agent_thread.terminate()
+                self._agent_thread.wait(500)
         self._reset_send_button()
         self.status_label.setText("⏹ Остановлено пользователем")
+        self._add_message("system", "⏹ Генерация остановлена пользователем")
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
@@ -713,26 +808,37 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self.message_list.scrollToBottom)
 
     def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
-        """Вставляет QTextEdit для thinking в виджет сообщения."""
+        """Вставляет QTextEdit для thinking в bubble."""
         thinking_edit = QTextEdit()
         thinking_edit.setReadOnly(True)
         thinking_edit.setPlainText(self._current_thinking_content)
+        bubble_text_color = "rgba(255,255,255,0.5)" if widget.role == "user" else "#888"
         thinking_edit.setStyleSheet(
             "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
-            " color: #888; font-style: italic; line-height: 1.3;"
+            f" color: {bubble_text_color}; font-style: italic; line-height: 1.3;"
         )
         thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         thinking_edit.setMinimumHeight(16)
         widget._thinking_edit = thinking_edit
-        layout = widget.layout()
-        layout.insertWidget(1, thinking_edit)
+        # Ищем bubble_layout внутри ChatMessageItem
+        if widget._content_edit:
+            bl = widget._content_edit.parentWidget()
+            if bl and bl.layout():
+                bl.layout().insertWidget(
+                    bl.layout().count() - 1, thinking_edit
+                )
 
     @Slot(str)
     def _on_chunk(self, content: str):
         """Обрабатывает полученный токен."""
         self._current_assistant_content += content
+
+        # Если статус показывал инструмент — переключаем на генерацию
+        status_text = self.status_label.text()
+        if any(emoji in status_text for emoji in ("📖", "✏️", "📁", "🔍", "🌐", "🔎", "📸", "⏪", "🛠️")):
+            self.status_label.setText("🤖 Генерация ответа...")
 
         last_item = self.message_list.item(self.message_list.count() - 1)
         if last_item and hasattr(last_item, "_is_assistant"):
@@ -749,7 +855,10 @@ class ChatPanel(QWidget):
             self.message_list.setItemWidget(item, widget)
             item._is_assistant = True
 
-        QTimer.singleShot(0, self.message_list.scrollToBottom)
+        def _scroll():
+            self.message_list.scrollToBottom()
+            self.message_list.update()
+        QTimer.singleShot(0, _scroll)
 
     def _resize_message_item(self, item: QListWidgetItem, widget: QWidget) -> None:
         """Подгоняет высоту элемента под содержимое."""
@@ -783,6 +892,7 @@ class ChatPanel(QWidget):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self.status_label.setText("Готов к работе")
 
 
     def _reset_send_button(self):
@@ -823,6 +933,7 @@ class ChatPanel(QWidget):
         """Обрабатывает ошибку агента."""
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
+        self.status_label.setText("❌ Ошибка")
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):

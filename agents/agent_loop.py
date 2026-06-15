@@ -136,14 +136,18 @@ class AgentLoop:
                     stream=True,
                 )
 
-                async for chunk in stream:
-                    if chunk.reasoning_content and on_thinking:
-                        await on_thinking(chunk.reasoning_content)
-                    if chunk.content:
-                        current_text += chunk.content
-                        await on_token(chunk.content)
-                    if chunk.tool_calls:
-                        pending_tool_calls.extend(chunk.tool_calls)
+                try:
+                    async for chunk in stream:
+                        if chunk.reasoning_content and on_thinking:
+                            await on_thinking(chunk.reasoning_content)
+                        if chunk.content:
+                            current_text += chunk.content
+                            await on_token(chunk.content)
+                        if chunk.tool_calls:
+                            pending_tool_calls.extend(chunk.tool_calls)
+                except StopAsyncIteration:
+                    logger.info("Запрос к Ollama отменён пользователем")
+                    return current_text or "Отменено"
 
             except ToolsNotSupportedError:
                 logger.warning(f"Модель {self.model} не поддерживает инструменты, повтор без инструментов")

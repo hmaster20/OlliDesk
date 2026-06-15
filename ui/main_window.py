@@ -320,6 +320,7 @@ class MainWindow(QMainWindow):
         )
         self.chat_panel.set_project_open(False)
         self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
+        self.chat_panel.agent_panel_toggle.connect(self._on_agent_panel_toggle)
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
@@ -361,12 +362,12 @@ class MainWindow(QMainWindow):
     def open_file_in_editor(self, file_path: str):
         """Открывает файл в редакторе."""
         self.editor_widget.open_file(file_path)
-        # Переключаемся на вкладку редактора
-        self.tab_widget.setCurrentWidget(self.editor_widget)
-        # Обновляем заголовок вкладки
+        # Добавляем вкладку обратно, если была закрыта
         index = self.tab_widget.indexOf(self.editor_widget)
-        if index >= 0:
-            self.tab_widget.setTabText(index, f"📝 {Path(file_path).name}")
+        if index < 0:
+            self.tab_widget.addTab(self.editor_widget, f"📝 {Path(file_path).name}")
+        self.tab_widget.setCurrentWidget(self.editor_widget)
+        self.tab_widget.setTabText(self.tab_widget.indexOf(self.editor_widget), f"📝 {Path(file_path).name}")
 
     def _create_right_panel(self) -> QWidget:
         """Создает правую панель (настройки агента)."""
@@ -405,7 +406,12 @@ class MainWindow(QMainWindow):
         self.tokens_spin.setRange(256, 32768)
         self.tokens_spin.setValue(4096)
         self.tokens_spin.setSingleStep(256)
-        self.tokens_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        self.tokens_spin.setStyleSheet(
+            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " QSpinBox:hover { border: 1px solid #1976d2; }"
+            " QSpinBox:focus { border: 1px solid #42a5f5; }"
+        )
         layout.addWidget(self.tokens_spin)
 
         # Context window
@@ -417,7 +423,12 @@ class MainWindow(QMainWindow):
         self.context_spin.setRange(1024, 128000)
         self.context_spin.setValue(8192)
         self.context_spin.setSingleStep(1024)
-        self.context_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        self.context_spin.setStyleSheet(
+            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " QSpinBox:hover { border: 1px solid #1976d2; }"
+            " QSpinBox:focus { border: 1px solid #42a5f5; }"
+        )
         layout.addWidget(self.context_spin)
 
         # Max iterations (агент)
@@ -428,7 +439,12 @@ class MainWindow(QMainWindow):
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1, 50)
         self.iterations_spin.setValue(10)
-        self.iterations_spin.setStyleSheet("font-size: 13px; padding: 4px; margin: 0 10px;")
+        self.iterations_spin.setStyleSheet(
+            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
+            " background: transparent; border: 1px solid #555; border-radius: 4px; color: inherit; }"
+            " QSpinBox:hover { border: 1px solid #1976d2; }"
+            " QSpinBox:focus { border: 1px solid #42a5f5; }"
+        )
         layout.addWidget(self.iterations_spin)
 
         # Инструменты
@@ -772,7 +788,12 @@ class MainWindow(QMainWindow):
     def _on_chat_mode_changed(self, mode: str) -> None:
         """Показывает/скрывает панель настроек агента."""
         if hasattr(self, 'right_panel'):
-            self.right_panel.setVisible(mode == "agent")
+            self.right_panel.setVisible(False)
+
+    def _on_agent_panel_toggle(self, visible: bool) -> None:
+        """Переключает видимость панели настроек агента."""
+        if hasattr(self, 'right_panel'):
+            self.right_panel.setVisible(not self.right_panel.isVisible())
 
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""

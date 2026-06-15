@@ -86,6 +86,7 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self._cancel_requested = False
 
     async def __aenter__(self):
         """Контекстный менеджер: вход."""
@@ -126,6 +127,15 @@ class OllamaClient:
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPError as e:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
+
+    def cancel_request(self):
+        """Отменяет текущий стриминг-запрос (безопасно из любого потока)."""
+        self._cancel_requested = True
+
+    def _check_cancelled(self):
+        """Поднимает StopAsyncIteration если запрос отменён."""
+        if self._cancel_requested:
+            raise StopAsyncIteration()
 
     async def chat(
         self,
@@ -188,6 +198,7 @@ class OllamaClient:
                             )
                         response.raise_for_status()
                     async for line in response.aiter_lines():
+                        self._check_cancelled()
                         if line:
                             chunk_data = json.loads(line)
                             msg = chunk_data.get("message", {})
