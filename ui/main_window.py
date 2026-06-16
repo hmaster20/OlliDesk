@@ -37,7 +37,7 @@ from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
-
+from core.model_capabilities import ModelCapabilitiesStore
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -97,6 +97,40 @@ class IndexingThread(QThread):
         except Exception as e:
             self.indexing_error.emit(str(e))
 
+class ModelCheckThread(QThread):
+    """Поток для фоновой проверки поддержки инструментов моделями."""
+    progress = Signal(str, int, int)  # model_name, current, total
+    finished = Signal(dict)           # {model_name: supports_tools}
+
+    def __init__(self, base_url: str, models: list[str], capabilities_store: ModelCapabilitiesStore):
+        super().__init__()
+        self.base_url = base_url
+        self.models = models
+        self.capabilities_store = capabilities_store
+
+    def run(self):
+        import asyncio
+        asyncio.run(self._check())
+
+    async def _check(self):
+        from agents.ollama_client import OllamaClient
+        client = OllamaClient(base_url=self.base_url)
+        results = {}
+        total = len(self.models)
+
+        async with client:
+            for i, model in enumerate(self.models):
+                self.progress.emit(model, i + 1, total)
+                try:
+                    supports = await client.check_tools_support(model)
+                    results[model] = supports
+                    self.capabilities_store.update(model, supports)
+                except Exception as e:
+                    logger.error(f"Ошибка проверки модели {model}: {e}")
+                    results[model] = False
+
+        self.capabilities_store.save()
+        self.finished.emit(results)
 
 class ProjectState:
     """Управление состоянием проекта для инкрементальной индексации."""
@@ -188,6 +222,9 @@ class MainWindow(QMainWindow):
         self.ollama_client = OllamaClient(base_url="http://localhost:11434")
         self._ollama_connected = False
         self._available_models: list[str] = []
+
+        # Инициализация хранилища возможностей моделей
+        self.capabilities_store = ModelCapabilitiesStore()
 
         # Индексация
         self.indexer = FileIndexer(config)
@@ -327,6 +364,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_open(False)
         self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
+        self.chat_panel.set_capabilities_store(self.capabilities_store)
+        self.chat_panel.refresh_models_requested.connect(self._start_model_check)
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
@@ -924,3 +963,32 @@ class MainWindow(QMainWindow):
                 loop.close()
             except Exception:
                 pass
+
+    def _start_model_check(self):
+        """Запускает фоновую проверку моделей."""
+        if hasattr(self, '_model_check_thread') and self._model_check_thread.isRunning():
+            logger.info("Проверка моделей уже выполняется")
+            return
+
+        self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
+        self.chat_panel.set_checking_state(True)
+
+        self._model_check_thread = ModelCheckThread(
+            self.ollama_client.base_url,
+            self._available_models,
+            self.capabilities_store
+        )
+        self._model_check_thread.progress.connect(self._on_model_check_progress)
+        self._model_check_thread.finished.connect(self._on_model_check_finished)
+        self._model_check_thread.start()
+
+    @Slot(str, int, int)
+    def _on_model_check_progress(self, model_name: str, current: int, total: int):
+        self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
+
+    @Slot(dict)
+    def _on_model_check_finished(self, results: dict):
+        self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
+        self.chat_panel.set_checking_state(False)
+        # Обновляем UI, чтобы подтянуть новые статусы
+        self.chat_panel.update_models(self._available_models)

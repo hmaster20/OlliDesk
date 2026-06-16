@@ -26,7 +26,7 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
-
+from core.model_capabilities import ModelCapabilitiesStore
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -358,6 +358,7 @@ class ChatPanel(QWidget):
     tool_requested = Signal(str, str, str)
     mode_changed = Signal(str)  # "chat", "plan", "agent"
     agent_panel_toggle = Signal(bool)  # показать/скрыть панель агента
+    refresh_models_requested = Signal()
 
     def __init__(
         self,
@@ -385,6 +386,8 @@ class ChatPanel(QWidget):
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
+
+        self.capabilities_store: ModelCapabilitiesStore | None = None
 
         self._setup_ui()
 
@@ -460,6 +463,23 @@ class ChatPanel(QWidget):
         self.model_combo.addItem(self.current_model)
         self.model_combo.setMinimumWidth(200)
         self.model_combo.setStyleSheet("font-size: 13px; padding: 4px;")
+
+        # Кнопка проверки моделей
+        self.refresh_models_btn = QPushButton("🔄")
+        self.refresh_models_btn.setToolTip("Проверить поддержку инструментов моделями")
+        self.refresh_models_btn.setStyleSheet("font-size: 14px; padding: 2px 8px;")
+        self.refresh_models_btn.clicked.connect(self.refresh_models_requested.emit)
+        top_bar.addWidget(self.refresh_models_btn)
+
+        # Статус текущей модели
+        self.model_status_label = QLabel("")
+        self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
+        top_bar.addWidget(self.model_status_label)
+
+        # Подключаем сигнал смены модели
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+
+
         top_bar.addWidget(self.model_combo)
 
         mode_label = QLabel("Режим:")
@@ -1074,12 +1094,17 @@ class ChatPanel(QWidget):
     def update_models(self, models: list[str]):
         """Обновляет список доступных моделей (в алфавитном порядке)."""
         current = self.model_combo.currentText()
+        self.model_combo.blockSignals(True) # Блокируем сигналы на время обновления
         self.model_combo.clear()
         for m in sorted(models, key=str.lower):
             self.model_combo.addItem(m)
         index = self.model_combo.findText(current)
         if index >= 0:
             self.model_combo.setCurrentIndex(index)
+        self.model_combo.blockSignals(False)
+
+        # Обновляем статус для текущей модели
+        self._update_model_status(self.model_combo.currentText())
 
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         """Устанавливает политику для инструмента."""
@@ -1122,3 +1147,58 @@ class ChatPanel(QWidget):
         else:
             self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
             self._reset_send_button()
+
+    def set_capabilities_store(self, store: ModelCapabilitiesStore):
+        """Устанавливает хранилище возможностей и обновляет статус."""
+        self.capabilities_store = store
+        self._update_model_status(self.model_combo.currentText())
+
+    def set_checking_state(self, is_checking: bool):
+        """Блокирует кнопку и меняет иконку во время проверки."""
+        self.refresh_models_btn.setEnabled(not is_checking)
+        self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
+
+    def _on_model_changed(self, index: int):
+        """Вызывается при смене модели в комбобоксе."""
+        model_name = self.model_combo.currentText()
+        self._update_model_status(model_name)
+        self._check_mode_compatibility()
+
+    def _update_model_status(self, model_name: str):
+        """Обновляет текстовый статус модели."""
+        if not self.capabilities_store:
+            self.model_status_label.setText("⏳ Нажмите 🔄 для проверки")
+            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
+            return
+
+        cap = self.capabilities_store.get(model_name)
+        if not cap:
+            self.model_status_label.setText(f"⚠️ {model_name}: Нажмите 🔄")
+            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: orange;")
+            return
+
+        if cap.supports_tools:
+            self.model_status_label.setText(f"✅ {model_name}: Agent/Plan")
+            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: green;")
+        else:
+            self.model_status_label.setText(f"⚠️ {model_name}: Только Chat")
+            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: orange;")
+
+    def _check_mode_compatibility(self):
+        """Проверяет, подходит ли выбранный режим для модели."""
+        if not self.capabilities_store:
+            return
+        model_name = self.model_combo.currentText()
+        cap = self.capabilities_store.get(model_name)
+
+        if cap and not cap.supports_tools:
+            current_mode = self._current_mode()
+            if current_mode in (AgentMode.PLAN, AgentMode.AGENT):
+                # Автоматически переключаем на Chat
+                self.mode_combo.setCurrentIndex(0)
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Режим недоступен",
+                    f"Модель '{model_name}' не поддерживает инструменты.\n"
+                    "Режим автоматически переключен на 'Chat'."
+                )

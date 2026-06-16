@@ -284,3 +284,37 @@ class OllamaClient:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
         except httpx.HTTPError as e:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
+
+    async def check_tools_support(self, model: str) -> bool:
+        """
+        Проверяет поддержку инструментов моделью через dummy tool call.
+        Возвращает True, если модель поддерживает tools, иначе False.
+        """
+        dummy_tool = ToolSchema(
+            function={
+                "name": "check_tools_support",
+                "description": "Dummy tool to check support",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        )
+        client = await self._get_client()
+        request_data = {
+            "model": model,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [dummy_tool.model_dump()],
+            "stream": False,
+        }
+        try:
+            response = await client.post(f"{self.base_url}/api/chat", json=request_data)
+            response.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            # Ollama возвращает 400 с сообщением "does not support tools"
+            if e.response.status_code == 400 and "does not support tools" in e.response.text:
+                logger.info(f"Модель {model} не поддерживает инструменты.")
+                return False
+            logger.warning(f"HTTP ошибка при проверке инструментов для {model}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при проверке инструментов для {model}: {e}")
+            return False
