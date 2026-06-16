@@ -26,7 +26,7 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
-from core.model_capabilities import ModelCapabilitiesStore
+from core.model_registry import ModelRegistry, ModelInfo
 from core.roles import RoleManager, RoleDefinition
 
 class OllamaChatThread(QThread):
@@ -387,8 +387,7 @@ class ChatPanel(QWidget):
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
-
-        self.capabilities_store: ModelCapabilitiesStore | None = None
+        self.registry: ModelRegistry | None = None
 
         self.role_manager: RoleManager | None = None
         self.current_role_id: str = "default"
@@ -630,9 +629,9 @@ class ChatPanel(QWidget):
         mode = mapping.get(index, "chat")
 
         # Жесткая блокировка: не даем выбрать Agent/Plan, если модель не поддерживает tools
-        if index > 0 and self.capabilities_store:
+        if index > 0 and self.registry:
             model_name = self.model_combo.currentText()
-            cap = self.capabilities_store.get(model_name)
+            cap = self.registry.get(model_name)
             if cap and not cap.supports_tools:
                 # Возвращаем комбобокс на Chat, блокируя сигналы чтобы не зациклить
                 self.mode_combo.blockSignals(True)
@@ -1117,28 +1116,13 @@ class ChatPanel(QWidget):
 
     def set_model(self, model: str):
         """Устанавливает модель в комбобоксе."""
-        self.current_model = model
-        index = self.model_combo.findText(model)
-        if index >= 0:
-            self.model_combo.setCurrentIndex(index)
+        idx = self.model_combo.findData(model)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
         else:
-            self.model_combo.insertItem(0, model)
-            self.model_combo.setCurrentIndex(0)
-
-    def update_models(self, models: list[str]):
-        """Обновляет список доступных моделей (в алфавитном порядке)."""
-        current = self.model_combo.currentText()
-        self.model_combo.blockSignals(True) # Блокируем сигналы на время обновления
-        self.model_combo.clear()
-        for m in sorted(models, key=str.lower):
-            self.model_combo.addItem(m)
-        index = self.model_combo.findText(current)
-        if index >= 0:
-            self.model_combo.setCurrentIndex(index)
-        self.model_combo.blockSignals(False)
-
-        # Обновляем статус для текущей модели
-        self._update_model_status(self.model_combo.currentText())
+            # Если модель не найдена, добавляем её временно
+            self.model_combo.addItem(model, model)
+            self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
 
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         """Устанавливает политику для инструмента."""
@@ -1182,48 +1166,95 @@ class ChatPanel(QWidget):
             self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
             self._reset_send_button()
 
-    def set_capabilities_store(self, store: ModelCapabilitiesStore):
-        """Устанавливает хранилище возможностей и обновляет статус."""
-        self.capabilities_store = store
-        self._update_model_status(self.model_combo.currentText())
+    def set_registry(self, registry):
+        """Устанавливает реестр моделей и обновляет список."""
+        self.registry = registry
+        self._update_model_list()
+
+    def update_models(self, models: list[str]) -> None:
+        """Обновляет список моделей (вызывается из MainWindow)."""
+        self._update_model_list()
+
+    def _update_model_list(self):
+        """Обновляет выпадающий список моделей из реестра."""
+        if not self.registry:
+            return
+        current = self.model_combo.currentData()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        all_models = self.registry.get_all_models()
+        # Сортировка: сначала локальные, потом остальные
+        sorted_names = sorted(
+            all_models.keys(),
+            key=lambda x: (not all_models[x].is_local, x.lower())
+        )
+        for model_name in sorted_names:
+            info = all_models[model_name]
+            # Префикс для визуального отличия локальных моделей
+            display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
+            self.model_combo.addItem(display, model_name)
+        # Восстанавливаем выбор
+        if current and self.model_combo.findData(current) >= 0:
+            self.model_combo.setCurrentIndex(self.model_combo.findData(current))
+        else:
+            # Выбираем первую локальную или первую вообще
+            for i in range(self.model_combo.count()):
+                if self.model_combo.itemData(i) and self.registry.get(self.model_combo.itemData(i)).is_local:
+                    self.model_combo.setCurrentIndex(i)
+                    break
+            else:
+                if self.model_combo.count() > 0:
+                    self.model_combo.setCurrentIndex(0)
+        self.model_combo.blockSignals(False)
+        self._update_model_status(self.model_combo.currentData())
+
+    def _update_model_status(self, model_name: str):
+        """Обновляет компактный статус модели (эмодзи + тултип)."""
+        if not self.registry:
+            self.model_status_label.setText("❓")
+            self.model_status_label.setToolTip("Реестр моделей не загружен")
+            return
+        info = self.registry.get(model_name)
+        if not info:
+            self.model_status_label.setText("❓")
+            self.model_status_label.setToolTip("Модель не найдена в реестре")
+            return
+        if info.is_local:
+            if info.supports_tools is True:
+                status_icon = "✅"
+                tooltip = "Поддерживает инструменты"
+            elif info.supports_tools is False:
+                status_icon = "⚠️"
+                tooltip = "Только чат (нет поддержки tools)"
+            else:
+                status_icon = "❓"
+                tooltip = "Поддержка tools не проверена"
+        else:
+            status_icon = "⬇️"
+            tooltip = "Модель не скачана локально"
+        if info.description:
+            tooltip += f"\n{info.description}"
+        self.model_status_label.setText(status_icon)
+        self.model_status_label.setToolTip(tooltip)
+
+    def _on_model_changed(self, index: int):
+        """Вызывается при смене модели в комбобоксе."""
+        model_name = self.model_combo.currentData()
+        if model_name:
+            self._update_model_status(model_name)
+            self._check_mode_compatibility()
 
     def set_checking_state(self, is_checking: bool):
         """Блокирует кнопку и меняет иконку во время проверки."""
         self.refresh_models_btn.setEnabled(not is_checking)
         self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
 
-    def _on_model_changed(self, index: int):
-        """Вызывается при смене модели в комбобоксе."""
-        model_name = self.model_combo.currentText()
-        self._update_model_status(model_name)
-        self._check_mode_compatibility()
-
-    def _update_model_status(self, model_name: str):
-        """Обновляет текстовый статус модели."""
-        if not self.capabilities_store:
-            self.model_status_label.setText("⏳ Нажмите 🔄 для проверки")
-            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
-            return
-
-        cap = self.capabilities_store.get(model_name)
-        if not cap:
-            self.model_status_label.setText(f"⚠️ {model_name}: Нажмите 🔄")
-            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: orange;")
-            return
-
-        if cap.supports_tools:
-            self.model_status_label.setText(f"✅ {model_name}: Agent/Plan")
-            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: green;")
-        else:
-            self.model_status_label.setText(f"⚠️ {model_name}: Только Chat")
-            self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: orange;")
-
     def _check_mode_compatibility(self):
         """Проверяет, подходит ли выбранный режим для модели."""
-        if not self.capabilities_store:
+        if not self.registry:
             return
         model_name = self.model_combo.currentText()
-        cap = self.capabilities_store.get(model_name)
+        cap = self.registry.get(model_name)
 
         if cap and not cap.supports_tools:
             current_mode = self._current_mode()

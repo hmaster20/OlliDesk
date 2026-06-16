@@ -37,7 +37,7 @@ from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
-from core.model_capabilities import ModelCapabilitiesStore
+from core.model_registry import ModelRegistry, ModelInfo
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -98,15 +98,13 @@ class IndexingThread(QThread):
             self.indexing_error.emit(str(e))
 
 class ModelCheckThread(QThread):
-    """Поток для фоновой проверки поддержки инструментов моделями."""
-    progress = Signal(str, int, int)  # model_name, current, total
-    finished = Signal(dict)           # {model_name: supports_tools}
+    progress = Signal(str, int, int)
+    finished = Signal(dict)
 
-    def __init__(self, base_url: str, models: list[str], capabilities_store: ModelCapabilitiesStore):
+    def __init__(self, base_url: str, registry: ModelRegistry):
         super().__init__()
         self.base_url = base_url
-        self.models = models
-        self.capabilities_store = capabilities_store
+        self.registry = registry
 
     def run(self):
         import asyncio
@@ -116,35 +114,25 @@ class ModelCheckThread(QThread):
         from agents.ollama_client import OllamaClient
         client = OllamaClient(base_url=self.base_url)
         results = {}
-
-        # Фильтруем модели: проверяем только те, которых нет в кэше
-        models_to_check = []
-        for model in self.models:
-            cap = self.capabilities_store.get(model)
-            if cap is None:
-                models_to_check.append(model)
-            else:
-                # Если модель уже есть в кэше, просто берем её статус
-                results[model] = cap.supports_tools
-
+        # Проверяем только локальные модели с неизвестной поддержкой
+        models_to_check = [
+            name for name, info in self.registry.models.items()
+            if info.is_local and info.supports_tools is None
+        ]
         total = len(models_to_check)
         if total == 0:
-            logger.info("Все модели уже проверены, используем кэш.")
             self.finished.emit(results)
             return
-
         async with client:
             for i, model in enumerate(models_to_check):
-                self.progress.emit(model, i + 1, total)
+                self.progress.emit(model, i+1, total)
                 try:
                     supports = await client.check_tools_support(model)
                     results[model] = supports
-                    self.capabilities_store.update(model, supports)
+                    self.registry.update_tool_support(model, supports)
                 except Exception as e:
                     logger.error(f"Ошибка проверки модели {model}: {e}")
                     results[model] = False
-
-        self.capabilities_store.save()
         self.finished.emit(results)
 
 class ProjectState:
@@ -239,7 +227,7 @@ class MainWindow(QMainWindow):
         self._available_models: list[str] = []
 
         # Инициализация хранилища возможностей моделей
-        self.capabilities_store = ModelCapabilitiesStore()
+        self.model_registry = ModelRegistry()
 
         # Инициализация менеджера ролей
         from core.roles import RoleManager
@@ -383,7 +371,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_open(False)
         self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
-        self.chat_panel.set_capabilities_store(self.capabilities_store)
+        self.chat_panel.set_registry(self.model_registry)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
 
         self.chat_panel.set_role_manager(self.role_manager)
@@ -614,6 +602,12 @@ class MainWindow(QMainWindow):
         self.theme_action = QAction("Toggle Dark/Light Theme", self)
         self.theme_action.setShortcut("Ctrl+T")
         self.theme_action.triggered.connect(self._toggle_theme)
+
+        view_menu.addSeparator()
+        manage_models_action = QAction("Manage Models...", self)
+        manage_models_action.triggered.connect(self._open_model_manager)
+        view_menu.addAction(manage_models_action)
+
         view_menu.addAction(self.theme_action)
 
         help_menu = menubar.addMenu("&Help")
@@ -668,15 +662,21 @@ class MainWindow(QMainWindow):
         self._update_ollama_status(ok, models)
 
     def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
-        """Обновляет статус Ollama в статус-баре."""
         if ok and models:
-            self.ollama_status_label.setText(
-                f"● Ollama: Подключен ({len(models)} моделей)"
-            )
+            self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
             self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
-            self.chat_panel.update_models(models)
+            # Синхронизируем реестр с реальным списком
+            self.model_registry.sync_with_ollama(models)
+            # Передаём реестр в чат-панель (если ещё не передали)
+            if not hasattr(self.chat_panel, 'registry') or self.chat_panel.registry is None:
+                self.chat_panel.set_registry(self.model_registry)
+            else:
+                # Если уже передан, просто обновляем список
+                self.chat_panel._update_model_list()
+            # Выбираем первую локальную модель, если не выбрана
             if models:
-                self.chat_panel.set_model(models[0])
+                first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+                self.chat_panel.set_model(first_local)
         else:
             self.ollama_status_label.setText("● Ollama: Не подключен")
             self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
@@ -987,18 +987,13 @@ class MainWindow(QMainWindow):
                 pass
 
     def _start_model_check(self):
-        """Запускает фоновую проверку моделей."""
         if hasattr(self, '_model_check_thread') and self._model_check_thread.isRunning():
-            logger.info("Проверка моделей уже выполняется")
             return
-
         self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
         self.chat_panel.set_checking_state(True)
-
         self._model_check_thread = ModelCheckThread(
             self.ollama_client.base_url,
-            self._available_models,
-            self.capabilities_store
+            self.model_registry   # передаём реестр
         )
         self._model_check_thread.progress.connect(self._on_model_check_progress)
         self._model_check_thread.finished.connect(self._on_model_check_finished)
@@ -1014,3 +1009,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_checking_state(False)
         # Обновляем UI, чтобы подтянуть новые статусы
         self.chat_panel.update_models(self._available_models)
+
+    def _open_model_manager(self):
+        from ui.dialogs.model_manager_dialog import ModelManagerDialog
+        dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
+        dlg.exec()
