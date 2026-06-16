@@ -28,3 +28,7 @@ desktop.ini
 
 ui/web_editor/vendor
 unused
+
+# Локальная база и параметризация
+.ollidesk/vector_db
+.ollidesk/project_settings.yaml
