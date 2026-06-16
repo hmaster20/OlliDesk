@@ -27,6 +27,7 @@ from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
 from core.model_capabilities import ModelCapabilitiesStore
+from core.roles import RoleManager, RoleDefinition
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -389,6 +390,9 @@ class ChatPanel(QWidget):
 
         self.capabilities_store: ModelCapabilitiesStore | None = None
 
+        self.role_manager: RoleManager | None = None
+        self.current_role_id: str = "default"
+
         self._setup_ui()
 
     @staticmethod
@@ -454,6 +458,17 @@ class ChatPanel(QWidget):
 
         top_bar = QHBoxLayout()
 
+        # Селектор ролей
+        role_label = QLabel("Роль:")
+        role_label.setStyleSheet("font-size: 13px; padding: 4px;")
+        top_bar.addWidget(role_label)
+
+        self.role_combo = QComboBox()
+        self.role_combo.setMinimumWidth(180)
+        self.role_combo.setStyleSheet("font-size: 13px; padding: 4px;")
+        self.role_combo.currentIndexChanged.connect(self._on_role_changed)
+        top_bar.addWidget(self.role_combo)
+
         model_label = QLabel("Модель:")
         model_label.setStyleSheet("font-size: 13px; padding: 4px;")
         top_bar.addWidget(model_label)
@@ -478,7 +493,6 @@ class ChatPanel(QWidget):
 
         # Подключаем сигнал смены модели
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-
 
         top_bar.addWidget(self.model_combo)
 
@@ -822,6 +836,7 @@ class ChatPanel(QWidget):
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         """Запускает AgentLoop."""
         context = AgentContext(
+            system_prompt=self.get_current_role_prompt(),
             rag_context=rag_context,
             project_root=self.project_root,
             vector_store=self.vector_store,
@@ -1221,3 +1236,31 @@ class ChatPanel(QWidget):
                     f"Модель '{model_name}' не поддерживает инструменты.\n"
                     "Режим автоматически переключен на 'Chat'."
                 )
+
+    def set_role_manager(self, manager: RoleManager):
+        """Устанавливает менеджер ролей и заполняет комбобокс."""
+        self.role_manager = manager
+        self.role_combo.blockSignals(True)
+        self.role_combo.clear()
+
+        for role in manager.get_all_roles():
+            self.role_combo.addItem(f"{role.icon} {role.name}", role.id)
+
+        # Выбираем дефолтную
+        idx = self.role_combo.findData("default")
+        if idx >= 0:
+            self.role_combo.setCurrentIndex(idx)
+        self.role_combo.blockSignals(False)
+
+    def _on_role_changed(self, index: int):
+        """Обработчик смены роли."""
+        if self.role_manager:
+            role_id = self.role_combo.itemData(index)
+            self.current_role_id = role_id
+            logger.info(f"Смена роли на: {role_id}")
+
+    def get_current_role_prompt(self) -> str:
+        """Возвращает системный промт текущей роли."""
+        if self.role_manager:
+            return self.role_manager.get_role(self.current_role_id).system_prompt
+        return ""

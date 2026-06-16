@@ -31,46 +31,37 @@ class AgentContext:
     max_tokens: int = 4096
     mode: AgentMode = AgentMode.AGENT
 
-
 def _build_system_prompt(context: AgentContext) -> str:
-    """Собирает system-промпт из контекста."""
+    """Собирает system-промпт из контекста и роли."""
     mode_name = {AgentMode.PLAN: "План", AgentMode.AGENT: "Агент"}.get(context.mode, "Агент")
 
-    parts = [
-        "Ты — OlliDesk, автономный AI-ассистент для написания и рефакторинга кода.",
-        "Отвечай на русском языке.",
-        f"Текущий режим: {mode_name}.",
-    ]
+    # Базовый промт из роли (или дефолтный)
+    base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
+
+    parts = [base_prompt, f"\nТекущий режим работы: {mode_name}."]
 
     if context.mode == AgentMode.PLAN:
         parts.append(
-            "Тебе доступны read-only инструменты: чтение файлов, поиск в коде, "
-            "поиск в интернете, просмотр статуса git. Используй их для сбора информации. "
-            "Не выводи JSON-план — сразу вызывай нужные инструменты."
+            "В режиме Плана тебе доступны только read-only инструменты (чтение файлов, поиск). "
+            "Не выводи JSON-план текстом — сразу вызывай нужные инструменты через API."
         )
     elif context.mode == AgentMode.AGENT:
         parts.append(
-            "У тебя есть доступ ко всем инструментам, включая запись файлов и "
-            "операции git. Используй их для выполнения задачи."
-        )
-        parts.append(
-            "Перед записью в файл сперва прочитай его содержимое, чтобы понять текущее состояние."
+            "В режиме Агента у тебя есть доступ ко всем инструментам, включая запись файлов и git. "
+            "Используй их для автономного выполнения задачи."
         )
 
     if context.rag_context:
         parts.append(f"\nКонтекст из кодовой базы:\n{context.rag_context}")
-
     if context.extra_rules:
         parts.append(f"\nДополнительные правила:\n{context.extra_rules}")
-
     if context.project_root:
         parts.append(
             f"\nКорень проекта: {context.project_root}\n"
-            f"Все пути к файлам должны быть относительными от корня проекта."
+            "Все пути к файлам должны быть относительными от корня проекта."
         )
 
-    return "\n\n".join(parts)
-
+    return "\n".join(parts)
 
 def _create_tool_result_message(
     tool_call_id: str,
@@ -177,15 +168,28 @@ class AgentLoop:
             # Fallback: model may output JSON tool call as text (no native function calling)
             if not pending_tool_calls and current_text and tools_to_send:
                 import json as _json
-                stripped = current_text.strip()
-                if stripped.startswith("{") and "name" in stripped and "arguments" in stripped:
+                import re
+
+                # Ищем первый JSON-объект в тексте (модели часто добавляют лишний текст до/после)
+                match = re.search(r'\{.*\}', current_text, re.DOTALL)
+                if match:
+                    raw_json = match.group(0)
+
+                    # "Ремонт" JSON: добавляем кавычки вокруг ключей, если их нет
+                    # Преобразует {"name": web_search} в {"name": "web_search"}
+                    repaired_json = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', raw_json)
+                    # Также чиним одинарные кавычки, если модель их использовала
+                    repaired_json = repaired_json.replace("'", '"')
+
                     try:
-                        parsed = _json.loads(stripped)
-                        tc = ToolCall(name=parsed["name"], arguments=parsed.get("arguments", {}))
-                        pending_tool_calls = [tc]
-                        current_text = ""
-                    except (_json.JSONDecodeError, KeyError):
-                        pass
+                        parsed = _json.loads(repaired_json)
+                        if "name" in parsed and "arguments" in parsed:
+                            tc = ToolCall(name=parsed["name"], arguments=parsed.get("arguments", {}))
+                            pending_tool_calls = [tc]
+                            current_text = "" # Очищаем текст, чтобы не дублировать вызов
+                            logger.debug(f"Успешно распарсен текстовый tool_call: {tc.name}")
+                    except (_json.JSONDecodeError, KeyError, TypeError) as e:
+                        logger.warning(f"Не удалось распарсить текстовый JSON от модели: {e}")
 
             if pending_tool_calls and tools_to_send:
                 messages.append(

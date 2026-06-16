@@ -241,6 +241,10 @@ class MainWindow(QMainWindow):
         # Инициализация хранилища возможностей моделей
         self.capabilities_store = ModelCapabilitiesStore()
 
+        # Инициализация менеджера ролей
+        from core.roles import RoleManager
+        self.role_manager = RoleManager()
+
         # Индексация
         self.indexer = FileIndexer(config)
         self.vector_store: VectorStore | None = None
@@ -381,6 +385,9 @@ class MainWindow(QMainWindow):
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
         self.chat_panel.set_capabilities_store(self.capabilities_store)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
+
+        self.chat_panel.set_role_manager(self.role_manager)
+
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
         self.editor_widget = EditorWidget()
