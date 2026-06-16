@@ -614,6 +614,25 @@ class ChatPanel(QWidget):
         """Оповещает MainWindow об изменении режима."""
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
+
+        # Жесткая блокировка: не даем выбрать Agent/Plan, если модель не поддерживает tools
+        if index > 0 and self.capabilities_store:
+            model_name = self.model_combo.currentText()
+            cap = self.capabilities_store.get(model_name)
+            if cap and not cap.supports_tools:
+                # Возвращаем комбобокс на Chat, блокируя сигналы чтобы не зациклить
+                self.mode_combo.blockSignals(True)
+                self.mode_combo.setCurrentIndex(0)
+                self.mode_combo.blockSignals(False)
+
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Режим недоступен",
+                    f"Модель '{model_name}' не поддерживает инструменты.\n"
+                    "Используйте модели с пометкой ✅ Agent/Plan."
+                )
+                return  # Прерываем выполнение, не эммитим сигнал смены режима
+
         self.mode_changed.emit(mode)
         self.gear_btn.setVisible(True)
 

@@ -116,10 +116,25 @@ class ModelCheckThread(QThread):
         from agents.ollama_client import OllamaClient
         client = OllamaClient(base_url=self.base_url)
         results = {}
-        total = len(self.models)
+
+        # Фильтруем модели: проверяем только те, которых нет в кэше
+        models_to_check = []
+        for model in self.models:
+            cap = self.capabilities_store.get(model)
+            if cap is None:
+                models_to_check.append(model)
+            else:
+                # Если модель уже есть в кэше, просто берем её статус
+                results[model] = cap.supports_tools
+
+        total = len(models_to_check)
+        if total == 0:
+            logger.info("Все модели уже проверены, используем кэш.")
+            self.finished.emit(results)
+            return
 
         async with client:
-            for i, model in enumerate(self.models):
+            for i, model in enumerate(models_to_check):
                 self.progress.emit(model, i + 1, total)
                 try:
                     supports = await client.check_tools_support(model)
