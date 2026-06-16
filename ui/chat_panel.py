@@ -240,7 +240,8 @@ class RagSearchThread(QThread):
 class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате (пузырёк как в Telegram)."""
 
-    def __init__(self, role: str, content: str, thinking: str = "", parent: QWidget | None = None):
+    def __init__(self, role: str, content: str, thinking: str = "",
+                 mode_name: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.role = role
         self.content = content
@@ -255,7 +256,6 @@ class ChatMessageItem(QWidget):
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
 
-        # Цвета пузырька
         if is_user:
             bg = "#3a5a7a"
             text_color = "white"
@@ -282,11 +282,8 @@ class ChatMessageItem(QWidget):
         bubble_layout.setSpacing(0)
 
         if not is_tool:
-            role_label = QLabel(
-                "Вы" if is_user
-                else "Ассистент" if is_assistant
-                else role
-            )
+            header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
+            role_label = QLabel(header)
             role_label.setStyleSheet(
                 f"font-weight: bold; font-size: 11px; color: {text_color};"
                 f" opacity: 0.7;"
@@ -563,6 +560,11 @@ class ChatPanel(QWidget):
             self._relayout_all_items()
         return super().eventFilter(obj, event)
 
+    def _current_mode_name(self) -> str:
+        """Возвращает отображаемое имя текущего режима."""
+        mapping = {0: "Чат", 1: "План", 2: "Агент"}
+        return mapping.get(self.mode_combo.currentIndex(), "Чат")
+
     def _current_mode(self) -> AgentMode:
         """Возвращает текущий режим из комбобокса."""
         mapping = {
@@ -572,9 +574,9 @@ class ChatPanel(QWidget):
         }
         return mapping.get(self.mode_combo.currentIndex(), AgentMode.CHAT)
 
-    def _add_message(self, role: str, content: str) -> ChatMessageItem:
+    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
         """Добавляет сообщение в список."""
-        widget = ChatMessageItem(role, content)
+        widget = ChatMessageItem(role, content, mode_name=mode_name)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._resize_message_item(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
@@ -593,9 +595,7 @@ class ChatPanel(QWidget):
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
         self.mode_changed.emit(mode)
-        self.gear_btn.setVisible(mode == "agent")
-        if mode != "agent":
-            self.agent_panel_toggle.emit(False)
+        self.gear_btn.setVisible(True)
 
     def _toggle_agent_panel(self):
         """Показывает/скрывает панель настроек агента."""
@@ -786,6 +786,7 @@ class ChatPanel(QWidget):
             rag_context=rag_context,
             project_root=self.project_root,
             vector_store=self.vector_store,
+            mode=mode,
         )
 
         self._current_assistant_content = ""
@@ -890,7 +891,10 @@ class ChatPanel(QWidget):
                 self._insert_thinking_edit(widget)
             self._resize_message_item(widget)
         else:
-            widget = ChatMessageItem("assistant", "", thinking=self._current_thinking_content)
+            widget = ChatMessageItem(
+                "assistant", "", thinking=self._current_thinking_content,
+                mode_name=self._current_mode_name(),
+            )
             self._last_assistant_widget = widget
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._resize_message_item(widget)
@@ -937,7 +941,10 @@ class ChatPanel(QWidget):
             self._resize_message_item(widget)
         else:
             thinking = self._current_thinking_content or ""
-            widget = ChatMessageItem("assistant", content, thinking=thinking)
+            widget = ChatMessageItem(
+                "assistant", content, thinking=thinking,
+                mode_name=self._current_mode_name(),
+            )
             self._last_assistant_widget = widget
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._resize_message_item(widget)

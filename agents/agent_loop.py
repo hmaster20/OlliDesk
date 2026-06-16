@@ -29,17 +29,33 @@ class AgentContext:
     vector_store: object = None
     extra_rules: str = ""
     max_tokens: int = 4096
+    mode: AgentMode = AgentMode.AGENT
 
 
 def _build_system_prompt(context: AgentContext) -> str:
     """Собирает system-промпт из контекста."""
+    mode_name = {AgentMode.PLAN: "План", AgentMode.AGENT: "Агент"}.get(context.mode, "Агент")
+
     parts = [
         "Ты — OlliDesk, автономный AI-ассистент для написания и рефакторинга кода.",
         "Отвечай на русском языке.",
-        "У тебя есть доступ к инструментам. Используй их, чтобы читать файлы, "
-        "искать в коде и вносить изменения.",
-        "Перед записью в файл сперва прочитай его содержимое, чтобы понять текущее состояние.",
+        f"Текущий режим: {mode_name}.",
     ]
+
+    if context.mode == AgentMode.PLAN:
+        parts.append(
+            "Тебе доступны read-only инструменты: чтение файлов, поиск в коде, "
+            "поиск в интернете, просмотр статуса git. Используй их для сбора информации. "
+            "Не выводи JSON-план — сразу вызывай нужные инструменты."
+        )
+    elif context.mode == AgentMode.AGENT:
+        parts.append(
+            "У тебя есть доступ ко всем инструментам, включая запись файлов и "
+            "операции git. Используй их для выполнения задачи."
+        )
+        parts.append(
+            "Перед записью в файл сперва прочитай его содержимое, чтобы понять текущее состояние."
+        )
 
     if context.rag_context:
         parts.append(f"\nКонтекст из кодовой базы:\n{context.rag_context}")
@@ -120,7 +136,7 @@ class AgentLoop:
         for msg in messages_history:
             messages.append(msg)
 
-        tools_to_send: list | None = self.registry.get_schemas(AgentMode.AGENT)
+        tools_to_send: list | None = self.registry.get_schemas(context.mode)
 
         for iteration in range(max_iterations):
             logger.debug(f"Агент: итерация {iteration + 1}/{max_iterations}")
@@ -157,6 +173,19 @@ class AgentLoop:
                 if current_text:
                     await on_token("\n\n")
                 continue
+
+            # Fallback: model may output JSON tool call as text (no native function calling)
+            if not pending_tool_calls and current_text and tools_to_send:
+                import json as _json
+                stripped = current_text.strip()
+                if stripped.startswith("{") and "name" in stripped and "arguments" in stripped:
+                    try:
+                        parsed = _json.loads(stripped)
+                        tc = ToolCall(name=parsed["name"], arguments=parsed.get("arguments", {}))
+                        pending_tool_calls = [tc]
+                        current_text = ""
+                    except (_json.JSONDecodeError, KeyError):
+                        pass
 
             if pending_tool_calls and tools_to_send:
                 messages.append(

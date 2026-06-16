@@ -821,21 +821,7 @@ class MainWindow(QMainWindow):
             self.right_panel.setVisible(visible)
 
     def _update_right_panel_for_mode(self, mode: str) -> None:
-        """Включает/выключает секции правой панели в зависимости от режима."""
-        if not hasattr(self, 'tools_box') or not hasattr(self, 'iterations_spin'):
-            return
-
-        is_chat = mode == "chat"
-        is_plan = mode == "plan"
-        is_agent = mode == "agent"
-
-        self.iterations_label.setVisible(is_agent or is_plan)
-        self.iterations_spin.setVisible(is_agent or is_plan)
-        self.iterations_spin.setEnabled(is_agent)
-
-        self.tools_box.setVisible(is_plan or is_agent)
-        for cb in self.tool_checkboxes.values():
-            cb.setEnabled(is_agent)
+        """Скрывает настройки агента — доступны только через шестерёнку."""
 
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""
