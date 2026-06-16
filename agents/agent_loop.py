@@ -6,7 +6,7 @@ from typing import Any
 
 from loguru import logger
 
-from agents.ollama_client import ChatMessage, OllamaClient
+from agents.ollama_client import ChatMessage, OllamaClient, ToolCall
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
