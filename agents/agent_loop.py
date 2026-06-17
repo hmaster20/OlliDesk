@@ -40,16 +40,16 @@ def _build_system_prompt(context: AgentContext) -> str:
 
     parts = [base_prompt, f"\nТекущий режим работы: {mode_name}."]
 
-    if context.mode == AgentMode.PLAN:
-        parts.append(
-            "В режиме Плана тебе доступны только read-only инструменты (чтение файлов, поиск). "
-            "Не выводи JSON-план текстом — сразу вызывай нужные инструменты через API."
-        )
-    elif context.mode == AgentMode.AGENT:
-        parts.append(
-            "В режиме Агента у тебя есть доступ ко всем инструментам, включая запись файлов и git. "
-            "Используй их для автономного выполнения задачи."
-        )
+    # if context.mode == AgentMode.PLAN:
+    #     parts.append(
+    #         "В режиме Плана тебе доступны только read-only инструменты (чтение файлов, поиск). "
+    #         "Не выводи JSON-план текстом — сразу вызывай нужные инструменты через API."
+    #     )
+    # elif context.mode == AgentMode.AGENT:
+    #     parts.append(
+    #         "В режиме Агента у тебя есть доступ ко всем инструментам, включая запись файлов и git. "
+    #         "Используй их для автономного выполнения задачи."
+    #     )
 
     if context.rag_context:
         parts.append(f"\nКонтекст из кодовой базы:\n{context.rag_context}")

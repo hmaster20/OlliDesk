@@ -392,6 +392,8 @@ class ChatPanel(QWidget):
         self.role_manager: RoleManager | None = None
         self.current_role_id: str = "default"
 
+        self.prompt_manager: SystemPromptManager | None
+
         self._setup_ui()
 
     @staticmethod
@@ -794,6 +796,11 @@ class ChatPanel(QWidget):
                 ),
             )
 
+        if self.prompt_manager:
+            sys_prompt = self.prompt_manager.get_prompt("chat")
+            if sys_prompt:
+                chat_messages.insert(0, ChatMessage(role="system", content=sys_prompt))
+
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._ollama_thread = OllamaChatThread(
@@ -834,6 +841,9 @@ class ChatPanel(QWidget):
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         """Запускает AgentLoop."""
+        role_prompt = self.get_current_role_prompt()
+        mode_prompt = self.prompt_manager.get_prompt(mode.value) if self.prompt_manager else ""
+        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
         context = AgentContext(
             system_prompt=self.get_current_role_prompt(),
             rag_context=rag_context,
