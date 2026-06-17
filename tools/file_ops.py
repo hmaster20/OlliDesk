@@ -115,13 +115,19 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        snapshot_status = None
         if project_root:
             repo_path = Path(project_root)
-            create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
+            snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
 
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
-        return f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
+
+        if snapshot_status:
+            return f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
+        else:
+            return f"Файл успешно обновлён: {file_path.name}. (Git-снапшот не создан – проверьте наличие репозитория или наличие изменений.)"
+
     except PermissionError:
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:

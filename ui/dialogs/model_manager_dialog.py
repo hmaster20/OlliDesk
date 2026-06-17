@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QWidget, QToolButton, QMenu, QInputDialog
 )
 from loguru import logger
-from core.model_registry import ModelRegistry
+from core.model_registry import ModelRegistry, ModelInfo
 
 class PullThread(QThread):
     """Поток для выполнения ollama pull."""

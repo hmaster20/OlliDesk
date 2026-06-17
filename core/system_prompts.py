@@ -41,6 +41,8 @@ class SystemPromptManager:
         Сначала ищет в проекте (если указан), затем глобально.
         Поддерживает шаблонизацию переменных вида {{key}}.
         """
+        if project_root is not None and not isinstance(project_root, Path):
+            project_root = Path(project_root)
         # 1. Попытка загрузить из проекта
         prompt = self._load_prompt_from_path(mode, project_root) if project_root else None
         if prompt is None:
@@ -56,6 +58,8 @@ class SystemPromptManager:
 
     def _load_prompt_from_path(self, mode: str, project_root: Optional[Path]) -> Optional[str]:
         """Загружает промт из указанной папки (глобальной или проектной)."""
+        if project_root is not None and not isinstance(project_root, Path):
+            project_root = Path(project_root)
         if project_root:
             dir_path = project_root / ".ollidesk" / "system_prompts"
         else:
@@ -64,8 +68,8 @@ class SystemPromptManager:
         if file_path.exists():
             content = file_path.read_text(encoding="utf-8").strip()
             # Кэшируем по полному пути для производительности
-            # cache_key = f"{project_path or 'global'}:{mode}"
-            cache_key = f"{project_root or 'global'}:{mode}"
+            root_str = str(project_root) if project_root is not None else "global"
+            cache_key = f"{root_str}:{mode}"
             self._cache[cache_key] = content
             return content
         return None

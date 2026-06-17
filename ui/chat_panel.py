@@ -633,8 +633,11 @@ class ChatPanel(QWidget):
 
         # Жесткая блокировка: не даем выбрать Agent/Plan, если модель не поддерживает tools
         if index > 0 and self.registry:
-            model_name = self.model_combo.currentText()
+            model_name = self.model_combo.currentData()
+            if model_name is None:
+                model_name = self.model_combo.currentText()
             cap = self.registry.get(model_name)
+
             if cap and not cap.supports_tools:
                 # Возвращаем комбобокс на Chat, блокируя сигналы чтобы не зациклить
                 self.mode_combo.blockSignals(True)
@@ -822,11 +825,16 @@ class ChatPanel(QWidget):
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+
+        model_name = self.model_combo.currentData()
+        if model_name is None:
+            model_name = self.model_combo.currentText()
         self._ollama_thread = OllamaChatThread(
-            model=self.model_combo.currentText(),
+            model=model_name,
             messages=chat_messages,
             base_url=self.base_url,
         )
+
         self._ollama_thread.chunk_received.connect(self._on_chunk)
         self._ollama_thread.thinking_received.connect(self._on_thinking)
         self._ollama_thread.finish_received.connect(self._on_finish)
@@ -875,10 +883,14 @@ class ChatPanel(QWidget):
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+
+        model_name = self.model_combo.currentData()
+        if model_name is None:
+            model_name = self.model_combo.currentText()
         self._agent_thread = AgentChatThread(
             client=OllamaClient(base_url=self.base_url),
             registry=self._build_registry(),
-            model=self.model_combo.currentText(),
+            model=model_name,
             context=context,
             messages_history=list(self._messages),
             agent_mode=mode,
@@ -1170,10 +1182,14 @@ class ChatPanel(QWidget):
     def get_settings(self) -> dict:
         """Возвращает текущие настройки панели."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
+        model_name = self.model_combo.currentData()
+        if model_name is None:
+            model_name = self.model_combo.currentText()
         return {
-            "model": self.model_combo.currentText(),
+            "model": model_name,
             "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
         }
+
 
     def apply_settings(self, settings: dict) -> None:
         """Применяет сохранённые настройки к панели."""
@@ -1283,7 +1299,9 @@ class ChatPanel(QWidget):
         """Проверяет, подходит ли выбранный режим для модели."""
         if not self.registry:
             return
-        model_name = self.model_combo.currentText()
+        model_name = self.model_combo.currentData()
+        if model_name is None:
+            model_name = self.model_combo.currentText()
         cap = self.registry.get(model_name)
 
         if cap and not cap.supports_tools:
@@ -1345,3 +1363,16 @@ class ChatPanel(QWidget):
         # Если это текущая модель, обновляем статусную метку
         if self.model_combo.currentData() == model_name:
             self._update_model_status(model_name)
+
+
+    def get_current_model(self) -> str:
+        """Возвращает чистое имя текущей модели (без префиксов)."""
+        model = self.model_combo.currentData()
+        if model is not None:
+            return model
+        # fallback: убираем возможные префиксы из отображаемого текста
+        text = self.model_combo.currentText()
+        for prefix in ("✅ ", "⬇️ "):
+            if text.startswith(prefix):
+                return text[len(prefix):]
+        return text
