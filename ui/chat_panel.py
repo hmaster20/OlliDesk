@@ -28,6 +28,7 @@ from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
 from core.model_registry import ModelRegistry, ModelInfo
 from core.roles import RoleManager, RoleDefinition
+from core.system_prompts import SystemPromptManager
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -782,24 +783,41 @@ class ChatPanel(QWidget):
         import loguru
         loguru.logger.warning(f"Ошибка RAG: {error_msg}; продолжаем без контекста")
 
+    def set_prompt_manager(self, manager):
+        """Устанавливает менеджер системных промтов."""
+        self.prompt_manager = manager
+        # Обновить тултипы для режимов
+        self._update_mode_tooltips()
+
+    def _update_mode_tooltips(self):
+        """Обновляет тултипы для режимов на основе текущих системных промтов."""
+        if not self.prompt_manager:
+            return
+        for index, mode in enumerate(["chat", "plan", "agent"]):
+            prompt = self.prompt_manager.get_prompt(mode)  # без контекста
+            if prompt:
+                # Обрезаем до 100 символов для компактности
+                short = prompt[:100] + "..." if len(prompt) > 100 else prompt
+                self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ToolTipRole)
+
     def _do_chat(self, text: str):
         """Запускает LLM-генерацию (режим Chat)."""
         self.status_label.setText("Генерация ответа...")
 
         chat_messages: list[ChatMessage] = list(self._messages)
-        if self._rag_context:
-            chat_messages.insert(
-                0,
-                ChatMessage(
-                    role="system",
-                    content=f"Контекст из кодовой базы:\n\n{self._rag_context}",
-                ),
-            )
 
+        # Формируем единый системный промт
+        system_prompt_parts = []
         if self.prompt_manager:
             sys_prompt = self.prompt_manager.get_prompt("chat")
             if sys_prompt:
-                chat_messages.insert(0, ChatMessage(role="system", content=sys_prompt))
+                system_prompt_parts.append(sys_prompt)
+        if self._rag_context:
+            system_prompt_parts.append(f"Контекст из кодовой базы:\n{self._rag_context}")
+
+        if system_prompt_parts:
+            combined = "\n\n".join(system_prompt_parts)
+            chat_messages.insert(0, ChatMessage(role="system", content=combined))
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -813,6 +831,20 @@ class ChatPanel(QWidget):
         self._ollama_thread.finish_received.connect(self._on_finish)
         self._ollama_thread.error_occurred.connect(self._on_chat_error)
         self._ollama_thread.start()
+
+    def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
+        """Запускает AgentLoop."""
+        role_prompt = self.get_current_role_prompt()
+        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
+        # Объединяем роль и режимный промт
+        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
+        context = AgentContext(
+            system_prompt=combined,
+            rag_context=rag_context,
+            project_root=self.project_root,
+            vector_store=self.vector_store,
+            mode=mode,
+        )
 
     def _start_agent(self, text: str, mode: AgentMode):
         """Запускает цикл агента (режимы Plan / Agent)."""

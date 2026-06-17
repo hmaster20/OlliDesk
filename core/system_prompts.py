@@ -1,5 +1,7 @@
+import re
 import yaml
 from pathlib import Path
+from typing import Optional
 from loguru import logger
 from core.utils import get_app_data_dir
 
@@ -33,14 +35,43 @@ class SystemPromptManager:
                 file_path.write_text(content, encoding="utf-8")
                 logger.info(f"Создан дефолтный системный промт: {filename}")
 
-    def get_prompt(self, mode: str) -> str:
-        """Возвращает системный промт для режима (chat, plan, agent)."""
-        if mode in self._cache:
-            return self._cache[mode]
-        file_path = self.prompts_dir / f"{mode}.md"
+    def get_prompt(self, mode: str, project_path: Optional[Path] = None, context: Optional[dict] = None) -> str:
+        """
+        Возвращает системный промт для режима (chat, plan, agent).
+        Сначала ищет в проекте (если указан), затем глобально.
+        Поддерживает шаблонизацию переменных вида {{key}}.
+        """
+        # 1. Попытка загрузить из проекта
+        prompt = self._load_prompt_from_path(mode, project_path) if project_path else None
+        if prompt is None:
+            # 2. Глобальный
+            prompt = self._load_prompt_from_path(mode, None) or ""
+        if not prompt:
+            # 3. Fallback (дефолт из кэша или встроенный)
+            prompt = self._cache.get(mode, "")
+        # 4. Рендеринг шаблона
+        if prompt and context:
+            prompt = self._render(prompt, context)
+        return prompt
+
+    def _load_prompt_from_path(self, mode: str, project_path: Optional[Path]) -> Optional[str]:
+        """Загружает промт из указанной папки (глобальной или проектной)."""
+        if project_path:
+            dir_path = project_path / ".ollidesk" / "system_prompts"
+        else:
+            dir_path = self.prompts_dir
+        file_path = dir_path / f"{mode}.md"
         if file_path.exists():
             content = file_path.read_text(encoding="utf-8").strip()
-            self._cache[mode] = content
+            # Кэшируем по полному пути для производительности
+            cache_key = f"{project_path or 'global'}:{mode}"
+            self._cache[cache_key] = content
             return content
-        # fallback на дефолтный (загруженный при создании)
-        return self._cache.get(mode, "")
+        return None
+
+    def _render(self, template: str, context: dict) -> str:
+        """Заменяет {{key}} на значения из контекста."""
+        def repl(match):
+            key = match.group(1).strip()
+            return str(context.get(key, match.group(0)))
+        return re.sub(r'\{\{\s*(\w+)\s*\}\}', repl, template)

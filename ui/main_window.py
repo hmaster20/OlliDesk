@@ -38,6 +38,8 @@ from state.session_store import SessionStore
 from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
 from core.model_registry import ModelRegistry, ModelInfo
+from core.system_prompts import SystemPromptManager
+from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -245,6 +247,9 @@ class MainWindow(QMainWindow):
         from core.roles import RoleManager
         self.role_manager = RoleManager()
 
+        # Инициализация менеджера промптов
+        self.prompt_manager = SystemPromptManager()
+
         # Индексация
         self.indexer = FileIndexer(config)
         self.vector_store: VectorStore | None = None
@@ -386,10 +391,11 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_open(False)
         self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
-        self.chat_panel.set_registry(self.model_registry)
-        self.chat_panel.refresh_models_requested.connect(self._start_model_check)
 
+        self.chat_panel.set_registry(self.model_registry)
         self.chat_panel.set_role_manager(self.role_manager)
+        self.chat_panel.set_prompt_manager(self.prompt_manager)
+        self.chat_panel.refresh_models_requested.connect(self._start_model_check)
 
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
@@ -625,6 +631,11 @@ class MainWindow(QMainWindow):
 
         view_menu.addAction(self.theme_action)
 
+        view_menu.addSeparator()
+        edit_prompts_action = QAction("Edit Prompts & Roles...", self)
+        edit_prompts_action.triggered.connect(self._open_prompt_editor)
+        view_menu.addAction(edit_prompts_action)
+
         help_menu = menubar.addMenu("&Help")
 
         wizard_action = QAction("Run Setup &Wizard...", self)
@@ -636,6 +647,15 @@ class MainWindow(QMainWindow):
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _open_prompt_editor(self):
+        from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
+        dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
+        if dlg.exec():
+            # После сохранения обновляем тултипы
+            self.chat_panel._update_mode_tooltips()
+            # Можно перезагрузить роли в комбобоксе
+            self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
         """Настраивает статус-бар."""
