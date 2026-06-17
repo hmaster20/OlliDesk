@@ -1245,8 +1245,7 @@ class ChatPanel(QWidget):
             self._check_mode_compatibility()
 
     def set_checking_state(self, is_checking: bool):
-        """Блокирует кнопку и меняет иконку во время проверки."""
-        self.refresh_models_btn.setEnabled(not is_checking)
+        """Меняет иконку кнопки во время проверки (кнопка остаётся активной)."""
         self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
 
     def _check_mode_compatibility(self):
@@ -1295,3 +1294,23 @@ class ChatPanel(QWidget):
         if self.role_manager:
             return self.role_manager.get_role(self.current_role_id).system_prompt
         return ""
+
+    def update_model_status(self, model_name: str):
+        """
+        Обновляет отображение для указанной модели в комбобоксе,
+        используя текущие данные из реестра.
+        """
+        if not self.registry:
+            return
+        info = self.registry.get(model_name)
+        if not info:
+            return
+        # Обновляем текст в комбобоксе
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == model_name:
+                display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
+                self.model_combo.setItemText(i, display)
+                break
+        # Если это текущая модель, обновляем статусную метку
+        if self.model_combo.currentData() == model_name:
+            self._update_model_status(model_name)

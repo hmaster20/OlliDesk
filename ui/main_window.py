@@ -98,13 +98,19 @@ class IndexingThread(QThread):
             self.indexing_error.emit(str(e))
 
 class ModelCheckThread(QThread):
-    progress = Signal(str, int, int)
+    progress = Signal(str, int, int)          # model_name, current, total
+    model_checked = Signal(str, bool)         # model_name, supports_tools
     finished = Signal(dict)
 
     def __init__(self, base_url: str, registry: ModelRegistry):
         super().__init__()
         self.base_url = base_url
         self.registry = registry
+        self._cancel = False
+
+    def cancel(self):
+        """Запрашивает остановку проверки."""
+        self._cancel = True
 
     def run(self):
         import asyncio
@@ -114,7 +120,7 @@ class ModelCheckThread(QThread):
         from agents.ollama_client import OllamaClient
         client = OllamaClient(base_url=self.base_url)
         results = {}
-        # Проверяем только локальные модели с неизвестной поддержкой
+        # Собираем модели для проверки
         models_to_check = [
             name for name, info in self.registry.models.items()
             if info.is_local and info.supports_tools is None
@@ -123,16 +129,23 @@ class ModelCheckThread(QThread):
         if total == 0:
             self.finished.emit(results)
             return
+
         async with client:
             for i, model in enumerate(models_to_check):
-                self.progress.emit(model, i+1, total)
+                if self._cancel:
+                    logger.info(f"Проверка моделей прервана пользователем на модели {model}")
+                    break
+                self.progress.emit(model, i + 1, total)
                 try:
                     supports = await client.check_tools_support(model)
                     results[model] = supports
                     self.registry.update_tool_support(model, supports)
+                    self.model_checked.emit(model, supports)   # <-- новый сигнал
                 except Exception as e:
                     logger.error(f"Ошибка проверки модели {model}: {e}")
                     results[model] = False
+                    self.registry.update_tool_support(model, False)
+                    self.model_checked.emit(model, False)
         self.finished.emit(results)
 
 class ProjectState:
@@ -192,7 +205,6 @@ class ProjectState:
         if self.state_file.exists():
             self.state_file.unlink()
 
-
 class MainWindow(QMainWindow):
     """Главное окно приложения."""
 
@@ -237,6 +249,9 @@ class MainWindow(QMainWindow):
         self.indexer = FileIndexer(config)
         self.vector_store: VectorStore | None = None
         self._indexing_thread: IndexingThread | None = None
+
+        self._model_check_thread: ModelCheckThread | None = None
+        self._is_checking = False
 
         self._setup_ui()
         self._setup_menu()
@@ -986,19 +1001,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _start_model_check(self):
-        if hasattr(self, '_model_check_thread') and self._model_check_thread.isRunning():
-            return
-        self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
-        self.chat_panel.set_checking_state(True)
-        self._model_check_thread = ModelCheckThread(
-            self.ollama_client.base_url,
-            self.model_registry   # передаём реестр
-        )
-        self._model_check_thread.progress.connect(self._on_model_check_progress)
-        self._model_check_thread.finished.connect(self._on_model_check_finished)
-        self._model_check_thread.start()
-
     @Slot(str, int, int)
     def _on_model_check_progress(self, model_name: str, current: int, total: int):
         self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
@@ -1014,3 +1016,68 @@ class MainWindow(QMainWindow):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
         dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
         dlg.exec()
+
+    def _start_model_check(self):
+        """Запускает или останавливает проверку моделей."""
+        if self._is_checking:
+            self._stop_model_check()
+            return
+
+        if hasattr(self, '_model_check_thread') and self._model_check_thread and self._model_check_thread.isRunning():
+            return
+
+        self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
+        # Меняем текст кнопки на "Стоп" (она остаётся активной)
+        self.chat_panel.refresh_models_btn.setText("⏹ Стоп")
+        self._is_checking = True
+
+        self._model_check_thread = ModelCheckThread(
+            self.ollama_client.base_url,
+            self.model_registry
+        )
+        self._model_check_thread.progress.connect(self._on_model_check_progress)
+        self._model_check_thread.model_checked.connect(self._on_model_checked)
+        self._model_check_thread.finished.connect(self._on_model_check_finished)
+        self._model_check_thread.start()
+
+    def _stop_model_check(self):
+        """Останавливает проверку моделей."""
+        if self._model_check_thread and self._model_check_thread.isRunning():
+            self._model_check_thread.cancel()
+            self._model_check_thread.wait(2000)
+            if self._model_check_thread.isRunning():
+                self._model_check_thread.terminate()
+                self._model_check_thread.wait(1000)
+        self._is_checking = False
+        self.chat_panel.refresh_models_btn.setText("🔄")
+        self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
+
+    @Slot(str, int, int)
+    def _on_model_check_progress(self, model_name: str, current: int, total: int):
+        self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
+
+    @Slot(str, bool)
+    def _on_model_checked(self, model_name: str, supports: bool):
+        """Обновляет UI для проверенной модели."""
+        # Обновляем статус в комбобоксе и метке
+        self.chat_panel.update_model_status(model_name)
+        # Если это текущая модель, обновляем статусную метку
+        if self.chat_panel.model_combo.currentData() == model_name:
+            self.chat_panel._update_model_status(model_name)
+
+    @Slot(dict)
+    def _on_model_check_finished(self, results: dict):
+        self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
+        self.chat_panel.set_checking_state(False)
+        self.chat_panel.refresh_models_btn.setText("🔄")
+        self._is_checking = False
+        # Обновляем полный список, чтобы подтянуть все изменения
+        self.chat_panel._update_model_list()
+
+    # В closeEvent добавляем остановку
+    def closeEvent(self, event: QCloseEvent) -> None:
+        logger.info("Закрытие главного окна")
+        self._save_project_settings()
+        self._stop_all_threads()
+        self._stop_model_check()
+        event.accept()
