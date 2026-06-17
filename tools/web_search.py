@@ -32,6 +32,10 @@ async def web_search(query: str, max_results: int = 5) -> str:
     Returns:
         Результаты поиска
     """
+    try:
+        max_results = int(max_results)
+    except (ValueError, TypeError):
+        max_results = 5
     n = min(max(max_results, 1), 10)
 
     for attempt in range(3):

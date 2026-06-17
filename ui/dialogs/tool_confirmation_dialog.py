@@ -40,7 +40,7 @@ class ToolConfirmationDialog(QDialog):
     ):
         """
         Args:
-            tool_name: Имя инструмента
+            tool_name: Имя инструмента (человекочитаемое)
             tool_description: Описание инструмента
             arguments: Аргументы вызова
             parent: Родительский виджет
@@ -68,14 +68,14 @@ class ToolConfirmationDialog(QDialog):
         layout.addWidget(desc)
 
         layout.addWidget(QLabel("Аргументы:"))
-        args_edit = QPlainTextEdit()
-        args_edit.setReadOnly(True)
-        args_edit.setPlainText(self._format_arguments(self._arguments))
-        args_edit.setMaximumHeight(120)
-        args_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
-        layout.addWidget(args_edit)
+        self.args_edit = QPlainTextEdit()
+        self.args_edit.setReadOnly(True)
+        self.args_edit.setPlainText(self._format_arguments(self._arguments))
+        self.args_edit.setMaximumHeight(120)
+        self.args_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
+        layout.addWidget(self.args_edit)
 
-        if tool_name == "write_file" and "content" in self._arguments:
+        if tool_name == "Запись файла" and "content" in self._arguments:
             layout.addWidget(QLabel("Предпросмотр изменений:"))
             diff_edit = QTextEdit()
             diff_edit.setReadOnly(True)
@@ -156,6 +156,8 @@ class ToolConfirmationDialog(QDialog):
                     key, _, value = line.partition(":")
                     new_args[key.strip()] = value.strip()
             self._arguments.update(new_args)
+            # --- обновляем отображение аргументов ---
+            self.args_edit.setPlainText(self._format_arguments(self._arguments))
 
     def _approve(self):
         """Подтверждает выполнение."""

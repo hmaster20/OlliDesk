@@ -633,9 +633,7 @@ class ChatPanel(QWidget):
 
         # Жесткая блокировка: не даем выбрать Agent/Plan, если модель не поддерживает tools
         if index > 0 and self.registry:
-            model_name = self.model_combo.currentData()
-            if model_name is None:
-                model_name = self.model_combo.currentText()
+            model_name = self.get_current_model()
             cap = self.registry.get(model_name)
 
             if cap and not cap.supports_tools:
@@ -826,9 +824,7 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
-        model_name = self.model_combo.currentData()
-        if model_name is None:
-            model_name = self.model_combo.currentText()
+        model_name = self.get_current_model()
         self._ollama_thread = OllamaChatThread(
             model=model_name,
             messages=chat_messages,
@@ -884,9 +880,7 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
-        model_name = self.model_combo.currentData()
-        if model_name is None:
-            model_name = self.model_combo.currentText()
+        model_name = self.get_current_model()
         self._agent_thread = AgentChatThread(
             client=OllamaClient(base_url=self.base_url),
             registry=self._build_registry(),
@@ -934,7 +928,18 @@ class ChatPanel(QWidget):
         from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
 
         arguments = json.loads(arguments_json)
-        dialog = ToolConfirmationDialog(name, description, arguments, self)
+        tool_labels = {
+            "read_file": "Чтение файла",
+            "write_file": "Запись файла",
+            "list_directory": "Просмотр директории",
+            "search_codebase": "Поиск в кодовой базе",
+            "web_search": "Поиск в интернете",
+            "get_git_status": "Статус Git",
+            "create_snapshot": "Создание снапшота Git",
+            "undo_last_snapshot": "Откат снапшота Git",
+        }
+        display_name = tool_labels.get(name, name)
+        dialog = ToolConfirmationDialog(display_name, description, arguments, self)
         if dialog.exec() == ToolConfirmationDialog.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
@@ -1182,9 +1187,7 @@ class ChatPanel(QWidget):
     def get_settings(self) -> dict:
         """Возвращает текущие настройки панели."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        model_name = self.model_combo.currentData()
-        if model_name is None:
-            model_name = self.model_combo.currentText()
+        model_name = self.get_current_model()
         return {
             "model": model_name,
             "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
@@ -1286,7 +1289,7 @@ class ChatPanel(QWidget):
 
     def _on_model_changed(self, index: int):
         """Вызывается при смене модели в комбобоксе."""
-        model_name = self.model_combo.currentData()
+        model_name = self.get_current_model()
         if model_name:
             self._update_model_status(model_name)
             self._check_mode_compatibility()
@@ -1299,9 +1302,7 @@ class ChatPanel(QWidget):
         """Проверяет, подходит ли выбранный режим для модели."""
         if not self.registry:
             return
-        model_name = self.model_combo.currentData()
-        if model_name is None:
-            model_name = self.model_combo.currentText()
+        model_name = self.get_current_model()
         cap = self.registry.get(model_name)
 
         if cap and not cap.supports_tools:
@@ -1363,7 +1364,6 @@ class ChatPanel(QWidget):
         # Если это текущая модель, обновляем статусную метку
         if self.model_combo.currentData() == model_name:
             self._update_model_status(model_name)
-
 
     def get_current_model(self) -> str:
         """Возвращает чистое имя текущей модели (без префиксов)."""

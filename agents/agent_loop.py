@@ -93,6 +93,80 @@ class AgentLoop:
         self.registry = registry
         self.model = model
 
+    def _extract_tool_calls_from_text(self, text: str) -> list[ToolCall]:
+        """Извлекает все возможные вызовы инструментов из текстового ответа модели."""
+        import json as _json
+        import re
+
+        # Ищем все JSON-объекты в тексте (включая вложенные)
+        json_objects = []
+        # Простейший поиск: находим блоки, начинающиеся с { и заканчивающиеся }
+        # Но нужно учитывать вложенность, поэтому используем стек
+        stack = []
+        start = None
+        for i, ch in enumerate(text):
+            if ch == '{':
+                if not stack:
+                    start = i
+                stack.append(ch)
+            elif ch == '}':
+                if stack:
+                    stack.pop()
+                    if not stack and start is not None:
+                        json_objects.append(text[start:i+1])
+                        start = None
+
+        extracted = []
+        for raw in json_objects:
+            # Пробуем "починить" JSON
+            repaired = raw
+            # 1. Добавляем кавычки к ключам, если их нет
+            repaired = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', repaired)
+            # 2. Заменяем одинарные кавычки на двойные (если они не экранированы)
+            repaired = re.sub(r"(?<!\\)'", '"', repaired)
+            # 3. Убираем trailing commas (иногда модель ставит запятую перед } или ])
+            repaired = re.sub(r',\s*}', '}', repaired)
+            repaired = re.sub(r',\s*]', ']', repaired)
+            # 4. Убираем лишние пробелы внутри чисел (например, "max_results": 5)
+            #    но это не критично
+
+            try:
+                parsed = _json.loads(repaired)
+                # Проверяем, есть ли поля name и arguments
+                if "name" in parsed and "arguments" in parsed:
+                    # Также может быть "type": "function" и "function": {...}
+                    if parsed.get("type") == "function" and "function" in parsed:
+                        func = parsed["function"]
+                        name = func.get("name")
+                        args = func.get("arguments", {})
+                    else:
+                        name = parsed["name"]
+                        args = parsed.get("arguments", {})
+                    if name:
+                        tc = ToolCall(name=name, arguments=args)
+                        extracted.append(tc)
+            except _json.JSONDecodeError:
+                # Если не удалось, пробуем извлечь name и arguments с помощью regex
+                name_match = re.search(r'"name"\s*:\s*"([^"]+)"', repaired)
+                args_match = re.search(r'"arguments"\s*:\s*({[^}]*})', repaired)
+                if name_match and args_match:
+                    try:
+                        args = _json.loads(args_match.group(1))
+                        extracted.append(ToolCall(name=name_match.group(1), arguments=args))
+                    except _json.JSONDecodeError:
+                        pass
+                # Также пробуем вариант без кавычек у ключей
+                name_match2 = re.search(r'name\s*:\s*"([^"]+)"', repaired)
+                args_match2 = re.search(r'arguments\s*:\s*({[^}]*})', repaired)
+                if name_match2 and args_match2:
+                    try:
+                        args = _json.loads(args_match2.group(1))
+                        extracted.append(ToolCall(name=name_match2.group(1), arguments=args))
+                    except _json.JSONDecodeError:
+                        pass
+        return extracted
+
+
     async def run(
         self,
         context: AgentContext,
@@ -104,24 +178,6 @@ class AgentLoop:
         on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str:
-        """Запускает цикл агента.
-
-        Args:
-            context: Контекст (RAG, project_root, векторное хранилище)
-            messages_history: История сообщений для продолжения диалога (включает новое сообщение пользователя)
-            on_token: Колбэк для каждого токена стрима
-            on_tool_request: Колбэк запроса подтверждения (name, description, arguments) -> bool
-            max_iterations: Максимальное число итераций
-            on_tools_disabled: Колбэк при отключении инструментов
-            on_tool_start: Колбэк при начале выполнения инструмента (name, arguments)
-
-        Returns:
-            Финальный текст ответа
-
-        Raises:
-            AgentIterationLimitError: При превышении лимита итераций
-            AgentError: При других ошибках
-        """
         messages = [ChatMessage(role="system", content=_build_system_prompt(context))]
 
         for msg in messages_history:
@@ -165,31 +221,17 @@ class AgentLoop:
                     await on_token("\n\n")
                 continue
 
-            # Fallback: model may output JSON tool call as text (no native function calling)
+            # --- УЛУЧШЕННЫЙ FALLBACK ДЛЯ ТЕКСТОВЫХ JSON-ВЫЗОВОВ ---
             if not pending_tool_calls and current_text and tools_to_send:
-                import json as _json
-                import re
-
-                # Ищем первый JSON-объект в тексте (модели часто добавляют лишний текст до/после)
-                match = re.search(r'\{.*\}', current_text, re.DOTALL)
-                if match:
-                    raw_json = match.group(0)
-
-                    # "Ремонт" JSON: добавляем кавычки вокруг ключей, если их нет
-                    # Преобразует {"name": web_search} в {"name": "web_search"}
-                    repaired_json = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', raw_json)
-                    # Также чиним одинарные кавычки, если модель их использовала
-                    repaired_json = repaired_json.replace("'", '"')
-
-                    try:
-                        parsed = _json.loads(repaired_json)
-                        if "name" in parsed and "arguments" in parsed:
-                            tc = ToolCall(name=parsed["name"], arguments=parsed.get("arguments", {}))
-                            pending_tool_calls = [tc]
-                            current_text = "" # Очищаем текст, чтобы не дублировать вызов
-                            logger.debug(f"Успешно распарсен текстовый tool_call: {tc.name}")
-                    except (_json.JSONDecodeError, KeyError, TypeError) as e:
-                        logger.warning(f"Не удалось распарсить текстовый JSON от модели: {e}")
+                extracted_calls = self._extract_tool_calls_from_text(current_text)
+                if extracted_calls:
+                    pending_tool_calls = extracted_calls
+                    # Очищаем текст, чтобы не дублировать вызов
+                    current_text = ""
+                    logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
+                else:
+                    # Если JSON невалидный, но мы не смогли извлечь, просто оставляем текст
+                    logger.debug("Не удалось извлечь вызовы из текста, продолжаем")
 
             if pending_tool_calls and tools_to_send:
                 messages.append(
