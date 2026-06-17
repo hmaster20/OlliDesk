@@ -707,8 +707,12 @@ class MainWindow(QMainWindow):
                 self.chat_panel.set_registry(self.model_registry)
             else:
                 # Если уже передан, просто обновляем список
-                self.chat_panel._update_model_list()
+                # self.chat_panel._update_model_list()
+                self.chat_panel.update_models(models)
             # Выбираем первую локальную модель, если не выбрана
+            # if models:
+            #     first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+            #     self.chat_panel.set_model(first_local)
             if models:
                 first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
                 self.chat_panel.set_model(first_local)

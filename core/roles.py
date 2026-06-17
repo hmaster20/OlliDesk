@@ -24,27 +24,31 @@ class RoleManager:
         self._load_roles()
 
     def _ensure_defaults(self):
-        """Создает дефолтные роли, если папка пуста."""
         self.roles_dir.mkdir(parents=True, exist_ok=True)
-        if not any(self.roles_dir.glob("*.md")):
-            logger.info("Папка ролей пуста, создаю дефолтные роли...")
-            defaults = {
-                "default.md": self._get_default_prompt(),
-                "python_dev.md": self._get_python_prompt(),
-                "devops.md": self._get_devops_prompt(),
-                "tech_writer.md": self._get_writer_prompt(),
-                "csharp_dev.md": self._get_csharp_prompt(),
-                "go_dev.md": self._get_go_prompt(),
-                "java_dev.md": self._get_java_prompt(),
-                "frontend_dev.md": self._get_frontend_prompt(),
-                "data_scientist.md": self._get_data_scientist_prompt(),
-                "security_expert.md": self._get_security_prompt(),
-                "project_manager.md": self._get_project_manager_prompt(),
-                "geopolitics.md": self._get_geopolitics_prompt(),
-                "strategy_planner.md": self._get_strategy_prompt(),
-            }
-            for filename, content in defaults.items():
-                (self.roles_dir / filename).write_text(content, encoding="utf-8")
+        defaults = {
+            "default.md": self._get_default_prompt(),
+            "python_dev.md": self._get_python_prompt(),
+            "devops.md": self._get_devops_prompt(),
+            "tech_writer.md": self._get_writer_prompt(),
+            "csharp_dev.md": self._get_csharp_prompt(),
+            "go_dev.md": self._get_go_prompt(),
+            "java_dev.md": self._get_java_prompt(),
+            "frontend_dev.md": self._get_frontend_prompt(),
+            "data_scientist.md": self._get_data_scientist_prompt(),
+            "security_expert.md": self._get_security_prompt(),
+            "project_manager.md": self._get_project_manager_prompt(),
+            "geopolitics.md": self._get_geopolitics_prompt(),
+            "strategy_planner.md": self._get_strategy_prompt(),
+        }
+        created = False
+        for filename, content in defaults.items():
+            file_path = self.roles_dir / filename
+            if not file_path.exists():
+                file_path.write_text(content, encoding="utf-8")
+                created = True
+                logger.info(f"Создана дефолтная роль: {filename}")
+        if created:
+            self._load_roles()
 
     def _load_roles(self):
         """Загружает роли из Markdown файлов с YAML frontmatter."""

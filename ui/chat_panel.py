@@ -809,7 +809,8 @@ class ChatPanel(QWidget):
         # Формируем единый системный промт
         system_prompt_parts = []
         if self.prompt_manager:
-            sys_prompt = self.prompt_manager.get_prompt("chat")
+            # sys_prompt = self.prompt_manager.get_prompt("chat")
+            sys_prompt = self.prompt_manager.get_prompt("chat", project_root=self.project_root)
             if sys_prompt:
                 system_prompt_parts.append(sys_prompt)
         if self._rag_context:
@@ -831,20 +832,6 @@ class ChatPanel(QWidget):
         self._ollama_thread.finish_received.connect(self._on_finish)
         self._ollama_thread.error_occurred.connect(self._on_chat_error)
         self._ollama_thread.start()
-
-    def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
-        """Запускает AgentLoop."""
-        role_prompt = self.get_current_role_prompt()
-        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
-        # Объединяем роль и режимный промт
-        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
-        context = AgentContext(
-            system_prompt=combined,
-            rag_context=rag_context,
-            project_root=self.project_root,
-            vector_store=self.vector_store,
-            mode=mode,
-        )
 
     def _start_agent(self, text: str, mode: AgentMode):
         """Запускает цикл агента (режимы Plan / Agent)."""
@@ -874,10 +861,12 @@ class ChatPanel(QWidget):
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         """Запускает AgentLoop."""
         role_prompt = self.get_current_role_prompt()
-        mode_prompt = self.prompt_manager.get_prompt(mode.value) if self.prompt_manager else ""
+        # mode_prompt = self.prompt_manager.get_prompt(mode.value) if self.prompt_manager else ""
+        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
         context = AgentContext(
-            system_prompt=self.get_current_role_prompt(),
+            # system_prompt=self.get_current_role_prompt(),
+            system_prompt=combined,
             rag_context=rag_context,
             project_root=self.project_root,
             vector_store=self.vector_store,

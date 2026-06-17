@@ -35,14 +35,14 @@ class SystemPromptManager:
                 file_path.write_text(content, encoding="utf-8")
                 logger.info(f"Создан дефолтный системный промт: {filename}")
 
-    def get_prompt(self, mode: str, project_path: Optional[Path] = None, context: Optional[dict] = None) -> str:
+    def get_prompt(self, mode: str, project_root: Optional[Path] = None, context: Optional[dict] = None) -> str:
         """
         Возвращает системный промт для режима (chat, plan, agent).
         Сначала ищет в проекте (если указан), затем глобально.
         Поддерживает шаблонизацию переменных вида {{key}}.
         """
         # 1. Попытка загрузить из проекта
-        prompt = self._load_prompt_from_path(mode, project_path) if project_path else None
+        prompt = self._load_prompt_from_path(mode, project_root) if project_root else None
         if prompt is None:
             # 2. Глобальный
             prompt = self._load_prompt_from_path(mode, None) or ""
@@ -54,17 +54,18 @@ class SystemPromptManager:
             prompt = self._render(prompt, context)
         return prompt
 
-    def _load_prompt_from_path(self, mode: str, project_path: Optional[Path]) -> Optional[str]:
+    def _load_prompt_from_path(self, mode: str, project_root: Optional[Path]) -> Optional[str]:
         """Загружает промт из указанной папки (глобальной или проектной)."""
-        if project_path:
-            dir_path = project_path / ".ollidesk" / "system_prompts"
+        if project_root:
+            dir_path = project_root / ".ollidesk" / "system_prompts"
         else:
             dir_path = self.prompts_dir
         file_path = dir_path / f"{mode}.md"
         if file_path.exists():
             content = file_path.read_text(encoding="utf-8").strip()
             # Кэшируем по полному пути для производительности
-            cache_key = f"{project_path or 'global'}:{mode}"
+            # cache_key = f"{project_path or 'global'}:{mode}"
+            cache_key = f"{project_root or 'global'}:{mode}"
             self._cache[cache_key] = content
             return content
         return None
