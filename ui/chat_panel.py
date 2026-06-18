@@ -240,7 +240,7 @@ class RagSearchThread(QThread):
 
 
 class ChatMessageItem(QWidget):
-    """Виджет одного сообщения в чате (пузырёк как в Telegram)."""
+    """Виджет одного сообщения в чате (пузырёк с улучшенным дизайном)."""
 
     def __init__(self, role: str, content: str, thinking: str = "",
                  mode_name: str = "", parent: QWidget | None = None):
@@ -249,50 +249,54 @@ class ChatMessageItem(QWidget):
         self.content = content
         self.thinking = thinking
 
+        # Основной layout для всего виджета
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 4, 0, 4)   # вертикальные отступы между сообщениями
+        outer.setSpacing(0)
 
+        # Контейнер-бабл
         bubble = QWidget()
         bubble.setObjectName("_bubble")
         is_user = role == "user"
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
 
+        # Стили бабла (цвет, скругление, тень)
         if is_user:
-            bg = "#3a5a7a"
+            bg = "#2b6f9e"
             text_color = "white"
-            bubble_style = (
-                f"background: {bg}; border-radius: 12px;"
-                f" margin: 0;"
-            )
         elif is_assistant:
-            bg = "#2d2d2d"
+            bg = "#3a3a3a"   # было #2d2d2d
             text_color = "#e0e0e0"
-            bubble_style = (
-                f"background: {bg}; border-radius: 12px;"
-                f" margin: 0;"
-            )
         else:
             bg = "transparent"
             text_color = "#999"
-            bubble_style = "margin: 0;"
 
-        bubble.setStyleSheet(bubble_style)
+        bubble.setStyleSheet(f"""
+            QWidget#_bubble {{
+                background-color: {bg};
+                border-radius: 12px;
+                padding: 8px 14px;
+                margin: 0;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+            }}
+        """)
 
+        # Внутренний layout бабла
         bubble_layout = QVBoxLayout(bubble)
-        bubble_layout.setContentsMargins(26, 3, 18, 3)
-        bubble_layout.setSpacing(0)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(4)
 
+        # Заголовок (роль)
         if not is_tool:
             header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
             role_label = QLabel(header)
             role_label.setStyleSheet(
-                f"font-weight: bold; font-size: 11px; color: {text_color};"
-                f" opacity: 0.7;"
+                f"font-weight: 600; font-size: 11px; color: {text_color}; opacity: 0.7;"
             )
             bubble_layout.addWidget(role_label)
 
-        # Reasoning (thinking)
+        # Блок рассуждений (thinking)
         self._thinking_edit: QTextEdit | None = None
         if thinking:
             self._thinking_edit = QTextEdit()
@@ -300,59 +304,42 @@ class ChatMessageItem(QWidget):
             self._thinking_edit.document().setDocumentMargin(0)
             self._thinking_edit.setPlainText(thinking)
             self._thinking_edit.setStyleSheet(
-                "font-size: 12px; padding: 0; border: none; background: transparent;"
-                f" color: {'rgba(255,255,255,0.5)' if is_user else '#888'};"
-                " font-style: italic;"
+                f"font-size: 12px; color: {text_color}; opacity: 0.6;"
+                " font-style: italic; background: transparent; border: none; padding: 0;"
             )
             self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self._thinking_edit.setMinimumHeight(16)
-            self._thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             bubble_layout.addWidget(self._thinking_edit)
 
-        # Content
+        # Основной контент
         self._content_edit = QTextEdit()
         self._content_edit.setReadOnly(True)
         self._content_edit.document().setDocumentMargin(0)
         ChatPanel._render_markdown(self._content_edit, content)
         self._content_edit.setStyleSheet(
-            f"font-size: 14px; padding: 0; border: none; background: transparent;"
-            f" color: {text_color};"
+            f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
+            f" color: {text_color}; background: transparent; border: none; padding: 0;"
         )
         self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_edit.setMinimumHeight(20)
-        self._content_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         bubble_layout.addWidget(self._content_edit)
 
-        # Выравнивание: пользователь справа, ассистент слева
+        # Выравнивание бабла внутри сообщения
         inner = QHBoxLayout()
-        inner.setContentsMargins(4, 0, 4, 0)
+        inner.setContentsMargins(8, 0, 8, 0)
         if is_user:
             inner.addStretch()
             inner.addWidget(bubble)
-            inner.setStretchFactor(bubble, 0)
         elif is_assistant:
             inner.addWidget(bubble)
             inner.addStretch()
-            inner.setStretchFactor(bubble, 0)
         else:
             inner.addWidget(bubble)
             inner.addStretch()
-            inner.setStretchFactor(bubble, 0)
 
         outer.addLayout(inner)
-
-    @staticmethod
-    def _adjust_text_edit_height(edit: QTextEdit, avail_width: int, max_height: int = 10000) -> None:
-        """Подгоняет высоту QTextEdit под содержимое по документу."""
-        doc = edit.document()
-        doc.setTextWidth(max(1, avail_width))
-        doc.adjustSize()
-        height = int(doc.size().height() + 5)
-        edit.setFixedHeight(min(max(20, height), max_height))
-        edit.updateGeometry()
-
 
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
@@ -416,7 +403,7 @@ class ChatPanel(QWidget):
                     else:
                         lexer = guess_lexer(code)
                     highlighted = pyg_highlight(code, lexer, formatter)
-                    return f'<div style="background:#2d2d2d; padding:6px 10px; border-radius:6px; margin:2px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
+                    return f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; margin:4px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
                 except Exception:
                     escaped = html_mod.escape(code)
                     return f'<pre style="background:#2d2d2d; padding:6px 10px; border-radius:6px; margin:2px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
@@ -1053,21 +1040,35 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _resize_message_item(self, widget: QWidget) -> None:
-        """Подгоняет высоту элемента под содержимое, ширина пузырька 98%."""
         scroll_width = self.scroll_area.viewport().width()
-        if scroll_width > 0:
-            bubble_width = int(scroll_width * 0.98)
-            widget.setFixedWidth(scroll_width)
-            for child in widget.findChildren(QWidget):
-                if child.objectName() == "_bubble":
-                    child.setFixedWidth(bubble_width)
-                    break
-            content_width = bubble_width - 44  # layout margins: left 26 + right 18
-            ChatMessageItem._adjust_text_edit_height(widget._content_edit, content_width)
-            if widget._thinking_edit:
-                ChatMessageItem._adjust_text_edit_height(widget._thinking_edit, content_width, max_height=400)
+        if scroll_width <= 0:
+            return
+
+        bubble_width = int(scroll_width * 0.85)
+        content_width = bubble_width - 28
+
+        bubble = widget.findChild(QWidget, "_bubble")
+        if bubble:
+            bubble.setFixedWidth(bubble_width)
+
+        for edit in widget.findChildren(QTextEdit):
+            max_h = 600 if edit is getattr(widget, '_content_edit', None) else 300
+            self._adjust_text_edit_height(edit, content_width, max_h)
+
         widget.adjustSize()
         widget.updateGeometry()
+
+    @staticmethod
+    def _adjust_text_edit_height(edit: QTextEdit, avail_width: int, max_height: int = 10000) -> None:
+        if not edit or avail_width <= 0:
+            return
+        doc = edit.document()
+        doc.setTextWidth(avail_width)
+        doc.adjustSize()  # <-- добавлено
+        rect = doc.size().toSize()
+        height = rect.height() + 8
+        height = max(20, min(height, max_height))
+        edit.setFixedHeight(height)
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает размеры всех сообщений при изменении ширины панели."""
