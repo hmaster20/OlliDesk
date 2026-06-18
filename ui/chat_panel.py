@@ -316,6 +316,9 @@ class ChatMessageItem(QWidget):
             f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
             f" color: {text_color}; background: transparent;"
         )
+        self.content_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.content_label.setWordWrap(True)
+
         # Рендерим Markdown в HTML
         self._set_content(content)
         bubble_layout.addWidget(self.content_label)
@@ -324,12 +327,11 @@ class ChatMessageItem(QWidget):
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
-            inner.addStretch()
-            inner.addWidget(bubble)
+            inner.addWidget(bubble)      # без выравнивания
+            inner.addStretch()           # растяжение справа → бабл прижат к правому краю
         else:
+            inner.addStretch()           # растяжение слева → бабл прижат к левому краю
             inner.addWidget(bubble)
-            inner.addStretch()
-
         outer.addLayout(inner)
 
         # Ограничиваем максимальную ширину бабла (80% от родителя)
@@ -363,9 +365,11 @@ class ChatMessageItem(QWidget):
                         lexer = guess_lexer(code)
                     highlighted = pyg_highlight(code, lexer, formatter)
                     return (f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
-                            f'margin:4px 0; font-size:13px; overflow-x:auto;">'
-                            f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;">'
+                            f'margin:4px 0; font-size:13px; overflow-x:auto; word-wrap: break-word;">'
+                            f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace; '
+                            f'white-space: pre-wrap; word-wrap: break-word;">'
                             f'<code>{highlighted}</code></pre></div>')
+
                 except Exception:
                     escaped = html_mod.escape(code)
                     return (f'<pre style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
@@ -392,7 +396,7 @@ class ChatMessageItem(QWidget):
             body = body.replace("\n", "<br>")
             body = re.sub(r"(<br>\s*){2,}", "<br>", body)
 
-            return f"<div style='line-height:1.3;'>{body}</div>"
+            return f"<div style='line-height:1.3; word-wrap: break-word; overflow-wrap: break-word;'>{body}</div>"
         except ImportError:
             # Fallback: просто экранируем и заменяем \n на <br>
             return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
@@ -468,19 +472,15 @@ class ChatPanel(QWidget):
         return widget
 
     def _update_bubble_width(self, widget: ChatMessageItem = None):
-        """Устанавливает максимальную ширину бабла и политику растяжения."""
-        from PySide6.QtWidgets import QSizePolicy
-
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
             return
-        # max_width = int(scroll_width * 0.90)   # 90% от ширины чата
-        max_width = int(scroll_width * 1.30)
+        max_width = int(scroll_width * 0.90)
 
         def apply_policy(bubble: QFrame):
             bubble.setMaximumWidth(max_width)
-            bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)  # ← было Preferred
+            bubble.updateGeometry()
 
         if widget is not None:
             if widget.bubble:
@@ -491,6 +491,7 @@ class ChatPanel(QWidget):
                 if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                     if item.widget().bubble:
                         apply_policy(item.widget().bubble)
+
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
