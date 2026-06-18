@@ -94,16 +94,20 @@ class AgentLoop:
         self.model = model
 
     def _extract_tool_calls_from_text(self, text: str) -> list[ToolCall]:
-        """Извлекает все возможные вызовы инструментов из текстового ответа модели."""
+        """Извлекает вызовы инструментов из текстового ответа модели."""
         import json as _json
         import re
 
-        # Ищем все JSON-объекты в тексте (включая вложенные)
-        json_objects = []
-        # Простейший поиск: находим блоки, начинающиеся с { и заканчивающиеся }
-        # Но нужно учитывать вложенность, поэтому используем стек
+        # Удаляем возможные markdown-блоки (```json ... ``` или просто ``` ... ```)
+        code_block_pattern = r"```(?:json)?\s*\n?(.*?)```"
+        match = re.search(code_block_pattern, text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+
+        extracted = []
         stack = []
         start = None
+
         for i, ch in enumerate(text):
             if ch == '{':
                 if not stack:
@@ -113,59 +117,55 @@ class AgentLoop:
                 if stack:
                     stack.pop()
                     if not stack and start is not None:
-                        json_objects.append(text[start:i+1])
+                        candidate = text[start:i+1]
+                        # Пробуем распарсить как есть
+                        try:
+                            parsed = _json.loads(candidate)
+                            if "name" in parsed and "arguments" in parsed:
+                                extracted.append(ToolCall(name=parsed["name"], arguments=parsed["arguments"]))
+                            elif "function" in parsed and "name" in parsed["function"]:
+                                func = parsed["function"]
+                                extracted.append(ToolCall(name=func["name"], arguments=func.get("arguments", {})))
+                        except _json.JSONDecodeError:
+                            # Пытаемся "починить" JSON
+                            repaired = candidate
+                            # Добавляем кавычки к ключам
+                            repaired = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', repaired)
+                            # Заменяем одинарные кавычки на двойные
+                            repaired = re.sub(r"(?<!\\)'", '"', repaired)
+                            # Убираем trailing commas
+                            repaired = re.sub(r',\s*}', '}', repaired)
+                            try:
+                                parsed = _json.loads(repaired)
+                                if "name" in parsed and "arguments" in parsed:
+                                    extracted.append(ToolCall(name=parsed["name"], arguments=parsed["arguments"]))
+                                elif "function" in parsed and "name" in parsed["function"]:
+                                    func = parsed["function"]
+                                    extracted.append(ToolCall(name=func["name"], arguments=func.get("arguments", {})))
+                            except _json.JSONDecodeError:
+                                # Если не удалось, просто игнорируем
+                                pass
                         start = None
 
-        extracted = []
-        for raw in json_objects:
-            # Пробуем "починить" JSON
-            repaired = raw
-            # 1. Добавляем кавычки к ключам, если их нет
-            repaired = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', repaired)
-            # 2. Заменяем одинарные кавычки на двойные (если они не экранированы)
-            repaired = re.sub(r"(?<!\\)'", '"', repaired)
-            # 3. Убираем trailing commas (иногда модель ставит запятую перед } или ])
-            repaired = re.sub(r',\s*}', '}', repaired)
-            repaired = re.sub(r',\s*]', ']', repaired)
-            # 4. Убираем лишние пробелы внутри чисел (например, "max_results": 5)
-            #    но это не критично
+        # Дополнительно пробуем найти JSON без скобок, если не нашли
+        if not extracted:
+            # Ищем простой паттерн: {"name": "...", "arguments": {...}}
+            pattern = r'\{"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*({[^}]*})\}'
+            for match in re.finditer(pattern, text):
+                try:
+                    name = match.group(1)
+                    args_str = match.group(2)
+                    args = _json.loads(args_str)
+                    extracted.append(ToolCall(name=name, arguments=args))
+                except:
+                    pass
 
-            try:
-                parsed = _json.loads(repaired)
-                # Проверяем, есть ли поля name и arguments
-                if "name" in parsed and "arguments" in parsed:
-                    # Также может быть "type": "function" и "function": {...}
-                    if parsed.get("type") == "function" and "function" in parsed:
-                        func = parsed["function"]
-                        name = func.get("name")
-                        args = func.get("arguments", {})
-                    else:
-                        name = parsed["name"]
-                        args = parsed.get("arguments", {})
-                    if name:
-                        tc = ToolCall(name=name, arguments=args)
-                        extracted.append(tc)
-            except _json.JSONDecodeError:
-                # Если не удалось, пробуем извлечь name и arguments с помощью regex
-                name_match = re.search(r'"name"\s*:\s*"([^"]+)"', repaired)
-                args_match = re.search(r'"arguments"\s*:\s*({[^}]*})', repaired)
-                if name_match and args_match:
-                    try:
-                        args = _json.loads(args_match.group(1))
-                        extracted.append(ToolCall(name=name_match.group(1), arguments=args))
-                    except _json.JSONDecodeError:
-                        pass
-                # Также пробуем вариант без кавычек у ключей
-                name_match2 = re.search(r'name\s*:\s*"([^"]+)"', repaired)
-                args_match2 = re.search(r'arguments\s*:\s*({[^}]*})', repaired)
-                if name_match2 and args_match2:
-                    try:
-                        args = _json.loads(args_match2.group(1))
-                        extracted.append(ToolCall(name=name_match2.group(1), arguments=args))
-                    except _json.JSONDecodeError:
-                        pass
+        if extracted:
+            logger.debug(f"Извлечено tool_calls из текста: {len(extracted)}")
+        else:
+            logger.debug("Не удалось извлечь tool_calls из текста")
+
         return extracted
-
 
     async def run(
         self,
