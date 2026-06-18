@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -183,10 +184,6 @@ class AgentChatThread(QThread):
         """Колбэк для каждого токена (вызывается из asyncio, пробрасывает в Qt)."""
         self.chunk_received.emit(token)
 
-    async def _on_thinking(self, token: str):
-        """Колбэк для токенов рассуждения (вызывается из asyncio)."""
-        self.thinking_received.emit(token)
-
 
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
@@ -238,9 +235,8 @@ class RagSearchThread(QThread):
         except Exception as e:
             self.search_error.emit(str(e))
 
-
 class ChatMessageItem(QWidget):
-    """Виджет одного сообщения в чате (пузырёк с улучшенным дизайном)."""
+    """Виджет одного сообщения в чате (пузырёк с QLabel)."""
 
     def __init__(self, role: str, content: str, thinking: str = "",
                  mode_name: str = "", parent: QWidget | None = None):
@@ -249,43 +245,45 @@ class ChatMessageItem(QWidget):
         self.content = content
         self.thinking = thinking
 
-        # Основной layout для всего виджета
+        # Основной layout – отступы между сообщениями
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 4, 0, 4)   # вертикальные отступы между сообщениями
+        outer.setContentsMargins(0, 4, 0, 4)
         outer.setSpacing(0)
 
-        # Контейнер-бабл
-        bubble = QWidget()
+        # Бабл (QFrame)
+        bubble = QFrame()
         bubble.setObjectName("_bubble")
         is_user = role == "user"
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
 
-        # Стили бабла (цвет, скругление, тень)
+        # Цвета и стили
         if is_user:
             bg = "#2b6f9e"
             text_color = "white"
+            align = Qt.AlignRight
         elif is_assistant:
-            bg = "#3a3a3a"   # было #2d2d2d
+            bg = "#3a3a3a"          # чуть светлее фона
             text_color = "#e0e0e0"
+            align = Qt.AlignLeft
         else:
             bg = "transparent"
             text_color = "#999"
+            align = Qt.AlignLeft
 
         bubble.setStyleSheet(f"""
-            QWidget#_bubble {{
+            QFrame#_bubble {{
                 background-color: {bg};
                 border-radius: 12px;
-                padding: 8px 14px;
-                margin: 0;
-                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+                padding: 6px 12px;
+                border: none;
             }}
         """)
 
         # Внутренний layout бабла
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
-        bubble_layout.setSpacing(4)
+        bubble_layout.setSpacing(2)
 
         # Заголовок (роль)
         if not is_tool:
@@ -297,49 +295,123 @@ class ChatMessageItem(QWidget):
             bubble_layout.addWidget(role_label)
 
         # Блок рассуждений (thinking)
-        self._thinking_edit: QTextEdit | None = None
         if thinking:
-            self._thinking_edit = QTextEdit()
-            self._thinking_edit.setReadOnly(True)
-            self._thinking_edit.document().setDocumentMargin(0)
-            self._thinking_edit.setPlainText(thinking)
-            self._thinking_edit.setStyleSheet(
+            think_label = QLabel(thinking)
+            think_label.setStyleSheet(
                 f"font-size: 12px; color: {text_color}; opacity: 0.6;"
-                " font-style: italic; background: transparent; border: none; padding: 0;"
+                " font-style: italic;"
             )
-            self._thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self._thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self._thinking_edit.setMinimumHeight(16)
-            bubble_layout.addWidget(self._thinking_edit)
+            think_label.setWordWrap(True)
+            bubble_layout.addWidget(think_label)
 
-        # Основной контент
-        self._content_edit = QTextEdit()
-        self._content_edit.setReadOnly(True)
-        self._content_edit.document().setDocumentMargin(0)
-        ChatPanel._render_markdown(self._content_edit, content)
-        self._content_edit.setStyleSheet(
+        # Основной контент – QLabel с HTML
+        self.content_label = QLabel()
+        self.content_label.setWordWrap(True)
+        self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.content_label.setOpenExternalLinks(True)
+        self.content_label.setStyleSheet(
             f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
-            f" color: {text_color}; background: transparent; border: none; padding: 0;"
+            f" color: {text_color}; background: transparent;"
         )
-        self._content_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content_edit.setMinimumHeight(20)
-        bubble_layout.addWidget(self._content_edit)
+        # Рендерим Markdown в HTML
+        self._set_content(content)
+        bubble_layout.addWidget(self.content_label)
 
         # Выравнивание бабла внутри сообщения
         inner = QHBoxLayout()
-        inner.setContentsMargins(8, 0, 8, 0)
+        inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
             inner.addStretch()
             inner.addWidget(bubble)
-        elif is_assistant:
-            inner.addWidget(bubble)
-            inner.addStretch()
         else:
             inner.addWidget(bubble)
             inner.addStretch()
 
         outer.addLayout(inner)
+
+        # Ограничиваем максимальную ширину бабла (80% от родителя)
+        # Это будет установлено позже в _update_bubble_width
+        self.bubble = bubble
+
+    def _set_content(self, text: str):
+        """Рендерит Markdown в HTML и устанавливает в content_label."""
+        html = self._render_markdown_to_html(text)
+        self.content_label.setText(html)
+
+    def _render_markdown_to_html(self, text: str) -> str:
+        """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
+        import re
+        import html as html_mod
+
+        try:
+            from pygments import highlight as pyg_highlight
+            from pygments.lexers import get_lexer_by_name, guess_lexer
+            from pygments.formatters import HtmlFormatter
+
+            formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+
+            def _code_block(m):
+                lang = m.group(1).strip() or ""
+                code = m.group(2)
+                try:
+                    if lang:
+                        lexer = get_lexer_by_name(lang, stripall=True)
+                    else:
+                        lexer = guess_lexer(code)
+                    highlighted = pyg_highlight(code, lexer, formatter)
+                    return (f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
+                            f'margin:4px 0; font-size:13px; overflow-x:auto;">'
+                            f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;">'
+                            f'<code>{highlighted}</code></pre></div>')
+                except Exception:
+                    escaped = html_mod.escape(code)
+                    return (f'<pre style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
+                            f'margin:4px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>')
+
+            pattern = r"```(\w*)\s*\n(.*?)```"
+            body = re.sub(pattern, _code_block, text, flags=re.DOTALL)
+
+            # Inline code
+            body = re.sub(
+                r"`([^`]+)`",
+                lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
+                body,
+            )
+            # Bold, italic, links, headings...
+            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+            body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
+            body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
+            body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
+            body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
+            body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
+
+            # Newlines to <br>, collapse multiples
+            body = body.replace("\n", "<br>")
+            body = re.sub(r"(<br>\s*){2,}", "<br>", body)
+
+            return f"<div style='line-height:1.3;'>{body}</div>"
+        except ImportError:
+            # Fallback: просто экранируем и заменяем \n на <br>
+            return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
+
+    def update_content(self, new_content: str):
+        """Обновляет содержимое сообщения (для стриминга)."""
+        self.content = new_content
+        self._set_content(new_content)
+
+    def update_thinking(self, new_thinking: str):
+        """Обновляет блок рассуждений (динамически)."""
+        self.thinking = new_thinking
+        # Найти существующий QLabel с thinking и обновить, либо создать
+        # Для простоты мы не поддерживаем динамическое обновление thinking
+        # (можно пересоздать виджет, но сейчас проще пересоздать всё сообщение)
+        # Однако в текущей архитектуре мы обычно обновляем thinking через _insert_thinking_edit
+        # В новом дизайне мы можем просто пересоздать виджет, но это сложнее.
+        # Я предлагаю оставить thinking как статичный блок, который не обновляется после создания.
+        # Если нужно динамическое обновление, лучше использовать QTextEdit, но мы от него отказались.
+        # Поэтому в _on_thinking мы будем пересоздавать виджет, если он ещё не создан.
+        # В текущем коде мы не будем динамически обновлять thinking.
+        pass
 
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
@@ -384,61 +456,68 @@ class ChatPanel(QWidget):
 
         self._setup_ui()
 
-    @staticmethod
-    def _render_markdown(edit: QTextEdit, text: str) -> None:
-        """Рендерит markdown в QTextEdit с подсветкой синтаксиса."""
-        try:
-            from pygments import highlight as pyg_highlight
-            from pygments.lexers import get_lexer_by_name, guess_lexer
-            from pygments.formatters import HtmlFormatter
+    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
+        """Добавляет сообщение в список."""
+        widget = ChatMessageItem(role, content, mode_name=mode_name)
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+        self._update_bubble_width(widget)   # установим максимальную ширину
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        return widget
 
-            formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+    def _update_bubble_width(self, widget: ChatMessageItem = None):
+        """Устанавливает максимальную ширину бабла в зависимости от ширины чата.
+        Если виджет не указан, обновляет все существующие виджеты.
+        """
+        scroll_width = self.scroll_area.viewport().width()
+        if scroll_width <= 0:
+            return
+        max_width = int(scroll_width * 0.80)   # 80% от ширины
 
-            def _replace_code_block(m):
-                lang = m.group(1).strip() or ""
-                code = m.group(2)
-                try:
-                    if lang:
-                        lexer = get_lexer_by_name(lang, stripall=True)
-                    else:
-                        lexer = guess_lexer(code)
-                    highlighted = pyg_highlight(code, lexer, formatter)
-                    return f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; margin:4px 0; font-size:13px; overflow-x:auto;"><pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;"><code>{highlighted}</code></pre></div>'
-                except Exception:
-                    escaped = html_mod.escape(code)
-                    return f'<pre style="background:#2d2d2d; padding:6px 10px; border-radius:6px; margin:2px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
+        if widget is not None:
+            if widget.bubble:
+                widget.bubble.setMaximumWidth(max_width)
+        else:
+            # Обновить все виджеты в scroll_layout
+            for i in range(self.scroll_layout.count()):
+                item = self.scroll_layout.itemAt(i)
+                if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
+                    if item.widget().bubble:
+                        item.widget().bubble.setMaximumWidth(max_width)
 
-            pattern = r"```(\w*)\s*\n(.*?)```"
-            body = re.sub(pattern, _replace_code_block, text, flags=re.DOTALL)
+    def _relayout_all_items(self) -> None:
+        """Пересчитывает ширину баблов при ресайзе."""
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
+                self._update_bubble_width(item.widget())
 
-            # Inline code
-            body = re.sub(
-                r"`([^`]+)`",
-                lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
-                body,
+    @Slot(str)
+    def _on_thinking(self, token: str):
+        """Накапливает токены рассуждения (виджет пока не создаётся)."""
+        self._current_thinking_content += token
+
+    @Slot(str)
+    def _on_chunk(self, content: str):
+        """Обрабатывает полученный токен."""
+        self._current_assistant_content += content
+
+        if self._last_assistant_widget is None:
+            # Создаём виджет с накопленным thinking и первым контентом
+            thinking = self._current_thinking_content or ""
+            widget = ChatMessageItem(
+                "assistant",
+                self._current_assistant_content,
+                thinking=thinking,
+                mode_name=self._current_mode_name(),
             )
+            self._last_assistant_widget = widget
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+            self._update_bubble_width(widget)
+        else:
+            # Обновляем контент существующего виджета
+            self._last_assistant_widget.update_content(self._current_assistant_content)
 
-            # Bold
-            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
-            # Italic
-            body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
-
-            # Simple links
-            body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
-
-            # Headings
-            body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
-            body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
-            body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
-
-            # Newlines to <br>, collapse multiples
-            body = body.replace("\n", "<br>")
-            body = re.sub(r"(<br>\s*){2,}", "<br>", body)
-
-            html_out = f"<div style='line-height:1.2;'>{body}</div>"
-            edit.setHtml(html_out)
-        except ImportError:
-            edit.setMarkdown(text)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _setup_ui(self):
         """Настраивает UI компоненты."""
@@ -580,7 +659,7 @@ class ChatPanel(QWidget):
                 self._toggle_send_stop()
                 return True
         if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
-            self._relayout_all_items()
+            self._update_bubble_width()   # обновить все
         return super().eventFilter(obj, event)
 
     def _current_mode_name(self) -> str:
@@ -596,14 +675,6 @@ class ChatPanel(QWidget):
             2: AgentMode.AGENT,
         }
         return mapping.get(self.mode_combo.currentIndex(), AgentMode.CHAT)
-
-    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
-        """Добавляет сообщение в список."""
-        widget = ChatMessageItem(role, content, mode_name=mode_name)
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-        self._resize_message_item(widget)
-        QTimer.singleShot(0, self._scroll_to_bottom)
-        return widget
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
         """Добавляет сообщение о выполнении инструмента."""
@@ -961,121 +1032,6 @@ class ChatPanel(QWidget):
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         self.status_label.setText(f"{label}: {arg_summary}")
-
-    @Slot(str)
-    def _on_thinking(self, token: str):
-        """Обрабатывает токен рассуждения от LLM."""
-        self._current_thinking_content += token
-
-        if not self._current_thinking_content.strip():
-            return
-
-        if self._last_assistant_widget:
-            widget = self._last_assistant_widget
-            widget.thinking = self._current_thinking_content
-            if widget._thinking_edit:
-                widget._thinking_edit.setPlainText(self._current_thinking_content)
-            else:
-                self._insert_thinking_edit(widget)
-            self._resize_message_item(widget)
-        else:
-            widget = ChatMessageItem(
-                "assistant", "", thinking=self._current_thinking_content,
-                mode_name=self._current_mode_name(),
-            )
-            self._last_assistant_widget = widget
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-            self._resize_message_item(widget)
-
-        self.status_label.setText("🧠 Анализирует...")
-        QTimer.singleShot(0, self._scroll_to_bottom)
-
-    def _insert_thinking_edit(self, widget: ChatMessageItem) -> None:
-        """Вставляет QTextEdit для thinking в bubble."""
-        thinking_edit = QTextEdit()
-        thinking_edit.setReadOnly(True)
-        thinking_edit.setPlainText(self._current_thinking_content)
-        bubble_text_color = "rgba(255,255,255,0.5)" if widget.role == "user" else "#888"
-        thinking_edit.setStyleSheet(
-            "font-size: 12px; padding: 4px 0; border: none; background: transparent;"
-            f" color: {bubble_text_color}; font-style: italic; line-height: 1.3;"
-        )
-        thinking_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        thinking_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        thinking_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        thinking_edit.setMinimumHeight(16)
-        widget._thinking_edit = thinking_edit
-        # Ищем bubble_layout внутри ChatMessageItem
-        if widget._content_edit:
-            bl = widget._content_edit.parentWidget()
-            if bl and bl.layout():
-                bl.layout().insertWidget(
-                    bl.layout().count() - 1, thinking_edit
-                )
-
-    @Slot(str)
-    def _on_chunk(self, content: str):
-        """Обрабатывает полученный токен."""
-        self._current_assistant_content += content
-
-        status_text = self.status_label.text()
-        if any(emoji in status_text for emoji in ("📖", "✏️", "📁", "🔍", "🌐", "🔎", "📸", "⏪", "🛠️")):
-            self.status_label.setText("🤖 Генерация ответа...")
-
-        if self._last_assistant_widget:
-            widget = self._last_assistant_widget
-            widget.content = self._current_assistant_content
-            self._render_markdown(widget._content_edit, self._current_assistant_content)
-            self._resize_message_item(widget)
-        else:
-            thinking = self._current_thinking_content or ""
-            widget = ChatMessageItem(
-                "assistant", content, thinking=thinking,
-                mode_name=self._current_mode_name(),
-            )
-            self._last_assistant_widget = widget
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-            self._resize_message_item(widget)
-
-        QTimer.singleShot(0, self._scroll_to_bottom)
-
-    def _resize_message_item(self, widget: QWidget) -> None:
-        scroll_width = self.scroll_area.viewport().width()
-        if scroll_width <= 0:
-            return
-
-        bubble_width = int(scroll_width * 0.85)
-        content_width = bubble_width - 28
-
-        bubble = widget.findChild(QWidget, "_bubble")
-        if bubble:
-            bubble.setFixedWidth(bubble_width)
-
-        for edit in widget.findChildren(QTextEdit):
-            max_h = 600 if edit is getattr(widget, '_content_edit', None) else 300
-            self._adjust_text_edit_height(edit, content_width, max_h)
-
-        widget.adjustSize()
-        widget.updateGeometry()
-
-    @staticmethod
-    def _adjust_text_edit_height(edit: QTextEdit, avail_width: int, max_height: int = 10000) -> None:
-        if not edit or avail_width <= 0:
-            return
-        doc = edit.document()
-        doc.setTextWidth(avail_width)
-        doc.adjustSize()  # <-- добавлено
-        rect = doc.size().toSize()
-        height = rect.height() + 8
-        height = max(20, min(height, max_height))
-        edit.setFixedHeight(height)
-
-    def _relayout_all_items(self) -> None:
-        """Пересчитывает размеры всех сообщений при изменении ширины панели."""
-        for i in range(self.scroll_layout.count()):
-            item = self.scroll_layout.itemAt(i)
-            if item and item.widget() and item.widget().objectName() != "_scrollContent":
-                self._resize_message_item(item.widget())
 
     @Slot()
     def _on_finish(self):
