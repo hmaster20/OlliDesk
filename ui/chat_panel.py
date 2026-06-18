@@ -184,6 +184,9 @@ class AgentChatThread(QThread):
         """Колбэк для каждого токена (вызывается из asyncio, пробрасывает в Qt)."""
         self.chunk_received.emit(token)
 
+    async def _on_thinking(self, token: str):
+        """Колбэк для токенов рассуждения (вызывается из asyncio)."""
+        self.thinking_received.emit(token)
 
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
@@ -263,7 +266,7 @@ class ChatMessageItem(QWidget):
             text_color = "white"
             align = Qt.AlignRight
         elif is_assistant:
-            bg = "#3a3a3a"          # чуть светлее фона
+            bg = "#3d3d3d"   # было #3a3a3a          # чуть светлее фона
             text_color = "#e0e0e0"
             align = Qt.AlignLeft
         else:
@@ -276,7 +279,7 @@ class ChatMessageItem(QWidget):
                 background-color: {bg};
                 border-radius: 12px;
                 padding: 6px 12px;
-                border: none;
+                border: 1px solid #555;
             }}
         """)
 
@@ -465,24 +468,29 @@ class ChatPanel(QWidget):
         return widget
 
     def _update_bubble_width(self, widget: ChatMessageItem = None):
-        """Устанавливает максимальную ширину бабла в зависимости от ширины чата.
-        Если виджет не указан, обновляет все существующие виджеты.
-        """
+        """Устанавливает максимальную ширину бабла и политику растяжения."""
+        from PySide6.QtWidgets import QSizePolicy
+
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
             return
-        max_width = int(scroll_width * 0.80)   # 80% от ширины
+        # max_width = int(scroll_width * 0.90)   # 90% от ширины чата
+        max_width = int(scroll_width * 1.30)
+
+        def apply_policy(bubble: QFrame):
+            bubble.setMaximumWidth(max_width)
+            bubble.setMinimumWidth(0)
+            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         if widget is not None:
             if widget.bubble:
-                widget.bubble.setMaximumWidth(max_width)
+                apply_policy(widget.bubble)
         else:
-            # Обновить все виджеты в scroll_layout
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
                 if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                     if item.widget().bubble:
-                        item.widget().bubble.setMaximumWidth(max_width)
+                        apply_policy(item.widget().bubble)
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
