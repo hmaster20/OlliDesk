@@ -5,6 +5,8 @@ import html as html_mod
 import json
 import re
 import threading
+
+from loguru import logger
 from typing import Any
 from pathlib import Path
 
@@ -247,6 +249,7 @@ class ChatMessageItem(QWidget):
         self.role = role
         self.content = content
         self.thinking = thinking
+        self.think_label = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
@@ -284,10 +287,13 @@ class ChatMessageItem(QWidget):
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
         bubble_layout.setSpacing(2)
+        self.bubble_layout = bubble_layout
+        self.text_color = text_color
 
         # Заголовок
-        if not is_tool:
-            header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
+        # Заголовок (роль) – показываем только для ассистента и системных, не для пользователя
+        if not is_tool and not is_user:
+            header = f"Ассистент ({mode_name})" if is_assistant else role
             role_label = QLabel(header)
             role_label.setStyleSheet(f"""
                 background-color: {bg};
@@ -300,8 +306,33 @@ class ChatMessageItem(QWidget):
                 margin-bottom: 2px;
             """)
             bubble_layout.addWidget(role_label)
+        # Для пользователя заголовок не выводим
+
+        # if not is_tool:
+        #     header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
+        #     role_label = QLabel(header)
+        #     role_label.setStyleSheet(f"""
+        #         background-color: {bg};
+        #         color: {text_color};
+        #         font-weight: 600;
+        #         font-size: 11px;
+        #         opacity: 0.7;
+        #         padding: 2px 0 4px 0;
+        #         border-bottom: 1px solid #666;
+        #         margin-bottom: 2px;
+        #     """)
+        #     bubble_layout.addWidget(role_label)
 
         # Блок рассуждений (если есть)
+        # if thinking:
+        #     think_label = QLabel(thinking)
+        #     think_label.setStyleSheet(
+        #         f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
+        #     )
+        #     think_label.setWordWrap(True)
+        #     bubble_layout.addWidget(think_label)
+
+
         if thinking:
             think_label = QLabel(thinking)
             think_label.setStyleSheet(
@@ -309,6 +340,7 @@ class ChatMessageItem(QWidget):
             )
             think_label.setWordWrap(True)
             bubble_layout.addWidget(think_label)
+            self.think_label = think_label
 
         # Основной контент
         self.content_label = QLabel()
@@ -322,15 +354,24 @@ class ChatMessageItem(QWidget):
         self._set_content(content)
         bubble_layout.addWidget(self.content_label)
 
-        # Выравнивание
+        # Выравнивание облаков
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
             inner.addStretch()
-            inner.addWidget(bubble, 1)   # растягиваем
+            inner.addWidget(bubble, 1)   # растягиваем, но ограничим maximumWidth
+            inner.addStretch()
         else:
-            inner.addWidget(bubble, 1)   # растягиваем для ассистента
-            # inner.addStretch()         # убираем, чтобы занимал всю ширину
+            inner.addWidget(bubble, 1)   # для ассистента – на всю ширину с ограничением 95%
+
+        # inner = QHBoxLayout()
+        # inner.setContentsMargins(6, 0, 6, 0)
+        # if is_user:
+        #     inner.addStretch()
+        #     inner.addWidget(bubble, 1)   # растягиваем
+        # else:
+        #     inner.addWidget(bubble, 1)   # растягиваем для ассистента
+        #     # inner.addStretch()         # убираем, чтобы занимал всю ширину
 
         outer.addLayout(inner)
         self.bubble = bubble
@@ -401,19 +442,38 @@ class ChatMessageItem(QWidget):
         self.content = new_content
         self._set_content(new_content)
 
+    # def update_thinking(self, new_thinking: str):
+    #     """Обновляет блок рассуждений (динамически)."""
+    #     self.thinking = new_thinking
+    #     # Найти существующий QLabel с thinking и обновить, либо создать
+    #     # Для простоты мы не поддерживаем динамическое обновление thinking
+    #     # (можно пересоздать виджет, но сейчас проще пересоздать всё сообщение)
+    #     # Однако в текущей архитектуре мы обычно обновляем thinking через _insert_thinking_edit
+    #     # В новом дизайне мы можем просто пересоздать виджет, но это сложнее.
+    #     # Я предлагаю оставить thinking как статичный блок, который не обновляется после создания.
+    #     # Если нужно динамическое обновление, лучше использовать QTextEdit, но мы от него отказались.
+    #     # Поэтому в _on_thinking мы будем пересоздавать виджет, если он ещё не создан.
+    #     # В текущем коде мы не будем динамически обновлять thinking.
+    #     pass
+
     def update_thinking(self, new_thinking: str):
-        """Обновляет блок рассуждений (динамически)."""
+        """Обновляет блок рассуждений."""
         self.thinking = new_thinking
-        # Найти существующий QLabel с thinking и обновить, либо создать
-        # Для простоты мы не поддерживаем динамическое обновление thinking
-        # (можно пересоздать виджет, но сейчас проще пересоздать всё сообщение)
-        # Однако в текущей архитектуре мы обычно обновляем thinking через _insert_thinking_edit
-        # В новом дизайне мы можем просто пересоздать виджет, но это сложнее.
-        # Я предлагаю оставить thinking как статичный блок, который не обновляется после создания.
-        # Если нужно динамическое обновление, лучше использовать QTextEdit, но мы от него отказались.
-        # Поэтому в _on_thinking мы будем пересоздавать виджет, если он ещё не создан.
-        # В текущем коде мы не будем динамически обновлять thinking.
-        pass
+        if self.think_label is None:
+            # Создаём новый QLabel для thinking и вставляем перед content_label
+            think_label = QLabel(new_thinking)
+            think_label.setStyleSheet(
+                f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
+            )
+            think_label.setWordWrap(True)
+            # Вставляем перед content_label (индекс 0, так как content_label последний)
+            # self.bubble_layout.insertWidget(self.bubble_layout.count() - 1, think_label)
+            #  Надёжнее вставлять перед content_label
+            index = self.bubble_layout.indexOf(self.content_label)
+            self.bubble_layout.insertWidget(index, think_label)
+            self.think_label = think_label
+        else:
+            self.think_label.setText(new_thinking)
 
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
@@ -467,30 +527,36 @@ class ChatPanel(QWidget):
         return widget
 
     def _update_bubble_width(self, widget: ChatMessageItem = None):
-        """Устанавливает максимальную ширину бабла и политику растяжения."""
+        """Устанавливает максимальную ширину бабла в зависимости от роли."""
         from PySide6.QtWidgets import QSizePolicy
 
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
             return
-        max_width = int(scroll_width * 0.90)   # 90% от ширины чата
 
-        def apply_policy(bubble: QFrame):
+        # Коэффициенты для разных ролей
+        ratios = {
+            "user": 0.80,       # запрос – 80%
+            "assistant": 0.95,  # ответ – 95%
+            "tool": 0.90,       # системные – по умолчанию
+            "system": 0.90,
+        }
+
+        def apply_policy(bubble: QFrame, role: str):
+            max_width = int(scroll_width * ratios.get(role, 0.90))
             bubble.setMaximumWidth(max_width)
             bubble.setMinimumWidth(0)
             bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         if widget is not None:
             if widget.bubble:
-                apply_policy(widget.bubble)
+                apply_policy(widget.bubble, widget.role)
         else:
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
                 if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                     if item.widget().bubble:
-                        apply_policy(item.widget().bubble)
-        print(max_width)
-        print(scroll_area.viewport().width())
+                        apply_policy(item.widget().bubble, item.widget().role)
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
@@ -499,33 +565,76 @@ class ChatPanel(QWidget):
             if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                 self._update_bubble_width(item.widget())
 
+    # @Slot(str)
+    # def _on_thinking(self, token: str):
+    #     """Накапливает токены рассуждения (виджет пока не создаётся)."""
+    #     self._current_thinking_content += token
+
     @Slot(str)
     def _on_thinking(self, token: str):
-        """Накапливает токены рассуждения (виджет пока не создаётся)."""
         self._current_thinking_content += token
-
-    @Slot(str)
-    def _on_chunk(self, content: str):
-        """Обрабатывает полученный токен."""
-        self._current_assistant_content += content
-
         if self._last_assistant_widget is None:
-            # Создаём виджет с накопленным thinking и первым контентом
-            thinking = self._current_thinking_content or ""
+            # Создаём виджет с пустым контентом и текущим thinking
             widget = ChatMessageItem(
                 "assistant",
-                self._current_assistant_content,
-                thinking=thinking,
+                "",  # контент пока пуст
+                thinking=self._current_thinking_content,
                 mode_name=self._current_mode_name(),
             )
             self._last_assistant_widget = widget
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
         else:
-            # Обновляем контент существующего виджета
+            # Обновляем thinking у существующего виджета
+            self._last_assistant_widget.update_thinking(self._current_thinking_content)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+
+    # @Slot(str)
+    # def _on_chunk(self, content: str):
+    #     """Обрабатывает полученный токен."""
+    #     self._current_assistant_content += content
+
+    #     if self._last_assistant_widget is None:
+    #         # Создаём виджет с накопленным thinking и первым контентом
+    #         thinking = self._current_thinking_content or ""
+    #         widget = ChatMessageItem(
+    #             "assistant",
+    #             self._current_assistant_content,
+    #             thinking=thinking,
+    #             mode_name=self._current_mode_name(),
+    #         )
+    #         self._last_assistant_widget = widget
+    #         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+    #         self._update_bubble_width(widget)
+    #     else:
+    #         # Обновляем контент существующего виджета
+    #         self._last_assistant_widget.update_content(self._current_assistant_content)
+
+    #     QTimer.singleShot(0, self._scroll_to_bottom)
+
+
+    @Slot(str)
+    def _on_chunk(self, content: str):
+        self._current_assistant_content += content
+
+        if self._last_assistant_widget is None:
+            # Если виджет ещё не создан (не было thinking), создаём его
+            widget = ChatMessageItem(
+                "assistant",
+                self._current_assistant_content,
+                thinking=self._current_thinking_content,
+                mode_name=self._current_mode_name(),
+            )
+            self._last_assistant_widget = widget
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+            self._update_bubble_width(widget)
+        else:
+            # Обновляем контент у существующего виджета
             self._last_assistant_widget.update_content(self._current_assistant_content)
 
         QTimer.singleShot(0, self._scroll_to_bottom)
+
 
     def _setup_ui(self):
         """Настраивает UI компоненты."""
@@ -639,10 +748,8 @@ class ChatPanel(QWidget):
 
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
-        self.input_edit.setFixedHeight(80)
-        self.input_edit.setStyleSheet(
-            "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
-        )
+        self.input_edit.setFixedHeight(100)
+        self.input_edit.setStyleSheet("font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;")
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
         self._enter_pressed = False
@@ -790,6 +897,8 @@ class ChatPanel(QWidget):
 
     def _send_message(self):
         """Отправляет сообщение в чат (в зависимости от режима)."""
+        if self._generating:
+            return   # или показать уведомление
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
@@ -822,7 +931,7 @@ class ChatPanel(QWidget):
         """Запускает обычный чат (режим Chat)."""
         self._generating = True
         self._set_button_stop()
-        self.input_edit.setEnabled(False)
+        # self.input_edit.setEnabled(False) # Блокировка поля ввода
         self.status_label.setText("Поиск в кодовой базе...")
         self._rag_context = None
 
@@ -907,7 +1016,7 @@ class ChatPanel(QWidget):
         """Запускает цикл агента (режимы Plan / Agent)."""
         self._generating = True
         self._set_button_stop()
-        self.input_edit.setEnabled(False)
+        # self.input_edit.setEnabled(False) # Блокировка поля ввода
         self.status_label.setText("🤖 Агент думает...")
 
         if self.vector_store:
