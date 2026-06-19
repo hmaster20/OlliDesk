@@ -248,66 +248,69 @@ class ChatMessageItem(QWidget):
         self.content = content
         self.thinking = thinking
 
-        # Основной layout – отступы между сообщениями
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
         outer.setSpacing(0)
 
-        # Бабл (QFrame)
         bubble = QFrame()
         bubble.setObjectName("_bubble")
         is_user = role == "user"
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
 
-        # Цвета и стили
+        # Настройка цветов и стилей
         if is_user:
-            bg = "#2b6f9e"
-            text_color = "white"
-            align = Qt.AlignRight
-        elif is_assistant:
-            bg = "#3d3d3d"   # было #3a3a3a          # чуть светлее фона
+            bg = "#3d3d3d"
             text_color = "#e0e0e0"
-            align = Qt.AlignLeft
+            border = "1px solid #555"
+        elif is_assistant:
+            bg = "transparent"
+            text_color = "#e0e0e0"
+            border = "none"
         else:
             bg = "transparent"
             text_color = "#999"
-            align = Qt.AlignLeft
+            border = "none"
 
         bubble.setStyleSheet(f"""
             QFrame#_bubble {{
                 background-color: {bg};
                 border-radius: 12px;
                 padding: 6px 12px;
-                border: 1px solid #555;
+                border: {border};
             }}
         """)
 
-        # Внутренний layout бабла
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
         bubble_layout.setSpacing(2)
 
-        # Заголовок (роль)
+        # Заголовок
         if not is_tool:
             header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
             role_label = QLabel(header)
-            role_label.setStyleSheet(
-                f"font-weight: 600; font-size: 11px; color: {text_color}; opacity: 0.7;"
-            )
+            role_label.setStyleSheet(f"""
+                background-color: {bg};
+                color: {text_color};
+                font-weight: 600;
+                font-size: 11px;
+                opacity: 0.7;
+                padding: 2px 0 4px 0;
+                border-bottom: 1px solid #666;
+                margin-bottom: 2px;
+            """)
             bubble_layout.addWidget(role_label)
 
-        # Блок рассуждений (thinking)
+        # Блок рассуждений (если есть)
         if thinking:
             think_label = QLabel(thinking)
             think_label.setStyleSheet(
-                f"font-size: 12px; color: {text_color}; opacity: 0.6;"
-                " font-style: italic;"
+                f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
             )
             think_label.setWordWrap(True)
             bubble_layout.addWidget(think_label)
 
-        # Основной контент – QLabel с HTML
+        # Основной контент
         self.content_label = QLabel()
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -316,24 +319,20 @@ class ChatMessageItem(QWidget):
             f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
             f" color: {text_color}; background: transparent;"
         )
-        # Рендерим Markdown в HTML
         self._set_content(content)
         bubble_layout.addWidget(self.content_label)
 
-        # Выравнивание бабла внутри сообщения
+        # Выравнивание
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
             inner.addStretch()
-            inner.addWidget(bubble)
+            inner.addWidget(bubble, 1)   # растягиваем
         else:
-            inner.addWidget(bubble)
-            inner.addStretch()
+            inner.addWidget(bubble, 1)   # растягиваем для ассистента
+            # inner.addStretch()         # убираем, чтобы занимал всю ширину
 
         outer.addLayout(inner)
-
-        # Ограничиваем максимальную ширину бабла (80% от родителя)
-        # Это будет установлено позже в _update_bubble_width
         self.bubble = bubble
 
     def _set_content(self, text: str):
@@ -474,8 +473,7 @@ class ChatPanel(QWidget):
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
             return
-        # max_width = int(scroll_width * 0.90)   # 90% от ширины чата
-        max_width = int(scroll_width * 1.30)
+        max_width = int(scroll_width * 0.90)   # 90% от ширины чата
 
         def apply_policy(bubble: QFrame):
             bubble.setMaximumWidth(max_width)
@@ -491,6 +489,8 @@ class ChatPanel(QWidget):
                 if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                     if item.widget().bubble:
                         apply_policy(item.widget().bubble)
+        print(max_width)
+        print(scroll_area.viewport().width())
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
