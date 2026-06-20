@@ -84,7 +84,6 @@ class OllamaChatThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Неизвестная ошибка: {e}")
 
-
 class AgentChatThread(QThread):
     """Поток для выполнения цикла агента (режимы Plan / Agent)."""
 
@@ -903,6 +902,16 @@ class ChatPanel(QWidget):
         if not text:
             return
 
+        # Проверка на команду @web
+        if text.startswith("@web"):
+            query = text[4:].strip()
+            if query:
+                self._start_web_search(query)   # выполняем поиск без подтверждения
+                return
+            else:
+                self._add_message("system", "Укажите запрос после @web")
+                return
+
         self._create_session()
 
         user_message = ChatMessage(role="user", content=text)
@@ -926,6 +935,31 @@ class ChatPanel(QWidget):
             or (self._agent_thread and self._agent_thread.isRunning())
             or (self._rag_thread and self._rag_thread.isRunning())
         )
+
+    def _start_web_search(self, query: str):
+        """Запускает быстрый интернет-поиск без RAG и подтверждений."""
+        if not query.strip():
+            self._add_message("system", "⚠️ Укажите запрос после @web")
+            return
+
+        # Блокируем ввод и меняем кнопку
+        self._generating = True
+        self._set_button_stop()
+        self.input_edit.setEnabled(False)
+        self.status_label.setText("🌐 Поиск в интернете...")
+
+        # Создаём поток для асинхронного выполнения поиска и генерации
+        self._web_thread = WebSearchThread(
+            model=self.get_current_model(),
+            query=query,
+            base_url=self.base_url,
+            messages_history=list(self._messages),
+        )
+        self._web_thread.chunk_received.connect(self._on_chunk)
+        self._web_thread.thinking_received.connect(self._on_thinking)
+        self._web_thread.finish_received.connect(self._on_web_finish)
+        self._web_thread.error_occurred.connect(self._on_web_error)
+        self._web_thread.start()
 
     def _start_chat(self, text: str):
         """Запускает обычный чат (режим Chat)."""
@@ -1450,3 +1484,79 @@ class ChatPanel(QWidget):
             if text.startswith(prefix):
                 return text[len(prefix):]
         return text
+
+
+    @Slot()
+    def _on_web_finish(self):
+        """Завершает поисковый запрос."""
+        self._reset_send_button()
+        self._current_assistant_content = ""
+        self._current_thinking_content = ""
+        self._last_assistant_widget = None
+        self.status_label.setText("🌐 Поиск завершён")
+
+    @Slot(str)
+    def _on_web_error(self, error_msg: str):
+        """Обрабатывает ошибку поиска."""
+        self._add_message("system", f"❌ {error_msg}")
+        self._reset_send_button()
+        self.status_label.setText("❌ Ошибка поиска")
+
+class WebSearchThread(QThread):
+    """Поток для выполнения интернет-поиска и генерации ответа."""
+
+    chunk_received = Signal(str)
+    thinking_received = Signal(str)
+    finish_received = Signal()
+    error_occurred = Signal(str)
+
+    def __init__(self, model: str, query: str, base_url: str, messages_history: list[ChatMessage]):
+        super().__init__()
+        self.model = model
+        self.query = query
+        self.base_url = base_url
+        self.messages_history = messages_history
+
+    def run(self):
+        asyncio.run(self._run())
+
+    async def _run(self):
+        try:
+            # 1. Выполняем поиск (импортируем функцию web_search)
+            from tools.web_search import web_search
+            search_results = await web_search(query=self.query, max_results=5)
+
+            if not search_results or "Ничего не найдено" in search_results:
+                # Если ничего не найдено, отправляем сообщение об этом
+                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
+                return
+
+            # 2. Формируем системный промт и сообщения
+            system_prompt = (
+                "Ты — поисковый ассистент. Используй результаты поиска для ответа на вопрос. "
+                "Отвечай на русском языке, будь лаконичен и полезен."
+            )
+            user_content = f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                *self.messages_history,  # можно добавить историю, но обычно не нужно
+                ChatMessage(role="user", content=user_content),
+            ]
+
+            # 3. Отправляем запрос в Ollama (без инструментов, без RAG)
+            async with OllamaClient(base_url=self.base_url) as client:
+                async for chunk in client.chat(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                ):
+                    if chunk.reasoning_content:
+                        self.thinking_received.emit(chunk.reasoning_content)
+                    if chunk.content:
+                        self.chunk_received.emit(chunk.content)
+                    if chunk.done:
+                        self.finish_received.emit()
+
+        except Exception as e:
+            self.error_occurred.emit(f"Ошибка: {e}")
