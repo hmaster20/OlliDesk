@@ -1,28 +1,65 @@
-"""Инструмент поиска в интернете через DuckDuckGo."""
+"""Инструмент поиска в интернете через DuckDuckGo с несколькими стратегиями."""
 
 import asyncio
-import urllib.parse
-
 from loguru import logger
-
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
-
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 
+async def _search_ddgs_api(query: str, max_results: int) -> list:
+    """Использует duckduckgo_search с backend='api'."""
+    from duckduckgo_search import DDGS
+    with DDGS() as ddgs:
+        return list(ddgs.text(query, max_results=max_results, region='ru-ru', backend='api'))
+
+async def _search_ddgs_html(query: str, max_results: int) -> list:
+    """Использует duckduckgo_search с backend='html'."""
+    from duckduckgo_search import DDGS
+    with DDGS() as ddgs:
+        return list(ddgs.text(query, max_results=max_results, region='ru-ru', backend='html'))
+
+async def _search_curl_cffi(query: str, max_results: int) -> list:
+    """Использует curl_cffi для прямого запроса HTML."""
+    from curl_cffi import requests
+    from bs4 import BeautifulSoup
+    url = "https://html.duckduckgo.com/html/"
+    params = {"q": query, "ia": "web"}
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://duckduckgo.com/",
+        "DNT": "1",
+    }
+    session = requests.Session()
+    resp = session.get(url, params=params, headers=headers, impersonate="chrome", timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"HTTP {resp.status_code}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+    for item in soup.select(".result"):
+        title_el = item.select_one(".result__title a")
+        snippet_el = item.select_one(".result__snippet")
+        if title_el:
+            title = title_el.get_text(strip=True)
+            href = title_el.get("href", "")
+            if href.startswith("//"):
+                href = "https:" + href
+            body = snippet_el.get_text(strip=True) if snippet_el else ""
+            results.append({"title": title, "href": href, "body": body})
+    return results
 
 @tool(
     name="web_search",
     description="Ищет информацию в интернете. "
-    "Используйте для получения актуальных данных, документации, примеров кода.",
+                "Используйте для получения актуальных данных, документации, примеров кода.",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.PLAN, AgentMode.AGENT],
 )
-
 async def web_search(query: str, max_results: int = 5) -> str:
     """Ищет в интернете через DuckDuckGo (HTML API).
     Args:
@@ -32,24 +69,37 @@ async def web_search(query: str, max_results: int = 5) -> str:
         Результаты поиска
     """
     try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        # fallback на старый метод (с предупреждением)
-        return await _legacy_web_search(query, max_results)
+        max_results = int(max_results)
+    except (ValueError, TypeError):
+        max_results = 5
+    n = min(max(max_results, 1), 10)
 
-    try:
-        n = min(max(max_results, 1), 10)
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=n))
-        if not results:
-            return "Ничего не найдено."
-        parts = []
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "Без заголовка")
-            href = r.get("href", "")
-            body = r.get("body", "")
-            parts.append(f"{i}. {title}\n   {href}\n   {body[:300]}")
-        return "\n\n".join(parts)
-    except Exception as e:
-        logger.error(f"Ошибка веб-поиска: {e}")
-        return f"Ошибка поиска: {e}"
+    strategies = [
+        ("DDGS API", _search_ddgs_api),
+        ("DDGS HTML", _search_ddgs_html),
+        ("curl_cffi", _search_curl_cffi),
+    ]
+
+    for attempt in range(2):  # две попытки для каждой стратегии
+        for name, strategy in strategies:
+            try:
+                logger.debug(f"Попытка поиска через {name}...")
+                results = await strategy(query, n)
+                if results:
+                    parts = []
+                    for i, r in enumerate(results[:n], 1):
+                        title = r.get("title", "Без заголовка")
+                        href = r.get("href", "")
+                        body = r.get("body", "")
+                        parts.append(f"{i}. {title}\n   {href}\n   {body[:300]}")
+                    logger.debug(f"Веб-поиск ({name}): {query} -> {len(results)} результатов")
+                    return "\n\n".join(parts)
+            except Exception as e:
+                logger.warning(f"Стратегия {name} не удалась: {e}")
+                await asyncio.sleep(1)  # небольшая задержка перед следующей стратегией
+        # Если все стратегии не дали результатов, делаем паузу и пробуем ещё раз
+        if attempt == 0:
+            logger.warning("Все стратегии не дали результатов, повтор через 3 секунды...")
+            await asyncio.sleep(3)
+
+    return "Поиск временно недоступен. Попробуйте позже или измените запрос."
