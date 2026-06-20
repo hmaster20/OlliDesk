@@ -165,6 +165,7 @@ class OllamaClient:
         Raises:
             OllamaConnectionError: Если не удалось подключиться
             ModelNotFoundError: Если модель не найдена
+            ToolsNotSupportedError: Если модель не поддерживает инструменты
         """
         client = await self._get_client()
 
@@ -183,40 +184,52 @@ class OllamaClient:
 
         req_preview = json.dumps(request_data, default=str, ensure_ascii=False)[:2000]
         logger.info(f"Ollama request: {req_preview}")
+
         try:
             if stream:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/api/chat",
-                    json=request_data,
-                ) as response:
-                    if response.status_code >= 400:
-                        await response.aread()
-                        body = response.text[:2000]
-                        logger.error(f"Ollama {response.status_code}: {body}")
-                        if response.status_code == 404:
-                            raise ModelNotFoundError(f"Модель '{model}' не найдена")
-                        if "does not support tools" in body:
-                            raise ToolsNotSupportedError(
-                                f"Модель '{model}' не поддерживает вызов инструментов"
-                            )
-                        response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if self._cancel_requested:
-                            return
-                        if line:
-                            chunk_data = json.loads(line)
-                            msg = chunk_data.get("message", {})
-                            chunk = ChatChunk(
-                                content=msg.get("content", ""),
-                                reasoning_content=msg.get("reasoning_content", ""),
-                                tool_calls=[
-                                    ToolCall(**tc["function"])
-                                    for tc in msg.get("tool_calls", [])
-                                ] if msg.get("tool_calls") else None,
-                                done=chunk_data.get("done", False),
-                            )
-                            yield chunk
+                try:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/api/chat",
+                        json=request_data,
+                    ) as response:
+                        if response.status_code >= 400:
+                            await response.aread()
+                            body = response.text[:2000]
+                            logger.error(f"Ollama {response.status_code}: {body}")
+                            if response.status_code == 404:
+                                raise ModelNotFoundError(f"Модель '{model}' не найдена")
+                            if "does not support tools" in body:
+                                raise ToolsNotSupportedError(
+                                    f"Модель '{model}' не поддерживает вызов инструментов"
+                                )
+                            response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if self._cancel_requested:
+                                return
+                            if line:
+                                chunk_data = json.loads(line)
+                                msg = chunk_data.get("message", {})
+                                chunk = ChatChunk(
+                                    content=msg.get("content", ""),
+                                    reasoning_content=msg.get("reasoning_content", ""),
+                                    tool_calls=[
+                                        ToolCall(**tc["function"])
+                                        for tc in msg.get("tool_calls", [])
+                                    ] if msg.get("tool_calls") else None,
+                                    done=chunk_data.get("done", False),
+                                )
+                                yield chunk
+                except httpx.HTTPStatusError as e:
+                    # Перехватываем HTTPStatusError из client.stream()
+                    logger.error(f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}")
+                    if e.response.status_code == 404:
+                        raise ModelNotFoundError(f"Модель '{model}' не найдена") from e
+                    if e.response.status_code == 400 and "does not support tools" in e.response.text:
+                        raise ToolsNotSupportedError(
+                            f"Модель '{model}' не поддерживает вызов инструментов"
+                        ) from e
+                    raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
             else:
                 response = await client.post(
                     f"{self.base_url}/api/chat",
@@ -238,9 +251,6 @@ class OllamaClient:
         except httpx.ConnectError as e:
             logger.error(f"Ollama ConnectError ({type(e).__name__}): {e!r}")
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}")
-            raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
         except httpx.HTTPError as e:
             logger.error(f"Ollama HTTPError ({type(e).__name__}): {e!r}")
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
