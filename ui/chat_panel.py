@@ -902,15 +902,14 @@ class ChatPanel(QWidget):
         if not text:
             return
 
-        # Проверка на команду @web
+        # Команда @web
         if text.startswith("@web"):
             query = text[4:].strip()
             if query:
-                self._start_web_search(query)   # выполняем поиск без подтверждения
-                return
+                self._start_web_search(query)
             else:
-                self._add_message("system", "Укажите запрос после @web")
-                return
+                self._add_message("system", "⚠️ Укажите запрос после @web")
+            return
 
         self._create_session()
 
@@ -918,7 +917,6 @@ class ChatPanel(QWidget):
         self._messages.append(user_message)
         self.session_store.save_message(self._session_id, user_message)
         self._add_message("user", text)
-
         self.input_edit.clear()
         self.status_label.setText("Обработка...")
 
@@ -1314,15 +1312,16 @@ class ChatPanel(QWidget):
             self.mode_combo.setCurrentIndex(idx)
 
     def set_project_open(self, is_open: bool):
-        """Блокирует/разблокирует ввод при отсутствии открытого проекта."""
-        self.input_edit.setEnabled(is_open)
-        self.send_btn.setVisible(is_open)
+        """Обновляет состояние интерфейса при открытии/закрытии проекта."""
+        # Не блокируем ввод, только меняем подсказку
         if not is_open:
-            self.input_edit.setPlaceholderText("Сначала откройте проект (File → Open Project...)")
-            self.status_label.setText("Проект не открыт")
+            self.input_edit.setPlaceholderText("Введите сообщение... (@web для поиска в интернете)")
+            self.status_label.setText("Проект не открыт (RAG недоступен)")
         else:
-            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
-            self._reset_send_button()
+            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL+Enter — отправить, @web — поиск)")
+            self.status_label.setText("Готов к работе")
+        # Кнопка отправки всегда доступна
+        self.send_btn.setVisible(True)
 
     def set_registry(self, registry):
         """Устанавливает реестр моделей и обновляет список."""
