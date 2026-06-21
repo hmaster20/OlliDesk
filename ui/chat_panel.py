@@ -773,17 +773,14 @@ class ChatPanel(QWidget):
         try:
             if not self.input_edit or not self.input_edit.document():
                 return
-
             self.input_edit.blockSignals(True)   # блокируем рекурсию
             try:
                 cursor = self.input_edit.textCursor()
                 if cursor.isNull():
                     return
-
                 cursor.select(QTextCursor.SelectionType.Document)
-                cursor.setCharFormat(QTextCharFormat())   # сброс всех форматов
+                cursor.setCharFormat(QTextCharFormat())   # сброс форматов
                 cursor.clearSelection()
-
                 text = self.input_edit.toPlainText()
                 for m in re.finditer(r'^@web(?=\s|$)', text):
                     start, end = m.start(), m.end()
@@ -792,9 +789,9 @@ class ChatPanel(QWidget):
                     fmt = QTextCharFormat()
                     fmt.setForeground(QColor("#42a5f5"))
                     fmt.setFontWeight(QFont.Weight.Bold)
-                    fmt.setBackground(QColor("#e3f2fd"))
-                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
-                    fmt.setUnderlineColor(QColor("#42a5f5"))
+                    # Полупрозрачный фон, подходящий для обеих тем
+                    fmt.setBackground(QColor(60, 60, 60, 80))   # тёмно-серый с прозрачностью
+                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)  # убрать подчёркивание
                     cursor.mergeCharFormat(fmt)
             finally:
                 self.input_edit.blockSignals(False)   # обязательно разблокировать

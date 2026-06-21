@@ -3,6 +3,7 @@
 import asyncio
 
 from loguru import logger
+from ddgs import DDGS
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
@@ -11,6 +12,11 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
+
+async def _search_ddgs(query: str, max_results: int) -> list:
+    """Использует ddgs с backend='html'."""
+    with DDGS() as ddgs:
+        return list(ddgs.text(query, max_results=max_results, region='ru-ru', backend='html'))
 
 async def _search_ddgs_api(query: str, max_results: int) -> list:
     """Использует duckduckgo_search с backend='api'."""
@@ -83,18 +89,27 @@ async def web_search(query: str, max_results: int = 5, search_cache=None) -> str
         max_results = 5
     n = min(max(max_results, 1), 10)
 
+    # strategies = [
+    #     ("DDGS API", _search_ddgs_api),
+    #     ("DDGS HTML", _search_ddgs_html),
+    #     ("curl_cffi", _search_curl_cffi),
+    # ]
+
     strategies = [
-        ("DDGS API", _search_ddgs_api),
-        ("DDGS HTML", _search_ddgs_html),
+        ("DDGS HTML", _search_ddgs),
         ("curl_cffi", _search_curl_cffi),
     ]
-    result = None
 
     for attempt in range(2):
         for name, strategy in strategies:
             try:
                 results = await strategy(query, n)
                 if results:
+                    # Простая проверка: если первый результат не содержит слов из запроса, пропустить
+                    words = set(query.lower().split())
+                    if results and not any(word in results[0].get('title', '').lower() or word in results[0].get('body', '').lower() for word in words):
+                        logger.warning(f"Стратегия {name} вернула нерелевантные результаты, пробую следующую")
+                        continue
                     parts = []
                     for i, r in enumerate(results[:n], 1):
                         title = r.get("title", "Без заголовка")
@@ -102,7 +117,6 @@ async def web_search(query: str, max_results: int = 5, search_cache=None) -> str
                         body = r.get("body", "")
                         parts.append(f"{i}. {title}\n   {href}\n   {body[:300]}")
                     result = "\n\n".join(parts)
-                    logger.debug(f"Веб-поиск ({name}): {query} -> {len(results)} результатов")
                     if search_cache and result:
                         search_cache.set(query, result)
                     return result
