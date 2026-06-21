@@ -89,10 +89,19 @@ class EditorWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.web_view = QWebEngineView()
+        try:
+            self.web_view = QWebEngineView()
+        except Exception as e:
+            logger.error(f"Не удалось создать QWebEngineView: {e}")
+            # Можно создать заглушку QLabel
+            self.web_view = QLabel("WebEngine недоступен")
+
         layout.addWidget(self.web_view)
 
         html_path = get_resource_path("ui/web_editor/editor.html")
+        if not html_path.exists():
+            logger.error(f"editor.html не найден: {html_path}")
+
         self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
 
         logger.info(f"EditorWidget загружен: {html_path}")

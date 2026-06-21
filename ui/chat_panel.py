@@ -527,8 +527,10 @@ class ChatPanel(QWidget):
 
     def _update_bubble_width(self, widget: QWidget | None = None) -> None:
         """Устанавливает максимальную ширину бабла в зависимости от роли."""
-
-        scroll_width = self.scroll_area.viewport().width()
+        viewport = self.scroll_area.viewport()
+        if not viewport:
+            return
+        scroll_width = viewport.width()
         if scroll_width <= 0:
             return
 
@@ -768,23 +770,30 @@ class ChatPanel(QWidget):
         layout.addLayout(input_layout)
 
     def _highlight_web_command(self):
-        cursor = self.input_edit.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        cursor.setCharFormat(QTextCharFormat())
-        cursor.clearSelection()
-        text = self.input_edit.toPlainText()
-        for m in re.finditer(r'^@web(?=\s|$)', text):
-            start, end = m.start(), m.end()
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#42a5f5"))   # синий
-            fmt.setFontWeight(QFont.Weight.Bold)
-            cursor.mergeCharFormat(fmt)
-            # микро облачко
-            fmt.setBackground(QColor("#e3f2fd"))
-            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
-            fmt.setUnderlineColor(QColor("#42a5f5"))
+        try:
+            if not self.input_edit or not self.input_edit.document():
+                return
+            cursor = self.input_edit.textCursor()
+            if cursor.isNull():
+                return
+            cursor.select(QTextCursor.SelectionType.Document)
+            cursor.setCharFormat(QTextCharFormat())
+            cursor.clearSelection()
+            text = self.input_edit.toPlainText()
+            for m in re.finditer(r'^@web(?=\s|$)', text):
+                start, end = m.start(), m.end()
+                cursor.setPosition(start)
+                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#42a5f5"))   # синий
+                fmt.setFontWeight(QFont.Weight.Bold)
+                cursor.mergeCharFormat(fmt)
+                # микро облачко
+                fmt.setBackground(QColor("#e3f2fd"))
+                fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+                fmt.setUnderlineColor(QColor("#42a5f5"))
+        except Exception as e:
+            logger.warning(f"Ошибка в _highlight_web_command: {e}")
 
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
