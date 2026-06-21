@@ -1,11 +1,12 @@
 """Менеджер ролей и системных промтов."""
 from pathlib import Path
-from typing import Any
+
 import yaml
 from loguru import logger
 from pydantic import BaseModel
+
 from core.utils import get_app_data_dir
-from typing import Optional
+
 
 class RoleDefinition(BaseModel):
     """Описание роли."""
@@ -245,7 +246,7 @@ description: Стратегическое планирование, тактик
 Отвечай на русском языке.
 """
 
-    def get_role(self, role_id: str, project_path: Optional[Path] = None) -> RoleDefinition:
+    def get_role(self, role_id: str, project_path: Path | None = None) -> RoleDefinition:
         """Загружает роль сначала из проекта, затем глобально."""
         if project_path:
             local_path = project_path / ".ollidesk" / "roles" / f"{role_id}.md"
@@ -256,7 +257,7 @@ description: Стратегическое планирование, тактик
         # Глобальная
         return self.roles.get(role_id, self.roles["default"])
 
-    def _load_role_from_file(self, file_path: Path) -> Optional[RoleDefinition]:
+    def _load_role_from_file(self, file_path: Path) -> RoleDefinition | None:
         """Загружает одну роль из файла."""
         try:
             content = file_path.read_text(encoding="utf-8")

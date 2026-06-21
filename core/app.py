@@ -1,9 +1,9 @@
 """Инициализация приложения OlliDesk."""
 
 import sys
-from pathlib import Path
 
 from loguru import logger
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 from core.config import AppConfig, load_config
@@ -13,7 +13,7 @@ from core.utils import get_app_data_dir
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
-from PySide6.QtGui import QColor
+
 
 def _check_config_exists() -> bool:
     """Проверяет, существует ли файл конфигурации."""

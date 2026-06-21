@@ -3,11 +3,12 @@
 import json
 
 from loguru import logger
-from core.utils import get_resource_path
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+from core.utils import get_resource_path
 
 
 class PythonBridge(QObject):

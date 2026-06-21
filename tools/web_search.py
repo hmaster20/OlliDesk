@@ -1,7 +1,9 @@
 """Инструмент поиска в интернете через DuckDuckGo с несколькими стратегиями."""
 
 import asyncio
+
 from loguru import logger
+
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 
@@ -24,8 +26,8 @@ async def _search_ddgs_html(query: str, max_results: int) -> list:
 
 async def _search_curl_cffi(query: str, max_results: int) -> list:
     """Использует curl_cffi для прямого запроса HTML."""
-    from curl_cffi import requests
     from bs4 import BeautifulSoup
+    from curl_cffi import requests
     url = "https://html.duckduckgo.com/html/"
     params = {"q": query, "ia": "web"}
     headers = {

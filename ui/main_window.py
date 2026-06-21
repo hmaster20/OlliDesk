@@ -6,7 +6,7 @@ from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QStandardItemModel
+from PySide6.QtGui import QAction, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -26,21 +26,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from ui.file_tree_delegate import GitStatusDelegate
-from typing_extensions import override
 
 from agents.ollama_client import OllamaClient
 from core.config import AppConfig
+from core.model_registry import ModelRegistry
+from core.search_cache import SearchCache
+from core.system_prompts import SystemPromptManager
+from core.utils import get_app_data_dir
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
-from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
-from core.model_registry import ModelRegistry, ModelInfo
-from core.system_prompts import SystemPromptManager
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
-from core.search_cache import SearchCache
+from ui.file_tree_delegate import GitStatusDelegate
+
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -672,7 +672,6 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_prompt_editor(self):
-        from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
         if dlg.exec():
             # После сохранения обновляем тултипы

@@ -1,17 +1,22 @@
 """Диалог редактирования системных промтов и ролей."""
-import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QTextEdit,
-    QPushButton, QMessageBox, QSplitter, QLabel, QFileDialog, QComboBox
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QTextEdit,
+    QVBoxLayout,
 )
-from loguru import logger
 
-from core.system_prompts import SystemPromptManager
 from core.roles import RoleManager
-from core.utils import get_app_data_dir
+from core.system_prompts import SystemPromptManager
 
 
 class PromptEditorDialog(QDialog):

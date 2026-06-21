@@ -1,8 +1,18 @@
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem,
-                               QHeaderView, QPushButton, QHBoxLayout, QMessageBox, QFileDialog)
-from PySide6.QtCore import Qt
+
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
+
 from state.session_store import SessionStore
-from datetime import datetime
+
 
 class SessionManagerDialog(QDialog):
     def __init__(self, session_store: SessionStore, chat_panel, parent=None):

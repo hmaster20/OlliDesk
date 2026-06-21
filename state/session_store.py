@@ -1,14 +1,14 @@
 """Хранение сессий чата в SQLite."""
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
 from pydantic import BaseModel
 
 from agents.ollama_client import ChatMessage
-from datetime import timedelta
+
 
 class SessionInfo(BaseModel):
     """Информация о сессии."""

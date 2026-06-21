@@ -4,13 +4,11 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -22,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig, save_config
-from PySide6.QtWidgets import QInputDialog
+
 
 class ExcludePatternEditor(QWidget):
     """Редактор паттернов исключения (игнорирования)."""

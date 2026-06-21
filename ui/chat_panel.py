@@ -5,12 +5,11 @@ import html as html_mod
 import json
 import re
 import threading
+from typing import Any
 
 from loguru import logger
-from typing import Any
-from pathlib import Path
-
-from PySide6.QtCore import QTimer, Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -29,10 +28,10 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
-from core.model_registry import ModelRegistry, ModelInfo
-from core.roles import RoleManager, RoleDefinition
+from core.model_registry import ModelRegistry
+from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -383,13 +382,11 @@ class ChatMessageItem(QWidget):
 
     def _render_markdown_to_html(self, text: str) -> str:
         """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
-        import re
-        import html as html_mod
 
         try:
             from pygments import highlight as pyg_highlight
-            from pygments.lexers import get_lexer_by_name, guess_lexer
             from pygments.formatters import HtmlFormatter
+            from pygments.lexers import get_lexer_by_name, guess_lexer
 
             formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
 
@@ -529,7 +526,6 @@ class ChatPanel(QWidget):
 
     def _update_bubble_width(self, widget: ChatMessageItem = None):
         """Устанавливает максимальную ширину бабла в зависимости от роли."""
-        from PySide6.QtWidgets import QSizePolicy
 
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
@@ -776,7 +772,6 @@ class ChatPanel(QWidget):
         cursor.setCharFormat(QTextCharFormat())
         cursor.clearSelection()
         text = self.input_edit.toPlainText()
-        import re
         for m in re.finditer(r'^@web(?=\s|$)', text):
             start, end = m.start(), m.end()
             cursor.setPosition(start)

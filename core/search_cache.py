@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from loguru import logger
+
 
 class SearchCache:
     def __init__(self, cache_dir: Path):
@@ -31,9 +31,8 @@ class SearchCache:
                 ts = datetime.fromisoformat(ts_str)
                 if datetime.now() - ts < timedelta(hours=max_age_hours):
                     return result
-                else:
-                    conn.execute("DELETE FROM cache WHERE query = ?", (query,))
-                    conn.commit()
+                conn.execute("DELETE FROM cache WHERE query = ?", (query,))
+                conn.commit()
         return None
 
     def set(self, query: str, result: str):

@@ -17,6 +17,7 @@ logging.getLogger("chromadb").setLevel(logging.WARNING)
 
 # Мок для posthog, чтобы избежать ошибок capture()
 import types
+
 _posthog_mock = types.ModuleType("posthog")
 _posthog_mock.capture = lambda *a, **kw: None
 _posthog_mock.identify = lambda *a, **kw: None

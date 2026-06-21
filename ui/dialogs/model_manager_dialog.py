@@ -1,16 +1,24 @@
 """Диалог управления реестром моделей."""
 import subprocess
 import sys
-from pathlib import Path
 
+from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit, QLabel,
-    QProgressBar, QWidget, QToolButton, QMenu, QInputDialog
+    QDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
 )
-from loguru import logger
-from core.model_registry import ModelRegistry, ModelInfo
+
+from core.model_registry import ModelInfo, ModelRegistry
+
 
 class PullThread(QThread):
     """Поток для выполнения ollama pull."""
@@ -182,8 +190,9 @@ class ModelManagerDialog(QDialog):
         """Проверяет поддержку инструментов для модели."""
         # Вызываем метод из основного приложения? Проще запустить проверку здесь же.
         # Но можно вызвать через сигнал или просто выполнить.
-        from agents.ollama_client import OllamaClient
         import asyncio
+
+        from agents.ollama_client import OllamaClient
         async def check():
             client = OllamaClient(base_url=self.ollama_url)
             async with client:
