@@ -904,6 +904,12 @@ class ChatPanel(QWidget):
             self._ollama_thread.cancel()
         if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
             self._agent_thread.client.cancel_request()
+        if hasattr(self, '_web_thread') and self._web_thread and self._web_thread.isRunning():
+            self._web_thread.quit()
+            self._web_thread.wait(1000)
+            if self._web_thread.isRunning():
+                self._web_thread.terminate()
+                self._web_thread.wait(500)
         if self._rag_thread and self._rag_thread.isRunning():
             self._rag_thread.quit()
             self._rag_thread.wait(1000)
@@ -995,7 +1001,9 @@ class ChatPanel(QWidget):
             query=query,
             base_url=self.base_url,
             messages_history=list(self._messages),
+            search_cache=getattr(self, 'search_cache', None),
         )
+
         self._web_thread.chunk_received.connect(self._on_chunk)
         self._web_thread.thinking_received.connect(self._on_thinking)
         self._web_thread.finish_received.connect(self._on_web_finish)
@@ -1595,12 +1603,14 @@ class WebSearchThread(QThread):
     finish_received = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, model: str, query: str, base_url: str, messages_history: list[ChatMessage]):
+    def __init__(self, model: str, query: str, base_url: str,
+                 messages_history: list[ChatMessage], search_cache=None):
         super().__init__()
         self.model = model
         self.query = query
         self.base_url = base_url
         self.messages_history = messages_history
+        self.search_cache = search_cache
 
     def run(self):
         asyncio.run(self._run())
@@ -1609,7 +1619,8 @@ class WebSearchThread(QThread):
         try:
             # 1. Выполняем поиск (импортируем функцию web_search)
             from tools.web_search import web_search
-            search_results = await web_search(query=self.query, max_results=5)
+            search_results = await web_search(query=self.query, max_results=5,
+                                            search_cache=self.search_cache)
 
             if not search_results or "Ничего не найдено" in search_results:
                 # Если ничего не найдено, отправляем сообщение об этом
