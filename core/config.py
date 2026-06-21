@@ -114,6 +114,8 @@ class AppConfig(BaseModel):
     recent_projects: list[str] = Field(default_factory=list)
     wizard_dismissed: bool = False
     theme: str = "light"
+    last_model: str = ""
+    last_mode: str = "chat"
 
     @field_validator("recent_projects")
     @classmethod

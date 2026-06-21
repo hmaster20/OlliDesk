@@ -40,6 +40,7 @@ from ui.chat_panel import ChatPanel
 from core.model_registry import ModelRegistry, ModelInfo
 from core.system_prompts import SystemPromptManager
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
+from core.search_cache import SearchCache
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -266,6 +267,8 @@ class MainWindow(QMainWindow):
         # Правая панель скрыта по умолчанию
         self.right_panel.setVisible(False)
 
+        self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
+
         logger.info("Главное окно создано")
 
     def _setup_ui(self) -> None:
@@ -285,6 +288,10 @@ class MainWindow(QMainWindow):
 
         center_panel = self._create_center_panel()
         self.main_splitter.addWidget(center_panel)
+
+        # Инициализация кэша Web Search
+        self.search_cache = SearchCache(get_app_data_dir() / "cache")
+        self.chat_panel.set_search_cache(self.search_cache)
 
         self.main_splitter.setSizes([320, 800])
         layout.addWidget(self.main_splitter, stretch=1)
@@ -406,6 +413,12 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.tab_widget)
         return panel
+
+    def _on_chat_settings_changed(self, settings: dict):
+        self.config.last_model = settings.get("model", "")
+        self.config.last_mode = settings.get("mode", "chat")
+        from core.config import save_config
+        save_config(self.config)
 
     def _read_file(self, path: str) -> str:
         """Читает файл (callback для EditorWidget)."""
@@ -636,6 +649,11 @@ class MainWindow(QMainWindow):
         edit_prompts_action.triggered.connect(self._open_prompt_editor)
         view_menu.addAction(edit_prompts_action)
 
+        view_menu.addSeparator()
+        manage_sessions_action = QAction("Manage Sessions...", self)
+        manage_sessions_action.triggered.connect(self._open_session_manager)
+        view_menu.addAction(manage_sessions_action)
+
         help_menu = menubar.addMenu("&Help")
 
         wizard_action = QAction("Run Setup &Wizard...", self)
@@ -647,6 +665,11 @@ class MainWindow(QMainWindow):
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _open_session_manager(self):
+        from ui.dialogs.session_manager_dialog import SessionManagerDialog
+        dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
+        dlg.exec()
 
     def _open_prompt_editor(self):
         from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
@@ -806,6 +829,18 @@ class MainWindow(QMainWindow):
             embed_model=self.config.embed_model,
         )
         self.chat_panel.set_vector_store(self.vector_store)
+
+        # Загружаем последнюю сессию для этого проекта
+        sessions = self.session_store.list_sessions(str(project_path))
+        if sessions:
+            last = sessions[0]  # уже отсортированы по updated_at DESC
+            history = self.session_store.get_history(last.id, limit=1000)
+            self.chat_panel.set_session_id(last.id)
+            self.chat_panel.load_history(history)
+        else:
+            # создаём новую сессию, но не сразу, а при первом сообщении
+            pass
+
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
         self._previous_state = self.project_state.load(self.project_path)
@@ -817,6 +852,14 @@ class MainWindow(QMainWindow):
         project_settings = ProjectSettings.load(self.project_path)
         if project_settings.model:
             self.chat_panel.apply_settings(project_settings.model_dump())
+
+        # ДОБАВЛЯЕМ ПРИМЕНЕНИЕ ГЛОБАЛЬНЫХ НАСТРОЕК
+        if self.config.last_model:
+            self.chat_panel.set_model(self.config.last_model)
+        if self.config.last_mode:
+            mode_map = {"chat": 0, "plan": 1, "agent": 2}
+            idx = mode_map.get(self.config.last_mode, 0)
+            self.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self._start_indexing()
 
@@ -993,12 +1036,18 @@ class MainWindow(QMainWindow):
             "Powered by Ollama + PySide6",
         )
 
-    @override
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """Обрабатывает закрытие окна."""
+    def closeEvent(self, event):
         logger.info("Закрытие главного окна")
-        self._save_project_settings()
+        # Сохраняем глобальные (last_model, last_mode) всегда
+        self._save_project_settings() # сохраняет проектные (model, mode) в .ollidesk/project_settings.yaml
+        if self.chat_panel:
+            self.config.last_model = self.chat_panel.get_current_model()
+            mode_map = {0: "chat", 1: "plan", 2: "agent"}
+            self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
+            from core.config import save_config
+            save_config(self.config)
         self._stop_all_threads()
+        self._stop_model_check()
         event.accept()
 
     def _save_project_settings(self) -> None:
@@ -1098,10 +1147,7 @@ class MainWindow(QMainWindow):
         # Обновляем полный список, чтобы подтянуть все изменения
         self.chat_panel._update_model_list()
 
-    # В closeEvent добавляем остановку
-    def closeEvent(self, event: QCloseEvent) -> None:
-        logger.info("Закрытие главного окна")
-        self._save_project_settings()
-        self._stop_all_threads()
-        self._stop_model_check()
-        event.accept()
+    def _open_session_manager(self):
+        from ui.dialogs.session_manager_dialog import SessionManagerDialog
+        dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
+        dlg.exec()

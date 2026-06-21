@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig, save_config
-
+from PySide6.QtWidgets import QInputDialog
 
 class ExcludePatternEditor(QWidget):
     """Редактор паттернов исключения (игнорирования)."""

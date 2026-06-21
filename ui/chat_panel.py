@@ -32,6 +32,7 @@ from core.exceptions import ModelNotFoundError, OllamaConnectionError
 from core.model_registry import ModelRegistry, ModelInfo
 from core.roles import RoleManager, RoleDefinition
 from core.system_prompts import SystemPromptManager
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -462,7 +463,7 @@ class ChatMessageItem(QWidget):
             # Создаём новый QLabel для thinking и вставляем перед content_label
             think_label = QLabel(new_thinking)
             think_label.setStyleSheet(
-                f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
+                f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
             )
             think_label.setWordWrap(True)
             # Вставляем перед content_label (индекс 0, так как content_label последний)
@@ -481,6 +482,7 @@ class ChatPanel(QWidget):
     mode_changed = Signal(str)  # "chat", "plan", "agent"
     agent_panel_toggle = Signal(bool)  # показать/скрыть панель агента
     refresh_models_requested = Signal()
+    settings_changed = Signal(dict)   # {'model': str, 'mode': str}
 
     def __init__(
         self,
@@ -754,6 +756,8 @@ class ChatPanel(QWidget):
         self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
+        self.input_edit.textChanged.connect(self._highlight_web_command)
+
         self.scroll_area.viewport().installEventFilter(self)
 
         self.send_btn = QPushButton("▶ Отправить")
@@ -765,6 +769,26 @@ class ChatPanel(QWidget):
         input_layout.addWidget(self.send_btn)
 
         layout.addLayout(input_layout)
+
+    def _highlight_web_command(self):
+        cursor = self.input_edit.textCursor()
+        cursor.select(QTextCursor.Document)
+        cursor.setCharFormat(QTextCharFormat())
+        cursor.clearSelection()
+        text = self.input_edit.toPlainText()
+        import re
+        for m in re.finditer(r'^@web(?=\s|$)', text):
+            start, end = m.start(), m.end()
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#42a5f5"))   # синий
+            fmt.setFontWeight(QFont.Bold)
+            cursor.mergeCharFormat(fmt)
+            # микро облачко
+            fmt.setBackground(QColor("#e3f2fd"))
+            fmt.setUnderlineStyle(QTextCharFormat.SingleUnderline)
+            fmt.setUnderlineColor(QColor("#42a5f5"))
 
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
@@ -823,7 +847,20 @@ class ChatPanel(QWidget):
                 return  # Прерываем выполнение, не эммитим сигнал смены режима
 
         self.mode_changed.emit(mode)
-        self.gear_btn.setVisible(True)
+        self._emit_settings_changed()
+
+        # # СОХРАНЯЕМ РЕЖИМ В КОНФИГ
+        # from core.config import save_config
+        # from core.app import OlliDeskApp  # или получить config через parent
+        # # Лучше через сигнал в MainWindow
+        # self.gear_btn.setVisible(True)
+
+    def _emit_settings_changed(self):
+        mode_map = {0: "chat", 1: "plan", 2: "agent"}
+        self.settings_changed.emit({
+            "model": self.get_current_model(),
+            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat")
+        })
 
     def _toggle_agent_panel(self):
         """Показывает/скрывает панель настроек агента."""
@@ -833,8 +870,7 @@ class ChatPanel(QWidget):
         sb = self.scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _clear_chat(self):
-        """Очищает чат."""
+    def _clear_chat(self, keep_session: bool = False):
         while self.scroll_layout.count() > 1:
             item = self.scroll_layout.takeAt(0)
             if item.widget():
@@ -843,16 +879,20 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._rag_context = None
-        self._session_id = None
+        if not keep_session:
+            self._session_id = None
         self._last_assistant_widget = None
         self.status_label.setText("Чат очищен")
 
     def _create_session(self):
         """Создаёт новую сессию если её нет."""
         if not self._session_id:
-            self._session_id = self.session_store.create_session(
-                project_path=str(Path.cwd())
-            )
+            project_path = self.project_root if self.project_root else "global"
+            self._session_id = self.session_store.create_session(project_path)
+        # if not self._session_id:
+        #     self._session_id = self.session_store.create_session(
+        #         project_path=str(Path.cwd())
+        #     )
 
     def _toggle_send_stop(self):
         """Переключает между отправкой и остановкой генерации."""
@@ -939,6 +979,14 @@ class ChatPanel(QWidget):
         if not query.strip():
             self._add_message("system", "⚠️ Укажите запрос после @web")
             return
+
+        # ДОБАВЛЯЕМ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ В ЧАТ
+        self._create_session()
+        user_message = ChatMessage(role="user", content=f"@web {query}")
+        self._messages.append(user_message)
+        if self._session_id:
+            self.session_store.save_message(self._session_id, user_message)
+        self._add_message("user", f"🌐 Поиск в интернете: {query}")
 
         # Блокируем ввод и меняем кнопку
         self._generating = True
@@ -1082,7 +1130,14 @@ class ChatPanel(QWidget):
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=mode,
+            search_cache=getattr(self, 'search_cache', None),
         )
+
+        extra = {"project_root": context.project_root}
+        if context.vector_store:
+            extra["vector_store"] = context.vector_store
+        if hasattr(self, 'search_cache') and self.search_cache:
+            extra["search_cache"] = self.search_cache
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1400,6 +1455,20 @@ class ChatPanel(QWidget):
         if model_name:
             self._update_model_status(model_name)
             self._check_mode_compatibility()
+            self._save_current_settings()
+
+    def _save_current_settings(self):
+        """Сохраняет текущие настройки в конфиг."""
+        try:
+            from core.config import save_config
+            # Получаем config через parent или через сигнал
+            if self.parent() and hasattr(self.parent(), 'config'):
+                self.parent().config.last_model = self.get_current_model()
+                mode_map = {0: "chat", 1: "plan", 2: "agent"}
+                self.parent().config.last_mode = mode_map.get(self.mode_combo.currentIndex(), "chat")
+                save_config(self.parent().config)
+        except Exception as e:
+            logger.warning(f"Не удалось сохранить настройки: {e}")
 
     def set_checking_state(self, is_checking: bool):
         """Меняет иконку кнопки во время проверки (кнопка остаётся активной)."""
@@ -1500,6 +1569,28 @@ class ChatPanel(QWidget):
         self._add_message("system", f"❌ {error_msg}")
         self._reset_send_button()
         self.status_label.setText("❌ Ошибка поиска")
+
+    def set_session_id(self, session_id: str):
+        self._session_id = session_id
+
+    def load_history(self, messages: list[ChatMessage]):
+        self._clear_chat(keep_session=True)
+        for msg in messages:
+            # добавляем сообщения в виджет, но не сохраняем в БД повторно
+            self._add_message(msg.role, msg.content)
+            self._messages.append(msg)
+
+    def keyPressEvent(self, event):
+        if self.input_edit.hasFocus():
+            key = event.key()
+            if key in (Qt.Key_Backspace, Qt.Key_Delete):
+                # При удалении сбрасываем формат и убираем пробел, если он был после @web
+                pass
+            # остальное
+        super().keyPressEvent(event)
+
+    def set_search_cache(self, cache):
+        self.search_cache = cache
 
 class WebSearchThread(QThread):
     """Поток для выполнения интернет-поиска и генерации ответа."""

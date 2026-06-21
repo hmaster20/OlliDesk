@@ -60,7 +60,7 @@ async def _search_curl_cffi(query: str, max_results: int) -> list:
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.PLAN, AgentMode.AGENT],
 )
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5, search_cache=None) -> str:
     """Ищет в интернете через DuckDuckGo (HTML API).
     Args:
         query: Поисковый запрос
@@ -68,6 +68,11 @@ async def web_search(query: str, max_results: int = 5) -> str:
     Returns:
         Результаты поиска
     """
+    if search_cache:
+        cached = search_cache.get(query)
+        if cached:
+            return cached
+
     try:
         max_results = int(max_results)
     except (ValueError, TypeError):
@@ -79,11 +84,11 @@ async def web_search(query: str, max_results: int = 5) -> str:
         ("DDGS HTML", _search_ddgs_html),
         ("curl_cffi", _search_curl_cffi),
     ]
+    result = None
 
-    for attempt in range(2):  # две попытки для каждой стратегии
+    for attempt in range(2):
         for name, strategy in strategies:
             try:
-                logger.debug(f"Попытка поиска через {name}...")
                 results = await strategy(query, n)
                 if results:
                     parts = []
@@ -92,12 +97,14 @@ async def web_search(query: str, max_results: int = 5) -> str:
                         href = r.get("href", "")
                         body = r.get("body", "")
                         parts.append(f"{i}. {title}\n   {href}\n   {body[:300]}")
+                    result = "\n\n".join(parts)
                     logger.debug(f"Веб-поиск ({name}): {query} -> {len(results)} результатов")
-                    return "\n\n".join(parts)
+                    if search_cache and result:
+                        search_cache.set(query, result)
+                    return result
             except Exception as e:
                 logger.warning(f"Стратегия {name} не удалась: {e}")
-                await asyncio.sleep(1)  # небольшая задержка перед следующей стратегией
-        # Если все стратегии не дали результатов, делаем паузу и пробуем ещё раз
+                await asyncio.sleep(1)
         if attempt == 0:
             logger.warning("Все стратегии не дали результатов, повтор через 3 секунды...")
             await asyncio.sleep(3)

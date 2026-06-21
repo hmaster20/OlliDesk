@@ -13,7 +13,7 @@ from core.utils import get_app_data_dir
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
-
+from PySide6.QtGui import QColor
 
 def _check_config_exists() -> bool:
     """Проверяет, существует ли файл конфигурации."""
@@ -94,8 +94,18 @@ class OlliDeskApp:
         self._apply_theme(self.config.theme)
 
         self.main_window = MainWindow(self.config)
+
+        # Применяем глобальные настройки
+        if self.config.last_model:
+            self.main_window.chat_panel.set_model(self.config.last_model)
+        if self.config.last_mode:
+            mode_map = {"chat": 0, "plan": 1, "agent": 2}
+            idx = mode_map.get(self.config.last_mode, 0)
+            self.main_window.chat_panel.mode_combo.setCurrentIndex(idx)
+
         self.main_window.theme_changed.connect(self._on_theme_changed)
-        self.main_window.show()
+        self.main_window.showMaximized()
+        # self.main_window.show()
         logger.info("Приложение готово к работе")
 
         return self.app.exec()
@@ -108,6 +118,19 @@ class OlliDeskApp:
         """
         stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
         self.app.setStyleSheet(stylesheet)
+        # Для заголовка
+        palette = self.app.palette()
+        if theme == "dark":
+            palette.setColor(palette.ColorRole.Window, QColor("#2d2d2d"))
+            palette.setColor(palette.ColorRole.WindowText, QColor("#d4d4d4"))
+            palette.setColor(palette.ColorRole.Base, QColor("#1e1e1e"))
+            palette.setColor(palette.ColorRole.Text, QColor("#d4d4d4"))
+        else:
+            palette.setColor(palette.ColorRole.Window, QColor("#f0f0f0"))
+            palette.setColor(palette.ColorRole.WindowText, QColor("#000000"))
+            palette.setColor(palette.ColorRole.Base, QColor("#ffffff"))
+            palette.setColor(palette.ColorRole.Text, QColor("#000000"))
+        self.app.setPalette(palette)
 
     def _on_theme_changed(self, theme: str) -> None:
         """Обрабатывает смену темы от MainWindow.
