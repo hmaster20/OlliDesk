@@ -4,7 +4,11 @@ import logging
 import os
 import sys
 import traceback
+import types
 from loguru import logger
+from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType
+from PySide6.QtWidgets import QApplication
+from core.app import main
 
 
 # Отключаем телеметрию ChromaDB (posthog)
@@ -32,6 +36,21 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from core.app import main
+
+# Настройка обработчика сообщений Qt
+def qt_message_handler(mode, context, message):
+    if mode == QtMsgType.QtDebugMsg:
+        logger.debug(f"Qt: {message}")
+    elif mode == QtMsgType.QtInfoMsg:
+        logger.info(f"Qt: {message}")
+    elif mode == QtMsgType.QtWarningMsg:
+        logger.warning(f"Qt: {message}")
+    elif mode == QtMsgType.QtCriticalMsg:
+        logger.critical(f"Qt: {message}")
+    elif mode == QtMsgType.QtFatalMsg:
+        logger.critical(f"Qt FATAL: {message}")
+
+qInstallMessageHandler(qt_message_handler)
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
     logger.error("Необработанное исключение:")

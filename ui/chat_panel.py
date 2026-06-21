@@ -773,25 +773,31 @@ class ChatPanel(QWidget):
         try:
             if not self.input_edit or not self.input_edit.document():
                 return
-            cursor = self.input_edit.textCursor()
-            if cursor.isNull():
-                return
-            cursor.select(QTextCursor.SelectionType.Document)
-            cursor.setCharFormat(QTextCharFormat())
-            cursor.clearSelection()
-            text = self.input_edit.toPlainText()
-            for m in re.finditer(r'^@web(?=\s|$)', text):
-                start, end = m.start(), m.end()
-                cursor.setPosition(start)
-                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#42a5f5"))   # синий
-                fmt.setFontWeight(QFont.Weight.Bold)
-                cursor.mergeCharFormat(fmt)
-                # микро облачко
-                fmt.setBackground(QColor("#e3f2fd"))
-                fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
-                fmt.setUnderlineColor(QColor("#42a5f5"))
+
+            self.input_edit.blockSignals(True)   # блокируем рекурсию
+            try:
+                cursor = self.input_edit.textCursor()
+                if cursor.isNull():
+                    return
+
+                cursor.select(QTextCursor.SelectionType.Document)
+                cursor.setCharFormat(QTextCharFormat())   # сброс всех форматов
+                cursor.clearSelection()
+
+                text = self.input_edit.toPlainText()
+                for m in re.finditer(r'^@web(?=\s|$)', text):
+                    start, end = m.start(), m.end()
+                    cursor.setPosition(start)
+                    cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(QColor("#42a5f5"))
+                    fmt.setFontWeight(QFont.Weight.Bold)
+                    fmt.setBackground(QColor("#e3f2fd"))
+                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+                    fmt.setUnderlineColor(QColor("#42a5f5"))
+                    cursor.mergeCharFormat(fmt)
+            finally:
+                self.input_edit.blockSignals(False)   # обязательно разблокировать
         except Exception as e:
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
 

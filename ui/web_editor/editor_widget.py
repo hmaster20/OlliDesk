@@ -6,10 +6,9 @@ from loguru import logger
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget, QLabel
 
 from core.utils import get_resource_path
-
 
 class PythonBridge(QObject):
     """Мост между Python и JavaScript (сигнальная версия)."""
@@ -85,7 +84,6 @@ class EditorWidget(QWidget):
         self._setup_bridge()
 
     def _setup_ui(self):
-        """Настраивает UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -93,18 +91,18 @@ class EditorWidget(QWidget):
             self.web_view = QWebEngineView()
         except Exception as e:
             logger.error(f"Не удалось создать QWebEngineView: {e}")
-            # Можно создать заглушку QLabel
             self.web_view = QLabel("WebEngine недоступен")
+            self.web_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.web_view.setStyleSheet("color: #888; font-size: 16px; padding: 20px;")
 
         layout.addWidget(self.web_view)
 
-        html_path = get_resource_path("ui/web_editor/editor.html")
-        if not html_path.exists():
-            logger.error(f"editor.html не найден: {html_path}")
-
-        self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
-
-        logger.info(f"EditorWidget загружен: {html_path}")
+        if isinstance(self.web_view, QWebEngineView):
+            html_path = get_resource_path("ui/web_editor/editor.html")
+            if not html_path.exists():
+                logger.error(f"editor.html не найден: {html_path}")
+            self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
+            self._setup_bridge()   # настройка моста только для WebEngine
 
     def _setup_bridge(self):
         """Настраивает QWebChannel."""
