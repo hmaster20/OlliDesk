@@ -30,6 +30,7 @@ class AgentContext:
     extra_rules: str = ""
     max_tokens: int = 4096
     mode: AgentMode = AgentMode.AGENT
+    search_cache: object = None
 
 def _build_system_prompt(context: AgentContext) -> str:
     """Собирает system-промпт из контекста и роли."""
@@ -258,6 +259,8 @@ class AgentLoop:
                         extra["project_root"] = context.project_root
                     if context.vector_store:
                         extra["vector_store"] = context.vector_store
+                    if context.search_cache:
+                        extra["search_cache"] = context.search_cache
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
                     result = await self.registry.execute(tc, **extra)

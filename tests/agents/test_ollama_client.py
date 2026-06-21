@@ -174,7 +174,12 @@ class TestOllamaClient:
             "message": {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_1", "name": "read_file", "arguments": {"path": "main.py"}}
+                    {
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "main.py"}
+                        }
+                    }
                 ],
             },
             "done": True,
@@ -201,12 +206,9 @@ class TestOllamaClient:
     async def test_chat_connection_error(self, client):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.stream.side_effect = httpx.ConnectError("connection refused")
-
         messages = [ChatMessage(role="user", content="hi")]
-
-        with (
-            patch.object(client, "_get_client", return_value=mock_client),
-            pytest.raises(OllamaConnectionError, match="Не удалось подключиться"),
+        with patch.object(client, "_get_client", return_value=mock_client), pytest.raises(
+            OllamaConnectionError, match="Не удалось подключиться"
         ):
             async for _ in client.chat(model="test-model", messages=messages):
                 pass

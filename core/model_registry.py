@@ -1,10 +1,12 @@
 """Реестр моделей: справочник с описаниями и кэш возможностей."""
-import yaml
 from datetime import datetime
-from pathlib import Path
+
+import yaml
 from loguru import logger
 from pydantic import BaseModel, Field
+
 from core.utils import get_app_data_dir
+
 
 class ModelInfo(BaseModel):
     """Информация о модели в реестре."""
@@ -26,7 +28,7 @@ class ModelRegistry:
     def _load_or_create(self):
         if self.file_path.exists():
             try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
+                with open(self.file_path, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 for key, val in data.get("models", {}).items():
                     self.models[key] = ModelInfo(**val)

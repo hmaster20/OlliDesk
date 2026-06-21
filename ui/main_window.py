@@ -6,7 +6,7 @@ from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QStandardItemModel
+from PySide6.QtGui import QAction, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -26,20 +26,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from ui.file_tree_delegate import GitStatusDelegate
-from typing_extensions import override
 
 from agents.ollama_client import OllamaClient
 from core.config import AppConfig
+from core.model_registry import ModelRegistry
+from core.search_cache import SearchCache
+from core.system_prompts import SystemPromptManager
+from core.utils import get_app_data_dir
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
-from core.utils import get_app_data_dir
 from ui.chat_panel import ChatPanel
-from core.model_registry import ModelRegistry, ModelInfo
-from core.system_prompts import SystemPromptManager
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
+from ui.file_tree_delegate import GitStatusDelegate
+
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -266,6 +267,8 @@ class MainWindow(QMainWindow):
         # Правая панель скрыта по умолчанию
         self.right_panel.setVisible(False)
 
+        self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
+
         logger.info("Главное окно создано")
 
     def _setup_ui(self) -> None:
@@ -285,6 +288,10 @@ class MainWindow(QMainWindow):
 
         center_panel = self._create_center_panel()
         self.main_splitter.addWidget(center_panel)
+
+        # Инициализация кэша Web Search
+        self.search_cache = SearchCache(get_app_data_dir() / "cache")
+        self.chat_panel.set_search_cache(self.search_cache)
 
         self.main_splitter.setSizes([320, 800])
         layout.addWidget(self.main_splitter, stretch=1)
@@ -406,6 +413,13 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.tab_widget)
         return panel
+
+    def _on_chat_settings_changed(self, settings: dict):
+        self.config.last_model = settings.get("model", "")
+        self.config.last_mode = settings.get("mode", "chat")
+        from core.config import save_config
+        logger.info(f"⚙️ settings_changed: model={settings.get('model')}, mode={settings.get('mode')}")
+        save_config(self.config)
 
     def _read_file(self, path: str) -> str:
         """Читает файл (callback для EditorWidget)."""
@@ -636,6 +650,11 @@ class MainWindow(QMainWindow):
         edit_prompts_action.triggered.connect(self._open_prompt_editor)
         view_menu.addAction(edit_prompts_action)
 
+        view_menu.addSeparator()
+        manage_sessions_action = QAction("Manage Sessions...", self)
+        manage_sessions_action.triggered.connect(self._open_session_manager)
+        view_menu.addAction(manage_sessions_action)
+
         help_menu = menubar.addMenu("&Help")
 
         wizard_action = QAction("Run Setup &Wizard...", self)
@@ -649,7 +668,6 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def _open_prompt_editor(self):
-        from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
         if dlg.exec():
             # После сохранения обновляем тултипы
@@ -700,22 +718,18 @@ class MainWindow(QMainWindow):
         if ok and models:
             self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
             self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
-            # Синхронизируем реестр с реальным списком
             self.model_registry.sync_with_ollama(models)
-            # Передаём реестр в чат-панель (если ещё не передали)
             if not hasattr(self.chat_panel, 'registry') or self.chat_panel.registry is None:
                 self.chat_panel.set_registry(self.model_registry)
             else:
-                # Если уже передан, просто обновляем список
-                # self.chat_panel._update_model_list()
                 self.chat_panel.update_models(models)
-            # Выбираем первую локальную модель, если не выбрана
-            # if models:
-            #     first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
-            #     self.chat_panel.set_model(first_local)
-            if models:
-                first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
-                self.chat_panel.set_model(first_local)
+            # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
+            current_model = self.chat_panel.get_current_model()
+            if not current_model or current_model == "":
+                if models:
+                    first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+                    self.chat_panel.set_model(first_local)
+            # иначе оставляем текущую
         else:
             self.ollama_status_label.setText("● Ollama: Не подключен")
             self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
@@ -806,6 +820,18 @@ class MainWindow(QMainWindow):
             embed_model=self.config.embed_model,
         )
         self.chat_panel.set_vector_store(self.vector_store)
+
+        # Загружаем последнюю сессию для этого проекта
+        sessions = self.session_store.list_sessions(str(project_path))
+        if sessions:
+            last = sessions[0]  # уже отсортированы по updated_at DESC
+            history = self.session_store.get_history(last.id, limit=1000)
+            self.chat_panel.set_session_id(last.id)
+            self.chat_panel.load_history(history)
+        else:
+            # создаём новую сессию, но не сразу, а при первом сообщении
+            pass
+
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
         self._previous_state = self.project_state.load(self.project_path)
@@ -813,10 +839,18 @@ class MainWindow(QMainWindow):
         self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
 
-        # Восстанавливаем настройки проекта
+        # Восстанавливаем настройки проекта (они приоритетнее глобальных)
         project_settings = ProjectSettings.load(self.project_path)
         if project_settings.model:
             self.chat_panel.apply_settings(project_settings.model_dump())
+        else:
+            # Если проектных нет, применяем глобальные
+            if self.config.last_model:
+                self.chat_panel.set_model(self.config.last_model)
+            if self.config.last_mode:
+                mode_map = {"chat": 0, "plan": 1, "agent": 2}
+                idx = mode_map.get(self.config.last_mode, 0)
+                self.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self._start_indexing()
 
@@ -993,12 +1027,20 @@ class MainWindow(QMainWindow):
             "Powered by Ollama + PySide6",
         )
 
-    @override
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """Обрабатывает закрытие окна."""
+    def closeEvent(self, event):
         logger.info("Закрытие главного окна")
-        self._save_project_settings()
+        # Сохраняем глобальные (last_model, last_mode) всегда
+        self._save_project_settings() # сохраняет проектные (model, mode) в .ollidesk/project_settings.yaml
+        if self.chat_panel:
+            self.config.last_model = self.chat_panel.get_current_model()
+            mode_map = {0: "chat", 1: "plan", 2: "agent"}
+            self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
+            from core.config import save_config
+            logger.info(f"🔄 closeEvent: last_model='{self.config.last_model}', last_mode='{self.config.last_mode}'")
+            save_config(self.config)
+            logger.info("✅ Конфиг сохранён в closeEvent")
         self._stop_all_threads()
+        self._stop_model_check()
         event.accept()
 
     def _save_project_settings(self) -> None:
@@ -1024,17 +1066,6 @@ class MainWindow(QMainWindow):
                 loop.close()
             except Exception:
                 pass
-
-    @Slot(str, int, int)
-    def _on_model_check_progress(self, model_name: str, current: int, total: int):
-        self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
-
-    @Slot(dict)
-    def _on_model_check_finished(self, results: dict):
-        self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
-        self.chat_panel.set_checking_state(False)
-        # Обновляем UI, чтобы подтянуть новые статусы
-        self.chat_panel.update_models(self._available_models)
 
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
@@ -1097,11 +1128,9 @@ class MainWindow(QMainWindow):
         self._is_checking = False
         # Обновляем полный список, чтобы подтянуть все изменения
         self.chat_panel._update_model_list()
+        self.chat_panel.update_models(self._available_models)
 
-    # В closeEvent добавляем остановку
-    def closeEvent(self, event: QCloseEvent) -> None:
-        logger.info("Закрытие главного окна")
-        self._save_project_settings()
-        self._stop_all_threads()
-        self._stop_model_check()
-        event.accept()
+    def _open_session_manager(self):
+        from ui.dialogs.session_manager_dialog import SessionManagerDialog
+        dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
+        dlg.exec()

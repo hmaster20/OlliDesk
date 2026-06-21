@@ -1,7 +1,7 @@
 """Хранение сессий чата в SQLite."""
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
@@ -161,3 +161,24 @@ class SessionStore:
         ]
         logger.debug(f"Найдено сессий: {len(sessions)}")
         return sessions
+
+    def delete_session(self, session_id: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.commit()
+
+    def delete_old_sessions(self, days: int) -> int:
+        """Удаляет сессии старше days дней, возвращает количество удалённых."""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT id FROM sessions WHERE updated_at < ?", (cutoff,))
+            ids = [row[0] for row in cur.fetchall()]
+            for sid in ids:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            conn.commit()
+        return len(ids)
+
+    def get_session_messages(self, session_id: str) -> list[ChatMessage]:
+        return self.get_history(session_id, limit=1000)  # можно без лимита

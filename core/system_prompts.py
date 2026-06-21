@@ -1,9 +1,10 @@
 import re
-import yaml
 from pathlib import Path
-from typing import Optional
+
 from loguru import logger
+
 from core.utils import get_app_data_dir
+
 
 class SystemPromptManager:
     def __init__(self):
@@ -35,7 +36,7 @@ class SystemPromptManager:
                 file_path.write_text(content, encoding="utf-8")
                 logger.info(f"Создан дефолтный системный промт: {filename}")
 
-    def get_prompt(self, mode: str, project_root: Optional[Path] = None, context: Optional[dict] = None) -> str:
+    def get_prompt(self, mode: str, project_root: Path | None = None, context: dict | None = None) -> str:
         """
         Возвращает системный промт для режима (chat, plan, agent).
         Сначала ищет в проекте (если указан), затем глобально.
@@ -56,7 +57,7 @@ class SystemPromptManager:
             prompt = self._render(prompt, context)
         return prompt
 
-    def _load_prompt_from_path(self, mode: str, project_root: Optional[Path]) -> Optional[str]:
+    def _load_prompt_from_path(self, mode: str, project_root: Path | None) -> str | None:
         """Загружает промт из указанной папки (глобальной или проектной)."""
         if project_root is not None and not isinstance(project_root, Path):
             project_root = Path(project_root)

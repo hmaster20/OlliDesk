@@ -1,13 +1,11 @@
 """Кастомный делегат для подсветки Git-статуса в дереве файлов."""
 
 import subprocess
-from pathlib import Path
 
+from loguru import logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
-from loguru import logger
-
 
 _GIT_COLORS = {
     "M": QColor("#e06c75"),
@@ -52,7 +50,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         """Парсит git status --porcelain для корня репозитория."""
         self._status_map.clear()
         if not self._repo_path:
-            self.invalidate()
+            self.parent().update()
             return
         try:
             result = subprocess.run(
@@ -61,7 +59,7 @@ class GitStatusDelegate(QStyledItemDelegate):
                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode != 0:
-                self.invalidate()
+                self.parent().update()
                 return
             for line in result.stdout.splitlines():
                 if len(line) < 3:
@@ -71,7 +69,7 @@ class GitStatusDelegate(QStyledItemDelegate):
                 normalised = rel_path.replace("\\", "/")
                 symbol = raw_status.strip() or raw_status[0]
                 self._status_map[normalised] = symbol
-            self.invalidate()
+            self.parent().update()
         except FileNotFoundError:
             pass
         except Exception as exc:

@@ -5,12 +5,11 @@ import html as html_mod
 import json
 import re
 import threading
+from typing import Any
 
 from loguru import logger
-from typing import Any
-from pathlib import Path
-
-from PySide6.QtCore import QTimer, Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -22,6 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 
 from agents.agent_loop import AgentContext, AgentIterationLimitError, AgentLoop
@@ -29,9 +29,10 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
-from core.model_registry import ModelRegistry, ModelInfo
-from core.roles import RoleManager, RoleDefinition
+from core.model_registry import ModelRegistry
+from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
+
 
 class OllamaChatThread(QThread):
     """Поток для асинхронного общения с Ollama (режим Chat)."""
@@ -84,7 +85,6 @@ class OllamaChatThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Неизвестная ошибка: {e}")
 
-
 class AgentChatThread(QThread):
     """Поток для выполнения цикла агента (режимы Plan / Agent)."""
 
@@ -117,7 +117,7 @@ class AgentChatThread(QThread):
         self.agent_mode = agent_mode
         self.max_iterations = max_iterations
 
-        self._tool_response: tuple[bool, dict] | None = None
+        self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
@@ -345,7 +345,7 @@ class ChatMessageItem(QWidget):
         # Основной контент
         self.content_label = QLabel()
         self.content_label.setWordWrap(True)
-        self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.content_label.setOpenExternalLinks(True)
         self.content_label.setStyleSheet(
             f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
@@ -383,13 +383,11 @@ class ChatMessageItem(QWidget):
 
     def _render_markdown_to_html(self, text: str) -> str:
         """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
-        import re
-        import html as html_mod
 
         try:
             from pygments import highlight as pyg_highlight
-            from pygments.lexers import get_lexer_by_name, guess_lexer
             from pygments.formatters import HtmlFormatter
+            from pygments.lexers import get_lexer_by_name, guess_lexer
 
             formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
 
@@ -463,7 +461,7 @@ class ChatMessageItem(QWidget):
             # Создаём новый QLabel для thinking и вставляем перед content_label
             think_label = QLabel(new_thinking)
             think_label.setStyleSheet(
-                f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
+                f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
             )
             think_label.setWordWrap(True)
             # Вставляем перед content_label (индекс 0, так как content_label последний)
@@ -482,6 +480,7 @@ class ChatPanel(QWidget):
     mode_changed = Signal(str)  # "chat", "plan", "agent"
     agent_panel_toggle = Signal(bool)  # показать/скрыть панель агента
     refresh_models_requested = Signal()
+    settings_changed = Signal(dict)   # {'model': str, 'mode': str}
 
     def __init__(
         self,
@@ -526,9 +525,8 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
 
-    def _update_bubble_width(self, widget: ChatMessageItem = None):
+    def _update_bubble_width(self, widget: QWidget | None = None) -> None:
         """Устанавливает максимальную ширину бабла в зависимости от роли."""
-        from PySide6.QtWidgets import QSizePolicy
 
         scroll_width = self.scroll_area.viewport().width()
         if scroll_width <= 0:
@@ -546,7 +544,7 @@ class ChatPanel(QWidget):
             max_width = int(scroll_width * ratios.get(role, 0.90))
             bubble.setMaximumWidth(max_width)
             bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         if widget is not None:
             if widget.bubble:
@@ -687,9 +685,9 @@ class ChatPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
-        self.mode_combo.setItemData(0, "Chat — Обычный диалог с LLM. Без инструментов, только текст.", Qt.ToolTipRole)
-        self.mode_combo.setItemData(1, "Plan — Чтение файлов и поиск по коду (read-only). Подготовка к изменениям.", Qt.ToolTipRole)
-        self.mode_combo.setItemData(2, "Agent — Полный доступ: чтение, запись, Git, поиск. Автономные изменения кода.", Qt.ToolTipRole)
+        self.mode_combo.setItemData(0, "Chat — Обычный диалог с LLM. Без инструментов, только текст.", Qt.ItemDataRole.ToolTipRole)
+        self.mode_combo.setItemData(1, "Plan — Чтение файлов и поиск по коду (read-only). Подготовка к изменениям.", Qt.ItemDataRole.ToolTipRole)
+        self.mode_combo.setItemData(2, "Agent — Полный доступ: чтение, запись, Git, поиск. Автономные изменения кода.", Qt.ItemDataRole.ToolTipRole)
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -755,6 +753,8 @@ class ChatPanel(QWidget):
         self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
+        self.input_edit.textChanged.connect(self._highlight_web_command)
+
         self.scroll_area.viewport().installEventFilter(self)
 
         self.send_btn = QPushButton("▶ Отправить")
@@ -766,6 +766,25 @@ class ChatPanel(QWidget):
         input_layout.addWidget(self.send_btn)
 
         layout.addLayout(input_layout)
+
+    def _highlight_web_command(self):
+        cursor = self.input_edit.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.setCharFormat(QTextCharFormat())
+        cursor.clearSelection()
+        text = self.input_edit.toPlainText()
+        for m in re.finditer(r'^@web(?=\s|$)', text):
+            start, end = m.start(), m.end()
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#42a5f5"))   # синий
+            fmt.setFontWeight(QFont.Weight.Bold)
+            cursor.mergeCharFormat(fmt)
+            # микро облачко
+            fmt.setBackground(QColor("#e3f2fd"))
+            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+            fmt.setUnderlineColor(QColor("#42a5f5"))
 
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
@@ -824,7 +843,20 @@ class ChatPanel(QWidget):
                 return  # Прерываем выполнение, не эммитим сигнал смены режима
 
         self.mode_changed.emit(mode)
-        self.gear_btn.setVisible(True)
+        self._emit_settings_changed()
+
+        # # СОХРАНЯЕМ РЕЖИМ В КОНФИГ
+        # from core.config import save_config
+        # from core.app import OlliDeskApp  # или получить config через parent
+        # # Лучше через сигнал в MainWindow
+        # self.gear_btn.setVisible(True)
+
+    def _emit_settings_changed(self):
+        mode_map = {0: "chat", 1: "plan", 2: "agent"}
+        self.settings_changed.emit({
+            "model": self.get_current_model(),
+            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat")
+        })
 
     def _toggle_agent_panel(self):
         """Показывает/скрывает панель настроек агента."""
@@ -834,8 +866,7 @@ class ChatPanel(QWidget):
         sb = self.scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _clear_chat(self):
-        """Очищает чат."""
+    def _clear_chat(self, keep_session: bool = False):
         while self.scroll_layout.count() > 1:
             item = self.scroll_layout.takeAt(0)
             if item.widget():
@@ -844,16 +875,20 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._rag_context = None
-        self._session_id = None
+        if not keep_session:
+            self._session_id = None
         self._last_assistant_widget = None
         self.status_label.setText("Чат очищен")
 
     def _create_session(self):
         """Создаёт новую сессию если её нет."""
         if not self._session_id:
-            self._session_id = self.session_store.create_session(
-                project_path=str(Path.cwd())
-            )
+            project_path = self.project_root if self.project_root else "global"
+            self._session_id = self.session_store.create_session(project_path)
+        # if not self._session_id:
+        #     self._session_id = self.session_store.create_session(
+        #         project_path=str(Path.cwd())
+        #     )
 
     def _toggle_send_stop(self):
         """Переключает между отправкой и остановкой генерации."""
@@ -870,6 +905,12 @@ class ChatPanel(QWidget):
             self._ollama_thread.cancel()
         if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
             self._agent_thread.client.cancel_request()
+        if hasattr(self, '_web_thread') and self._web_thread and self._web_thread.isRunning():
+            self._web_thread.quit()
+            self._web_thread.wait(1000)
+            if self._web_thread.isRunning():
+                self._web_thread.terminate()
+                self._web_thread.wait(500)
         if self._rag_thread and self._rag_thread.isRunning():
             self._rag_thread.quit()
             self._rag_thread.wait(1000)
@@ -903,13 +944,21 @@ class ChatPanel(QWidget):
         if not text:
             return
 
+        # Команда @web
+        if text.startswith("@web"):
+            query = text[4:].strip()
+            if query:
+                self._start_web_search(query)
+            else:
+                self._add_message("system", "⚠️ Укажите запрос после @web")
+            return
+
         self._create_session()
 
         user_message = ChatMessage(role="user", content=text)
         self._messages.append(user_message)
         self.session_store.save_message(self._session_id, user_message)
         self._add_message("user", text)
-
         self.input_edit.clear()
         self.status_label.setText("Обработка...")
 
@@ -926,6 +975,41 @@ class ChatPanel(QWidget):
             or (self._agent_thread and self._agent_thread.isRunning())
             or (self._rag_thread and self._rag_thread.isRunning())
         )
+
+    def _start_web_search(self, query: str):
+        """Запускает быстрый интернет-поиск без RAG и подтверждений."""
+        if not query.strip():
+            self._add_message("system", "⚠️ Укажите запрос после @web")
+            return
+
+        # ДОБАВЛЯЕМ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ В ЧАТ
+        self._create_session()
+        user_message = ChatMessage(role="user", content=f"@web {query}")
+        self._messages.append(user_message)
+        if self._session_id:
+            self.session_store.save_message(self._session_id, user_message)
+        self._add_message("user", f"🌐 Поиск в интернете: {query}")
+
+        # Блокируем ввод и меняем кнопку
+        self._generating = True
+        self._set_button_stop()
+        self.input_edit.setEnabled(False)
+        self.status_label.setText("🌐 Поиск в интернете...")
+
+        # Создаём поток для асинхронного выполнения поиска и генерации
+        self._web_thread = WebSearchThread(
+            model=self.get_current_model(),
+            query=query,
+            base_url=self.base_url,
+            messages_history=list(self._messages),
+            search_cache=getattr(self, 'search_cache', None),
+        )
+
+        self._web_thread.chunk_received.connect(self._on_chunk)
+        self._web_thread.thinking_received.connect(self._on_thinking)
+        self._web_thread.finish_received.connect(self._on_web_finish)
+        self._web_thread.error_occurred.connect(self._on_web_error)
+        self._web_thread.start()
 
     def _start_chat(self, text: str):
         """Запускает обычный чат (режим Chat)."""
@@ -974,7 +1058,7 @@ class ChatPanel(QWidget):
             if prompt:
                 # Обрезаем до 100 символов для компактности
                 short = prompt[:100] + "..." if len(prompt) > 100 else prompt
-                self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ToolTipRole)
+                self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ItemDataRole.ToolTipRole)
 
     def _do_chat(self, text: str):
         """Запускает LLM-генерацию (режим Chat)."""
@@ -1050,7 +1134,14 @@ class ChatPanel(QWidget):
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=mode,
+            search_cache=getattr(self, 'search_cache', None),
         )
+
+        extra = {"project_root": context.project_root}
+        if context.vector_store:
+            extra["vector_store"] = context.vector_store
+        if hasattr(self, 'search_cache') and self.search_cache:
+            extra["search_cache"] = self.search_cache
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1115,7 +1206,7 @@ class ChatPanel(QWidget):
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
-        if dialog.exec() == ToolConfirmationDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
             if self._agent_thread:
@@ -1280,15 +1371,16 @@ class ChatPanel(QWidget):
             self.mode_combo.setCurrentIndex(idx)
 
     def set_project_open(self, is_open: bool):
-        """Блокирует/разблокирует ввод при отсутствии открытого проекта."""
-        self.input_edit.setEnabled(is_open)
-        self.send_btn.setVisible(is_open)
+        """Обновляет состояние интерфейса при открытии/закрытии проекта."""
+        # Не блокируем ввод, только меняем подсказку
         if not is_open:
-            self.input_edit.setPlaceholderText("Сначала откройте проект (File → Open Project...)")
-            self.status_label.setText("Проект не открыт")
+            self.input_edit.setPlaceholderText("Введите сообщение... (@web для поиска в интернете)")
+            self.status_label.setText("Проект не открыт (RAG недоступен)")
         else:
-            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
-            self._reset_send_button()
+            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL+Enter — отправить, @web — поиск)")
+            self.status_label.setText("Готов к работе")
+        # Кнопка отправки всегда доступна
+        self.send_btn.setVisible(True)
 
     def set_registry(self, registry):
         """Устанавливает реестр моделей и обновляет список."""
@@ -1367,6 +1459,18 @@ class ChatPanel(QWidget):
         if model_name:
             self._update_model_status(model_name)
             self._check_mode_compatibility()
+            self._save_current_settings()
+
+    def _save_current_settings(self):
+        """Сохраняет текущие настройки через сигнал."""
+        try:
+            mode_map = {0: "chat", 1: "plan", 2: "agent"}
+            self.settings_changed.emit({
+                "model": self.get_current_model(),
+                "mode": mode_map.get(self.mode_combo.currentIndex(), "chat")
+            })
+        except Exception as e:
+            logger.warning(f"Не удалось сохранить настройки: {e}")
 
     def set_checking_state(self, is_checking: bool):
         """Меняет иконку кнопки во время проверки (кнопка остаётся активной)."""
@@ -1443,10 +1547,111 @@ class ChatPanel(QWidget):
         """Возвращает чистое имя текущей модели (без префиксов)."""
         model = self.model_combo.currentData()
         if model is not None:
-            return model
+            return str(model)
         # fallback: убираем возможные префиксы из отображаемого текста
         text = self.model_combo.currentText()
         for prefix in ("✅ ", "⬇️ "):
             if text.startswith(prefix):
                 return text[len(prefix):]
-        return text
+        return text or "llama3.2"  # fallback
+
+
+    @Slot()
+    def _on_web_finish(self):
+        """Завершает поисковый запрос."""
+        self._reset_send_button()
+        self._current_assistant_content = ""
+        self._current_thinking_content = ""
+        self._last_assistant_widget = None
+        self.status_label.setText("🌐 Поиск завершён")
+
+    @Slot(str)
+    def _on_web_error(self, error_msg: str):
+        """Обрабатывает ошибку поиска."""
+        self._add_message("system", f"❌ {error_msg}")
+        self._reset_send_button()
+        self.status_label.setText("❌ Ошибка поиска")
+
+    def set_session_id(self, session_id: str):
+        self._session_id = session_id
+
+    def load_history(self, messages: list[ChatMessage]):
+        self._clear_chat(keep_session=True)
+        for msg in messages:
+            # добавляем сообщения в виджет, но не сохраняем в БД повторно
+            self._add_message(msg.role, msg.content)
+            self._messages.append(msg)
+
+    def keyPressEvent(self, event):
+        if self.input_edit.hasFocus():
+            key = event.key()
+            if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+                # При удалении сбрасываем формат и убираем пробел, если он был после @web
+                pass
+            # остальное
+        super().keyPressEvent(event)
+
+    def set_search_cache(self, cache):
+        self.search_cache = cache
+
+class WebSearchThread(QThread):
+    """Поток для выполнения интернет-поиска и генерации ответа."""
+
+    chunk_received = Signal(str)
+    thinking_received = Signal(str)
+    finish_received = Signal()
+    error_occurred = Signal(str)
+
+    def __init__(self, model: str, query: str, base_url: str,
+                 messages_history: list[ChatMessage], search_cache=None):
+        super().__init__()
+        self.model = model
+        self.query = query
+        self.base_url = base_url
+        self.messages_history = messages_history
+        self.search_cache = search_cache
+
+    def run(self):
+        asyncio.run(self._run())
+
+    async def _run(self):
+        try:
+            # 1. Выполняем поиск (импортируем функцию web_search)
+            from tools.web_search import web_search
+            search_results = await web_search(query=self.query, max_results=5,
+                                            search_cache=self.search_cache)
+
+            if not search_results or "Ничего не найдено" in search_results:
+                # Если ничего не найдено, отправляем сообщение об этом
+                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
+                return
+
+            # 2. Формируем системный промт и сообщения
+            system_prompt = (
+                "Ты — поисковый ассистент. Используй результаты поиска для ответа на вопрос. "
+                "Отвечай на русском языке, будь лаконичен и полезен."
+            )
+            user_content = f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                *self.messages_history,  # можно добавить историю, но обычно не нужно
+                ChatMessage(role="user", content=user_content),
+            ]
+
+            # 3. Отправляем запрос в Ollama (без инструментов, без RAG)
+            async with OllamaClient(base_url=self.base_url) as client:
+                async for chunk in client.chat(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                ):
+                    if chunk.reasoning_content:
+                        self.thinking_received.emit(chunk.reasoning_content)
+                    if chunk.content:
+                        self.chunk_received.emit(chunk.content)
+                    if chunk.done:
+                        self.finish_received.emit()
+
+        except Exception as e:
+            self.error_occurred.emit(f"Ошибка: {e}")
