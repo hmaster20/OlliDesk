@@ -284,7 +284,7 @@ class OllamaClient:
             data = response.json()
             embeddings = data.get("embeddings", [])
             logger.debug(f"Получено эмбеддингов: {len(embeddings)}")
-            return embeddings
+            return cast(list[list[float]], embeddings)
 
         except httpx.ConnectError as e:
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e

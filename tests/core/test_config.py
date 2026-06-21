@@ -62,7 +62,7 @@ def _write_yaml(path: Path, data: dict):
 
 class TestAppConfig:
     def test_valid_config(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         assert config.default_model == "qwen2.5-coder:7b"
         assert config.embed_model == "nomic-embed-text"
         assert len(config.models) == 2
@@ -199,7 +199,7 @@ class TestConfigLoader:
         config_path = tmp_path / ".ollidesk" / "config.yaml"
         loader.global_config_path = config_path
 
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         loader.save_config(config)
 
         loaded = loader.load_config()
@@ -226,17 +226,17 @@ class TestConfigLoader:
 
 class TestGetModelByRole:
     def test_find_chat_model(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         model = get_model_by_role(config, ModelRole.CHAT)
         assert model.name == "Qwen 2.5 Coder 7B"
 
     def test_find_embed_model(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         model = get_model_by_role(config, ModelRole.EMBED)
         assert model.name == "Nomic Embed Text"
 
     def test_model_not_found(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         with pytest.raises(ConfigError, match="не найдена"):
             get_model_by_role(config, ModelRole.RERANK)
 

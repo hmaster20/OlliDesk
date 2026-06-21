@@ -39,7 +39,7 @@ class PromptEditorDialog(QDialog):
         layout.addLayout(type_layout)
 
         # Сплиттер: список файлов слева, редактор справа
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Список файлов
         self.file_list = QListWidget()

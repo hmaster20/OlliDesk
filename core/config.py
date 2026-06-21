@@ -143,13 +143,10 @@ class ConfigLoader:
     def load_config(self, project_path: Path | None = None) -> AppConfig:
         """
         Загружает глобальный и локальный конфиги, мержит с приоритетом локального.
-
         Args:
             project_path: Путь к проекту (опционально)
-
         Returns:
             AppConfig: Объединенная конфигурация
-
         Raises:
             ConfigError: Если конфиг не найден или невалиден
         """
@@ -219,18 +216,18 @@ class ConfigLoader:
     def save_config(self, config: AppConfig, project_path: Path | None = None) -> None:
         """
         Сохраняет конфигурацию в YAML-файл.
-
         Args:
             config: Конфигурация для сохранения
             project_path: Путь к проекту (опционально)
         """
+        logger.info(f"💾 Сохранение конфига: last_model='{config.last_model}', last_mode='{config.last_mode}', project_path={project_path}")
         config_dict = config.model_dump(mode="json")
-
         if project_path:
             local_config_path = project_path / ".ollidesk" / "config.yaml"
             self._save_yaml(config_dict, local_config_path)
         else:
             self._save_yaml(config_dict, self.global_config_path)
+
 
     def _save_yaml(self, data: dict[str, Any], path: Path) -> None:
         """
@@ -287,6 +284,7 @@ def save_config(config: AppConfig, project_path: Path | None = None) -> None:
         project_path: Путь к проекту (опционально)
     """
     config_loader.save_config(config, project_path)
+    logger.info(f"Сохранение конфига: last_model={config.last_model}, last_mode={config.last_mode}")
 
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:

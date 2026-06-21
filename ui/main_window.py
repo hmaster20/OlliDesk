@@ -418,6 +418,7 @@ class MainWindow(QMainWindow):
         self.config.last_model = settings.get("model", "")
         self.config.last_mode = settings.get("mode", "chat")
         from core.config import save_config
+        logger.info(f"⚙️ settings_changed: model={settings.get('model')}, mode={settings.get('mode')}")
         save_config(self.config)
 
     def _read_file(self, path: str) -> str:
@@ -666,11 +667,6 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
 
-    def _open_session_manager(self):
-        from ui.dialogs.session_manager_dialog import SessionManagerDialog
-        dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
-        dlg.exec()
-
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
         if dlg.exec():
@@ -722,22 +718,18 @@ class MainWindow(QMainWindow):
         if ok and models:
             self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
             self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
-            # Синхронизируем реестр с реальным списком
             self.model_registry.sync_with_ollama(models)
-            # Передаём реестр в чат-панель (если ещё не передали)
             if not hasattr(self.chat_panel, 'registry') or self.chat_panel.registry is None:
                 self.chat_panel.set_registry(self.model_registry)
             else:
-                # Если уже передан, просто обновляем список
-                # self.chat_panel._update_model_list()
                 self.chat_panel.update_models(models)
-            # Выбираем первую локальную модель, если не выбрана
-            # if models:
-            #     first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
-            #     self.chat_panel.set_model(first_local)
-            if models:
-                first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
-                self.chat_panel.set_model(first_local)
+            # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
+            current_model = self.chat_panel.get_current_model()
+            if not current_model or current_model == "":
+                if models:
+                    first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+                    self.chat_panel.set_model(first_local)
+            # иначе оставляем текущую
         else:
             self.ollama_status_label.setText("● Ollama: Не подключен")
             self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
@@ -847,18 +839,18 @@ class MainWindow(QMainWindow):
         self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
 
-        # Восстанавливаем настройки проекта
+        # Восстанавливаем настройки проекта (они приоритетнее глобальных)
         project_settings = ProjectSettings.load(self.project_path)
         if project_settings.model:
             self.chat_panel.apply_settings(project_settings.model_dump())
-
-        # ДОБАВЛЯЕМ ПРИМЕНЕНИЕ ГЛОБАЛЬНЫХ НАСТРОЕК
-        if self.config.last_model:
-            self.chat_panel.set_model(self.config.last_model)
-        if self.config.last_mode:
-            mode_map = {"chat": 0, "plan": 1, "agent": 2}
-            idx = mode_map.get(self.config.last_mode, 0)
-            self.chat_panel.mode_combo.setCurrentIndex(idx)
+        else:
+            # Если проектных нет, применяем глобальные
+            if self.config.last_model:
+                self.chat_panel.set_model(self.config.last_model)
+            if self.config.last_mode:
+                mode_map = {"chat": 0, "plan": 1, "agent": 2}
+                idx = mode_map.get(self.config.last_mode, 0)
+                self.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self._start_indexing()
 
@@ -1044,7 +1036,9 @@ class MainWindow(QMainWindow):
             mode_map = {0: "chat", 1: "plan", 2: "agent"}
             self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
             from core.config import save_config
+            logger.info(f"🔄 closeEvent: last_model='{self.config.last_model}', last_mode='{self.config.last_mode}'")
             save_config(self.config)
+            logger.info("✅ Конфиг сохранён в closeEvent")
         self._stop_all_threads()
         self._stop_model_check()
         event.accept()
@@ -1072,17 +1066,6 @@ class MainWindow(QMainWindow):
                 loop.close()
             except Exception:
                 pass
-
-    @Slot(str, int, int)
-    def _on_model_check_progress(self, model_name: str, current: int, total: int):
-        self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
-
-    @Slot(dict)
-    def _on_model_check_finished(self, results: dict):
-        self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
-        self.chat_panel.set_checking_state(False)
-        # Обновляем UI, чтобы подтянуть новые статусы
-        self.chat_panel.update_models(self._available_models)
 
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
@@ -1145,6 +1128,7 @@ class MainWindow(QMainWindow):
         self._is_checking = False
         # Обновляем полный список, чтобы подтянуть все изменения
         self.chat_panel._update_model_list()
+        self.chat_panel.update_models(self._available_models)
 
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog

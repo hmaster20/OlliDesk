@@ -92,7 +92,7 @@ class VectorStore:
                 embeddings=embeddings,
                 documents=documents,
                 metadatas=metadatas,
-            )
+            ) # type: ignore
 
             logger.debug(f"Добавлено чанков: {len(batch)}")
 
@@ -129,7 +129,7 @@ class VectorStore:
             n_results=n_results,
             where=where_filter,
             include=["documents", "metadatas", "distances"],
-        )
+        )  # type: ignore
 
         # Преобразование результатов
         search_results = []

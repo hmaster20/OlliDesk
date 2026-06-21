@@ -42,13 +42,15 @@ async def _search_curl_cffi(query: str, max_results: int) -> list:
     if resp.status_code != 200:
         raise Exception(f"HTTP {resp.status_code}")
     soup = BeautifulSoup(resp.text, "html.parser")
-    results = []
+    results: list[dict[str, str]] = []
     for item in soup.select(".result"):
         title_el = item.select_one(".result__title a")
         snippet_el = item.select_one(".result__snippet")
         if title_el:
             title = title_el.get_text(strip=True)
             href = title_el.get("href", "")
+            if isinstance(href, str) and href.startswith("//"):
+                href = "https:" + href
             if href.startswith("//"):
                 href = "https:" + href
             body = snippet_el.get_text(strip=True) if snippet_el else ""

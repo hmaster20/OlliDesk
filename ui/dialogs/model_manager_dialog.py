@@ -40,8 +40,9 @@ class PullThread(QThread):
                 bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
-            for line in iter(process.stdout.readline, ''):
-                self.progress.emit(line.strip())
+            if process.stdout is not None:
+                for line in iter(process.stdout.readline, ''):
+                    self.progress.emit(line.strip())
             process.wait()
             success = process.returncode == 0
             self.finished.emit(self.model_name, success)
@@ -65,8 +66,8 @@ class ModelManagerDialog(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Модель", "Локально", "Tools", "Описание", "Действие"])
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
 
         # Кнопки управления
@@ -108,7 +109,7 @@ class ModelManagerDialog(QDialog):
             # Локально
             local_text = "✅" if info.is_local else "⬇️"
             item_local = QTableWidgetItem(local_text)
-            item_local.setTextAlignment(Qt.AlignCenter)
+            item_local.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 1, item_local)
             # Tools
             if info.supports_tools is True:
@@ -122,7 +123,7 @@ class ModelManagerDialog(QDialog):
                 tooltip = "Не проверено"
             item_tools = QTableWidgetItem(tools_text)
             item_tools.setToolTip(tooltip)
-            item_tools.setTextAlignment(Qt.AlignCenter)
+            item_tools.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 2, item_tools)
             # Описание
             desc_item = QTableWidgetItem(info.description)
@@ -162,9 +163,9 @@ class ModelManagerDialog(QDialog):
         reply = QMessageBox.question(
             self, "Подтверждение",
             f"Загрузить модель '{model_name}'?\nЭто может занять время.",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # неопределённый прогресс
@@ -236,9 +237,9 @@ class ModelManagerDialog(QDialog):
         reply = QMessageBox.question(
             self, "Подтверждение",
             f"Будет загружено {len(to_pull)} моделей. Продолжить?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         # Запускаем последовательную загрузку (можно сделать параллельно, но осторожно)
         # Пока простой вариант: загружаем по одной

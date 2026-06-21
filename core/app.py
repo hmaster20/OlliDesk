@@ -97,8 +97,10 @@ class OlliDeskApp:
 
         # Применяем глобальные настройки
         if self.config.last_model:
+            logger.info(f"🔄 Применяю last_model={self.config.last_model}")
             self.main_window.chat_panel.set_model(self.config.last_model)
         if self.config.last_mode:
+            logger.info(f"🔄 Применяю last_mode={self.config.last_mode}")
             mode_map = {"chat": 0, "plan": 1, "agent": 2}
             idx = mode_map.get(self.config.last_mode, 0)
             self.main_window.chat_panel.mode_combo.setCurrentIndex(idx)
@@ -116,6 +118,8 @@ class OlliDeskApp:
         Args:
             theme: 'light' или 'dark'
         """
+        if self.app is None:
+            return
         stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
         self.app.setStyleSheet(stylesheet)
         # Для заголовка
@@ -138,6 +142,8 @@ class OlliDeskApp:
         Args:
             theme: 'light' или 'dark'
         """
+        if self.app is None:
+            return
         self.config.theme = theme
         self._apply_theme(theme)
         from core.config import save_config

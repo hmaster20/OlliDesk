@@ -23,8 +23,8 @@ def download_tarball(url: str) -> bytes:
     print(f"Скачиваю Monaco Editor v{MONACO_VERSION}...")
     with urllib.request.urlopen(url) as resp:
         data = resp.read()
-    print(f"  Загружено {len(data) / 1024 / 1024:.1f} MB")
-    return data
+        print(f"  Загружено {len(data) / 1024 / 1024:.1f} MB")
+        return data
 
 
 def extract_tarball(data: bytes, target: Path) -> None:

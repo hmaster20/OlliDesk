@@ -50,7 +50,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         """Парсит git status --porcelain для корня репозитория."""
         self._status_map.clear()
         if not self._repo_path:
-            self.invalidate()
+            self.parent().update()
             return
         try:
             result = subprocess.run(
@@ -59,7 +59,7 @@ class GitStatusDelegate(QStyledItemDelegate):
                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode != 0:
-                self.invalidate()
+                self.parent().update()
                 return
             for line in result.stdout.splitlines():
                 if len(line) < 3:
@@ -69,7 +69,7 @@ class GitStatusDelegate(QStyledItemDelegate):
                 normalised = rel_path.replace("\\", "/")
                 symbol = raw_status.strip() or raw_status[0]
                 self._status_map[normalised] = symbol
-            self.invalidate()
+            self.parent().update()
         except FileNotFoundError:
             pass
         except Exception as exc:

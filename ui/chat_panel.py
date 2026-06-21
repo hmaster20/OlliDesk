@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 
 from agents.agent_loop import AgentContext, AgentIterationLimitError, AgentLoop
@@ -116,7 +117,7 @@ class AgentChatThread(QThread):
         self.agent_mode = agent_mode
         self.max_iterations = max_iterations
 
-        self._tool_response: tuple[bool, dict] | None = None
+        self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
@@ -344,7 +345,7 @@ class ChatMessageItem(QWidget):
         # Основной контент
         self.content_label = QLabel()
         self.content_label.setWordWrap(True)
-        self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.content_label.setOpenExternalLinks(True)
         self.content_label.setStyleSheet(
             f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
@@ -524,7 +525,7 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
 
-    def _update_bubble_width(self, widget: ChatMessageItem = None):
+    def _update_bubble_width(self, widget: QWidget | None = None) -> None:
         """Устанавливает максимальную ширину бабла в зависимости от роли."""
 
         scroll_width = self.scroll_area.viewport().width()
@@ -543,7 +544,7 @@ class ChatPanel(QWidget):
             max_width = int(scroll_width * ratios.get(role, 0.90))
             bubble.setMaximumWidth(max_width)
             bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         if widget is not None:
             if widget.bubble:
@@ -684,9 +685,9 @@ class ChatPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
-        self.mode_combo.setItemData(0, "Chat — Обычный диалог с LLM. Без инструментов, только текст.", Qt.ToolTipRole)
-        self.mode_combo.setItemData(1, "Plan — Чтение файлов и поиск по коду (read-only). Подготовка к изменениям.", Qt.ToolTipRole)
-        self.mode_combo.setItemData(2, "Agent — Полный доступ: чтение, запись, Git, поиск. Автономные изменения кода.", Qt.ToolTipRole)
+        self.mode_combo.setItemData(0, "Chat — Обычный диалог с LLM. Без инструментов, только текст.", Qt.ItemDataRole.ToolTipRole)
+        self.mode_combo.setItemData(1, "Plan — Чтение файлов и поиск по коду (read-only). Подготовка к изменениям.", Qt.ItemDataRole.ToolTipRole)
+        self.mode_combo.setItemData(2, "Agent — Полный доступ: чтение, запись, Git, поиск. Автономные изменения кода.", Qt.ItemDataRole.ToolTipRole)
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -768,21 +769,21 @@ class ChatPanel(QWidget):
 
     def _highlight_web_command(self):
         cursor = self.input_edit.textCursor()
-        cursor.select(QTextCursor.Document)
+        cursor.select(QTextCursor.SelectionType.Document)
         cursor.setCharFormat(QTextCharFormat())
         cursor.clearSelection()
         text = self.input_edit.toPlainText()
         for m in re.finditer(r'^@web(?=\s|$)', text):
             start, end = m.start(), m.end()
             cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
             fmt = QTextCharFormat()
             fmt.setForeground(QColor("#42a5f5"))   # синий
-            fmt.setFontWeight(QFont.Bold)
+            fmt.setFontWeight(QFont.Weight.Bold)
             cursor.mergeCharFormat(fmt)
             # микро облачко
             fmt.setBackground(QColor("#e3f2fd"))
-            fmt.setUnderlineStyle(QTextCharFormat.SingleUnderline)
+            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
             fmt.setUnderlineColor(QColor("#42a5f5"))
 
     def eventFilter(self, obj: QWidget, event) -> bool:
@@ -1057,7 +1058,7 @@ class ChatPanel(QWidget):
             if prompt:
                 # Обрезаем до 100 символов для компактности
                 short = prompt[:100] + "..." if len(prompt) > 100 else prompt
-                self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ToolTipRole)
+                self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ItemDataRole.ToolTipRole)
 
     def _do_chat(self, text: str):
         """Запускает LLM-генерацию (режим Chat)."""
@@ -1205,7 +1206,7 @@ class ChatPanel(QWidget):
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
-        if dialog.exec() == ToolConfirmationDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
             if self._agent_thread:
@@ -1461,15 +1462,13 @@ class ChatPanel(QWidget):
             self._save_current_settings()
 
     def _save_current_settings(self):
-        """Сохраняет текущие настройки в конфиг."""
+        """Сохраняет текущие настройки через сигнал."""
         try:
-            from core.config import save_config
-            # Получаем config через parent или через сигнал
-            if self.parent() and hasattr(self.parent(), 'config'):
-                self.parent().config.last_model = self.get_current_model()
-                mode_map = {0: "chat", 1: "plan", 2: "agent"}
-                self.parent().config.last_mode = mode_map.get(self.mode_combo.currentIndex(), "chat")
-                save_config(self.parent().config)
+            mode_map = {0: "chat", 1: "plan", 2: "agent"}
+            self.settings_changed.emit({
+                "model": self.get_current_model(),
+                "mode": mode_map.get(self.mode_combo.currentIndex(), "chat")
+            })
         except Exception as e:
             logger.warning(f"Не удалось сохранить настройки: {e}")
 
@@ -1548,13 +1547,13 @@ class ChatPanel(QWidget):
         """Возвращает чистое имя текущей модели (без префиксов)."""
         model = self.model_combo.currentData()
         if model is not None:
-            return model
+            return str(model)
         # fallback: убираем возможные префиксы из отображаемого текста
         text = self.model_combo.currentText()
         for prefix in ("✅ ", "⬇️ "):
             if text.startswith(prefix):
                 return text[len(prefix):]
-        return text
+        return text or "llama3.2"  # fallback
 
 
     @Slot()
@@ -1586,7 +1585,7 @@ class ChatPanel(QWidget):
     def keyPressEvent(self, event):
         if self.input_edit.hasFocus():
             key = event.key()
-            if key in (Qt.Key_Backspace, Qt.Key_Delete):
+            if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
                 # При удалении сбрасываем формат и убираем пробел, если он был после @web
                 pass
             # остальное

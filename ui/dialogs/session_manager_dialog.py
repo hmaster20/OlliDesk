@@ -26,9 +26,9 @@ class SessionManagerDialog(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["ID", "Проект", "Создана", "Обновлена"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self._load_selected)
         layout.addWidget(self.table)
 
@@ -72,7 +72,7 @@ class SessionManagerDialog(QDialog):
         row = self.table.currentRow()
         if row < 0: return
         session_id = self.table.item(row, 0).text()
-        if QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?") == QMessageBox.Yes:
+        if QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?") == QMessageBox.StandardButton.Yes:
             self.session_store.delete_session(session_id)
             self._refresh()
 
