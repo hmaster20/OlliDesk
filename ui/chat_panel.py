@@ -7,6 +7,9 @@ import re
 import threading
 from typing import Any
 
+import markdown
+from markdown.extensions import fenced_code, tables, nl2br
+
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
@@ -378,62 +381,169 @@ class ChatMessageItem(QWidget):
 
     def _set_content(self, text: str):
         """Рендерит Markdown в HTML и устанавливает в content_label."""
-        html = self._render_markdown_to_html(text)
-        self.content_label.setText(html)
+        if self.role == "system":
+            # системные сообщения — без Markdown
+            self.content_label.setText(html_mod.escape(text))
+        else:
+            html = self._render_markdown_to_html(text)
+            self.content_label.setText(html)
 
     def _render_markdown_to_html(self, text: str) -> str:
-        """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
-
         try:
-            from pygments import highlight as pyg_highlight
-            from pygments.formatters import HtmlFormatter
-            from pygments.lexers import get_lexer_by_name, guess_lexer
+            import html as html_mod
+            import re
 
-            formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+            # Экранируем специальные символы, но сохраняем маркеры списков и заголовки
+            # Сначала заменим маркеры на временные метки, чтобы экранирование их не тронуло
+            # Но проще — экранировать только текст внутри тегов, но это сложно.
+            # Поступим иначе: обработаем построчно.
+            lines = text.split('\n')
+            html_lines = []
+            in_list = False
+            list_type = None  # 'ul' or 'ol'
+            list_indent = 0
 
-            def _code_block(m):
-                lang = m.group(1).strip() or ""
-                code = m.group(2)
-                try:
-                    if lang:
-                        lexer = get_lexer_by_name(lang, stripall=True)
+            for line in lines:
+                stripped = line.lstrip()
+                indent = len(line) - len(stripped)
+                # Проверка на маркированный список: - или * или +
+                ul_match = re.match(r'^([-*+])\s+(.*)', stripped)
+                # Проверка на нумерованный список: 1. 2. и т.д.
+                ol_match = re.match(r'^(\d+)\.\s+(.*)', stripped)
+
+                if ul_match:
+                    if not in_list or list_type != 'ul':
+                        if in_list:
+                            html_lines.append(f'</{list_type}>')
+                        html_lines.append('<ul>')
+                        in_list = True
+                        list_type = 'ul'
+                    content = html_mod.escape(ul_match.group(2))
+                    html_lines.append(f'<li>{self._render_inline(content)}</li>')
+                    continue
+                elif ol_match:
+                    if not in_list or list_type != 'ol':
+                        if in_list:
+                            html_lines.append(f'</{list_type}>')
+                        html_lines.append('<ol>')
+                        in_list = True
+                        list_type = 'ol'
+                    content = html_mod.escape(ol_match.group(2))
+                    html_lines.append(f'<li>{self._render_inline(content)}</li>')
+                    continue
+                else:
+                    if in_list:
+                        html_lines.append(f'</{list_type}>')
+                        in_list = False
+                        list_type = None
+                    # Обычный текст
+                    if stripped == '':
+                        html_lines.append('<br>')
                     else:
-                        lexer = guess_lexer(code)
-                    highlighted = pyg_highlight(code, lexer, formatter)
-                    return (f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
-                            f'margin:4px 0; font-size:13px; overflow-x:auto;">'
-                            f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;">'
-                            f'<code>{highlighted}</code></pre></div>')
-                except Exception:
-                    escaped = html_mod.escape(code)
-                    return (f'<pre style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
-                            f'margin:4px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>')
+                        # Заголовки
+                        if stripped.startswith('# '):
+                            html_lines.append(f'<h1>{self._render_inline(html_mod.escape(stripped[2:]))}</h1>')
+                        elif stripped.startswith('## '):
+                            html_lines.append(f'<h2>{self._render_inline(html_mod.escape(stripped[3:]))}</h2>')
+                        elif stripped.startswith('### '):
+                            html_lines.append(f'<h3>{self._render_inline(html_mod.escape(stripped[4:]))}</h3>')
+                        else:
+                            html_lines.append(f'<div>{self._render_inline(html_mod.escape(stripped))}</div>')
+            if in_list:
+                html_lines.append(f'</{list_type}>')
 
-            pattern = r"```(\w*)\s*\n(.*?)```"
-            body = re.sub(pattern, _code_block, text, flags=re.DOTALL)
-
-            # Inline code
-            body = re.sub(
-                r"`([^`]+)`",
-                lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
-                body,
-            )
-            # Bold, italic, links, headings...
-            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
-            body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
-            body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
-            body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
-            body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
-            body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
-
-            # Newlines to <br>, collapse multiples
-            body = body.replace("\n", "<br>")
-            body = re.sub(r"(<br>\s*){2,}", "<br>", body)
-
-            return f"<div style='line-height:1.3;'>{body}</div>"
-        except ImportError:
-            # Fallback: просто экранируем и заменяем \n на <br>
+            # Собираем HTML
+            body = '\n'.join(html_lines)
+            # Заменяем переносы строк на <br> только там, где это нужно (уже сделано через <div>)
+            return f'<div style="line-height:1.4; font-family: sans-serif; font-size:14px;">{body}</div>'
+        except Exception:
+            # fallback
             return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
+
+    def _render_inline(self, text: str) -> str:
+        """Обрабатывает жирный, курсив, ссылки, код внутри строки."""
+        # Жирный
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        # Курсив
+        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        # Код
+        text = re.sub(r'`([^`]+)`', r'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px;">\1</code>', text)
+        # Ссылки
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:#42a5f5;">\1</a>', text)
+        return text
+
+
+    # def _render_markdown_to_html(self, text: str) -> str:
+    #     try:
+    #         # Настройка расширений
+    #         md = markdown.Markdown(
+    #             extensions=[
+    #                 'fenced_code',   # ```code```
+    #                 'tables',        # таблицы
+    #                 'nl2br',         # перевод строк в <br>
+    #             ],
+    #             output_format='html5'
+    #         )
+    #         html = md.convert(text)
+    #         # Добавим стиль для списков и отступов
+    #         return f'<div style="line-height:1.5; font-family: sans-serif;">{html}</div>'
+    #     except Exception:
+    #         # fallback
+    #         return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
+
+    # def _render_markdown_to_html(self, text: str) -> str:
+    #     """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
+
+    #     try:
+    #         from pygments import highlight as pyg_highlight
+    #         from pygments.formatters import HtmlFormatter
+    #         from pygments.lexers import get_lexer_by_name, guess_lexer
+
+    #         formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+
+    #         def _code_block(m):
+    #             lang = m.group(1).strip() or ""
+    #             code = m.group(2)
+    #             try:
+    #                 if lang:
+    #                     lexer = get_lexer_by_name(lang, stripall=True)
+    #                 else:
+    #                     lexer = guess_lexer(code)
+    #                 highlighted = pyg_highlight(code, lexer, formatter)
+    #                 return (f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
+    #                         f'margin:4px 0; font-size:13px; overflow-x:auto;">'
+    #                         f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;">'
+    #                         f'<code>{highlighted}</code></pre></div>')
+    #             except Exception:
+    #                 escaped = html_mod.escape(code)
+    #                 return (f'<pre style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
+    #                         f'margin:4px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>')
+
+    #         pattern = r"```(\w*)\s*\n(.*?)```"
+    #         body = re.sub(pattern, _code_block, text, flags=re.DOTALL)
+
+    #         # Inline code
+    #         body = re.sub(
+    #             r"`([^`]+)`",
+    #             lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
+    #             body,
+    #         )
+    #         # Bold, italic, links, headings...
+    #         body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+    #         body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
+    #         body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
+    #         body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
+    #         body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
+    #         body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
+
+    #         # Newlines to <br>, collapse multiples
+    #         body = body.replace("\n", "<br>")
+    #         body = re.sub(r"(<br>\s*){2,}", "<br>", body)
+
+    #         return f"<div style='line-height:1.3;'>{body}</div>"
+    #     except ImportError:
+    #         # Fallback: просто экранируем и заменяем \n на <br>
+    #         return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
 
     def update_content(self, new_content: str):
         """Обновляет содержимое сообщения (для стриминга)."""
@@ -773,30 +883,152 @@ class ChatPanel(QWidget):
         try:
             if not self.input_edit or not self.input_edit.document():
                 return
-            self.input_edit.blockSignals(True)   # блокируем рекурсию
+
+            self.input_edit.blockSignals(True)
             try:
                 cursor = self.input_edit.textCursor()
                 if cursor.isNull():
                     return
+
+                # Сброс всех форматов
                 cursor.select(QTextCursor.SelectionType.Document)
-                cursor.setCharFormat(QTextCharFormat())   # сброс форматов
+                cursor.setCharFormat(QTextCharFormat())
                 cursor.clearSelection()
+
                 text = self.input_edit.toPlainText()
-                for m in re.finditer(r'^@web(?=\s|$)', text):
-                    start, end = m.start(), m.end()
-                    cursor.setPosition(start)
-                    cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                    fmt = QTextCharFormat()
-                    fmt.setForeground(QColor("#42a5f5"))
-                    fmt.setFontWeight(QFont.Weight.Bold)
-                    # Полупрозрачный фон, подходящий для обеих тем
-                    fmt.setBackground(QColor(60, 60, 60, 80))   # тёмно-серый с прозрачностью
-                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)  # убрать подчёркивание
-                    cursor.mergeCharFormat(fmt)
+
+                # Паттерны: @web, @folder, @file, @project
+                patterns = [
+                    (r'^@web(?=\s|$)', '#42a5f5'),
+                    (r'^@folder(?=\s|$)', '#66bb6a'),
+                    (r'^@file(?=\s|$)', '#ffa726'),
+                    (r'^@project(?=\s|$)', '#ab47bc'),
+                ]
+
+                for pattern, color in patterns:
+                    for m in re.finditer(pattern, text):
+                        start, end = m.start(), m.end()
+                        # расширяем на пробелы (если есть)
+                        if start > 0 and text[start-1] == ' ':
+                            start -= 1
+                        if end < len(text) and text[end] == ' ':
+                            end += 1
+                        cursor.setPosition(start)
+                        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                        fmt = QTextCharFormat()
+                        fmt.setForeground(QColor(color))
+                        fmt.setBackground(QColor(60, 60, 60, 80))  # полупрозрачный
+                        fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)
+                        cursor.mergeCharFormat(fmt)
             finally:
-                self.input_edit.blockSignals(False)   # обязательно разблокировать
+                self.input_edit.blockSignals(False)
         except Exception as e:
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
+
+    # def _highlight_web_command(self):
+    #     try:
+    #         if not self.input_edit or not self.input_edit.document():
+    #             return
+
+    #         self.input_edit.blockSignals(True)
+    #         try:
+    #             # Заменяем @web на 🌐🔍 (если есть)
+    #             text = self.input_edit.toPlainText()
+    #             if '@web' in text:
+    #                 new_text = text.replace('@web', '🌐🔍')
+    #                 if new_text != text:
+    #                     self.input_edit.setPlainText(new_text)
+    #                     # Перемещаем курсор в конец
+    #                     cursor = self.input_edit.textCursor()
+    #                     cursor.movePosition(QTextCursor.MoveOperation.End)
+    #                     self.input_edit.setTextCursor(cursor)
+    #                     # После замены выходим, чтобы не делать лишнего форматирования
+    #                     return
+
+    #             # Далее форматирование (остальные якоря не трогаем)
+    #             cursor = self.input_edit.textCursor()
+    #             if cursor.isNull():
+    #                 return
+    #             cursor.select(QTextCursor.SelectionType.Document)
+    #             cursor.setCharFormat(QTextCharFormat())
+    #             cursor.clearSelection()
+
+    #             text = self.input_edit.toPlainText()
+    #             patterns = [
+    #                 (r'^@folder(?=\s|$)', '#66bb6a'),
+    #                 (r'^@file(?=\s|$)', '#ffa726'),
+    #                 (r'^@project(?=\s|$)', '#ab47bc'),
+    #             ]
+    #             for pattern, color in patterns:
+    #                 for m in re.finditer(pattern, text):
+    #                     start, end = m.start(), m.end()
+    #                     # расширяем на пробелы
+    #                     if start > 0 and text[start-1] == ' ':
+    #                         start -= 1
+    #                     if end < len(text) and text[end] == ' ':
+    #                         end += 1
+    #                     cursor.setPosition(start)
+    #                     cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+    #                     fmt = QTextCharFormat()
+    #                     fmt.setForeground(QColor(color))
+    #                     fmt.setBackground(QColor(60, 60, 60, 80))
+    #                     fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)
+    #                     cursor.mergeCharFormat(fmt)
+    #         finally:
+    #             self.input_edit.blockSignals(False)
+    #     except Exception as e:
+    #         logger.warning(f"Ошибка в _highlight_web_command: {e}")
+
+
+    # def _highlight_web_command(self):
+    #     try:
+    #         if not self.input_edit or not self.input_edit.document():
+    #             return
+
+    #         self.input_edit.blockSignals(True)
+    #         try:
+    #             cursor = self.input_edit.textCursor()
+    #             if cursor.isNull():
+    #                 return
+
+    #             # Сбрасываем все форматы во всём документе
+    #             cursor.select(QTextCursor.SelectionType.Document)
+    #             cursor.setCharFormat(QTextCharFormat())
+    #             cursor.clearSelection()
+
+    #             text = self.input_edit.toPlainText()
+
+    #             # Паттерны: (регулярка, цвет, название для лога)
+    #             patterns = [
+    #                 (r'^@web(?=\s|$)', '#42a5f5', 'web'),
+    #                 (r'^@folder(?=\s|$)', '#66bb6a', 'folder'),
+    #                 (r'^@file(?=\s|$)', '#ffa726', 'file'),
+    #                 (r'^@project(?=\s|$)', '#ab47bc', 'project'),
+    #             ]
+
+    #             for pattern, color, _ in patterns:
+    #                 for m in re.finditer(pattern, text):
+    #                     start, end = m.start(), m.end()
+    #                     # Расширяем влево, если перед словом пробел
+    #                     if start > 0 and text[start-1] == ' ':
+    #                         start -= 1
+    #                     # Расширяем вправо, если после слова пробел
+    #                     if end < len(text) and text[end] == ' ':
+    #                         end += 1
+    #                     cursor.setPosition(start)
+    #                     cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+    #                     fmt = QTextCharFormat()
+    #                     fmt.setForeground(QColor(color))
+    #                     # fmt.setFontWeight(QFont.Weight.Bold) # жирный шрифт @web
+    #                     # Полупрозрачный фон (чуть светлее, подходит для обеих тем)
+    #                     fmt.setBackground(QColor(60, 60, 60, 80))
+    #                     fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)
+    #                     cursor.mergeCharFormat(fmt)
+    #         finally:
+    #             self.input_edit.blockSignals(False)
+    #     except Exception as e:
+    #         logger.warning(f"Ошибка в _highlight_web_command: {e}")
+
 
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
@@ -971,7 +1203,7 @@ class ChatPanel(QWidget):
         self._messages.append(user_message)
         self.session_store.save_message(self._session_id, user_message)
         self._add_message("user", text)
-        self.input_edit.clear()
+        # self.input_edit.clear()
         self.status_label.setText("Обработка...")
 
         mode = self._current_mode()
@@ -1007,6 +1239,9 @@ class ChatPanel(QWidget):
         self._set_button_stop()
         self.input_edit.setEnabled(False)
         self.status_label.setText("🌐 Поиск в интернете...")
+
+        # Очистка поля ввода
+        self.input_edit.clear()
 
         # Создаём поток для асинхронного выполнения поиска и генерации
         self._web_thread = WebSearchThread(
