@@ -34,3 +34,6 @@ unused
 # Локальная база и параметризация
 .ollidesk/vector_db
 .ollidesk/project_settings.yaml
+
+Notes.md
+Roadmap.md
