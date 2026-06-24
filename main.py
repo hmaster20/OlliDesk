@@ -10,7 +10,6 @@ from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType
 from PySide6.QtWidgets import QApplication
 from core.app import main
 
-
 # Отключаем телеметрию ChromaDB (posthog)
 os.environ.update({
     "CHROMA_TELEMETRY_ENABLED": "false",
@@ -23,19 +22,12 @@ logging.getLogger("posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
 # Мок для posthog, чтобы избежать ошибок capture()
-import types
-
 _posthog_mock = types.ModuleType("posthog")
 _posthog_mock.capture = lambda *a, **kw: None
 _posthog_mock.identify = lambda *a, **kw: None
 _posthog_mock.flush = lambda *a, **kw: None
 _posthog_mock.disabled = True
 sys.modules["posthog"] = _posthog_mock
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
-
-from core.app import main
 
 # Настройка обработчика сообщений Qt
 def qt_message_handler(mode, context, message):
