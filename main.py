@@ -5,9 +5,11 @@ import os
 import sys
 import traceback
 import types
+
 from loguru import logger
-from PySide6.QtCore import Qt, qInstallMessageHandler, QtMsgType
+from PySide6.QtCore import Qt, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
+
 from core.app import main
 
 # Отключаем телеметрию ChromaDB (posthog)

@@ -6,9 +6,10 @@ from loguru import logger
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QVBoxLayout, QWidget, QLabel
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from core.utils import get_resource_path
+
 
 class PythonBridge(QObject):
     """Мост между Python и JavaScript (сигнальная версия)."""
