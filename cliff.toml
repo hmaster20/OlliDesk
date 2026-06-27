@@ -1,0 +1,35 @@
+[git]
+# Регулярное выражение для разбора коммитов.
+# Оно ищет префикс (с двоеточием или без, со скобками области или без)
+commit_parsers = [
+    # Новые функции (Conventional + ваш старый стиль)
+    { message = "^feat|^add", group = "<!-- 0 -->🚀 Features & Additions" },
+
+    # Исправления (работает и для старых fix:, и для новых fix)
+    { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+
+    # Обновления и изменения (Conventional refactor/perf + ваш старый upd)
+    { message = "^upd|^refactor|^perf", group = "<!-- 2 -->🔄 Updates & Refactoring" },
+
+    # Удаление кода/компонентов
+    { message = "^del", group = "<!-- 3 -->🗑️ Removals" },
+
+    # Рутинные задачи (Conventional chore/ci/build)
+    { message = "^chore|^ci|^build", group = "<!-- 4 -->⚙️ Maintenance" },
+
+    # Документация
+    { message = "^docs", group = "<!-- 5 -->📚 Documentation" },
+
+    # Стилизация кода
+    { message = "^style", group = "<!-- 6 -->🎨 Styling" },
+
+    # Все остальные коммиты, которые не подошли под правила,
+    # отправятся в общую категорию, чтобы ничего не потерять
+    { message = ".*", group = "<!-- 7 -->📝 Other Changes" },
+]
+
+# Игнорировать коммиты слияния веток (merge commits)
+ignore_merge = true
+
+# Фильтровать коммиты, которые не соответствуют ни одному правилу (выключено, так как у нас есть ".*")
+filter_commits = false
