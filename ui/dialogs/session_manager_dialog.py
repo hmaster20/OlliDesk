@@ -61,7 +61,8 @@ class SessionManagerDialog(QDialog):
 
     def _load_selected(self):
         row = self.table.currentRow()
-        if row < 0: return
+        if row < 0:
+            return
         session_id = self.table.item(row, 0).text()
         history = self.session_store.get_history(session_id, limit=1000)
         self.chat_panel.set_session_id(session_id)
@@ -70,7 +71,8 @@ class SessionManagerDialog(QDialog):
 
     def _delete_selected(self):
         row = self.table.currentRow()
-        if row < 0: return
+        if row < 0:
+            return
         session_id = self.table.item(row, 0).text()
         if QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?") == QMessageBox.StandardButton.Yes:
             self.session_store.delete_session(session_id)
@@ -78,7 +80,8 @@ class SessionManagerDialog(QDialog):
 
     def _export_selected(self):
         row = self.table.currentRow()
-        if row < 0: return
+        if row < 0:
+            return
         session_id = self.table.item(row, 0).text()
         path, _ = QFileDialog.getSaveFileName(self, "Экспортировать сессию", f"{session_id}.txt", "Text files (*.txt)")
         if path:

@@ -554,9 +554,8 @@ class ChatPanel(QWidget):
         else:
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
-                if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
-                    if item.widget().bubble:
-                        apply_policy(item.widget().bubble, item.widget().role)
+                if item and item.widget() and isinstance(item.widget(), ChatMessageItem) and item.widget().bubble:
+                    apply_policy(item.widget().bubble, item.widget().role)
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
@@ -803,10 +802,10 @@ class ChatPanel(QWidget):
 
     def eventFilter(self, obj: QWidget, event) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
-        if obj is self.input_edit and event.type() == event.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-                self._toggle_send_stop()
-                return True
+        if (obj is self.input_edit and event.type() == event.Type.KeyPress
+                and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+            self._toggle_send_stop()
+            return True
         if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
             self._update_bubble_width()   # обновить все
         return super().eventFilter(obj, event)

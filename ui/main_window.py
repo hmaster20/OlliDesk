@@ -725,11 +725,10 @@ class MainWindow(QMainWindow):
                 self.chat_panel.update_models(models)
             # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
             current_model = self.chat_panel.get_current_model()
-            if not current_model or current_model == "":
-                if models:
-                    first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
-                    self.chat_panel.set_model(first_local)
-            # иначе оставляем текущую
+            if not current_model and models:
+                first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+                self.chat_panel.set_model(first_local)
+                # иначе оставляем текущую
         else:
             self.ollama_status_label.setText("● Ollama: Не подключен")
             self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
