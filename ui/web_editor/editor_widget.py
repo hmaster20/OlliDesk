@@ -3,6 +3,7 @@
 import json
 
 from loguru import logger
+from PyQt6.QtCore import Qt
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
