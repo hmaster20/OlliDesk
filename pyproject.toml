@@ -34,6 +34,7 @@ dev = [
     "mypy>=1.9",
     "black>=24.0",
     "isort>=5.13",
+    "bump-my-version>=1.4.1",
 ]
 
 [tool.ruff]
@@ -42,12 +43,23 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
-ignore = ["E501"] # Игнорировать слишком длинные строки
+ignore = [
+"E501",   # Игнорировать слишком длинные строки
+"SIM108"  # Игнорировать замену If на тернарный оператор
+]
 
 [tool.ruff.format]
 quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
 indent-style = "space" # Использовать пробелы для отступов
 docstring-code-format = true # Автоматически форматировать примеры кода внутри докстрингов
+
+[tool.ruff.lint.pep8-naming]
+ignore-names = [
+    "eventFilter",
+    "keyPressEvent",
+    "initStyleOption",
+    "closeEvent"
+]
 
 [tool.mypy]
 python_version = "3.11"
