@@ -106,10 +106,10 @@ packages = ["agents", "core", "fs", "state", "tools", "ui"]
 # === Утилита автоматической смены версий - Начало
 [tool.bumpversion]
 current_version = "0.1.1"
-parse = "(?P<major>\\d+)\\.(\\d+)\\.(?P<patch>\\d+)"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "version = \"{current_version}\""
-replace = "version = \"{new_version}\""# Автоматически коммитить изменения и создавать тег
+replace = "version = \"{new_version}\"" # Автоматически коммитить изменения и создавать тег
 commit = true
 tag = true
 sign_tags = false
