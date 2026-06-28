@@ -106,7 +106,8 @@ class AgentLoop:
             text = match.group(1).strip()
 
         extracted = []
-        stack = []
+        # stack = []
+        stack: list[str] = []
         start = None
 
         for i, ch in enumerate(text):
@@ -158,7 +159,7 @@ class AgentLoop:
                     args_str = match.group(2)
                     args = _json.loads(args_str)
                     extracted.append(ToolCall(name=name, arguments=args))
-                except:
+                except Exception:
                     pass
 
         if extracted:

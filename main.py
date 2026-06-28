@@ -3,6 +3,15 @@
 import logging
 import os
 import sys
+import traceback
+import types
+
+from loguru import logger
+from PySide6.QtCore import Qt, QtMsgType, qInstallMessageHandler
+from PySide6.QtWidgets import QApplication
+
+from core.app import main
+from typing import Any
 
 # Отключаем телеметрию ChromaDB (posthog)
 os.environ.update({
@@ -15,21 +24,51 @@ os.environ.update({
 logging.getLogger("posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-# Мок для posthog, чтобы избежать ошибок capture()
-import types
+# # Мок для posthog, чтобы избежать ошибок capture()
+# _posthog_mock = types.ModuleType("posthog")
+# _posthog_mock.capture = lambda *a, **kw: None
+# _posthog_mock.identify = lambda *a, **kw: None
+# _posthog_mock.flush = lambda *a, **kw: None
+# _posthog_mock.disabled = True
+# sys.modules["posthog"] = _posthog_mock
 
-_posthog_mock = types.ModuleType("posthog")
-_posthog_mock.capture = lambda *a, **kw: None
-_posthog_mock.identify = lambda *a, **kw: None
-_posthog_mock.flush = lambda *a, **kw: None
-_posthog_mock.disabled = True
+# Создаем класс-заглушку с нужными атрибутами
+class PosthogMock:
+    capture = lambda *a, **kw: None
+    identify = lambda *a, **kw: None
+    flush = lambda *a, **kw: None
+    disabled = True
+
+# Приводим к Any, чтобы Python разрешил подменить им целый модуль в sys.modules
+_posthog_mock: Any = PosthogMock()
 sys.modules["posthog"] = _posthog_mock
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+# Настройка обработчика сообщений Qt
+def qt_message_handler(mode, context, message):
+    if mode == QtMsgType.QtDebugMsg:
+        logger.debug(f"Qt: {message}")
+    elif mode == QtMsgType.QtInfoMsg:
+        logger.info(f"Qt: {message}")
+    elif mode == QtMsgType.QtWarningMsg:
+        logger.warning(f"Qt: {message}")
+    elif mode == QtMsgType.QtCriticalMsg:
+        logger.critical(f"Qt: {message}")
+    elif mode == QtMsgType.QtFatalMsg:
+        logger.critical(f"Qt FATAL: {message}")
 
-from core.app import main
+qInstallMessageHandler(qt_message_handler)
+
+def global_exception_handler(exc_type, exc_value, exc_tb):
+    logger.error("Необработанное исключение:")
+    logger.error("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+    # Можно показать диалог с ошибкой
+
+sys.excepthook = global_exception_handler
 
 if __name__ == "__main__":
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-    sys.exit(main())
+    try:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+        sys.exit(main())
+    except Exception as e:
+        logger.exception(f"Критическая ошибка: {e}")
+        sys.exit(1)

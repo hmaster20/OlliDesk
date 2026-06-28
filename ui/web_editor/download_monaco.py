@@ -18,11 +18,20 @@ VENDOR_DIR = Path(__file__).parent / "vendor"
 TARGET_DIR = VENDOR_DIR / "monaco"
 
 
+# def download_tarball(url: str) -> bytes:
+#     """Скачивает tarball по URL."""
+#     print(f"Скачиваю Monaco Editor v{MONACO_VERSION}...")
+#     with urllib.request.urlopen(url) as resp:
+#         data = resp.read()
+#         print(f"  Загружено {len(data) / 1024 / 1024:.1f} MB")
+#         return data
+
 def download_tarball(url: str) -> bytes:
     """Скачивает tarball по URL."""
     print(f"Скачиваю Monaco Editor v{MONACO_VERSION}...")
     with urllib.request.urlopen(url) as resp:
-        data = resp.read()
+        # Явно указываем тип переменной для mypy
+        data: bytes = resp.read()
         print(f"  Загружено {len(data) / 1024 / 1024:.1f} MB")
         return data
 

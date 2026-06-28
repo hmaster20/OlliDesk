@@ -4,12 +4,14 @@ from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.api.types import Where, Include
+from typing import cast, Any
+
 from loguru import logger
 from pydantic import BaseModel
 
 from agents.ollama_client import OllamaClient
 from fs.indexer import TextChunk
-
 
 class SearchResult(BaseModel):
     """Результат поиска."""
@@ -89,10 +91,10 @@ class VectorStore:
             # Добавление в коллекцию
             self.collection.add(
                 ids=ids,
-                embeddings=embeddings,
+                embeddings=embeddings,   # type: ignore[arg-type]
                 documents=documents,
-                metadatas=metadatas,
-            ) # type: ignore
+                metadatas=metadatas,     # type: ignore[arg-type]
+            )
 
             logger.debug(f"Добавлено чанков: {len(batch)}")
 
@@ -124,37 +126,112 @@ class VectorStore:
             where_filter = {"file_path": {"$in": file_filter}}
 
         # Поиск
+        # results = self.collection.query(
+        #     query_embeddings=query_embedding,
+        #     n_results=n_results,
+        #     where=where_filter,
+        #     include=["documents", "metadatas", "distances"],
+        # )  # type: ignore
+
+        # Это вариант 2 переделки Поиск строка 127
+        # # Убедитесь, что эти импорты есть в начале файла:
+        # # from chromadb.api.types import Where, Include
+
+        # # 1. Приводим query_embedding к типу Sequence[float]
+        # # (если ищем по одному вектору) или к нужному списку
+        # casted_embedding = [list(query_embedding[0])] if query_embedding else None
+
+        # # 2. Явно указываем тип для фильтра where
+        # casted_where: Where | None = where_filter
+
+        # # 3. Приводим список строк к типу списка IncludeEnum
+        # include_modes: Include = ["documents", "metadatas", "distances"] # type: ignore[assignment]
+
+        # results = self.collection.query(
+        #     query_embeddings=casted_embedding,  # type: ignore[arg-type]
+        #     n_results=n_results,
+        #     where=casted_where,
+        #     include=include_modes,
+        # )
+
+        # 1. Приводим фильтр к типу Any, чтобы mypy не проверял сложную структуру dict
+        casted_where = cast(Any, where_filter)
+
+        # 2. Приводим список строк к Any, чтобы избежать ошибок IncludeEnum
+        include_modes = cast(Any, ["documents", "metadatas", "distances"])
+
+        # 3. Делаем вызов. Добавляем точечный игнор только для query_embeddings
         results = self.collection.query(
-            query_embeddings=query_embedding,
+            query_embeddings=query_embedding,  # type: ignore[arg-type]
             n_results=n_results,
-            where=where_filter,
-            include=["documents", "metadatas", "distances"],
-        )  # type: ignore
+            where=casted_where,
+            include=include_modes,
+        )
+
 
         # Преобразование результатов
+        # search_results = []
+        # if results["documents"] and results["documents"][0]:
+        #     for i, doc in enumerate(results["documents"][0]):
+        #         metadata = results["metadatas"][0][i]
+        #         distance = results["distances"][0][i]
+        #         score = max(0.0, min(1.0, 1 - distance))  # Cosine distance -> similarity
+
+        #         chunk = TextChunk(
+        #             id=results["ids"][0][i],
+        #             file_path=metadata["file_path"],
+        #             content=doc,
+        #             start_line=metadata["start_line"],
+        #             end_line=metadata["end_line"],
+        #             metadata={"language": metadata.get("language", "unknown")},
+        #         )
+
+        #         search_results.append(
+        #             SearchResult(
+        #                 chunk=chunk,
+        #                 score=score,
+        #                 file_path=metadata["file_path"],
+        #             )
+        #         )
+
         search_results = []
-        if results["documents"] and results["documents"][0]:
+
+        # Гарантируем mypy, что списки документов, метаданных, дистанций и id существуют
+        if (
+            results["documents"] and results["documents"][0]
+            and results["metadatas"] and results["metadatas"][0]
+            and results["distances"] and results["distances"][0]
+            and results["ids"] and results["ids"][0]
+        ):
             for i, doc in enumerate(results["documents"][0]):
                 metadata = results["metadatas"][0][i]
                 distance = results["distances"][0][i]
                 score = max(0.0, min(1.0, 1 - distance))  # Cosine distance -> similarity
 
+                # Извлекаем и строго приводим типы метаданных для mypy
+                # Если в метаданных оказывается None или другой тип, используем фолбеки
+                file_path = str(metadata.get("file_path", ""))
+                start_line = int(metadata.get("start_line", 0))
+                end_line = int(metadata.get("end_line", 0))
+                language = str(metadata.get("language", "unknown"))
+
                 chunk = TextChunk(
                     id=results["ids"][0][i],
-                    file_path=metadata["file_path"],
+                    file_path=file_path,
                     content=doc,
-                    start_line=metadata["start_line"],
-                    end_line=metadata["end_line"],
-                    metadata={"language": metadata.get("language", "unknown")},
+                    start_line=start_line,
+                    end_line=end_line,
+                    metadata={"language": language},
                 )
 
                 search_results.append(
                     SearchResult(
                         chunk=chunk,
                         score=score,
-                        file_path=metadata["file_path"],
+                        file_path=file_path,
                     )
                 )
+
 
         logger.debug(f"Найдено результатов: {len(search_results)}")
         return search_results
@@ -170,10 +247,16 @@ class VectorStore:
             return
 
         # Получение ID чанков для удаления
+        # results = self.collection.get(
+        #     where={"file_path": {"$in": file_paths}},
+        #     include=[],
+        # )
+
         results = self.collection.get(
-            where={"file_path": {"$in": file_paths}},
+            where=cast(Any, {"file_path": {"$in": file_paths}}),
             include=[],
         )
+
 
         if results["ids"]:
             self.collection.delete(ids=results["ids"])

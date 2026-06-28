@@ -22,7 +22,6 @@ def _check_config_exists() -> bool:
 
 def _load_config_or_wizard() -> AppConfig | None:
     """Загружает конфиг или показывает визард.
-
     Returns:
         AppConfig или None, если визард не был завершён
     """
@@ -50,7 +49,7 @@ def _load_config_or_wizard() -> AppConfig | None:
             except Exception:
                 pass
 
-        logger.info("Запуск визарда первого запуска...")
+        logger.info("Запуск визарда для первого запуска...")
         wizard = SetupWizard()
         if wizard.exec():
             try:
@@ -73,7 +72,6 @@ class OlliDeskApp:
     def run(self) -> int:
         """
         Запускает приложение.
-
         Returns:
             int: Код выхода (0 — успех)
         """
@@ -82,8 +80,8 @@ class OlliDeskApp:
         logger.info("Запуск OlliDesk...")
 
         self.app = QApplication(sys.argv)
+        self.app.setApplicationVersion("0.1.1")
         self.app.setApplicationName("OlliDesk")
-        self.app.setApplicationVersion("1.0.0")
         self.app.setOrganizationName("OlliDesk")
 
         self.config = _load_config_or_wizard()
@@ -97,24 +95,22 @@ class OlliDeskApp:
 
         # Применяем глобальные настройки
         if self.config.last_model:
-            logger.info(f"🔄 Применяю last_model={self.config.last_model}")
+            logger.info(f"Применяю last_model={self.config.last_model}")
             self.main_window.chat_panel.set_model(self.config.last_model)
         if self.config.last_mode:
-            logger.info(f"🔄 Применяю last_mode={self.config.last_mode}")
+            logger.info(f"Применяю last_mode={self.config.last_mode}")
             mode_map = {"chat": 0, "plan": 1, "agent": 2}
             idx = mode_map.get(self.config.last_mode, 0)
             self.main_window.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self.main_window.theme_changed.connect(self._on_theme_changed)
         self.main_window.showMaximized()
-        # self.main_window.show()
         logger.info("Приложение готово к работе")
 
         return self.app.exec()
 
     def _apply_theme(self, theme: str) -> None:
         """Применяет тему к приложению.
-
         Args:
             theme: 'light' или 'dark'
         """
@@ -122,7 +118,7 @@ class OlliDeskApp:
             return
         stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
         self.app.setStyleSheet(stylesheet)
-        # Для заголовка
+        # Доработка темы для заголовка
         palette = self.app.palette()
         if theme == "dark":
             palette.setColor(palette.ColorRole.Window, QColor("#2d2d2d"))
@@ -138,28 +134,24 @@ class OlliDeskApp:
 
     def _on_theme_changed(self, theme: str) -> None:
         """Обрабатывает смену темы от MainWindow.
-
         Args:
             theme: 'light' или 'dark'
         """
-        if self.app is None:
+        if self.config is None:
             return
         self.config.theme = theme
         self._apply_theme(theme)
         from core.config import save_config
         save_config(self.config)
 
-
 def main() -> int:
     """
     Главная функция приложения.
-
     Returns:
         int: Код выхода
     """
     app = OlliDeskApp()
     return app.run()
-
 
 if __name__ == "__main__":
     sys.exit(main())

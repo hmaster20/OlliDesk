@@ -1,6 +1,6 @@
 [project]
 name = "ollidesk"
-version = "0.1.0"
+version = "0.1.2"
 description = "Local AI coding assistant for Windows 10"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.9,<2.10",
     "pydantic-settings>=2.5,<2.6",
     "PyYAML>=6.0,<6.1",
+    "types-pyyaml>=6.0.12,<6.1",
     "loguru>=0.7,<0.8",
     "httpx>=0.28,<0.29",
     "chromadb>=0.5,<0.6",
@@ -37,17 +38,39 @@ dev = [
 ]
 
 [tool.ruff]
-line-length = 120 # Установить максимальную длину строки в 120 символов
+line-length = 110 # Максимальная длина строки (символов)
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
-ignore = ["E501"] # Игнорировать слишком длинные строки
+ignore = [
+"E501",   # Игнорировать слишком длинные строки
+"SIM108"  # Игнорировать замену If на тернарный оператор
+]
 
 [tool.ruff.format]
-quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
+quote-style = "preserve" # Оставлять кавычки (одинарные или двойные) такими, как есть
+# ##### quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
 indent-style = "space" # Использовать пробелы для отступов
 docstring-code-format = true # Автоматически форматировать примеры кода внутри докстрингов
+
+[tool.ruff.lint.pep8-naming]
+ignore-names = [
+    "eventFilter",
+    "keyPressEvent",
+    "initStyleOption",
+    "closeEvent"
+]
+
+# Black это более простая альтернатива Ruff
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 110
+# Black
 
 [tool.mypy]
 python_version = "3.11"
@@ -56,25 +79,20 @@ warn_return_any = true
 warn_unused_configs = true
 # disallow_untyped_defs = true  # Требовать аннотации типов для всех функций
 ignore_missing_imports = true # Игнорировать библиотеки без поддержки типов
-exclude = ["ui/unused/","unused/"]
 # ВРЕМЕННО ОТКЛЮЧАЕМ ЖЕСТКИЕ ПРАВИЛА:
 disallow_untyped_defs = false       # Разрешаем функции без -> None и типов
 disallow_incomplete_defs = false    # Разрешаем частично аннотированные функции
 check_untyped_defs = true           # Но внутри функций код всё равно проверяем!
 disallow_untyped_calls = false      # Уберет ошибки [no-untyped-call]
 disallow_any_generics = false       # Уберет ошибки [type-arg] для dict без указания типов
+exclude = [
+    '.venv',
+    'unused'
+]
 
 [[tool.mypy.overrides]]
 module = "ui.dialogs.wizard"
 ignore_errors = true
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
-[tool.isort]
-profile = "black"
-line_length = 100
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -83,3 +101,15 @@ addopts = "--cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui --c
 
 [tool.setuptools]
 packages = ["agents", "core", "fs", "state", "tools", "ui"]
+
+[dependency-groups]
+dev = [
+    "black>=25.12.0",
+    "isort>=8.0.1",
+    "mypy>=1.19.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.15.20",
+]

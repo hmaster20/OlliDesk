@@ -1,0 +1,96 @@
+# git-cliff — конфигурационный файл
+# Документация: https://git-cliff.org/docs/configuration
+
+[changelog]
+# Шаблон генерируемого changelog'а
+body = """
+{% if not loop.first %}
+{% endif %}\
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+
+{% for commit in commits %}\
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+{% if commit.breaking %}[**breaking**] {% endif %}\
+{{ commit.message | upper_first }}
+{% endfor %}\
+{% endfor %}\
+"""
+
+# Удалять начальные и конечные пробелы из тела changelog'а
+trim = true
+
+# Генерировать тело даже если нет выпусков (тегов)
+render_always = true
+
+[git]
+# Парсить коммиты по спецификации Conventional Commits
+conventional_commits = true
+
+# Исключать коммиты, не соответствующие Conventional Commits
+filter_unconventional = true
+
+# Не требовать, чтобы все коммиты были Conventional (если false – пропускаем неконвенциональные)
+require_conventional = false
+
+# Разбивать сообщение коммита по переводам строк (каждая строка – отдельный коммит)
+split_commits = false
+
+# Защищать breaking-коммиты от исключения парсерами
+protect_breaking_commits = false
+
+# Игнорировать коммиты слияния веток (merge commits)
+ignore_merge = true
+
+# Фильтровать коммиты, которые не соответствуют ни одному правилу (выключено, так как у нас есть ".*")
+filter_commits = false
+
+# Не завершать с ошибкой, если коммит не сопоставлен ни с одним правилом
+fail_on_unmatched_commit = false
+
+# Включать только теги, принадлежащие текущей ветке
+use_branch_tags = false
+
+# Упорядочивать выпуски топологически (вместо хронологического)
+topo_order = false
+
+# Упорядочивать коммиты топологически (вместо хронологического)
+topo_order_commits = true
+
+# Порядок коммитов в каждой группе/выпуске: "newest" или "oldest"
+sort_commits = "oldest"
+
+# Обрабатывать коммиты подмодулей
+recurse_submodules = false
+
+# Правила (регулярные выражения) разбора коммитов для распределения по группам
+commit_parsers = [
+    # Новые функции (Conventional + старый стиль)
+    { message = "^feat|^add", group = "<!-- 0 -->🚀 Features & Additions" },
+
+    # Исправления
+    { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+
+    # Обновления и рефакторинг
+    { message = "^upd|^refactor|^perf", group = "<!-- 2 -->🔄 Updates & Refactoring" },
+
+    # Удаление кода
+    { message = "^del", group = "<!-- 3 -->🗑️ Removals" },
+
+    # Рутинные задачи (сборка, CI, служебные)
+    { message = "^chore|^ci|^build", group = "<!-- 4 -->⚙️ Maintenance" },
+
+    # Документация
+    { message = "^docs", group = "<!-- 5 -->📚 Documentation" },
+
+    # Стилизация кода
+    { message = "^style", group = "<!-- 6 -->🎨 Styling" },
+
+    # Все остальные коммиты попадают сюда
+    { message = ".*", group = "<!-- 7 -->📝 Other Changes" },
+]

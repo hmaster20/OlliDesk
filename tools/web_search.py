@@ -6,6 +6,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
+from core.search_cache import SearchCache
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -46,13 +47,27 @@ async def _search_curl_cffi(query: str, max_results: int) -> list:
     for item in soup.select(".result"):
         title_el = item.select_one(".result__title a")
         snippet_el = item.select_one(".result__snippet")
+        # if title_el:
+        #     title = title_el.get_text(strip=True)
+        #     href = title_el.get("href", "")
+        #     if isinstance(href, str) and href.startswith("//"):
+        #         href = "https:" + href
+        #     if href.startswith("//"):
+        #         href = "https:" + href
+        #     body = snippet_el.get_text(strip=True) if snippet_el else ""
+        #     results.append({"title": title, "href": href, "body": body})
+
         if title_el:
             title = title_el.get_text(strip=True)
-            href = title_el.get("href", "")
-            if isinstance(href, str) and href.startswith("//"):
-                href = "https:" + href
+
+            # Извлекаем href. Если его нет, get() может вернуть None, поэтому даем фолбек ""
+            raw_href = title_el.get("href", "")
+            # Гарантируем mypy, что работаем со строкой
+            href = raw_href if isinstance(raw_href, str) else ""
+
             if href.startswith("//"):
                 href = "https:" + href
+
             body = snippet_el.get_text(strip=True) if snippet_el else ""
             results.append({"title": title, "href": href, "body": body})
     return results
@@ -64,7 +79,8 @@ async def _search_curl_cffi(query: str, max_results: int) -> list:
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.PLAN, AgentMode.AGENT],
 )
-async def web_search(query: str, max_results: int = 5, search_cache=None) -> str:
+# async def web_search(query: str, max_results: int = 5, search_cache=None) -> str:
+async def web_search(query: str, max_results: int = 5, search_cache: SearchCache | None = None) -> str:
     """Ищет в интернете через DuckDuckGo (HTML API).
     Args:
         query: Поисковый запрос
@@ -74,7 +90,11 @@ async def web_search(query: str, max_results: int = 5, search_cache=None) -> str
     """
     if search_cache:
         cached = search_cache.get(query)
-        if cached:
+        # if cached:
+        #     return cached
+        if cached is not None:
+            # Метод .get() вашего кэша возвращает str | None,
+            # проверка на None гарантирует mypy, что cached — это str.
             return cached
 
     try:
