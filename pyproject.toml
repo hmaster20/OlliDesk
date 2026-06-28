@@ -35,7 +35,6 @@ dev = [
     "mypy>=1.9",
     "black>=24.0",
     "isort>=5.13",
-    "bump-my-version>=1.4.1",
 ]
 
 [tool.ruff]
@@ -103,33 +102,14 @@ addopts = "--cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui --c
 [tool.setuptools]
 packages = ["agents", "core", "fs", "state", "tools", "ui"]
 
-# === Утилита автоматической смены версий - Начало
-[tool.bumpversion]
-current_version = "0.1.2"
-parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
-serialize = ["{major}.{minor}.{patch}"]
-search = "version = \"{current_version}\""
-replace = "version = \"{new_version}\"" # Автоматически коммитить изменения и создавать тег
-commit = true
-tag = true
-sign_tags = false
-tag_name = "v{new_version}"
-commit_message = "chore(release): bump version {current_version} → {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "pyproject.toml"
-
-[[tool.bumpversion.files]]
-filename = "CHANGELOG.md"
-search = "v{current_version}"
-replace = "v{current_version}"
-
-[[tool.bumpversion.hooks]]
-# setup = "git-cliff --tag v{new_version} -o CHANGELOG.md"
-# Переносим запуск git-cliff из 'setup' в 'post_bump'
-# Добавляем команду 'git add', чтобы зафиксировать изменения чейнджлога перед коммитом
-post_bump = """
-git-cliff --tag v{new_version} -o CHANGELOG.md
-git add CHANGELOG.md
-"""
-# === Утилита автоматической смены версий - Конец
+[dependency-groups]
+dev = [
+    "black>=25.12.0",
+    "isort>=8.0.1",
+    "mypy>=1.19.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.15.20",
+]
