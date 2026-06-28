@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from core.app import main
+from typing import Any
 
 # Отключаем телеметрию ChromaDB (posthog)
 os.environ.update({
@@ -23,12 +24,23 @@ os.environ.update({
 logging.getLogger("posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-# Мок для posthog, чтобы избежать ошибок capture()
-_posthog_mock = types.ModuleType("posthog")
-_posthog_mock.capture = lambda *a, **kw: None
-_posthog_mock.identify = lambda *a, **kw: None
-_posthog_mock.flush = lambda *a, **kw: None
-_posthog_mock.disabled = True
+# # Мок для posthog, чтобы избежать ошибок capture()
+# _posthog_mock = types.ModuleType("posthog")
+# _posthog_mock.capture = lambda *a, **kw: None
+# _posthog_mock.identify = lambda *a, **kw: None
+# _posthog_mock.flush = lambda *a, **kw: None
+# _posthog_mock.disabled = True
+# sys.modules["posthog"] = _posthog_mock
+
+# Создаем класс-заглушку с нужными атрибутами
+class PosthogMock:
+    capture = lambda *a, **kw: None
+    identify = lambda *a, **kw: None
+    flush = lambda *a, **kw: None
+    disabled = True
+
+# Приводим к Any, чтобы Python разрешил подменить им целый модуль в sys.modules
+_posthog_mock: Any = PosthogMock()
 sys.modules["posthog"] = _posthog_mock
 
 # Настройка обработчика сообщений Qt

@@ -1,5 +1,7 @@
 """Диалог настроек OlliDesk — глобальные и локальные (проектные) конфиги."""
 
+from typing import Any
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -262,9 +264,8 @@ class SettingsDialog(QDialog):
         # Сохраняем глобальный конфиг
         self._config.ignored_patterns = self._global_ignore_editor.get_patterns()
         self._config.index_extensions = self._global_ext_editor.get_extensions()
-        # self._config.ignored_patterns = self._global_ignore_editor.get_patterns() # type: ignore[assignment]
-        # self._config.index_extensions = self._global_ext_editor.get_extensions() # type: ignore[assignment]
 
+        # Теперь эти строки встанут ровно на 267 и 268 позиции в файле
         self._config.max_file_size_kb = self._global_max_size.value()
         self._config.chunk_size_tokens = self._global_chunk_size.value()
         self._config.chunk_overlap_tokens = self._global_chunk_overlap.value()
@@ -274,27 +275,27 @@ class SettingsDialog(QDialog):
         if self._project_path:
             local_patterns = self._local_ignore_editor.get_patterns()
             local_exts = self._local_ext_editor.get_extensions()
-            local_max_size = self._local_max_size.value()
-            local_chunk_size = self._local_chunk_size.value()
-            # local_max_size = self._local_max_size.value()  # type: ignore[assignment]
-            # local_chunk_size = self._local_chunk_size.value() # type: ignore[assignment]
 
-            local_data = {}
+            val_max_size = self._local_max_size.value()
+            val_chunk_size = self._local_chunk_size.value()
+
+            # Явно указываем dict[str, Any], чтобы mypy разрешил смешанные типы (list и int)
+            local_data: dict[str, Any] = {}
+
             if local_patterns:
                 local_data["ignored_patterns"] = local_patterns
             if local_exts:
                 local_data["index_extensions"] = local_exts
-            if local_max_size > 0:
-                local_data["max_file_size_kb"] = local_max_size
-            if local_chunk_size > 0:
-                local_data["chunk_size_tokens"] = local_chunk_size
+            if val_max_size > 0:
+                local_data["max_file_size_kb"] = val_max_size
+            if val_chunk_size > 0:
+                local_data["chunk_size_tokens"] = val_chunk_size
 
             if local_data:
                 local_path = self._project_path / ".ollidesk" / "config.yaml"
                 local_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Добавляем игнорирование для untyped импорта yaml, если типы не установлены глобально
-                import yaml  # type: ignore[import-untyped]
+                import yaml
                 with open(local_path, "w", encoding="utf-8") as f:
                     yaml.dump(local_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
