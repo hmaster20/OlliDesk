@@ -88,6 +88,19 @@ class ExtensionsEditor(QWidget):
 class SettingsDialog(QDialog):
     """Диалог настроек — редактирование глобального и локального конфига."""
 
+    # 1. Выносим аннотации элементов PyQt на уровень класса.
+    # Это жестко привяжет их к типу QSpinBox/Editor для всех методов!
+    _global_ignore_editor: ExcludePatternEditor
+    _global_ext_editor: ExtensionsEditor
+    _global_max_size: QSpinBox
+    _global_chunk_size: QSpinBox
+    _global_chunk_overlap: QSpinBox
+
+    _local_ignore_editor: ExcludePatternEditor
+    _local_ext_editor: ExtensionsEditor
+    _local_max_size: QSpinBox
+    _local_chunk_size: QSpinBox
+
     def __init__(
         self,
         config: AppConfig,
@@ -95,8 +108,22 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self._config = config
-        self._project_path = project_path
+
+        # 1. Явно аннотируем конфигурацию и пути
+        self._config: AppConfig = config
+        self._project_path: Path | None = project_path
+
+        # 2. Объявляем типы UI элементов, чтобы mypy точно знал их тип (особенно .value())
+        # self._global_ignore_editor: ExcludePatternEditor
+        # self._global_ext_editor: ExtensionsEditor
+        # self._global_max_size: QSpinBox
+        # self._global_chunk_size: QSpinBox
+        # self._global_chunk_overlap: QSpinBox
+
+        # self._local_ignore_editor: ExcludePatternEditor
+        # self._local_ext_editor: ExtensionsEditor
+        # self._local_max_size: QSpinBox
+        # self._local_chunk_size: QSpinBox
 
         self.setWindowTitle("Настройки OlliDesk")
         self.setMinimumSize(700, 500)
@@ -128,21 +155,18 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Игнорируемые паттерны
         group = QGroupBox("Паттерны исключения (игнорирование файлов)")
         group_layout = QVBoxLayout(group)
         self._global_ignore_editor = ExcludePatternEditor(self._config.ignored_patterns)
         group_layout.addWidget(self._global_ignore_editor)
         layout.addWidget(group)
 
-        # Расширения для индексации
         group2 = QGroupBox("Расширения файлов для индексации")
         group2_layout = QVBoxLayout(group2)
         self._global_ext_editor = ExtensionsEditor(self._config.index_extensions)
         group2_layout.addWidget(self._global_ext_editor)
         layout.addWidget(group2)
 
-        # Числовые параметры
         nums_layout = QHBoxLayout()
 
         vbox1 = QVBoxLayout()
@@ -186,7 +210,6 @@ class SettingsDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # Игнорируемые паттерны (проектные)
         group = QGroupBox("Паттерны исключения (проектные)")
         group_layout = QVBoxLayout(group)
         local_patterns = self._get_local_value("ignored_patterns", [])
@@ -194,7 +217,6 @@ class SettingsDialog(QDialog):
         group_layout.addWidget(self._local_ignore_editor)
         layout.addWidget(group)
 
-        # Расширения для индексации (проектные)
         group2 = QGroupBox("Расширения файлов (проектные)")
         group2_layout = QVBoxLayout(group2)
         local_exts = self._get_local_value("index_extensions", [])
@@ -202,7 +224,6 @@ class SettingsDialog(QDialog):
         group2_layout.addWidget(self._local_ext_editor)
         layout.addWidget(group2)
 
-        # Числовые параметры (проектные)
         nums_layout = QHBoxLayout()
 
         vbox1 = QVBoxLayout()
@@ -241,6 +262,9 @@ class SettingsDialog(QDialog):
         # Сохраняем глобальный конфиг
         self._config.ignored_patterns = self._global_ignore_editor.get_patterns()
         self._config.index_extensions = self._global_ext_editor.get_extensions()
+        # self._config.ignored_patterns = self._global_ignore_editor.get_patterns() # type: ignore[assignment]
+        # self._config.index_extensions = self._global_ext_editor.get_extensions() # type: ignore[assignment]
+
         self._config.max_file_size_kb = self._global_max_size.value()
         self._config.chunk_size_tokens = self._global_chunk_size.value()
         self._config.chunk_overlap_tokens = self._global_chunk_overlap.value()
@@ -252,6 +276,8 @@ class SettingsDialog(QDialog):
             local_exts = self._local_ext_editor.get_extensions()
             local_max_size = self._local_max_size.value()
             local_chunk_size = self._local_chunk_size.value()
+            # local_max_size = self._local_max_size.value()  # type: ignore[assignment]
+            # local_chunk_size = self._local_chunk_size.value() # type: ignore[assignment]
 
             local_data = {}
             if local_patterns:
@@ -266,7 +292,9 @@ class SettingsDialog(QDialog):
             if local_data:
                 local_path = self._project_path / ".ollidesk" / "config.yaml"
                 local_path.parent.mkdir(parents=True, exist_ok=True)
-                import yaml
+
+                # Добавляем игнорирование для untyped импорта yaml, если типы не установлены глобально
+                import yaml  # type: ignore[import-untyped]
                 with open(local_path, "w", encoding="utf-8") as f:
                     yaml.dump(local_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

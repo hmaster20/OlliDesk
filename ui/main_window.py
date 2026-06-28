@@ -122,7 +122,11 @@ class ModelCheckThread(QThread):
     async def _check(self):
         from agents.ollama_client import OllamaClient
         client = OllamaClient(base_url=self.base_url)
-        results = {}
+
+        # results = {}
+        # Явная аннотация типов исправляет ошибку [var-annotated]
+        results: dict[str, bool] = {}
+
         # Собираем модели для проверки
         models_to_check = [
             name for name, info in self.registry.models.items()
@@ -725,8 +729,15 @@ class MainWindow(QMainWindow):
                 self.chat_panel.update_models(models)
             # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
             current_model = self.chat_panel.get_current_model()
+            # if not current_model and models:
+            #     first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+            #     self.chat_panel.set_model(first_local)
             if not current_model and models:
-                first_local = next((m for m in models if self.model_registry.get(m) and self.model_registry.get(m).is_local), models[0])
+                # Используем моржовый оператор (:=), чтобы сохранить объект и проверить его на None
+                first_local = next(
+                    (m for m in models if (info := self.model_registry.get(m)) is not None and info.is_local),
+                    models[0]
+                )
                 self.chat_panel.set_model(first_local)
                 # иначе оставляем текущую
         else:
@@ -920,13 +931,55 @@ class MainWindow(QMainWindow):
         self.index_progress.setVisible(True)  # keep visible
         self.reindex_btn.setEnabled(True)
 
+    # def _save_project_state(self) -> None:
+    #     """Сохраняет состояние проекта после индексации."""
+    #     if not self.project_path:
+    #         return
+
+    #     async def _get_state():
+    #         files = await self.indexer.scan_project(self.project_path)
+    #         return {f.path: f for f in files}
+
+    #     loop = asyncio.new_event_loop()
+    #     try:
+    #         state = loop.run_until_complete(_get_state())
+    #         self.project_state.save(state)
+    #         self._previous_state = state
+    #     finally:
+    #         loop.close()
+
+    # def _save_project_state(self) -> None:
+    #     """Сохраняет состояние проекта после индексации."""
+    #     if not self.project_path:
+    #         return
+
+    #     # Создаем локальную переменную. Теперь mypy на 100% уверен, что path имеет тип Path
+    #     path = self.project_path
+
+    #     async def _get_state():
+    #         # Передаем гарантированный Path, убирая ошибку [arg-type]
+    #         files = await self.indexer.scan_project(path)
+    #         return {f.path: f for f in files}
+
+    #     loop = asyncio.new_event_loop()
+    #     try:
+    #         state = loop.run_until_complete(_get_state())
+    #         self.project_state.save(state)
+    #         self._previous_state = state
+    #     finally:
+    #         loop.close()
+
     def _save_project_state(self) -> None:
         """Сохраняет состояние проекта после индексации."""
         if not self.project_path:
             return
 
+        # Создаем локальную переменную. Теперь mypy на 100% уверен, что path имеет тип Path
+        path = self.project_path
+
         async def _get_state():
-            files = await self.indexer.scan_project(self.project_path)
+            # Передаем гарантированный Path, убирая ошибку [arg-type]
+            files = await self.indexer.scan_project(path)
             return {f.path: f for f in files}
 
         loop = asyncio.new_event_loop()

@@ -7,7 +7,13 @@ import re
 import threading
 from typing import Any
 
+from pathlib import Path
+from typing import Any, cast
+
 from loguru import logger
+
+from PySide6.QtCore import QObject, QEvent
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
@@ -548,14 +554,29 @@ class ChatPanel(QWidget):
             bubble.setMinimumWidth(0)
             bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        if widget is not None:
-            if widget.bubble:
+        # if widget is not None:
+        #     if widget.bubble:
+        #         apply_policy(widget.bubble, widget.role)
+        # else:
+        #     for i in range(self.scroll_layout.count()):
+        #         item = self.scroll_layout.itemAt(i)
+        #         if item and item.widget() and isinstance(item.widget(), ChatMessageItem) and item.widget().bubble:
+        #             apply_policy(item.widget().bubble, item.widget().role)
+
+        if widget is not None and hasattr(widget, "bubble"):
+            # Используем явное приведение типа для mypy ( cast ) или проверку isinstance
+            if isinstance(widget, ChatMessageItem):
                 apply_policy(widget.bubble, widget.role)
         else:
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
-                if item and item.widget() and isinstance(item.widget(), ChatMessageItem) and item.widget().bubble:
-                    apply_policy(item.widget().bubble, item.widget().role)
+                if item and item.widget():
+                    w = item.widget()
+                    # isinstance гарантирует mypy, что w теперь имеет тип ChatMessageItem
+                    if isinstance(w, ChatMessageItem) and w.bubble:
+                        apply_policy(w.bubble, w.role)
+
+
 
     def _relayout_all_items(self) -> None:
         """Пересчитывает ширину баблов при ресайзе."""
@@ -800,15 +821,48 @@ class ChatPanel(QWidget):
         except Exception as e:
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
 
-    def eventFilter(self, obj: QWidget, event) -> bool:
+    # def eventFilter(self, obj: QWidget, event) -> bool:
+    #     """Обрабатывает Ctrl+Enter и ресайз панели чата."""
+    #     if (obj is self.input_edit and event.type() == event.Type.KeyPress
+    #             and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+    #         self._toggle_send_stop()
+    #         return True
+    #     if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
+    #         self._update_bubble_width()   # обновить все
+    #     return super().eventFilter(obj, event)
+
+    # def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+    #     """Обрабатывает Ctrl+Enter и ресайз панели чата."""
+    #     # Проверка "is" абсолютно безопасна для QObject
+    #     if (obj is self.input_edit and event.type() == QEvent.Type.KeyPress
+    #             and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+    #         self._toggle_send_stop()
+    #         return True
+
+    #     if obj is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
+    #         self._update_bubble_width()   # обновить все
+
+    #     return super().eventFilter(obj, event)
+
+
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Обрабатывает Ctrl+Enter и ресайз панели чата."""
-        if (obj is self.input_edit and event.type() == event.Type.KeyPress
-                and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
-            self._toggle_send_stop()
-            return True
-        if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
+
+        # 1. Проверяем, что событие произошло на нужном виджете и это нажатие клавиши
+        if obj is self.input_edit and event.type() == QEvent.Type.KeyPress:
+            # 2. Доказываем mypy, что event — это именно QKeyEvent
+            if isinstance(event, QKeyEvent):
+                if (event.key() == Qt.Key.Key_Return
+                        and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+                    self._toggle_send_stop()
+                    return True
+
+        if obj is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
             self._update_bubble_width()   # обновить все
+
         return super().eventFilter(obj, event)
+
 
     def _current_mode_name(self) -> str:
         """Возвращает отображаемое имя текущего режима."""
@@ -982,9 +1036,18 @@ class ChatPanel(QWidget):
         else:
             self._start_agent(text, mode)
 
+    # def _is_busy(self) -> bool:
+    #     """Проверяет, выполняется ли сейчас генерация."""
+    #     return (
+    #         (self._ollama_thread and self._ollama_thread.isRunning())
+    #         or (self._agent_thread and self._agent_thread.isRunning())
+    #         or (self._rag_thread and self._rag_thread.isRunning())
+    #     )
+
     def _is_busy(self) -> bool:
         """Проверяет, выполняется ли сейчас генерация."""
-        return (
+        # Явное приведение к bool() гарантирует соответствие аннотации -> bool
+        return bool(
             (self._ollama_thread and self._ollama_thread.isRunning())
             or (self._agent_thread and self._agent_thread.isRunning())
             or (self._rag_thread and self._rag_thread.isRunning())
@@ -1082,11 +1145,18 @@ class ChatPanel(QWidget):
 
         # Формируем единый системный промт
         system_prompt_parts = []
+        # if self.prompt_manager:
+        #     # sys_prompt = self.prompt_manager.get_prompt("chat")
+        #     sys_prompt = self.prompt_manager.get_prompt("chat", project_root=self.project_root)
+        #     if sys_prompt:
+        #         system_prompt_parts.append(sys_prompt)
         if self.prompt_manager:
-            # sys_prompt = self.prompt_manager.get_prompt("chat")
-            sys_prompt = self.prompt_manager.get_prompt("chat", project_root=self.project_root)
+            # Преобразуем строку self.project_root в объект Path, если путь существует
+            p_root = Path(self.project_root) if self.project_root else None
+            sys_prompt = self.prompt_manager.get_prompt("chat", project_root=p_root)
             if sys_prompt:
                 system_prompt_parts.append(sys_prompt)
+
         if self._rag_context:
             system_prompt_parts.append(f"Контекст из кодовой базы:\n{self._rag_context}")
 
@@ -1139,8 +1209,16 @@ class ChatPanel(QWidget):
         """Запускает AgentLoop."""
         role_prompt = self.get_current_role_prompt()
         # mode_prompt = self.prompt_manager.get_prompt(mode.value) if self.prompt_manager else ""
-        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
+        # mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
+
+        p_root = Path(self.project_root) if self.project_root else None
+        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=p_root) if self.prompt_manager else ""
+
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
+
+        # Извлекаем search_cache и приводим его к Any или нужному типу для AgentContext
+        raw_cache = getattr(self, 'search_cache', None)
+
         context = AgentContext(
             # system_prompt=self.get_current_role_prompt(),
             system_prompt=combined,
@@ -1148,14 +1226,28 @@ class ChatPanel(QWidget):
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=mode,
-            search_cache=getattr(self, 'search_cache', None),
+            # search_cache=getattr(self, 'search_cache', None),
+            search_cache=cast(Any, raw_cache),  # Исправляем [assignment]
         )
 
-        extra = {"project_root": context.project_root}
+        # extra = {"project_root": context.project_root}
+        # if context.vector_store:
+        #     extra["vector_store"] = context.vector_store
+        # # if hasattr(self, 'search_cache') and self.search_cache:
+        # #     extra["search_cache"] = self.search_cache
+        # if hasattr(self, 'search_cache') and self.search_cache:
+        #     extra["search_cache"] = cast(Any, self.search_cache)
+
+
+        # Явно указываем тип словаря как dict[str, Any], чтобы mypy разрешил любые типы данных
+        extra: dict[str, Any] = {"project_root": context.project_root}
         if context.vector_store:
             extra["vector_store"] = context.vector_store
+
+        # Теперь это присвоение пройдет без каких-либо ошибок типов
         if hasattr(self, 'search_cache') and self.search_cache:
             extra["search_cache"] = self.search_cache
+
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1427,11 +1519,29 @@ class ChatPanel(QWidget):
         if current and self.model_combo.findData(current) >= 0:
             self.model_combo.setCurrentIndex(self.model_combo.findData(current))
         else:
+            # # Выбираем первую локальную или первую вообще
+            # for i in range(self.model_combo.count()):
+            #     if self.model_combo.itemData(i) and self.registry.get(self.model_combo.itemData(i)).is_local:
+            #         self.model_combo.setCurrentIndex(i)
+            #         break
+
+            # Выбираем первую локальную или первую вообще
+            # for i in range(self.model_combo.count()):
+            #     model_data = self.model_combo.itemData(i)
+            #     # Извлекаем инфо о модели, проверяем на None и только потом смотрим .is_local
+            #     if model_data and (info := self.registry.get(model_data)) is not None and info.is_local:
+            #         self.model_combo.setCurrentIndex(i)
+            #         break
+
             # Выбираем первую локальную или первую вообще
             for i in range(self.model_combo.count()):
-                if self.model_combo.itemData(i) and self.registry.get(self.model_combo.itemData(i)).is_local:
+                model_data = self.model_combo.itemData(i)
+                # Используем новое имя переменной model_info, чтобы избежать конфликта типов
+                if model_data and (model_info := self.registry.get(model_data)) is not None and model_info.is_local:
                     self.model_combo.setCurrentIndex(i)
                     break
+
+
             else:
                 if self.model_combo.count() > 0:
                     self.model_combo.setCurrentIndex(0)

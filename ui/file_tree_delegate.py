@@ -6,6 +6,8 @@ from loguru import logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
+from typing import cast
+from PySide6.QtWidgets import QWidget
 
 _GIT_COLORS = {
     "M": QColor("#e06c75"),
@@ -48,9 +50,41 @@ class GitStatusDelegate(QStyledItemDelegate):
 
     def _refresh(self):
         """Парсит git status --porcelain для корня репозитория."""
+        # self._status_map.clear()
+        # if not self._repo_path:
+        #     self.parent().update()
+        #     return
+        # try:
+        #     result = subprocess.run(
+        #         ["git", "status", "--porcelain"],
+        #         capture_output=True, text=True, cwd=self._repo_path,
+        #         timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
+        #     )
+        #     if result.returncode != 0:
+        #         self.parent().update()
+        #         return
+        #     for line in result.stdout.splitlines():
+        #         if len(line) < 3:
+        #             continue
+        #         raw_status = line[:2]
+        #         rel_path = line[3:].strip()
+        #         normalised = rel_path.replace("\\", "/")
+        #         symbol = raw_status.strip() or raw_status[0]
+        #         self._status_map[normalised] = symbol
+        #     self.parent().update()
+        # except FileNotFoundError:
+        #     pass
+        # except Exception as exc:
+        #     logger.debug(f"Git status refresh error: {exc}")
+
         self._status_map.clear()
+
+        # Приводим родителя к типу QWidget, у которого есть метод update()
+        parent_widget = cast(QWidget, self.parent())
+
         if not self._repo_path:
-            self.parent().update()
+            if parent_widget:
+                parent_widget.update()
             return
         try:
             result = subprocess.run(
@@ -59,7 +93,8 @@ class GitStatusDelegate(QStyledItemDelegate):
                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode != 0:
-                self.parent().update()
+                if parent_widget:
+                    parent_widget.update()
                 return
             for line in result.stdout.splitlines():
                 if len(line) < 3:
@@ -69,11 +104,16 @@ class GitStatusDelegate(QStyledItemDelegate):
                 normalised = rel_path.replace("\\", "/")
                 symbol = raw_status.strip() or raw_status[0]
                 self._status_map[normalised] = symbol
-            self.parent().update()
+
+            if parent_widget:
+                parent_widget.update()
         except FileNotFoundError:
             pass
         except Exception as exc:
             logger.debug(f"Git status refresh error: {exc}")
+
+
+
 
     def _status_for(self, file_path: str) -> str | None:
         """Возвращает Git-символ статуса для относительного пути."""
@@ -87,6 +127,36 @@ class GitStatusDelegate(QStyledItemDelegate):
                 return sym
         return None
 
+    # def initStyleOption(self, option: QStyleOptionViewItem, index):
+    #     """Настраивает опции отображения, устанавливая цвет текста по Git."""
+    #     super().initStyleOption(option, index)
+
+    #     if not self._repo_path or not self._status_map:
+    #         return
+
+    #     file_name = index.data(Qt.ItemDataRole.DisplayRole)
+    #     if not file_name:
+    #         return
+
+    #     parts = []
+    #     idx = index
+    #     while idx.isValid():
+    #         data = idx.data(Qt.ItemDataRole.DisplayRole)
+    #         if data:
+    #             parts.insert(0, data)
+    #         idx = idx.parent()
+    #     if len(parts) < 2:
+    #         return
+    #     rel_path = "/".join(parts[1:])
+
+    #     symbol = self._status_for(rel_path)
+    #     if not symbol:
+    #         return
+
+    #     color = _GIT_COLORS.get(symbol)
+    #     if color:
+    #         option.palette.setColor(option.palette.ColorRole.Text, color)
+
     def initStyleOption(self, option: QStyleOptionViewItem, index):
         """Настраивает опции отображения, устанавливая цвет текста по Git."""
         super().initStyleOption(option, index)
@@ -98,7 +168,8 @@ class GitStatusDelegate(QStyledItemDelegate):
         if not file_name:
             return
 
-        parts = []
+        # 1. Исправляем [var-annotated]: явно указываем тип списка строк
+        parts: list[str] = []
         idx = index
         while idx.isValid():
             data = idx.data(Qt.ItemDataRole.DisplayRole)
@@ -115,4 +186,5 @@ class GitStatusDelegate(QStyledItemDelegate):
 
         color = _GIT_COLORS.get(symbol)
         if color:
-            option.palette.setColor(option.palette.ColorRole.Text, color)
+            # 2. Исправляем [attr-defined]: глушим ошибку генерации типов Qt для palette
+            option.palette.setColor(option.palette.ColorRole.Text, color)  # type: ignore[attr-defined]

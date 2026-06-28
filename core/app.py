@@ -137,13 +137,12 @@ class OlliDeskApp:
         Args:
             theme: 'light' или 'dark'
         """
-        if self.app is None:
+        if self.config is None:
             return
         self.config.theme = theme
         self._apply_theme(theme)
         from core.config import save_config
         save_config(self.config)
-
 
 def main() -> int:
     """

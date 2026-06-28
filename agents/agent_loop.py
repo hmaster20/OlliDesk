@@ -106,7 +106,8 @@ class AgentLoop:
             text = match.group(1).strip()
 
         extracted = []
-        stack = []
+        # stack = []
+        stack: list[str] = []
         start = None
 
         for i, ch in enumerate(text):
