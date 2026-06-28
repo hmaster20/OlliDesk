@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.9,<2.10",
     "pydantic-settings>=2.5,<2.6",
     "PyYAML>=6.0,<6.1",
+    "types-pyyaml>=6.0.12,<6.1",
     "loguru>=0.7,<0.8",
     "httpx>=0.28,<0.29",
     "chromadb>=0.5,<0.6",
@@ -38,7 +39,7 @@ dev = [
 ]
 
 [tool.ruff]
-line-length = 120 # Установить максимальную длину строки в 120 символов
+line-length = 110 # Максимальная длина строки (символов)
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -49,7 +50,8 @@ ignore = [
 ]
 
 [tool.ruff.format]
-quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
+quote-style = "preserve" # Оставлять кавычки (одинарные или двойные) такими, как есть
+# ##### quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
 indent-style = "space" # Использовать пробелы для отступов
 docstring-code-format = true # Автоматически форматировать примеры кода внутри докстрингов
 
@@ -61,6 +63,16 @@ ignore-names = [
     "closeEvent"
 ]
 
+# Black это более простая альтернатива Ruff
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 110
+# Black
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
@@ -68,25 +80,20 @@ warn_return_any = true
 warn_unused_configs = true
 # disallow_untyped_defs = true  # Требовать аннотации типов для всех функций
 ignore_missing_imports = true # Игнорировать библиотеки без поддержки типов
-exclude = ["ui/unused/","unused/"]
 # ВРЕМЕННО ОТКЛЮЧАЕМ ЖЕСТКИЕ ПРАВИЛА:
 disallow_untyped_defs = false       # Разрешаем функции без -> None и типов
 disallow_incomplete_defs = false    # Разрешаем частично аннотированные функции
 check_untyped_defs = true           # Но внутри функций код всё равно проверяем!
 disallow_untyped_calls = false      # Уберет ошибки [no-untyped-call]
 disallow_any_generics = false       # Уберет ошибки [type-arg] для dict без указания типов
+exclude = [
+    '.venv',
+    'unused'
+]
 
 [[tool.mypy.overrides]]
 module = "ui.dialogs.wizard"
 ignore_errors = true
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
-[tool.isort]
-profile = "black"
-line_length = 100
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -95,3 +102,23 @@ addopts = "--cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui --c
 
 [tool.setuptools]
 packages = ["agents", "core", "fs", "state", "tools", "ui"]
+
+# === Утилита автоматической смены версий - Начало
+[tool.bumpversion]
+current_version = "0.1.1"
+parse = "(?P<major>\\d+)\\.(\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+search = "version = \"{current_version}\""
+replace = "version = \"{new_version}\""# Автоматически коммитить изменения и создавать тег
+commit = true
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+commit_message = "chore(release): bump version {current_version} → {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+
+[[tool.bumpversion.hooks]]
+setup = "git-cliff --tag v{new_version} -o CHANGELOG.md"
+# === Утилита автоматической смены версий - Конец
