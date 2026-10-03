@@ -1,13 +1,14 @@
 """Инструмент поиска в интернете.
 
 Стратегии (в порядке приоритета):
-  1. DuckDuckGo Lite  — curl_cffi, минимальный HTML, стабильнее основного домена.
-  2. DuckDuckGo HTML  — curl_cffi, основной HTML-эндпоинт.
-  3. Wikipedia API    — для фактических запросов и определений.
-  4. SearXNG          — публичные инстансы (best-effort, может быть отключён).
+  1. Яндекс (парсинг HTML через curl_cffi) — основной для РФ.
+  2. DDGS (ddgs / duckduckgo_search)       — старый проверенный движок.
+  3. DDG HTML (curl_cffi)                  — прямой HTML-парсинг.
+  4. SearXNG (публичные инстансы)          — последний резерв.
 
-Порядок подобран эмпирически: в регионах, где DDG блокируется, Lite-версия
-часто работает, а Wikipedia/ SearX дают хоть какой-то результат вместо пустоты.
+Порядок подобран эмпирически: Яндекс даёт лучшую выдачу для русскоязычных
+запросов, DDGS — стабильный fallback. Если Яндекс ловит SmartCaptcha —
+молча падаем на следующий движок.
 """
 
 import asyncio
@@ -31,7 +32,6 @@ _HEADERS = {
     "DNT": "1",
 }
 
-# Публичные SearXNG-инстансы. Могут быть временно недоступны — обходим по кругу.
 _SEARX_INSTANCES = (
     "https://searx.be",
     "https://search.bus-hit.me",
@@ -40,52 +40,62 @@ _SEARX_INSTANCES = (
 
 
 # ---------------------------------------------------------------------------
-# Стратегия 1: DuckDuckGo Lite
+# Стратегия 1: Яндекс (парсинг)
 # ---------------------------------------------------------------------------
 
-async def _search_ddg_lite(query: str, max_results: int) -> list[dict[str, str]]:
-    """DuckDuckGo Lite через curl_cffi (POST q=...)."""
+async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
+    """Парсит выдачу yandex.ru/search/?text=... через curl_cffi."""
     from bs4 import BeautifulSoup
     from curl_cffi import requests
 
     def _do() -> str:
         session = requests.Session()
-        resp = session.post(
-            "https://lite.duckduckgo.com/lite/",
-            data={"q": query},
+        resp = session.get(
+            "https://yandex.ru/search/",
+            params={"text": query},
             headers=_HEADERS,
             impersonate="chrome",
-            timeout=20,
+            timeout=25,
         )
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
         return resp.text
 
     html = await asyncio.to_thread(_do)
+
+    # Яндекс может вернуть капчу с HTTP 200 — проверяем содержимое.
+    if "SmartCaptcha" in html or "captcha" in html.lower():
+        raise RuntimeError("Yandex SmartCaptcha triggered")
+
     soup = BeautifulSoup(html, "html.parser")
-
     results: list[dict[str, str]] = []
-    # Lite-разметка: ссылки в <a class="result-link">, сниппет — следующий <td>.
-    for a in soup.find_all("a", href=True):
-        href = a.get("href", "")
-        if not isinstance(href, str):
-            continue
-        if not href.startswith("http"):
-            continue
-        if "duckduckgo.com" in href:
-            continue
-        title = a.get_text(strip=True)
-        if not title or len(title) < 3:
+
+    # Селекторы Яндекса меняются, поэтому пробуем несколько вариантов.
+    for item in soup.select("li.serp-item, li.serp-item_card"):
+        title_el = item.select_one(
+            "h2 a, .organic__url-text, .OrganicTitle-Link"
+        )
+        snippet_el = item.select_one(
+            ".organic__content-wrapper, .OrganicTextContentSpan"
+        )
+        url_el = item.select_one("a.organic__url, a[href^='http']")
+
+        if not title_el:
             continue
 
-        snippet = ""
-        parent_tr = a.find_parent("tr")
-        if parent_tr:
-            tds = parent_tr.find_all("td")
-            if len(tds) >= 2:
-                snippet = tds[-1].get_text(strip=True)
+        title = title_el.get_text(strip=True)
+        href = ""
+        if url_el:
+            raw = url_el.get("href", "")
+            href = raw if isinstance(raw, str) else ""
+        if not href:
+            raw_title_href = title_el.get("href", "")
+            href = raw_title_href if isinstance(raw_title_href, str) else ""
 
-        results.append({"title": title, "href": href, "body": snippet})
+        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+
+        if title and href:
+            results.append({"title": title, "href": href, "body": snippet})
         if len(results) >= max_results:
             break
 
@@ -93,11 +103,43 @@ async def _search_ddg_lite(query: str, max_results: int) -> list[dict[str, str]]
 
 
 # ---------------------------------------------------------------------------
-# Стратегия 2: DuckDuckGo HTML
+# Стратегия 2: DDGS (ddgs / duckduckgo_search)
+# ---------------------------------------------------------------------------
+
+async def _search_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
+    """DuckDuckGo через ddgs (или duckduckgo_search как fallback)."""
+    def _do() -> list[dict]:
+        try:
+            from ddgs import DDGS  # новый пакет (июль 2025+)
+        except ImportError:
+            from duckduckgo_search import DDGS  # старый пакет
+
+        with DDGS() as ddgs:
+            return list(
+                ddgs.text(
+                    query,
+                    max_results=max_results,
+                    region="ru-ru",
+                )
+            )
+
+    raw = await asyncio.to_thread(_do)
+    return [
+        {
+            "title": r.get("title", ""),
+            "href": r.get("href", r.get("url", "")),
+            "body": r.get("body", r.get("snippet", "")),
+        }
+        for r in raw
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Стратегия 3: DDG HTML (curl_cffi)
 # ---------------------------------------------------------------------------
 
 async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]:
-    """DuckDuckGo HTML через curl_cffi (POST q=...)."""
+    """Прямой парсинг html.duckduckgo.com/html/ через curl_cffi."""
     from bs4 import BeautifulSoup
     from curl_cffi import requests
 
@@ -123,12 +165,13 @@ async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]
         snippet_el = item.select_one(".result__snippet")
         if not title_el:
             continue
+
         title = title_el.get_text(strip=True)
         raw_href = title_el.get("href", "")
         href = raw_href if isinstance(raw_href, str) else ""
         if href.startswith("//"):
             href = "https:" + href
-        # DDG часто отдаёт редирект вида /l/?uddg=<encoded>. Достаём целевой URL.
+        # DDG отдаёт редирект /l/?uddg=<url> — извлекаем целевой URL.
         if href.startswith("/l/") or "duckduckgo.com/l/" in href:
             try:
                 parsed = urllib.parse.urlparse(href)
@@ -137,59 +180,13 @@ async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]
                     href = urllib.parse.unquote(qs["uddg"][0])
             except Exception:
                 pass
+
         body = snippet_el.get_text(strip=True) if snippet_el else ""
         if title and href:
             results.append({"title": title, "href": href, "body": body})
         if len(results) >= max_results:
             break
-    return results
 
-
-# ---------------------------------------------------------------------------
-# Стратегия 3: Wikipedia API
-# ---------------------------------------------------------------------------
-
-async def _search_wikipedia(query: str, max_results: int) -> list[dict[str, str]]:
-    """Wikipedia API — только для фактических запросов."""
-    import re
-
-    from curl_cffi import requests
-
-    def _do() -> dict:
-        session = requests.Session()
-        resp = session.get(
-            "https://ru.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "format": "json",
-                "srlimit": max_results,
-                "utf8": "1",
-            },
-            headers=_HEADERS,
-            impersonate="chrome",
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"HTTP {resp.status_code}")
-        return resp.json()
-
-    data = await asyncio.to_thread(_do)
-    hits = (data.get("query", {}) or {}).get("search", []) or []
-
-    results: list[dict[str, str]] = []
-    for hit in hits[:max_results]:
-        title = hit.get("title", "")
-        snippet = hit.get("snippet", "")
-        snippet = re.sub(r"<[^>]+>", "", snippet)
-        results.append(
-            {
-                "title": title,
-                "href": f"https://ru.wikipedia.org/wiki/{urllib.parse.quote(title)}",
-                "body": snippet,
-            }
-        )
     return results
 
 
@@ -220,15 +217,14 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
         try:
             data = await asyncio.to_thread(_fetch, base)
             raw = data.get("results") or []
-            results = []
-            for r in raw[:max_results]:
-                results.append(
-                    {
-                        "title": r.get("title", ""),
-                        "href": r.get("url", ""),
-                        "body": r.get("content", ""),
-                    }
-                )
+            results = [
+                {
+                    "title": r.get("title", ""),
+                    "href": r.get("url", ""),
+                    "body": r.get("content", ""),
+                }
+                for r in raw[:max_results]
+            ]
             if results:
                 return results
         except Exception as e:
@@ -247,10 +243,12 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
 @tool(
     name="web_search",
     description=(
-        "Ищет АКТУАЛЬНУЮ информацию в интернете. ОБЯЗАТЕЛЬНО использовать для "
-        "вопросов про свежие события, новости, курсы, погоду, сегодняшнюю дату, "
-        "любые данные, которые могли измениться. НЕ пытайся отвечать на такие "
-        "вопросы из памяти — твои знания устарели."
+        "Ищет АКТУАЛЬНУЮ информацию в интернете. "
+        "ОБЯЗАТЕЛЬНО вызывай этот инструмент, если вопрос касается: "
+        "новостей, текущих событий, курсов валют, ключевой ставки, "
+        "погоды, версий ПО, цен, законов, релизов — "
+        "любых данных, которые могли измениться после обучения модели. "
+        "НЕ отвечай на такие вопросы из памяти — твои знания устарели."
     ),
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
@@ -284,9 +282,9 @@ async def web_search(
         n = 5
 
     strategies = [
-        ("DDG Lite", _search_ddg_lite),
+        ("Yandex", _search_yandex),
+        ("DDGS", _search_ddgs),
         ("DDG HTML", _search_ddg_html),
-        ("Wikipedia", _search_wikipedia),
         ("SearX", _search_searx),
     ]
 
