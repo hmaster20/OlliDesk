@@ -1,4 +1,4 @@
-.PHONY: all setup install download-monaco lint test check clean
+.PHONY: all setup install download-monaco download-slm lint test check clean
 
 VENV_NAME ?= .venv
 VENV_BIN := $(VENV_NAME)/Scripts
@@ -16,7 +16,10 @@ install: $(VENV_NAME)
 download-monaco:
 	$(PYTHON) -m ui.web_editor.download_monaco
 
-setup: install download-monaco
+download-slm:
+	$(PYTHON) -m agents.download_slm
+
+setup: install download-monaco download-slm
 
 lint: $(VENV_NAME)
 	$(VENV_BIN)/ruff check .

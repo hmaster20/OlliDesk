@@ -128,6 +128,15 @@ class OllamaClient:
         except httpx.HTTPError as e:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
+    async def is_available(self) -> bool:
+        """Проверяет доступность сервера Ollama."""
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{self.base_url}/api/tags", timeout=3.0)
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def cancel_request(self):
         """Отменяет текущий стриминг-запрос (безопасно из любого потока)."""
         self._cancel_requested = True
@@ -148,6 +157,7 @@ class OllamaClient:
         tools: list[ToolSchema] | None = None,
         options: ChatOptions | None = None,
         stream: bool = True,
+        **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """
         Отправляет запрос в чат со стримингом.

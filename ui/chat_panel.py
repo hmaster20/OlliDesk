@@ -5,23 +5,20 @@ import html as html_mod
 import json
 import re
 import threading
-from typing import Any
-
 from pathlib import Path
 from typing import Any, cast
 
 from loguru import logger
 
-from PySide6.QtCore import QObject, QEvent
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QObject, QEvent, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -31,17 +28,30 @@ from PySide6.QtWidgets import (
 )
 
 from agents.agent_loop import AgentContext, AgentIterationLimitError, AgentLoop
+from agents.download_slm import (
+    download_chat_model,
+    download_embed_model,
+    get_model_paths,
+)
+from agents.local_llm_client import LocalLLMClient
+from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
+from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ModelNotFoundError, OllamaConnectionError
 from core.model_registry import ModelRegistry
 from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
+from tools.weather import get_weather
 
+
+# ============================================================
+# Потоки
+# ============================================================
 
 class OllamaChatThread(QThread):
-    """Поток для асинхронного общения с Ollama (режим Chat)."""
+    """Поток для асинхронного общения с Ollama (режим Chat, legacy)."""
 
     chunk_received = Signal(str)
     thinking_received = Signal(str)
@@ -58,18 +68,17 @@ class OllamaChatThread(QThread):
         self.model = model
         self.messages = messages
         self.base_url = base_url
+        self._client: OllamaClient | None = None
 
     def cancel(self):
         """Отменяет текущий запрос к Ollama."""
-        if hasattr(self, '_client') and self._client:
+        if self._client:
             self._client.cancel_request()
 
     def run(self):
-        """Запускает асинхронный чат в цикле событий."""
         asyncio.run(self._run_chat())
 
     async def _run_chat(self):
-        """Выполняет асинхронный запрос к Ollama."""
         try:
             self._client = OllamaClient(base_url=self.base_url)
             async with self._client as client:
@@ -91,18 +100,22 @@ class OllamaChatThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Неизвестная ошибка: {e}")
 
+
 class AgentChatThread(QThread):
-    """Поток для выполнения цикла агента (режимы Plan / Agent)."""
+    """Поток для выполнения цикла агента (режимы Plan / Agent).
+
+    Работает только с Ollama (у SLM нет нативного tool-calling).
+    """
 
     chunk_received = Signal(str)
     thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
     tool_executed = Signal(str, str, bool)
-    tool_started = Signal(str, str)  # name, arguments_json
+    tool_started = Signal(str, str)
     finish_received = Signal(str)
     error_occurred = Signal(str)
     iteration_changed = Signal(int, int)
-    tools_status_changed = Signal(bool)  # True = tools active, False = disabled
+    tools_status_changed = Signal(bool)
 
     def __init__(
         self,
@@ -127,17 +140,11 @@ class AgentChatThread(QThread):
         self._tool_event = threading.Event()
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
-        """Отвечает на запрос подтверждения инструмента (вызывается из UI-потока).
-
-        Args:
-            approved: True если пользователь одобрил
-            arguments: Возможно изменённые аргументы
-        """
+        """Отвечает на запрос подтверждения инструмента."""
         self._tool_response = (approved, arguments)
         self._tool_event.set()
 
     async def _on_tool_request(self, name: str, description: str, arguments: dict) -> bool:
-        """Колбэк, вызываемый AgentLoop при запросе подтверждения."""
         args_json = json.dumps(arguments, ensure_ascii=False)
         self.tool_call_detected.emit(name, description, args_json)
 
@@ -151,11 +158,9 @@ class AgentChatThread(QThread):
         return approved
 
     def run(self):
-        """Запускает цикл агента."""
         asyncio.run(self._run_agent())
 
     async def _run_agent(self):
-        """Выполняет цикл ReAct агента."""
         self.tools_status_changed.emit(True)
 
         async def _notify_tools_disabled():
@@ -189,12 +194,48 @@ class AgentChatThread(QThread):
             self.error_occurred.emit(f"Ошибка агента: {e}")
 
     async def _on_token(self, token: str):
-        """Колбэк для каждого токена (вызывается из asyncio, пробрасывает в Qt)."""
         self.chunk_received.emit(token)
 
     async def _on_thinking(self, token: str):
-        """Колбэк для токенов рассуждения (вызывается из asyncio)."""
         self.thinking_received.emit(token)
+
+
+class RouterChatThread(QThread):
+    """Поток для асинхронного чата через ModelRouter."""
+
+    chunk_received = Signal(str)
+    thinking_received = Signal(str)
+    finish_received = Signal()
+    error_occurred = Signal(str)
+
+    def __init__(self, router: ModelRouter, model: str, messages: list[ChatMessage]):
+        super().__init__()
+        self.router = router
+        self.model = model
+        self.messages = messages
+
+    def cancel(self):
+        self.router.cancel_request()
+
+    def run(self):
+        asyncio.run(self._run_chat())
+
+    async def _run_chat(self):
+        try:
+            async for chunk in self.router.chat(
+                model=self.model,
+                messages=self.messages,
+                stream=True,
+            ):
+                if chunk.reasoning_content:
+                    self.thinking_received.emit(chunk.reasoning_content)
+                if chunk.content:
+                    self.chunk_received.emit(chunk.content)
+                if chunk.done:
+                    self.finish_received.emit()
+        except Exception as e:
+            self.error_occurred.emit(f"Ошибка: {e}")
+
 
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
@@ -202,19 +243,13 @@ class RagSearchThread(QThread):
     results_ready = Signal(str, str)
     search_error = Signal(str)
 
-    def __init__(
-        self,
-        vector_store,
-        query: str,
-        n_results: int = 5,
-    ):
+    def __init__(self, vector_store, query: str, n_results: int = 5):
         super().__init__()
         self.vector_store = vector_store
         self.query = query
         self.n_results = n_results
 
     def run(self):
-        """Запускает асинхронный RAG-поиск."""
         try:
             asyncio.run(self._search())
         except RuntimeError as e:
@@ -224,7 +259,6 @@ class RagSearchThread(QThread):
                 raise
 
     async def _search(self):
-        """Выполняет поиск и формирует контекст."""
         try:
             results = await self.vector_store.search(self.query, n_results=self.n_results)
             if results:
@@ -246,6 +280,72 @@ class RagSearchThread(QThread):
         except Exception as e:
             self.search_error.emit(str(e))
 
+
+class _OllamaCheckThread(QThread):
+    """Проверяет доступность Ollama в фоне."""
+
+    result = Signal(bool)
+
+    def __init__(self, client: OllamaClient):
+        super().__init__()
+        self.client = client
+
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            ok = loop.run_until_complete(self.client.is_available())
+            loop.close()
+            self.result.emit(ok)
+        except Exception as e:
+            logger.debug(f"Ollama check failed: {e}")
+            self.result.emit(False)
+
+
+class _SLMLoadThread(QThread):
+    """Загружает SLM в фоне."""
+
+    finished = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, chat_path: Path, embed_path: Path | None):
+        super().__init__()
+        self.chat_path = chat_path
+        self.embed_path = embed_path
+
+    def run(self):
+        try:
+            client = LocalLLMClient(
+                model_path=self.chat_path,
+                embed_model_path=self.embed_path,
+                n_ctx=4096,
+                n_threads=4,
+            )
+            self.finished.emit(client)
+        except Exception as e:
+            logger.exception("Ошибка загрузки SLM")
+            self.error.emit(str(e))
+
+
+class _SLMDownloadThread(QThread):
+    """Скачивает модели SLM в фоне."""
+
+    finished = Signal(str, str)  # chat_path, embed_path (может быть пустым)
+    error = Signal(str)
+
+    def run(self):
+        try:
+            chat = download_chat_model()
+            embed = download_embed_model()
+            self.finished.emit(str(chat), str(embed) if embed else "")
+        except Exception as e:
+            logger.exception("Ошибка скачивания SLM")
+            self.error.emit(str(e))
+
+
+# ============================================================
+# Виджет сообщения
+# ============================================================
+
 class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате (пузырёк с QLabel)."""
 
@@ -255,7 +355,7 @@ class ChatMessageItem(QWidget):
         self.role = role
         self.content = content
         self.thinking = thinking
-        self.think_label = None
+        self.think_label: QLabel | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
@@ -267,7 +367,6 @@ class ChatMessageItem(QWidget):
         is_assistant = role == "assistant"
         is_tool = role in ("tool", "system")
 
-        # Настройка цветов и стилей
         if is_user:
             bg = "#3d3d3d"
             text_color = "#e0e0e0"
@@ -296,8 +395,6 @@ class ChatMessageItem(QWidget):
         self.bubble_layout = bubble_layout
         self.text_color = text_color
 
-        # Заголовок
-        # Заголовок (роль) – показываем только для ассистента и системных, не для пользователя
         if not is_tool and not is_user:
             header = f"Ассистент ({mode_name})" if is_assistant else role
             role_label = QLabel(header)
@@ -312,32 +409,6 @@ class ChatMessageItem(QWidget):
                 margin-bottom: 2px;
             """)
             bubble_layout.addWidget(role_label)
-        # Для пользователя заголовок не выводим
-
-        # if not is_tool:
-        #     header = "Вы" if is_user else f"Ассистент ({mode_name})" if is_assistant else role
-        #     role_label = QLabel(header)
-        #     role_label.setStyleSheet(f"""
-        #         background-color: {bg};
-        #         color: {text_color};
-        #         font-weight: 600;
-        #         font-size: 11px;
-        #         opacity: 0.7;
-        #         padding: 2px 0 4px 0;
-        #         border-bottom: 1px solid #666;
-        #         margin-bottom: 2px;
-        #     """)
-        #     bubble_layout.addWidget(role_label)
-
-        # Блок рассуждений (если есть)
-        # if thinking:
-        #     think_label = QLabel(thinking)
-        #     think_label.setStyleSheet(
-        #         f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
-        #     )
-        #     think_label.setWordWrap(True)
-        #     bubble_layout.addWidget(think_label)
-
 
         if thinking:
             think_label = QLabel(thinking)
@@ -348,7 +419,6 @@ class ChatMessageItem(QWidget):
             bubble_layout.addWidget(think_label)
             self.think_label = think_label
 
-        # Основной контент
         self.content_label = QLabel()
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -360,36 +430,23 @@ class ChatMessageItem(QWidget):
         self._set_content(content)
         bubble_layout.addWidget(self.content_label)
 
-        # Выравнивание облаков
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
             inner.addStretch()
-            inner.addWidget(bubble, 1)   # растягиваем, но ограничим maximumWidth
+            inner.addWidget(bubble, 1)
             inner.addStretch()
         else:
-            inner.addWidget(bubble, 1)   # для ассистента – на всю ширину с ограничением 95%
-
-        # inner = QHBoxLayout()
-        # inner.setContentsMargins(6, 0, 6, 0)
-        # if is_user:
-        #     inner.addStretch()
-        #     inner.addWidget(bubble, 1)   # растягиваем
-        # else:
-        #     inner.addWidget(bubble, 1)   # растягиваем для ассистента
-        #     # inner.addStretch()         # убираем, чтобы занимал всю ширину
+            inner.addWidget(bubble, 1)
 
         outer.addLayout(inner)
         self.bubble = bubble
 
     def _set_content(self, text: str):
-        """Рендерит Markdown в HTML и устанавливает в content_label."""
         html = self._render_markdown_to_html(text)
         self.content_label.setText(html)
 
     def _render_markdown_to_html(self, text: str) -> str:
-        """Преобразует Markdown в HTML (упрощённо, с подсветкой кода)."""
-
         try:
             from pygments import highlight as pyg_highlight
             from pygments.formatters import HtmlFormatter
@@ -418,13 +475,11 @@ class ChatMessageItem(QWidget):
             pattern = r"```(\w*)\s*\n(.*?)```"
             body = re.sub(pattern, _code_block, text, flags=re.DOTALL)
 
-            # Inline code
             body = re.sub(
                 r"`([^`]+)`",
                 lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
                 body,
             )
-            # Bold, italic, links, headings...
             body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
             body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
             body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#42a5f5;">\1</a>', body)
@@ -432,61 +487,44 @@ class ChatMessageItem(QWidget):
             body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
             body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
 
-            # Newlines to <br>, collapse multiples
             body = body.replace("\n", "<br>")
             body = re.sub(r"(<br>\s*){2,}", "<br>", body)
 
             return f"<div style='line-height:1.3;'>{body}</div>"
         except ImportError:
-            # Fallback: просто экранируем и заменяем \n на <br>
             return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
 
     def update_content(self, new_content: str):
-        """Обновляет содержимое сообщения (для стриминга)."""
         self.content = new_content
         self._set_content(new_content)
 
-    # def update_thinking(self, new_thinking: str):
-    #     """Обновляет блок рассуждений (динамически)."""
-    #     self.thinking = new_thinking
-    #     # Найти существующий QLabel с thinking и обновить, либо создать
-    #     # Для простоты мы не поддерживаем динамическое обновление thinking
-    #     # (можно пересоздать виджет, но сейчас проще пересоздать всё сообщение)
-    #     # Однако в текущей архитектуре мы обычно обновляем thinking через _insert_thinking_edit
-    #     # В новом дизайне мы можем просто пересоздать виджет, но это сложнее.
-    #     # Я предлагаю оставить thinking как статичный блок, который не обновляется после создания.
-    #     # Если нужно динамическое обновление, лучше использовать QTextEdit, но мы от него отказались.
-    #     # Поэтому в _on_thinking мы будем пересоздавать виджет, если он ещё не создан.
-    #     # В текущем коде мы не будем динамически обновлять thinking.
-    #     pass
-
     def update_thinking(self, new_thinking: str):
-        """Обновляет блок рассуждений."""
         self.thinking = new_thinking
         if self.think_label is None:
-            # Создаём новый QLabel для thinking и вставляем перед content_label
             think_label = QLabel(new_thinking)
             think_label.setStyleSheet(
                 f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
             )
             think_label.setWordWrap(True)
-            # Вставляем перед content_label (индекс 0, так как content_label последний)
-            # self.bubble_layout.insertWidget(self.bubble_layout.count() - 1, think_label)
-            #  Надёжнее вставлять перед content_label
             index = self.bubble_layout.indexOf(self.content_label)
             self.bubble_layout.insertWidget(index, think_label)
             self.think_label = think_label
         else:
             self.think_label.setText(new_thinking)
 
+
+# ============================================================
+# Панель чата
+# ============================================================
+
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
 
     tool_requested = Signal(str, str, str)
-    mode_changed = Signal(str)  # "chat", "plan", "agent"
-    agent_panel_toggle = Signal(bool)  # показать/скрыть панель агента
+    mode_changed = Signal(str)
+    agent_panel_toggle = Signal(bool)
     refresh_models_requested = Signal()
-    settings_changed = Signal(dict)   # {'model': str, 'mode': str}
+    settings_changed = Signal(dict)
 
     def __init__(
         self,
@@ -507,7 +545,7 @@ class ChatPanel(QWidget):
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-        self._ollama_thread: OllamaChatThread | None = None
+        self._ollama_thread: RouterChatThread | None = None
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
@@ -519,20 +557,128 @@ class ChatPanel(QWidget):
         self.role_manager: RoleManager | None = None
         self.current_role_id: str = "default"
 
-        self.prompt_manager: SystemPromptManager | None
+        self.prompt_manager: SystemPromptManager | None = None
+
+        # --- Маршрутизатор бэкендов ---
+        self._router = ModelRouter()
+        self._ollama_client = OllamaClient(base_url=base_url)
+        self._router.set_ollama(self._ollama_client)
+
+        # Rule-based fallback (всегда доступен)
+        self._rule_based = RuleBasedFallback(weather_tool=get_weather)
+        self._router.set_rule_based(self._rule_based)
+
+        # SLM загружается лениво в фоне
+        self._slm_client: LocalLLMClient | None = None
+        self._slm_loading = False
+        self._slm_load_thread: _SLMLoadThread | None = None
+        self._slm_download_thread: _SLMDownloadThread | None = None
+        self._ollama_check_thread: _OllamaCheckThread | None = None
 
         self._setup_ui()
 
+        # Запускаем детект бэкендов после построения UI (нужен self.status_label)
+        QTimer.singleShot(100, self._detect_backends)
+
+    # ---------------------------------------------------------
+    # Детект и загрузка бэкендов
+    # ---------------------------------------------------------
+
+    def _detect_backends(self):
+        """Проверяет доступность Ollama и SLM."""
+        self._check_ollama_async()
+
+        chat_path, embed_path = get_model_paths()
+        if chat_path:
+            self._load_slm_async(chat_path, embed_path)
+        elif self._config_slm_enabled():
+            self._download_and_load_slm()
+
+    def _config_slm_enabled(self) -> bool:
+        """Проверяет, включена ли SLM в конфиге."""
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            return cfg.slm.enabled
+        except Exception:
+            return True
+
+    def _check_ollama_async(self):
+        self._ollama_check_thread = _OllamaCheckThread(self._ollama_client)
+        self._ollama_check_thread.result.connect(self._on_ollama_check_result)
+        self._ollama_check_thread.start()
+
+    @Slot(bool)
+    def _on_ollama_check_result(self, available: bool):
+        self._router.set_ollama_available(available)
+        if available:
+            self.status_label.setText("✅ Ollama подключён")
+        else:
+            if self._slm_client is not None:
+                self.status_label.setText("✅ Локальная модель загружена (Ollama недоступен)")
+            else:
+                self.status_label.setText(
+                    "⚠️ Ollama не найден. Используется резервный режим (погода/время/дата)."
+                )
+
+    def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
+        if self._slm_loading or self._slm_client is not None:
+            return
+        self._slm_loading = True
+        self.status_label.setText("⏳ Загрузка локальной модели...")
+
+        self._slm_load_thread = _SLMLoadThread(chat_path, embed_path)
+        self._slm_load_thread.finished.connect(self._on_slm_loaded)
+        self._slm_load_thread.error.connect(self._on_slm_error)
+        self._slm_load_thread.start()
+
+    @Slot(object)
+    def _on_slm_loaded(self, client):
+        self._slm_client = client
+        self._router.set_local_slm(client)
+        self._router.set_slm_available(True)
+        self._slm_loading = False
+        logger.info("Локальная SLM загружена и доступна как fallback")
+        if self._router.active_backend == BackendType.LOCAL_SLM:
+            self.status_label.setText("✅ Локальная модель загружена")
+
+    @Slot(str)
+    def _on_slm_error(self, error_msg: str):
+        self._slm_loading = False
+        logger.error(f"Ошибка загрузки SLM: {error_msg}")
+        self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
+
+    def _download_and_load_slm(self):
+        if self._slm_loading or self._slm_client is not None:
+            return
+        self._slm_loading = True
+        self.status_label.setText("⏳ Скачивание локальной модели (~1.1 ГБ)...")
+
+        self._slm_download_thread = _SLMDownloadThread()
+        self._slm_download_thread.finished.connect(self._on_slm_downloaded)
+        self._slm_download_thread.error.connect(self._on_slm_error)
+        self._slm_download_thread.start()
+
+    @Slot(str, str)
+    def _on_slm_downloaded(self, chat_path: str, embed_path: str):
+        self._slm_loading = False
+        self._load_slm_async(
+            Path(chat_path),
+            Path(embed_path) if embed_path else None,
+        )
+
+    # ---------------------------------------------------------
+    # UI
+    # ---------------------------------------------------------
+
     def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
-        """Добавляет сообщение в список."""
         widget = ChatMessageItem(role, content, mode_name=mode_name)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-        self._update_bubble_width(widget)   # установим максимальную ширину
+        self._update_bubble_width(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
 
     def _update_bubble_width(self, widget: QWidget | None = None) -> None:
-        """Устанавливает максимальную ширину бабла в зависимости от роли."""
         viewport = self.scroll_area.viewport()
         if not viewport:
             return
@@ -540,13 +686,7 @@ class ChatPanel(QWidget):
         if scroll_width <= 0:
             return
 
-        # Коэффициенты для разных ролей
-        ratios = {
-            "user": 0.80,       # запрос – 80%
-            "assistant": 0.95,  # ответ – 95%
-            "tool": 0.90,       # системные – по умолчанию
-            "system": 0.90,
-        }
+        ratios = {"user": 0.80, "assistant": 0.95, "tool": 0.90, "system": 0.90}
 
         def apply_policy(bubble: QFrame, role: str):
             max_width = int(scroll_width * ratios.get(role, 0.90))
@@ -554,50 +694,29 @@ class ChatPanel(QWidget):
             bubble.setMinimumWidth(0)
             bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        # if widget is not None:
-        #     if widget.bubble:
-        #         apply_policy(widget.bubble, widget.role)
-        # else:
-        #     for i in range(self.scroll_layout.count()):
-        #         item = self.scroll_layout.itemAt(i)
-        #         if item and item.widget() and isinstance(item.widget(), ChatMessageItem) and item.widget().bubble:
-        #             apply_policy(item.widget().bubble, item.widget().role)
-
-        if widget is not None and hasattr(widget, "bubble"):
-            # Используем явное приведение типа для mypy ( cast ) или проверку isinstance
-            if isinstance(widget, ChatMessageItem):
-                apply_policy(widget.bubble, widget.role)
+        if widget is not None and isinstance(widget, ChatMessageItem):
+            apply_policy(widget.bubble, widget.role)
         else:
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
                 if item and item.widget():
                     w = item.widget()
-                    # isinstance гарантирует mypy, что w теперь имеет тип ChatMessageItem
-                    if isinstance(w, ChatMessageItem) and w.bubble:
+                    if isinstance(w, ChatMessageItem):
                         apply_policy(w.bubble, w.role)
 
-
-
     def _relayout_all_items(self) -> None:
-        """Пересчитывает ширину баблов при ресайзе."""
         for i in range(self.scroll_layout.count()):
             item = self.scroll_layout.itemAt(i)
             if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
                 self._update_bubble_width(item.widget())
 
-    # @Slot(str)
-    # def _on_thinking(self, token: str):
-    #     """Накапливает токены рассуждения (виджет пока не создаётся)."""
-    #     self._current_thinking_content += token
-
     @Slot(str)
     def _on_thinking(self, token: str):
         self._current_thinking_content += token
         if self._last_assistant_widget is None:
-            # Создаём виджет с пустым контентом и текущим thinking
             widget = ChatMessageItem(
                 "assistant",
-                "",  # контент пока пуст
+                "",
                 thinking=self._current_thinking_content,
                 mode_name=self._current_mode_name(),
             )
@@ -605,41 +724,13 @@ class ChatPanel(QWidget):
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
         else:
-            # Обновляем thinking у существующего виджета
             self._last_assistant_widget.update_thinking(self._current_thinking_content)
         QTimer.singleShot(0, self._scroll_to_bottom)
-
-
-    # @Slot(str)
-    # def _on_chunk(self, content: str):
-    #     """Обрабатывает полученный токен."""
-    #     self._current_assistant_content += content
-
-    #     if self._last_assistant_widget is None:
-    #         # Создаём виджет с накопленным thinking и первым контентом
-    #         thinking = self._current_thinking_content or ""
-    #         widget = ChatMessageItem(
-    #             "assistant",
-    #             self._current_assistant_content,
-    #             thinking=thinking,
-    #             mode_name=self._current_mode_name(),
-    #         )
-    #         self._last_assistant_widget = widget
-    #         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-    #         self._update_bubble_width(widget)
-    #     else:
-    #         # Обновляем контент существующего виджета
-    #         self._last_assistant_widget.update_content(self._current_assistant_content)
-
-    #     QTimer.singleShot(0, self._scroll_to_bottom)
-
 
     @Slot(str)
     def _on_chunk(self, content: str):
         self._current_assistant_content += content
-
         if self._last_assistant_widget is None:
-            # Если виджет ещё не создан (не было thinking), создаём его
             widget = ChatMessageItem(
                 "assistant",
                 self._current_assistant_content,
@@ -650,20 +741,15 @@ class ChatPanel(QWidget):
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
         else:
-            # Обновляем контент у существующего виджета
             self._last_assistant_widget.update_content(self._current_assistant_content)
-
         QTimer.singleShot(0, self._scroll_to_bottom)
 
-
     def _setup_ui(self):
-        """Настраивает UI компоненты."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         top_bar = QHBoxLayout()
 
-        # Селектор ролей
         role_label = QLabel("Роль:")
         role_label.setStyleSheet("font-size: 13px; padding: 4px;")
         top_bar.addWidget(role_label)
@@ -684,21 +770,17 @@ class ChatPanel(QWidget):
         self.model_combo.setMinimumWidth(200)
         self.model_combo.setStyleSheet("font-size: 13px; padding: 4px;")
 
-        # Кнопка проверки моделей
         self.refresh_models_btn = QPushButton("🔄")
         self.refresh_models_btn.setToolTip("Проверить поддержку инструментов моделями")
         self.refresh_models_btn.setStyleSheet("font-size: 14px; padding: 2px 8px;")
         self.refresh_models_btn.clicked.connect(self.refresh_models_requested.emit)
         top_bar.addWidget(self.refresh_models_btn)
 
-        # Статус текущей модели
         self.model_status_label = QLabel("")
         self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
         top_bar.addWidget(self.model_status_label)
 
-        # Подключаем сигнал смены модели
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-
         top_bar.addWidget(self.model_combo)
 
         mode_label = QLabel("Режим:")
@@ -760,7 +842,10 @@ class ChatPanel(QWidget):
         layout.addWidget(self.scroll_area, stretch=1)
 
         self.status_label = QLabel("Готов к работе")
-        self.status_label.setStyleSheet("font-size: 12px; color: gray; padding: 4px 8px; background: #f5f5f5; border-radius: 4px;")
+        self.status_label.setStyleSheet(
+            "font-size: 12px; color: gray; padding: 4px 8px;"
+            " background: #f5f5f5; border-radius: 4px;"
+        )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -769,14 +854,14 @@ class ChatPanel(QWidget):
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText("Введите сообщение... (CTRL + Enter — отправить)")
         self.input_edit.setFixedHeight(100)
-        self.input_edit.setStyleSheet("font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;")
+        self.input_edit.setStyleSheet(
+            "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
+        )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
-        self._enter_pressed = False
         input_layout.addWidget(self.input_edit, stretch=1)
 
         self.input_edit.textChanged.connect(self._highlight_web_command)
-
         self.scroll_area.viewport().installEventFilter(self)
 
         self.send_btn = QPushButton("▶ Отправить")
@@ -793,15 +878,13 @@ class ChatPanel(QWidget):
         try:
             if not self.input_edit or not self.input_edit.document():
                 return
-
-            self.input_edit.blockSignals(True)   # блокируем рекурсию
+            self.input_edit.blockSignals(True)
             try:
                 cursor = self.input_edit.textCursor()
                 if cursor.isNull():
                     return
-
                 cursor.select(QTextCursor.SelectionType.Document)
-                cursor.setCharFormat(QTextCharFormat())   # сброс всех форматов
+                cursor.setCharFormat(QTextCharFormat())
                 cursor.clearSelection()
 
                 text = self.input_edit.toPlainText()
@@ -817,41 +900,12 @@ class ChatPanel(QWidget):
                     fmt.setUnderlineColor(QColor("#42a5f5"))
                     cursor.mergeCharFormat(fmt)
             finally:
-                self.input_edit.blockSignals(False)   # обязательно разблокировать
+                self.input_edit.blockSignals(False)
         except Exception as e:
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
 
-    # def eventFilter(self, obj: QWidget, event) -> bool:
-    #     """Обрабатывает Ctrl+Enter и ресайз панели чата."""
-    #     if (obj is self.input_edit and event.type() == event.Type.KeyPress
-    #             and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
-    #         self._toggle_send_stop()
-    #         return True
-    #     if obj is self.scroll_area.viewport() and event.type() == event.Type.Resize:
-    #         self._update_bubble_width()   # обновить все
-    #     return super().eventFilter(obj, event)
-
-    # def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-    #     """Обрабатывает Ctrl+Enter и ресайз панели чата."""
-    #     # Проверка "is" абсолютно безопасна для QObject
-    #     if (obj is self.input_edit and event.type() == QEvent.Type.KeyPress
-    #             and event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
-    #         self._toggle_send_stop()
-    #         return True
-
-    #     if obj is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
-    #         self._update_bubble_width()   # обновить все
-
-    #     return super().eventFilter(obj, event)
-
-
-
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        """Обрабатывает Ctrl+Enter и ресайз панели чата."""
-
-        # 1. Проверяем, что событие произошло на нужном виджете и это нажатие клавиши
         if obj is self.input_edit and event.type() == QEvent.Type.KeyPress:
-            # 2. Доказываем mypy, что event — это именно QKeyEvent
             if isinstance(event, QKeyEvent):
                 if (event.key() == Qt.Key.Key_Return
                         and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
@@ -859,27 +913,19 @@ class ChatPanel(QWidget):
                     return True
 
         if obj is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
-            self._update_bubble_width()   # обновить все
+            self._update_bubble_width()
 
         return super().eventFilter(obj, event)
 
-
     def _current_mode_name(self) -> str:
-        """Возвращает отображаемое имя текущего режима."""
         mapping = {0: "Чат", 1: "План", 2: "Агент"}
         return mapping.get(self.mode_combo.currentIndex(), "Чат")
 
     def _current_mode(self) -> AgentMode:
-        """Возвращает текущий режим из комбобокса."""
-        mapping = {
-            0: AgentMode.CHAT,
-            1: AgentMode.PLAN,
-            2: AgentMode.AGENT,
-        }
+        mapping = {0: AgentMode.CHAT, 1: AgentMode.PLAN, 2: AgentMode.AGENT}
         return mapping.get(self.mode_combo.currentIndex(), AgentMode.CHAT)
 
     def _add_tool_message(self, name: str, content: str, is_error: bool = False):
-        """Добавляет сообщение о выполнении инструмента."""
         prefix = "❌" if is_error else "🔧"
         display_text = f"{prefix} Инструмент: {name}\n{content[:500]}"
         if len(content) > 500:
@@ -887,37 +933,28 @@ class ChatPanel(QWidget):
         self._add_message("tool", display_text)
 
     def _on_mode_changed(self, index: int):
-        """Оповещает MainWindow об изменении режима."""
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
 
-        # Жесткая блокировка: не даем выбрать Agent/Plan, если модель не поддерживает tools
+        # Блокировка Plan/Agent, если модель не поддерживает tools (только для Ollama)
         if index > 0 and self.registry:
             model_name = self.get_current_model()
             cap = self.registry.get(model_name)
 
             if cap and not cap.supports_tools:
-                # Возвращаем комбобокс на Chat, блокируя сигналы чтобы не зациклить
                 self.mode_combo.blockSignals(True)
                 self.mode_combo.setCurrentIndex(0)
                 self.mode_combo.blockSignals(False)
 
-                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self, "Режим недоступен",
                     f"Модель '{model_name}' не поддерживает инструменты.\n"
                     "Используйте модели с пометкой ✅ Agent/Plan."
                 )
-                return  # Прерываем выполнение, не эммитим сигнал смены режима
+                return
 
         self.mode_changed.emit(mode)
         self._emit_settings_changed()
-
-        # # СОХРАНЯЕМ РЕЖИМ В КОНФИГ
-        # from core.config import save_config
-        # from core.app import OlliDeskApp  # или получить config через parent
-        # # Лучше через сигнал в MainWindow
-        # self.gear_btn.setVisible(True)
 
     def _emit_settings_changed(self):
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
@@ -927,7 +964,6 @@ class ChatPanel(QWidget):
         })
 
     def _toggle_agent_panel(self):
-        """Показывает/скрывает панель настроек агента."""
         self.agent_panel_toggle.emit(True)
 
     def _scroll_to_bottom(self):
@@ -949,55 +985,53 @@ class ChatPanel(QWidget):
         self.status_label.setText("Чат очищен")
 
     def _create_session(self):
-        """Создаёт новую сессию если её нет."""
         if not self._session_id:
             project_path = self.project_root if self.project_root else "global"
             self._session_id = self.session_store.create_session(project_path)
-        # if not self._session_id:
-        #     self._session_id = self.session_store.create_session(
-        #         project_path=str(Path.cwd())
-        #     )
 
     def _toggle_send_stop(self):
-        """Переключает между отправкой и остановкой генерации."""
         if self._generating:
             self._stop_generation()
         else:
             self._send_message()
 
     def _stop_generation(self):
-        """Останавливает текущую генерацию."""
         self._generating = False
-        # Сначала отменяем HTTP-запрос, чтобы не грузить процессор
+
         if self._ollama_thread and self._ollama_thread.isRunning():
             self._ollama_thread.cancel()
+
         if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
             self._agent_thread.client.cancel_request()
+
         if hasattr(self, '_web_thread') and self._web_thread and self._web_thread.isRunning():
             self._web_thread.quit()
             self._web_thread.wait(1000)
             if self._web_thread.isRunning():
                 self._web_thread.terminate()
                 self._web_thread.wait(500)
+
         if self._rag_thread and self._rag_thread.isRunning():
             self._rag_thread.quit()
             self._rag_thread.wait(1000)
             if self._rag_thread.isRunning():
                 self._rag_thread.terminate()
                 self._rag_thread.wait(500)
-        # Ждём остановки потоков
+
         if self._ollama_thread and self._ollama_thread.isRunning():
             self._ollama_thread.quit()
             self._ollama_thread.wait(1000)
             if self._ollama_thread.isRunning():
                 self._ollama_thread.terminate()
                 self._ollama_thread.wait(500)
+
         if self._agent_thread and self._agent_thread.isRunning():
             self._agent_thread.quit()
             self._agent_thread.wait(1000)
             if self._agent_thread.isRunning():
                 self._agent_thread.terminate()
                 self._agent_thread.wait(500)
+
         self._reset_send_button()
         self.status_label.setText("⏹ Остановлено пользователем")
         self._add_message("system", "⏹ Генерация остановлена пользователем")
@@ -1005,14 +1039,12 @@ class ChatPanel(QWidget):
         self._current_thinking_content = ""
 
     def _send_message(self):
-        """Отправляет сообщение в чат (в зависимости от режима)."""
         if self._generating:
-            return   # или показать уведомление
+            return
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
 
-        # Команда @web
         if text.startswith("@web"):
             query = text[4:].strip()
             if query:
@@ -1025,7 +1057,8 @@ class ChatPanel(QWidget):
 
         user_message = ChatMessage(role="user", content=text)
         self._messages.append(user_message)
-        self.session_store.save_message(self._session_id, user_message)
+        if self._session_id:
+            self.session_store.save_message(self._session_id, user_message)
         self._add_message("user", text)
         self.input_edit.clear()
         self.status_label.setText("Обработка...")
@@ -1036,30 +1069,11 @@ class ChatPanel(QWidget):
         else:
             self._start_agent(text, mode)
 
-    # def _is_busy(self) -> bool:
-    #     """Проверяет, выполняется ли сейчас генерация."""
-    #     return (
-    #         (self._ollama_thread and self._ollama_thread.isRunning())
-    #         or (self._agent_thread and self._agent_thread.isRunning())
-    #         or (self._rag_thread and self._rag_thread.isRunning())
-    #     )
-
-    def _is_busy(self) -> bool:
-        """Проверяет, выполняется ли сейчас генерация."""
-        # Явное приведение к bool() гарантирует соответствие аннотации -> bool
-        return bool(
-            (self._ollama_thread and self._ollama_thread.isRunning())
-            or (self._agent_thread and self._agent_thread.isRunning())
-            or (self._rag_thread and self._rag_thread.isRunning())
-        )
-
     def _start_web_search(self, query: str):
-        """Запускает быстрый интернет-поиск без RAG и подтверждений."""
         if not query.strip():
             self._add_message("system", "⚠️ Укажите запрос после @web")
             return
 
-        # ДОБАВЛЯЕМ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ В ЧАТ
         self._create_session()
         user_message = ChatMessage(role="user", content=f"@web {query}")
         self._messages.append(user_message)
@@ -1067,13 +1081,11 @@ class ChatPanel(QWidget):
             self.session_store.save_message(self._session_id, user_message)
         self._add_message("user", f"🌐 Поиск в интернете: {query}")
 
-        # Блокируем ввод и меняем кнопку
         self._generating = True
         self._set_button_stop()
         self.input_edit.setEnabled(False)
         self.status_label.setText("🌐 Поиск в интернете...")
 
-        # Создаём поток для асинхронного выполнения поиска и генерации
         self._web_thread = WebSearchThread(
             model=self.get_current_model(),
             query=query,
@@ -1092,7 +1104,6 @@ class ChatPanel(QWidget):
         """Запускает обычный чат (режим Chat)."""
         self._generating = True
         self._set_button_stop()
-        # self.input_edit.setEnabled(False) # Блокировка поля ввода
         self.status_label.setText("Поиск в кодовой базе...")
         self._rag_context = None
 
@@ -1109,49 +1120,57 @@ class ChatPanel(QWidget):
 
     @Slot(str, str)
     def _on_rag_results(self, context: str, sources: str):
-        """Обрабатывает результаты RAG-поиска."""
         self._rag_context = context
         if sources:
             self.status_label.setText(f"📚 Источники: {sources}")
 
     @Slot(str)
     def _on_rag_error(self, error_msg: str):
-        """Обрабатывает ошибку RAG-поиска."""
-        import loguru
-        loguru.logger.warning(f"Ошибка RAG: {error_msg}; продолжаем без контекста")
+        logger.warning(f"Ошибка RAG: {error_msg}; продолжаем без контекста")
 
     def set_prompt_manager(self, manager):
-        """Устанавливает менеджер системных промтов."""
         self.prompt_manager = manager
-        # Обновить тултипы для режимов
         self._update_mode_tooltips()
 
     def _update_mode_tooltips(self):
-        """Обновляет тултипы для режимов на основе текущих системных промтов."""
         if not self.prompt_manager:
             return
         for index, mode in enumerate(["chat", "plan", "agent"]):
-            prompt = self.prompt_manager.get_prompt(mode)  # без контекста
+            prompt = self.prompt_manager.get_prompt(mode)
             if prompt:
-                # Обрезаем до 100 символов для компактности
                 short = prompt[:100] + "..." if len(prompt) > 100 else prompt
                 self.mode_combo.setItemData(index, f"Системный промт:\n{short}", Qt.ItemDataRole.ToolTipRole)
 
+    def _start_agent(self, text: str, mode: AgentMode):
+        self._generating = True
+        self._set_button_stop()
+        self.status_label.setText("🤖 Агент думает...")
+
+        if self.vector_store:
+            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            self._rag_thread.results_ready.connect(
+                lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
+            )
+            self._rag_thread.search_error.connect(
+                lambda err: self._do_agent(text, mode, "")
+            )
+            self._rag_thread.start()
+        else:
+            self._do_agent(text, mode, "")
+
+    def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
+        if sources:
+            self.status_label.setText(f"📚 {sources}")
+        self._do_agent(text, mode, context)
+
     def _do_chat(self, text: str):
-        """Запускает LLM-генерацию (режим Chat)."""
+        """Запускает LLM-генерацию (режим Chat) через маршрутизатор."""
         self.status_label.setText("Генерация ответа...")
 
         chat_messages: list[ChatMessage] = list(self._messages)
 
-        # Формируем единый системный промт
         system_prompt_parts = []
-        # if self.prompt_manager:
-        #     # sys_prompt = self.prompt_manager.get_prompt("chat")
-        #     sys_prompt = self.prompt_manager.get_prompt("chat", project_root=self.project_root)
-        #     if sys_prompt:
-        #         system_prompt_parts.append(sys_prompt)
         if self.prompt_manager:
-            # Преобразуем строку self.project_root в объект Path, если путь существует
             p_root = Path(self.project_root) if self.project_root else None
             sys_prompt = self.prompt_manager.get_prompt("chat", project_root=p_root)
             if sys_prompt:
@@ -1168,10 +1187,12 @@ class ChatPanel(QWidget):
         self._current_thinking_content = ""
 
         model_name = self.get_current_model()
-        self._ollama_thread = OllamaChatThread(
+
+        # Используем маршрутизатор — он сам выберет Ollama / SLM / rule-based
+        self._ollama_thread = RouterChatThread(
+            router=self._router,
             model=model_name,
             messages=chat_messages,
-            base_url=self.base_url,
         )
 
         self._ollama_thread.chunk_received.connect(self._on_chunk)
@@ -1180,74 +1201,44 @@ class ChatPanel(QWidget):
         self._ollama_thread.error_occurred.connect(self._on_chat_error)
         self._ollama_thread.start()
 
-    def _start_agent(self, text: str, mode: AgentMode):
-        """Запускает цикл агента (режимы Plan / Agent)."""
-        self._generating = True
-        self._set_button_stop()
-        # self.input_edit.setEnabled(False) # Блокировка поля ввода
-        self.status_label.setText("🤖 Агент думает...")
-
-        if self.vector_store:
-            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
-            self._rag_thread.results_ready.connect(
-                lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
-            )
-            self._rag_thread.search_error.connect(
-                lambda err: self._do_agent(text, mode, "")
-            )
-            self._rag_thread.start()
-        else:
-            self._do_agent(text, mode, "")
-
-    def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
-        """RAG-контекст получен для агента."""
-        if sources:
-            self.status_label.setText(f"📚 {sources}")
-        self._do_agent(text, mode, context)
-
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         """Запускает AgentLoop."""
-        role_prompt = self.get_current_role_prompt()
-        # mode_prompt = self.prompt_manager.get_prompt(mode.value) if self.prompt_manager else ""
-        # mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=self.project_root) if self.prompt_manager else ""
+        # Агентные режимы требуют Ollama (у SLM нет нативного tool-calling)
+        if self._router.active_backend != BackendType.OLLAMA:
+            logger.warning(
+                f"Агентный режим недоступен для бэкенда "
+                f"{self._router.active_backend.name}, fallback в Chat"
+            )
+            self._add_message(
+                "system",
+                "⚠️ Агентные режимы (Plan/Agent) требуют запущенного Ollama. "
+                "Автоматически переключаюсь в режим Chat."
+            )
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentIndex(0)
+            self.mode_combo.blockSignals(False)
+            self._do_chat(text)
+            return
 
+        role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
-        mode_prompt = self.prompt_manager.get_prompt(mode.value, project_root=p_root) if self.prompt_manager else ""
+        mode_prompt = (
+            self.prompt_manager.get_prompt(mode.value, project_root=p_root)
+            if self.prompt_manager else ""
+        )
 
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
-        # Извлекаем search_cache и приводим его к Any или нужному типу для AgentContext
         raw_cache = getattr(self, 'search_cache', None)
 
         context = AgentContext(
-            # system_prompt=self.get_current_role_prompt(),
             system_prompt=combined,
             rag_context=rag_context,
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=mode,
-            # search_cache=getattr(self, 'search_cache', None),
-            search_cache=cast(Any, raw_cache),  # Исправляем [assignment]
+            search_cache=cast(Any, raw_cache),
         )
-
-        # extra = {"project_root": context.project_root}
-        # if context.vector_store:
-        #     extra["vector_store"] = context.vector_store
-        # # if hasattr(self, 'search_cache') and self.search_cache:
-        # #     extra["search_cache"] = self.search_cache
-        # if hasattr(self, 'search_cache') and self.search_cache:
-        #     extra["search_cache"] = cast(Any, self.search_cache)
-
-
-        # Явно указываем тип словаря как dict[str, Any], чтобы mypy разрешил любые типы данных
-        extra: dict[str, Any] = {"project_root": context.project_root}
-        if context.vector_store:
-            extra["vector_store"] = context.vector_store
-
-        # Теперь это присвоение пройдет без каких-либо ошибок типов
-        if hasattr(self, 'search_cache') and self.search_cache:
-            extra["search_cache"] = self.search_cache
-
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1276,7 +1267,12 @@ class ChatPanel(QWidget):
         """Строит реестр инструментов для агента."""
         from tools.codebase_search import search_codebase
         from tools.file_ops import list_directory, read_file, write_file
-        from tools.git_ops_tool import tool_create_snapshot, tool_git_status, tool_undo_snapshot
+        from tools.git_ops_tool import (
+            tool_create_snapshot,
+            tool_git_status,
+            tool_undo_snapshot,
+        )
+        from tools.weather import get_weather
         from tools.web_search import web_search
 
         registry = ToolRegistry()
@@ -1285,6 +1281,7 @@ class ChatPanel(QWidget):
         registry.register(write_file)
         registry.register(search_codebase)
         registry.register(web_search)
+        registry.register(get_weather)
         registry.register(tool_git_status)
         registry.register(tool_create_snapshot)
         registry.register(tool_undo_snapshot)
@@ -1296,7 +1293,6 @@ class ChatPanel(QWidget):
 
     @Slot(str, str, str)
     def _on_tool_call_detected(self, name: str, description: str, arguments_json: str):
-        """Обрабатывает запрос подтверждения инструмента."""
         from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
 
         arguments = json.loads(arguments_json)
@@ -1306,6 +1302,7 @@ class ChatPanel(QWidget):
             "list_directory": "Просмотр директории",
             "search_codebase": "Поиск в кодовой базе",
             "web_search": "Поиск в интернете",
+            "get_weather": "Погода",
             "get_git_status": "Статус Git",
             "create_snapshot": "Создание снапшота Git",
             "undo_last_snapshot": "Откат снапшота Git",
@@ -1323,12 +1320,10 @@ class ChatPanel(QWidget):
 
     @Slot(str, str, bool)
     def _on_tool_executed(self, name: str, content: str, is_error: bool):
-        """Обрабатывает результат выполнения инструмента."""
         self._add_tool_message(name, content, is_error)
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
-        """Обрабатывает начало выполнения инструмента."""
         try:
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
@@ -1340,6 +1335,7 @@ class ChatPanel(QWidget):
             "list_directory": "📁 Просмотр директории",
             "search_codebase": "🔍 Поиск в кодовой базе",
             "web_search": "🌐 Поиск в интернете",
+            "get_weather": "🌤 Погода",
             "get_git_status": "🔎 Проверка Git-статуса",
             "create_snapshot": "📸 Создание снапшота Git",
             "undo_last_snapshot": "⏪ Откат снапшота Git",
@@ -1349,18 +1345,15 @@ class ChatPanel(QWidget):
 
     @Slot()
     def _on_finish(self):
-        """Обрабатывает завершение чат-генерации."""
         self._send_finished()
 
     @Slot(str)
     def _on_chat_error(self, error_msg: str):
-        """Обрабатывает ошибку чата."""
         self._add_message("system", f"❌ Ошибка: {error_msg}")
         self._send_finished()
 
     @Slot(str)
     def _on_agent_finish(self, result: str):
-        """Обрабатывает завершение цикла агента."""
         if result and result != "Отменено":
             assistant_message = ChatMessage(role="assistant", content=result)
             self._messages.append(assistant_message)
@@ -1373,7 +1366,6 @@ class ChatPanel(QWidget):
         self._last_assistant_widget = None
 
     def _reset_send_button(self):
-        """Сбрасывает кнопку отправки в исходное состояние."""
         self._generating = False
         self.input_edit.setEnabled(True)
         self.send_btn.setText("▶ Отправить")
@@ -1384,7 +1376,6 @@ class ChatPanel(QWidget):
         self.status_label.setText("Готов к работе")
 
     def _set_button_stop(self) -> None:
-        """Переключает кнопку в режим остановки."""
         self.send_btn.setText("■")
         self.send_btn.setStyleSheet(
             "font-size: 18px; padding: 8px 20px; background: #d32f2f; color: white;"
@@ -1392,7 +1383,6 @@ class ChatPanel(QWidget):
         )
 
     def _send_finished(self):
-        """Завершает отправку сообщения (режим Chat)."""
         if self._current_assistant_content:
             assistant_message = ChatMessage(
                 role="assistant", content=self._current_assistant_content
@@ -1408,14 +1398,12 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_agent_error(self, error_msg: str):
-        """Обрабатывает ошибку агента."""
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
         self.status_label.setText("❌ Ошибка")
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):
-        """Обновляет индикатор статуса инструментов."""
         if active:
             self.tool_status_label.setText("🔧 Инструменты активны")
             self.tool_status_label.setStyleSheet(
@@ -1434,39 +1422,30 @@ class ChatPanel(QWidget):
         self.tool_status_label.setVisible(True)
 
     def set_model(self, model: str):
-        """Устанавливает модель в комбобоксе."""
         idx = self.model_combo.findData(model)
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
         else:
-            # Если модель не найдена, добавляем её временно
             self.model_combo.addItem(model, model)
             self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
 
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
-        """Устанавливает политику для инструмента."""
         self.tool_policies[tool_name] = policy
 
     def set_vector_store(self, vector_store):
-        """Устанавливает векторное хранилище для RAG."""
         self.vector_store = vector_store
 
     def set_project_root(self, project_root: str):
-        """Устанавливает корень проекта."""
         self.project_root = project_root
 
     def get_settings(self) -> dict:
-        """Возвращает текущие настройки панели."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        model_name = self.get_current_model()
         return {
-            "model": model_name,
+            "model": self.get_current_model(),
             "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
         }
 
-
     def apply_settings(self, settings: dict) -> None:
-        """Применяет сохранённые настройки к панели."""
         model = settings.get("model", "")
         if model:
             self.set_model(model)
@@ -1477,71 +1456,49 @@ class ChatPanel(QWidget):
             self.mode_combo.setCurrentIndex(idx)
 
     def set_project_open(self, is_open: bool):
-        """Обновляет состояние интерфейса при открытии/закрытии проекта."""
-        # Не блокируем ввод, только меняем подсказку
         if not is_open:
-            self.input_edit.setPlaceholderText("Введите сообщение... (@web для поиска в интернете)")
+            self.input_edit.setPlaceholderText(
+                "Введите сообщение... (@web для поиска в интернете)"
+            )
             self.status_label.setText("Проект не открыт (RAG недоступен)")
         else:
-            self.input_edit.setPlaceholderText("Введите сообщение... (CTRL+Enter — отправить, @web — поиск)")
+            self.input_edit.setPlaceholderText(
+                "Введите сообщение... (CTRL+Enter — отправить, @web — поиск)"
+            )
             self.status_label.setText("Готов к работе")
-        # Кнопка отправки всегда доступна
         self.send_btn.setVisible(True)
 
     def set_registry(self, registry):
-        """Устанавливает реестр моделей и обновляет список."""
         self.registry = registry
         self._update_model_list()
 
     def update_models(self, models: list[str]) -> None:
-        """Обновляет список моделей (вызывается из MainWindow)."""
         self._update_model_list()
 
     def _update_model_list(self):
-        """Обновляет выпадающий список моделей из реестра."""
         if not self.registry:
             return
         current = self.model_combo.currentData()
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         all_models = self.registry.get_all_models()
-        # Сортировка: сначала локальные, потом остальные
         sorted_names = sorted(
             all_models.keys(),
             key=lambda x: (not all_models[x].is_local, x.lower())
         )
         for model_name in sorted_names:
             info = all_models[model_name]
-            # Префикс для визуального отличия локальных моделей
             display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
             self.model_combo.addItem(display, model_name)
-        # Восстанавливаем выбор
+
         if current and self.model_combo.findData(current) >= 0:
             self.model_combo.setCurrentIndex(self.model_combo.findData(current))
         else:
-            # # Выбираем первую локальную или первую вообще
-            # for i in range(self.model_combo.count()):
-            #     if self.model_combo.itemData(i) and self.registry.get(self.model_combo.itemData(i)).is_local:
-            #         self.model_combo.setCurrentIndex(i)
-            #         break
-
-            # Выбираем первую локальную или первую вообще
-            # for i in range(self.model_combo.count()):
-            #     model_data = self.model_combo.itemData(i)
-            #     # Извлекаем инфо о модели, проверяем на None и только потом смотрим .is_local
-            #     if model_data and (info := self.registry.get(model_data)) is not None and info.is_local:
-            #         self.model_combo.setCurrentIndex(i)
-            #         break
-
-            # Выбираем первую локальную или первую вообще
             for i in range(self.model_combo.count()):
                 model_data = self.model_combo.itemData(i)
-                # Используем новое имя переменной model_info, чтобы избежать конфликта типов
-                if model_data and (model_info := self.registry.get(model_data)) is not None and model_info.is_local:
+                if model_data and (info := self.registry.get(model_data)) is not None and info.is_local:
                     self.model_combo.setCurrentIndex(i)
                     break
-
-
             else:
                 if self.model_combo.count() > 0:
                     self.model_combo.setCurrentIndex(0)
@@ -1549,7 +1506,6 @@ class ChatPanel(QWidget):
         self._update_model_status(self.model_combo.currentData())
 
     def _update_model_status(self, model_name: str):
-        """Обновляет компактный статус модели (эмодзи + тултип)."""
         if not self.registry:
             self.model_status_label.setText("❓")
             self.model_status_label.setToolTip("Реестр моделей не загружен")
@@ -1578,7 +1534,6 @@ class ChatPanel(QWidget):
         self.model_status_label.setToolTip(tooltip)
 
     def _on_model_changed(self, index: int):
-        """Вызывается при смене модели в комбобоксе."""
         model_name = self.get_current_model()
         if model_name:
             self._update_model_status(model_name)
@@ -1586,7 +1541,6 @@ class ChatPanel(QWidget):
             self._save_current_settings()
 
     def _save_current_settings(self):
-        """Сохраняет текущие настройки через сигнал."""
         try:
             mode_map = {0: "chat", 1: "plan", 2: "agent"}
             self.settings_changed.emit({
@@ -1597,11 +1551,9 @@ class ChatPanel(QWidget):
             logger.warning(f"Не удалось сохранить настройки: {e}")
 
     def set_checking_state(self, is_checking: bool):
-        """Меняет иконку кнопки во время проверки (кнопка остаётся активной)."""
         self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
 
     def _check_mode_compatibility(self):
-        """Проверяет, подходит ли выбранный режим для модели."""
         if not self.registry:
             return
         model_name = self.get_current_model()
@@ -1610,9 +1562,7 @@ class ChatPanel(QWidget):
         if cap and not cap.supports_tools:
             current_mode = self._current_mode()
             if current_mode in (AgentMode.PLAN, AgentMode.AGENT):
-                # Автоматически переключаем на Chat
                 self.mode_combo.setCurrentIndex(0)
-                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self, "Режим недоступен",
                     f"Модель '{model_name}' не поддерживает инструменты.\n"
@@ -1620,7 +1570,6 @@ class ChatPanel(QWidget):
                 )
 
     def set_role_manager(self, manager: RoleManager):
-        """Устанавливает менеджер ролей и заполняет комбобокс."""
         self.role_manager = manager
         self.role_combo.blockSignals(True)
         self.role_combo.clear()
@@ -1628,61 +1577,48 @@ class ChatPanel(QWidget):
         for role in manager.get_all_roles():
             self.role_combo.addItem(f"{role.icon} {role.name}", role.id)
 
-        # Выбираем дефолтную
         idx = self.role_combo.findData("default")
         if idx >= 0:
             self.role_combo.setCurrentIndex(idx)
         self.role_combo.blockSignals(False)
 
     def _on_role_changed(self, index: int):
-        """Обработчик смены роли."""
         if self.role_manager:
             role_id = self.role_combo.itemData(index)
             self.current_role_id = role_id
             logger.info(f"Смена роли на: {role_id}")
 
     def get_current_role_prompt(self) -> str:
-        """Возвращает системный промт текущей роли."""
         if self.role_manager:
             return self.role_manager.get_role(self.current_role_id).system_prompt
         return ""
 
     def update_model_status(self, model_name: str):
-        """
-        Обновляет отображение для указанной модели в комбобоксе,
-        используя текущие данные из реестра.
-        """
         if not self.registry:
             return
         info = self.registry.get(model_name)
         if not info:
             return
-        # Обновляем текст в комбобоксе
         for i in range(self.model_combo.count()):
             if self.model_combo.itemData(i) == model_name:
                 display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
                 self.model_combo.setItemText(i, display)
                 break
-        # Если это текущая модель, обновляем статусную метку
         if self.model_combo.currentData() == model_name:
             self._update_model_status(model_name)
 
     def get_current_model(self) -> str:
-        """Возвращает чистое имя текущей модели (без префиксов)."""
         model = self.model_combo.currentData()
         if model is not None:
             return str(model)
-        # fallback: убираем возможные префиксы из отображаемого текста
         text = self.model_combo.currentText()
         for prefix in ("✅ ", "⬇️ "):
             if text.startswith(prefix):
                 return text[len(prefix):]
-        return text or "llama3.2"  # fallback
-
+        return text or "llama3.2"
 
     @Slot()
     def _on_web_finish(self):
-        """Завершает поисковый запрос."""
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1691,7 +1627,6 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_web_error(self, error_msg: str):
-        """Обрабатывает ошибку поиска."""
         self._add_message("system", f"❌ {error_msg}")
         self._reset_send_button()
         self.status_label.setText("❌ Ошибка поиска")
@@ -1702,7 +1637,6 @@ class ChatPanel(QWidget):
     def load_history(self, messages: list[ChatMessage]):
         self._clear_chat(keep_session=True)
         for msg in messages:
-            # добавляем сообщения в виджет, но не сохраняем в БД повторно
             self._add_message(msg.role, msg.content)
             self._messages.append(msg)
 
@@ -1710,13 +1644,16 @@ class ChatPanel(QWidget):
         if self.input_edit.hasFocus():
             key = event.key()
             if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
-                # При удалении сбрасываем формат и убираем пробел, если он был после @web
                 pass
-            # остальное
         super().keyPressEvent(event)
 
     def set_search_cache(self, cache):
         self.search_cache = cache
+
+
+# ============================================================
+# Web Search Thread
+# ============================================================
 
 class WebSearchThread(QThread):
     """Поток для выполнения интернет-поиска и генерации ответа."""
@@ -1740,17 +1677,18 @@ class WebSearchThread(QThread):
 
     async def _run(self):
         try:
-            # 1. Выполняем поиск (импортируем функцию web_search)
             from tools.web_search import web_search
-            search_results = await web_search(query=self.query, max_results=5,
-                                            search_cache=self.search_cache)
+            search_results = await web_search(
+                query=self.query, max_results=5,
+                search_cache=self.search_cache
+            )
 
             if not search_results or "Ничего не найдено" in search_results:
-                # Если ничего не найдено, отправляем сообщение об этом
-                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
+                self.error_occurred.emit(
+                    "Поиск не дал результатов. Попробуйте уточнить запрос."
+                )
                 return
 
-            # 2. Формируем системный промт и сообщения
             system_prompt = (
                 "Ты — поисковый ассистент. Используй результаты поиска для ответа на вопрос. "
                 "Отвечай на русском языке, будь лаконичен и полезен."
@@ -1759,11 +1697,10 @@ class WebSearchThread(QThread):
 
             messages = [
                 ChatMessage(role="system", content=system_prompt),
-                *self.messages_history,  # можно добавить историю, но обычно не нужно
+                *self.messages_history,
                 ChatMessage(role="user", content=user_content),
             ]
 
-            # 3. Отправляем запрос в Ollama (без инструментов, без RAG)
             async with OllamaClient(base_url=self.base_url) as client:
                 async for chunk in client.chat(
                     model=self.model,

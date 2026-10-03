@@ -13,7 +13,6 @@ from core.exceptions import ConfigError
 
 class ModelRole(StrEnum):
     """Роль модели в системе."""
-
     CHAT = "chat"
     EMBED = "embed"
     RERANK = "rerank"
@@ -69,6 +68,22 @@ class ModelConfig(BaseModel):
         return v
 
 
+class SLMConfig(BaseModel):
+    """Конфигурация встроенной SLM (llama.cpp)."""
+    enabled: bool = True
+    auto_download: bool = True
+    chat_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    chat_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+    embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    n_ctx: int = 4096
+    n_threads: int = 4
+    n_batch: int = 512
+    n_gpu_layers: int = 0
+    max_tokens: int = 1024
+    temperature: float = 0.7
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -79,6 +94,7 @@ class AppConfig(BaseModel):
     rerank_model: str | None = None
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
+    slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [
             ".git",
@@ -220,14 +236,16 @@ class ConfigLoader:
             config: Конфигурация для сохранения
             project_path: Путь к проекту (опционально)
         """
-        logger.info(f"💾 Сохранение конфига: last_model='{config.last_model}', last_mode='{config.last_mode}', project_path={project_path}")
+        logger.info(
+            f"💾 Сохранение конфига: last_model='{config.last_model}', "
+            f"last_mode='{config.last_mode}', project_path={project_path}"
+        )
         config_dict = config.model_dump(mode="json")
         if project_path:
             local_config_path = project_path / ".ollidesk" / "config.yaml"
             self._save_yaml(config_dict, local_config_path)
         else:
             self._save_yaml(config_dict, self.global_config_path)
-
 
     def _save_yaml(self, data: dict[str, Any], path: Path) -> None:
         """

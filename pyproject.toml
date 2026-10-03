@@ -23,6 +23,9 @@ dependencies = [
     "curl-cffi>=0.15,<0.16",
     "beautifulsoup4>=4.15,<4.16",
     "pygments>=2.20,<2.21",
+    # --- SLM (встроенная модель) ---
+    "llama-cpp-python>=0.3.0",
+    "huggingface-hub>=0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -59,7 +62,7 @@ ignore-names = [
     "eventFilter",
     "keyPressEvent",
     "initStyleOption",
-    "closeEvent"
+    "closeEvent",
 ]
 
 # Black это более простая альтернатива Ruff
@@ -87,7 +90,7 @@ disallow_untyped_calls = false      # Уберет ошибки [no-untyped-call
 disallow_any_generics = false       # Уберет ошибки [type-arg] для dict без указания типов
 exclude = [
     '.venv',
-    'unused'
+    'unused',
 ]
 
 [[tool.mypy.overrides]]
