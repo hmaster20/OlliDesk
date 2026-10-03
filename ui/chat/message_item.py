@@ -4,17 +4,27 @@ import html as html_mod
 import re
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QSizePolicy,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 
 class ChatMessageItem(QWidget):
-    """Виджет одного сообщения в чате (пузырёк с QLabel)."""
+    """Виджет одного сообщения в чате.
+
+    Текст рендерится в QTextBrowser (выделение мышью, Ctrl+C, кликабельные
+    ссылки, встроенное контекстное меню). Кнопка 📋 в правом верхнем углу
+    копирует исходный markdown сообщения в буфер обмена.
+    """
 
     def __init__(
         self,
@@ -68,6 +78,11 @@ class ChatMessageItem(QWidget):
         self.bubble_layout = bubble_layout
         self.text_color = text_color
 
+        # --- Заголовок: имя роли (для assistant/tool) + кнопка «копировать» ---
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+
         if not is_tool and not is_user:
             header = f"Ассистент ({mode_name})" if is_assistant else role
             role_label = QLabel(header)
@@ -76,12 +91,28 @@ class ChatMessageItem(QWidget):
                 color: {text_color};
                 font-weight: 600;
                 font-size: 11px;
-                opacity: 0.7;
                 padding: 2px 0 4px 0;
-                border-bottom: 1px solid #666;
-                margin-bottom: 2px;
             """)
-            bubble_layout.addWidget(role_label)
+            header_row.addWidget(role_label)
+
+        header_row.addStretch()
+
+        if is_user or is_assistant:
+            copy_btn = QPushButton("📋")
+            copy_btn.setFixedSize(22, 22)
+            copy_btn.setToolTip("Копировать сообщение (markdown)")
+            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            copy_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: none; color: #888;"
+                " font-size: 12px; padding: 0; }"
+                " QPushButton:hover { background: rgba(128,128,128,0.2);"
+                " border-radius: 3px; color: #ddd; }"
+                " QPushButton:pressed { background: rgba(128,128,128,0.35); }"
+            )
+            copy_btn.clicked.connect(self._copy_to_clipboard)
+            header_row.addWidget(copy_btn)
+
+        bubble_layout.addLayout(header_row)
 
         if thinking:
             think_label = QLabel(thinking)
@@ -92,18 +123,31 @@ class ChatMessageItem(QWidget):
             bubble_layout.addWidget(think_label)
             self.think_label = think_label
 
-        self.content_label = QLabel()
-        self.content_label.setWordWrap(True)
-        self.content_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        # --- Текст сообщения ---
+        self.content_browser = QTextBrowser()
+        self.content_browser.setOpenExternalLinks(True)
+        self.content_browser.setReadOnly(True)
+        self.content_browser.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_browser.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.content_label.setOpenExternalLinks(True)
-        self.content_label.setStyleSheet(
-            f"font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px;"
-            f" color: {text_color}; background: transparent;"
+        self.content_browser.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        self.content_browser.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self.content_browser.document().setDocumentMargin(0)
+        self.content_browser.setStyleSheet(
+            f"QTextBrowser {{"
+            f" font-family: 'Segoe UI', Roboto, sans-serif;"
+            f" font-size: 14px; color: {text_color};"
+            f" background: transparent; border: none; padding: 0;"
+            f" }}"
+        )
+        bubble_layout.addWidget(self.content_browser)
+
         self._set_content(content)
-        bubble_layout.addWidget(self.content_label)
 
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
@@ -117,9 +161,63 @@ class ChatMessageItem(QWidget):
         outer.addLayout(inner)
         self.bubble = bubble
 
+    # ---------------------------------------------------------
+    # Контент и высота
+    # ---------------------------------------------------------
+
     def _set_content(self, text: str):
         html = self._render_markdown_to_html(text)
-        self.content_label.setText(html)
+        self.content_browser.setHtml(html)
+        # Обновляем высоту после смены контента.
+        self._adjust_browser_height()
+
+    def _adjust_browser_height(self):
+        """Подгоняет высоту QTextBrowser под содержимое при текущей ширине."""
+        doc: QTextDocument = self.content_browser.document()
+        viewport_width = self.content_browser.viewport().width()
+        if viewport_width <= 0:
+            # Виджет ещё не отрисован — выйдем, resizeEvent вызовет повторно.
+            return
+        doc.setTextWidth(viewport_width)
+        height = int(doc.size().height()) + 4
+        self.content_browser.setFixedHeight(max(height, 22))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._adjust_browser_height()
+
+    # ---------------------------------------------------------
+    # Копирование
+    # ---------------------------------------------------------
+
+    def _copy_to_clipboard(self):
+        QApplication.clipboard().setText(self.content)
+
+    # ---------------------------------------------------------
+    # Обновление во время стриминга
+    # ---------------------------------------------------------
+
+    def update_content(self, new_content: str):
+        self.content = new_content
+        self._set_content(new_content)
+
+    def update_thinking(self, new_thinking: str):
+        self.thinking = new_thinking
+        if self.think_label is None:
+            think_label = QLabel(new_thinking)
+            think_label.setStyleSheet(
+                f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
+            )
+            think_label.setWordWrap(True)
+            index = self.bubble_layout.indexOf(self.content_browser)
+            self.bubble_layout.insertWidget(index, think_label)
+            self.think_label = think_label
+        else:
+            self.think_label.setText(new_thinking)
+
+    # ---------------------------------------------------------
+    # Markdown → HTML
+    # ---------------------------------------------------------
 
     def _render_markdown_to_html(self, text: str) -> str:
         try:
@@ -176,21 +274,3 @@ class ChatMessageItem(QWidget):
             return f"<div style='line-height:1.3;'>{body}</div>"
         except ImportError:
             return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
-
-    def update_content(self, new_content: str):
-        self.content = new_content
-        self._set_content(new_content)
-
-    def update_thinking(self, new_thinking: str):
-        self.thinking = new_thinking
-        if self.think_label is None:
-            think_label = QLabel(new_thinking)
-            think_label.setStyleSheet(
-                f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
-            )
-            think_label.setWordWrap(True)
-            index = self.bubble_layout.indexOf(self.content_label)
-            self.bubble_layout.insertWidget(index, think_label)
-            self.think_label = think_label
-        else:
-            self.think_label.setText(new_thinking)
