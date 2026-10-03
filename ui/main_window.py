@@ -37,7 +37,7 @@ from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
-from ui.chat_panel import ChatPanel
+from ui.chat import ChatPanel
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_delegate import GitStatusDelegate
 
