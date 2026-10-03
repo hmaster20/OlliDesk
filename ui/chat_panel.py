@@ -161,6 +161,7 @@ class AgentChatThread(QThread):
         asyncio.run(self._run_agent())
 
     async def _run_agent(self):
+        """Выполняет цикл ReAct агента."""
         self.tools_status_changed.emit(True)
 
         async def _notify_tools_disabled():
@@ -170,23 +171,26 @@ class AgentChatThread(QThread):
             args_json = json.dumps(args, ensure_ascii=False)
             self.tool_started.emit(name, args_json)
 
+        async def _run_with(client):
+            loop = AgentLoop(client=client, registry=self.registry, model=self.model)
+            return await loop.run(
+                context=self.context,
+                messages_history=self.messages_history,
+                on_token=self._on_token,
+                on_tool_request=self._on_tool_request,
+                max_iterations=self.max_iterations,
+                on_thinking=self._on_thinking,
+                on_tools_disabled=_notify_tools_disabled,
+                on_tool_start=_on_tool_start,
+            )
+
         try:
-            async with self.client as client:
-                loop = AgentLoop(
-                    client=client,
-                    registry=self.registry,
-                    model=self.model,
-                )
-                result = await loop.run(
-                    context=self.context,
-                    messages_history=self.messages_history,
-                    on_token=self._on_token,
-                    on_tool_request=self._on_tool_request,
-                    max_iterations=self.max_iterations,
-                    on_thinking=self._on_thinking,
-                    on_tools_disabled=_notify_tools_disabled,
-                    on_tool_start=_on_tool_start,
-                )
+            if hasattr(self.client, "__aenter__"):
+                async with self.client as client:
+                    result = await _run_with(client)
+            else:
+                result = await _run_with(self.client)
+
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
             self.error_occurred.emit(str(e))
@@ -201,18 +205,41 @@ class AgentChatThread(QThread):
 
 
 class RouterChatThread(QThread):
-    """Поток для асинхронного чата через ModelRouter."""
+    """Поток для чата через ModelRouter с авто-исполнением инструментов.
+
+    Работает в двух режимах:
+      * без registry — просто стримит ответ;
+      * с registry — прозрачно вызывает tools, если модель их запросила,
+        и продолжает диалог до финального текстового ответа.
+    """
 
     chunk_received = Signal(str)
     thinking_received = Signal(str)
+    tool_started = Signal(str, str)
+    tool_executed = Signal(str, str, bool)
     finish_received = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, router: ModelRouter, model: str, messages: list[ChatMessage]):
+    def __init__(
+        self,
+        router: ModelRouter,
+        model: str,
+        messages: list[ChatMessage],
+        registry: ToolRegistry | None = None,
+        project_root: str = "",
+        vector_store: Any = None,
+        search_cache: Any = None,
+        max_iterations: int = 4,
+    ):
         super().__init__()
         self.router = router
         self.model = model
         self.messages = messages
+        self.registry = registry
+        self.project_root = project_root
+        self.vector_store = vector_store
+        self.search_cache = search_cache
+        self.max_iterations = max_iterations
 
     def cancel(self):
         self.router.cancel_request()
@@ -222,20 +249,91 @@ class RouterChatThread(QThread):
 
     async def _run_chat(self):
         try:
+            if self.registry is None:
+                await self._stream_simple()
+                return
+
+            schemas = self.registry.get_schemas(AgentMode.CHAT)
+            if not schemas:
+                await self._stream_simple()
+                return
+
+            await self._stream_with_tools(schemas)
+        except Exception as e:
+            logger.exception("RouterChatThread error")
+            self.error_occurred.emit(f"Ошибка: {e}")
+
+    async def _stream_simple(self):
+        async for chunk in self.router.chat(
+            model=self.model, messages=self.messages, stream=True,
+        ):
+            if chunk.reasoning_content:
+                self.thinking_received.emit(chunk.reasoning_content)
+            if chunk.content:
+                self.chunk_received.emit(chunk.content)
+            if chunk.done:
+                self.finish_received.emit()
+
+    async def _stream_with_tools(self, schemas: list):
+        messages = list(self.messages)
+
+        for iteration in range(self.max_iterations):
+            current_text = ""
+            pending_tool_calls: list[Any] = []
+
             async for chunk in self.router.chat(
                 model=self.model,
-                messages=self.messages,
+                messages=messages,
+                tools=schemas,
                 stream=True,
             ):
                 if chunk.reasoning_content:
                     self.thinking_received.emit(chunk.reasoning_content)
                 if chunk.content:
+                    current_text += chunk.content
                     self.chunk_received.emit(chunk.content)
-                if chunk.done:
-                    self.finish_received.emit()
-        except Exception as e:
-            self.error_occurred.emit(f"Ошибка: {e}")
+                if chunk.tool_calls:
+                    pending_tool_calls.extend(chunk.tool_calls)
 
+            if not pending_tool_calls:
+                self.finish_received.emit()
+                return
+
+            # Фиксируем ход ассистента с tool_calls
+            messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=current_text,
+                    tool_calls=pending_tool_calls,
+                )
+            )
+
+            # Выполняем инструменты
+            for tc in pending_tool_calls:
+                args_json = json.dumps(tc.arguments, ensure_ascii=False)
+                self.tool_started.emit(tc.name, args_json)
+
+                extra: dict[str, Any] = {}
+                if self.project_root:
+                    extra["project_root"] = self.project_root
+                if self.vector_store is not None:
+                    extra["vector_store"] = self.vector_store
+                if self.search_cache is not None:
+                    extra["search_cache"] = self.search_cache
+
+                result = await self.registry.execute(tc, **extra)
+                self.tool_executed.emit(result.name, result.content, result.is_error)
+
+                messages.append(
+                    ChatMessage(
+                        role="tool",
+                        content=result.content,
+                        name=result.name,
+                    )
+                )
+
+        # Достигли лимита итераций — завершаемся
+        self.finish_received.emit()
 
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
@@ -1087,11 +1185,11 @@ class ChatPanel(QWidget):
         self.status_label.setText("🌐 Поиск в интернете...")
 
         self._web_thread = WebSearchThread(
+            router=self._router,
             model=self.get_current_model(),
             query=query,
-            base_url=self.base_url,
             messages_history=list(self._messages),
-            search_cache=getattr(self, 'search_cache', None),
+            search_cache=getattr(self, "search_cache", None),
         )
 
         self._web_thread.chunk_received.connect(self._on_chunk)
@@ -1164,7 +1262,7 @@ class ChatPanel(QWidget):
         self._do_agent(text, mode, context)
 
     def _do_chat(self, text: str):
-        """Запускает LLM-генерацию (режим Chat) через маршрутизатор."""
+        """Запускает LLM-генерацию (режим Chat) с авто-использованием tools."""
         self.status_label.setText("Генерация ответа...")
 
         chat_messages: list[ChatMessage] = list(self._messages)
@@ -1188,36 +1286,38 @@ class ChatPanel(QWidget):
 
         model_name = self.get_current_model()
 
-        # Используем маршрутизатор — он сам выберет Ollama / SLM / rule-based
+        # Регистр инструментов: даёт Chat-режиму возможность авто-вызывать tools
+        try:
+            registry = self._build_registry()
+        except Exception as e:
+            logger.warning(f"Не удалось собрать registry для Chat: {e}")
+            registry = None
+
         self._ollama_thread = RouterChatThread(
             router=self._router,
             model=model_name,
             messages=chat_messages,
+            registry=registry,
+            project_root=self.project_root,
+            vector_store=self.vector_store,
+            search_cache=getattr(self, "search_cache", None),
+            max_iterations=4,
         )
 
         self._ollama_thread.chunk_received.connect(self._on_chunk)
         self._ollama_thread.thinking_received.connect(self._on_thinking)
+        self._ollama_thread.tool_started.connect(self._on_tool_started)
+        self._ollama_thread.tool_executed.connect(self._on_tool_executed)
         self._ollama_thread.finish_received.connect(self._on_finish)
         self._ollama_thread.error_occurred.connect(self._on_chat_error)
         self._ollama_thread.start()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
-        """Запускает AgentLoop."""
-        # Агентные режимы требуют Ollama (у SLM нет нативного tool-calling)
-        if self._router.active_backend != BackendType.OLLAMA:
-            logger.warning(
-                f"Агентный режим недоступен для бэкенда "
-                f"{self._router.active_backend.name}, fallback в Chat"
-            )
-            self._add_message(
-                "system",
-                "⚠️ Агентные режимы (Plan/Agent) требуют запущенного Ollama. "
-                "Автоматически переключаюсь в режим Chat."
-            )
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentIndex(0)
-            self.mode_combo.blockSignals(False)
-            self._do_chat(text)
+        """Запускает AgentLoop, используя активный бэкенд router'а."""
+        client = self._router.active_client
+        if client is None:
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
+            self._reset_send_button()
             return
 
         role_prompt = self.get_current_role_prompt()
@@ -1229,7 +1329,7 @@ class ChatPanel(QWidget):
 
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
-        raw_cache = getattr(self, 'search_cache', None)
+        raw_cache = getattr(self, "search_cache", None)
 
         context = AgentContext(
             system_prompt=combined,
@@ -1245,7 +1345,7 @@ class ChatPanel(QWidget):
 
         model_name = self.get_current_model()
         self._agent_thread = AgentChatThread(
-            client=OllamaClient(base_url=self.base_url),
+            client=client,
             registry=self._build_registry(),
             model=model_name,
             context=context,
@@ -1656,19 +1756,19 @@ class ChatPanel(QWidget):
 # ============================================================
 
 class WebSearchThread(QThread):
-    """Поток для выполнения интернет-поиска и генерации ответа."""
+    """Поток для выполнения интернет-поиска и генерации ответа через router."""
 
     chunk_received = Signal(str)
     thinking_received = Signal(str)
     finish_received = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, model: str, query: str, base_url: str,
+    def __init__(self, router, model: str, query: str,
                  messages_history: list[ChatMessage], search_cache=None):
         super().__init__()
+        self.router = router
         self.model = model
         self.query = query
-        self.base_url = base_url
         self.messages_history = messages_history
         self.search_cache = search_cache
 
@@ -1678,9 +1778,10 @@ class WebSearchThread(QThread):
     async def _run(self):
         try:
             from tools.web_search import web_search
+
             search_results = await web_search(
                 query=self.query, max_results=5,
-                search_cache=self.search_cache
+                search_cache=self.search_cache,
             )
 
             if not search_results or "Ничего не найдено" in search_results:
@@ -1690,10 +1791,12 @@ class WebSearchThread(QThread):
                 return
 
             system_prompt = (
-                "Ты — поисковый ассистент. Используй результаты поиска для ответа на вопрос. "
+                "Ты — поисковый ассистент. Используй результаты поиска для ответа. "
                 "Отвечай на русском языке, будь лаконичен и полезен."
             )
-            user_content = f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+            user_content = (
+                f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+            )
 
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -1701,18 +1804,15 @@ class WebSearchThread(QThread):
                 ChatMessage(role="user", content=user_content),
             ]
 
-            async with OllamaClient(base_url=self.base_url) as client:
-                async for chunk in client.chat(
-                    model=self.model,
-                    messages=messages,
-                    stream=True,
-                ):
-                    if chunk.reasoning_content:
-                        self.thinking_received.emit(chunk.reasoning_content)
-                    if chunk.content:
-                        self.chunk_received.emit(chunk.content)
-                    if chunk.done:
-                        self.finish_received.emit()
+            async for chunk in self.router.chat(
+                model=self.model, messages=messages, stream=True,
+            ):
+                if chunk.reasoning_content:
+                    self.thinking_received.emit(chunk.reasoning_content)
+                if chunk.content:
+                    self.chunk_received.emit(chunk.content)
+                if chunk.done:
+                    self.finish_received.emit()
 
         except Exception as e:
             self.error_occurred.emit(f"Ошибка: {e}")

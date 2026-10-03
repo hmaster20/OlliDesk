@@ -1,6 +1,8 @@
 """Клиент встроенной SLM через llama.cpp (fallback для Ollama)."""
 
 import asyncio
+import json
+import re
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -17,6 +19,9 @@ class LocalLLMClient:
     Используется как fallback, когда Ollama недоступен.
     Поддерживает стриминг, простой tool-calling через JSON-парсинг
     и эмбеддинги (если загружена embedding-модель).
+    Поддерживает стриминг и «мягкий» tool-calling через JSON-парсинг:
+    модель получает инструкцию в system-промпте, а её ответ проверяется
+    на наличие JSON вида {"name": ..., "arguments": {...}}.
     """
 
     def __init__(
@@ -78,7 +83,7 @@ class LocalLLMClient:
 
         logger.info("Локальная SLM загружена успешно")
 
-    # --- Управление отменой ---
+    # --- Отмена ---
 
     def cancel_request(self):
         """Запрашивает отмену текущего стриминга."""
@@ -104,10 +109,7 @@ class LocalLLMClient:
         stream: bool = True,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
-        """Генерирует ответ через llama.cpp.
-
-        Работает в отдельном потоке, чтобы не блокировать event loop.
-        """
+        """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
         self.reset_cancel()
 
         # Формируем сообщения для llama.cpp
@@ -116,7 +118,13 @@ class LocalLLMClient:
         # Если есть инструменты — добавляем инструкцию в system prompt
         if tools:
             tool_instruction = self._build_tool_instruction(tools)
-            chat_messages.insert(0, {"role": "system", "content": tool_instruction})
+            # Вставляем инструкцию как САМОЕ ПЕРВОЕ system-сообщение
+            if chat_messages and chat_messages[0].get("role") == "system":
+                chat_messages[0]["content"] = (
+                    tool_instruction + "\n\n" + chat_messages[0]["content"]
+                )
+            else:
+                chat_messages.insert(0, {"role": "system", "content": tool_instruction})
 
         # Параметры генерации
         temperature = 0.7
@@ -129,8 +137,17 @@ class LocalLLMClient:
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue[ChatChunk | None] = asyncio.Queue()
 
+        def _safe_put(chunk: ChatChunk) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+            except RuntimeError:
+                # Loop уже закрыт — просто игнорируем
+                pass
+
         def _generate():
             """Синхронная генерация в отдельном потоке."""
+            cancelled = False
+            full_text_parts: list[str] = []
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
@@ -140,32 +157,44 @@ class LocalLLMClient:
                         stream=True,
                         stop=["<|im_end|>", "<|endoftext|>"],
                     )
-
                     for chunk in response:
                         if self._cancel_requested:
+                            cancelled = True
                             break
-
                         delta = chunk["choices"][0].get("delta", {})
                         content = delta.get("content", "")
-
                         if content:
-                            asyncio.run_coroutine_threadsafe(
-                                queue.put(ChatChunk(content=content, done=False)),
-                                loop,
-                            )
+                            full_text_parts.append(content)
 
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(ChatChunk(content="", done=True)),
-                    loop,
-                )
+                if cancelled:
+                    _safe_put(ChatChunk(content="", done=True))
+                    return
+
+                full_text = "".join(full_text_parts)
+
+                # Попытка распознать tool-call
+                tool_call: ToolCall | None = None
+                if tools and full_text.strip():
+                    tool_call = self._parse_tool_call(full_text)
+
+                if tool_call is not None:
+                    logger.info(
+                        f"SLM: распознан tool_call → {tool_call.name}"
+                        f"({tool_call.arguments})"
+                    )
+                    _safe_put(
+                        ChatChunk(content="", tool_calls=[tool_call], done=False)
+                    )
+                    _safe_put(ChatChunk(content="", done=True))
+                else:
+                    if full_text:
+                        _safe_put(ChatChunk(content=full_text, done=False))
+                    _safe_put(ChatChunk(content="", done=True))
+
             except Exception as e:
-                logger.error(f"Ошибка генерации SLM: {e}")
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(ChatChunk(content=f"\n[Ошибка: {e}]", done=True)),
-                    loop,
-                )
+                logger.error(f"SLM generation error: {e}")
+                _safe_put(ChatChunk(content=f"\n[Ошибка SLM: {e}]", done=True))
 
-        # Запускаем поток
         thread = threading.Thread(target=_generate, daemon=True)
         thread.start()
 
@@ -177,6 +206,162 @@ class LocalLLMClient:
             yield chunk
             if chunk.done:
                 break
+
+    # --- Tool-call parsing ---
+
+    def _parse_tool_call(self, text: str) -> ToolCall | None:
+        """Пытается распарсить JSON-вызов инструмента из ответа модели."""
+        stripped = text.strip()
+
+        # 1. Убираем markdown-фенсы ```json ... ```
+        m = re.search(r"```(?:json)?\s*\n?(.*?)```", stripped, re.DOTALL)
+        if m:
+            stripped = m.group(1).strip()
+
+        # 2. Пробуем распарсить целиком
+        parsed = self._try_json(stripped)
+        if parsed is not None:
+            return parsed
+
+        # 3. Ищем первое вхождение JSON-объекта с "name"
+        #    (аккуратный поиск по сбалансированным скобкам)
+        for start, end in self._iter_json_spans(stripped):
+            candidate = stripped[start:end]
+            parsed = self._try_json(candidate)
+            if parsed is not None:
+                return parsed
+
+        return None
+
+    @staticmethod
+    def _try_json(text: str) -> ToolCall | None:
+        """Парсит JSON и, если это tool-call, возвращает ToolCall."""
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        name: Any = None
+        args: Any = None
+
+        if "name" in parsed:
+            name = parsed.get("name")
+            args = parsed.get("arguments", {})
+        elif isinstance(parsed.get("function"), dict):
+            func = parsed["function"]
+            name = func.get("name")
+            args = func.get("arguments", {})
+
+        if not isinstance(name, str) or not name:
+            return None
+
+        if not isinstance(args, dict):
+            # Иногда модель отдаёт args как строку с JSON
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    args = {}
+            else:
+                args = {}
+
+        return ToolCall(name=name, arguments=args)
+
+    @staticmethod
+    def _iter_json_spans(text: str):
+        """Возвращает (start, end) для каждого сбалансированного {...} блока."""
+        stack: list[int] = []
+        for i, ch in enumerate(text):
+            if ch == "{":
+                stack.append(i)
+            elif ch == "}" and stack:
+                start = stack.pop()
+                if not stack:
+                    yield start, i + 1
+
+    # --- Инструкция для модели ---
+
+    def _build_tool_instruction(self, tools: list[Any]) -> str:
+        """Формирует инструкцию по вызову инструментов.
+
+        Ставит акцент на том, что для актуальных данных ОБЯЗАТЕЛЬНО
+        нужно вызывать инструмент, а не отвечать из «знаний».
+        """
+        lines = [
+            "У тебя есть доступ к инструментам для получения актуальной информации.",
+            "",
+            "ВАЖНОЕ ПРАВИЛО:",
+            "Если вопрос требует свежих/актуальных данных — погода, курс валют,",
+            "новости, сегодняшняя дата, поиск в интернете, содержимое файла —",
+            "ты ОБЯЗАН вызвать соответствующий инструмент.",
+            "НЕ пытайся отвечать на такие вопросы из собственных знаний —",
+            "твои знания устарели, и ответ будет неверным.",
+            "",
+            "Формат вызова — ТОЛЬКО JSON, без пояснений и текста вокруг:",
+            '{"name": "имя_инструмента", "arguments": {"параметр": "значение"}}',
+            "",
+            "Если инструменты не нужны — просто ответь обычным текстом.",
+            "",
+            "Доступные инструменты:",
+        ]
+
+        for t in tools:
+            func = getattr(t, "function", None) or t
+            if not isinstance(func, dict):
+                continue
+            name = func.get("name", "")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+            props = params.get("properties", {}) or {}
+            required = params.get("required", []) or []
+            args_parts = []
+            for pk, pv in props.items():
+                t_str = pv.get("type", "any") if isinstance(pv, dict) else "any"
+                if pk in required:
+                    args_parts.append(f"{pk}: {t_str}")
+                else:
+                    args_parts.append(f"{pk}?: {t_str}")
+            args_str = ", ".join(args_parts)
+            lines.append(f"- {name}({args_str}): {desc}")
+
+        return "\n".join(lines)
+
+    # --- Конвертация сообщений ---
+
+    def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Конвертирует ChatMessage в формат llama.cpp.
+
+        - tool-сообщения превращаем в user (ChatML корректно обрабатывает
+          результаты инструмента как «внешний источник»).
+        - tool_calls от ассистента разворачиваем в текст JSON — так модель
+          видит «свой» прошлый вызов.
+        """
+        result: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg.role == "tool":
+                prefix = f"[Результат инструмента {msg.name or ''}]"
+                content = f"{prefix}\n{msg.content or ''}".strip()
+                result.append({"role": "user", "content": content})
+            elif msg.role == "assistant" and msg.tool_calls:
+                calls_json = ", ".join(
+                    json.dumps(
+                        {"name": tc.name, "arguments": tc.arguments},
+                        ensure_ascii=False,
+                    )
+                    for tc in msg.tool_calls
+                )
+                content = (msg.content or "").strip()
+                if content:
+                    content = f"{content}\n{calls_json}"
+                else:
+                    content = calls_json
+                result.append({"role": "assistant", "content": content})
+            else:
+                result.append({"role": msg.role, "content": msg.content or ""})
+        return result
 
     # --- Эмбеддинги ---
 
@@ -191,56 +376,9 @@ class LocalLLMClient:
             return []
 
         def _embed():
-            results = []
-            for text in texts:
-                emb = self.embed_llm.embed(text)
-                results.append(list(emb))
-            return results
+            return [list(self.embed_llm.embed(t)) for t in texts]
 
         return await asyncio.to_thread(_embed)
-
-    # --- Вспомогательные методы ---
-
-    def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
-        """Конвертирует ChatMessage в формат llama.cpp."""
-        result = []
-        for msg in messages:
-            entry: dict[str, Any] = {
-                "role": msg.role,
-                "content": msg.content or "",
-            }
-            if msg.role == "tool" and msg.name:
-                entry["name"] = msg.name
-            result.append(entry)
-        return result
-
-    def _build_tool_instruction(self, tools: list[Any]) -> str:
-        """Формирует инструкцию по вызову инструментов для SLM.
-
-        SLM не имеет нативного tool-calling, поэтому используем
-        JSON-инструкцию в system prompt.
-        """
-        tool_descriptions = []
-        for tool in tools:
-            if hasattr(tool, "function"):
-                func = tool.function
-                name = func.get("name", "")
-                desc = func.get("description", "")
-                params = func.get("parameters", {})
-                tool_descriptions.append(
-                    f"- {name}: {desc}\n  Параметры: {params}"
-                )
-
-        tools_text = "\n".join(tool_descriptions)
-
-        return (
-            "Ты — AI-ассистент с доступом к инструментам.\n"
-            "Если тебе нужно вызвать инструмент, ответь СТРОГО в формате JSON:\n"
-            '{"name": "имя_инструмента", "arguments": {"параметр": "значение"}}\n'
-            "Не добавляй ничего кроме JSON, если вызываешь инструмент.\n"
-            "Если инструмент не нужен — просто ответь текстом.\n\n"
-            f"Доступные инструменты:\n{tools_text}"
-        )
 
     def check_tools_support(self, model: str) -> bool:
         """SLM поддерживает инструменты через JSON-парсинг."""

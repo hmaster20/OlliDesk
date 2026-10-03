@@ -77,7 +77,7 @@ async def _search_curl_cffi(query: str, max_results: int) -> list:
     description="Ищет информацию в интернете. "
                 "Используйте для получения актуальных данных, документации, примеров кода.",
     policy=ToolPolicy.ASK_FIRST,
-    modes=[AgentMode.PLAN, AgentMode.AGENT],
+    modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 # async def web_search(query: str, max_results: int = 5, search_cache=None) -> str:
 async def web_search(query: str, max_results: int = 5, search_cache: SearchCache | None = None) -> str:

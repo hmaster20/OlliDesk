@@ -13,7 +13,7 @@ from tools.git_ops import create_snapshot
     name="read_file",
     description="Читает содержимое файла по указанному пути",
     policy=ToolPolicy.AUTO,
-    modes=[AgentMode.PLAN, AgentMode.AGENT],
+    modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 def read_file(path: str, project_root: str = "") -> str:
     """Читает файл и возвращает его содержимое.
