@@ -72,8 +72,10 @@ class SLMConfig(BaseModel):
     """Конфигурация встроенной SLM (llama.cpp)."""
     enabled: bool = True
     auto_download: bool = True
-    chat_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-    chat_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    # chat_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    # chat_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    chat_model_repo: str = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+    chat_model_file: str = "qwen2.5-3b-instruct-q4_k_m.gguf"
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
     embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
     n_ctx: int = 4096

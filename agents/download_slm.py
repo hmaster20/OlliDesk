@@ -8,8 +8,11 @@ from pathlib import Path
 
 from loguru import logger
 
-CHAT_MODEL_REPO = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-CHAT_MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+# CHAT_MODEL_REPO = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+# CHAT_MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+CHAT_MODEL_REPO = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+CHAT_MODEL_FILE = "qwen2.5-3b-instruct-q4_k_m.gguf"
 
 EMBED_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 EMBED_MODEL_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
