@@ -406,8 +406,8 @@ class _SLMLoadThread(QThread):
 class _SLMDownloadThread(QThread):
     """Скачивает выбранную chat-модель и общую embedding-модель."""
 
-    finished = Signal(str, str)  # chat_path, embed_path (может быть "")
-    progress = Signal(str)       # строка статуса
+    finished = Signal(str, str)
+    progress = Signal(str)
     error = Signal(str)
 
     def __init__(
@@ -416,21 +416,38 @@ class _SLMDownloadThread(QThread):
         model_file: str,
         embed_repo: str,
         embed_file: str,
+        is_split: bool = False,
+        parts: int = 1,
     ):
         super().__init__()
         self.model_repo = model_repo
         self.model_file = model_file
         self.embed_repo = embed_repo
         self.embed_file = embed_file
+        self.is_split = is_split
+        self.parts = parts
 
     def run(self):
         try:
-            self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
-            chat = download_model(self.model_repo, self.model_file)
+            if self.is_split:
+                self.progress.emit(
+                    f"Скачивание {self.model_file} ({self.parts} частей)..."
+                )
+            else:
+                self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
+
+            chat = download_model(
+                self.model_repo,
+                self.model_file,
+                is_split=self.is_split,
+                parts=self.parts,
+            )
 
             embed_path = ""
             try:
-                self.progress.emit(f"Скачивание embedding-модели {self.embed_file}...")
+                self.progress.emit(
+                    f"Скачивание embedding-модели {self.embed_file}..."
+                )
                 embed = download_model(self.embed_repo, self.embed_file)
                 embed_path = str(embed)
             except Exception as e:

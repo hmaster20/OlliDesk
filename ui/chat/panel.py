@@ -242,6 +242,8 @@ class ChatPanel(QWidget):
             model_file=info.file,
             embed_repo=slm.embed_model_repo,
             embed_file=slm.embed_model_file,
+            is_split=info.is_split,
+            parts=info.parts,
         )
         self._slm_download_thread.progress.connect(self._on_slm_progress)
         self._slm_download_thread.finished.connect(self._on_slm_downloaded)

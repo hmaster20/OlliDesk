@@ -67,7 +67,6 @@ class ModelConfig(BaseModel):
             raise ValueError(f"max_tokens must be > 0, got {v}")
         return v
 
-
 class SLMModelInfo(BaseModel):
     """Описание одной доступной локальной SLM-модели."""
 
@@ -76,6 +75,8 @@ class SLMModelInfo(BaseModel):
     file: str
     display_name: str
     size_mb: int = 0
+    is_split: bool = False   # модель разбита на части на HF
+    parts: int = 1           # количество частей (если is_split=True)
 
 
 _DEFAULT_SLM_MODELS: list[dict] = [
@@ -85,6 +86,8 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 7B (умная, рекомендуется)",
         "size_mb": 4680,
+        "is_split": True,
+        "parts": 2,
     },
     {
         "id": "qwen2.5-3b-instruct",
@@ -92,6 +95,8 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 3B (баланс)",
         "size_mb": 2030,
+        "is_split": False,
+        "parts": 1,
     },
     {
         "id": "qwen2.5-1.5b-instruct",
@@ -99,6 +104,8 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 1.5B (быстрая, для слабых машин)",
         "size_mb": 1120,
+        "is_split": False,
+        "parts": 1,
     },
 ]
 
