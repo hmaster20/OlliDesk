@@ -14,7 +14,7 @@ from agents.agent_loop import (
     AgentIterationLimitError,
     AgentLoop,
 )
-from agents.download_slm import download_chat_model, download_embed_model
+from agents.download_slm import download_model
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
@@ -370,18 +370,32 @@ class _SLMLoadThread(QThread):
     finished = Signal(object)
     error = Signal(str)
 
-    def __init__(self, chat_path: Path, embed_path: Path | None):
+    def __init__(
+        self,
+        chat_path: Path,
+        embed_path: Path | None,
+        n_ctx: int = 4096,
+        n_threads: int = 4,
+        n_batch: int = 512,
+        n_gpu_layers: int = 0,
+    ):
         super().__init__()
         self.chat_path = chat_path
         self.embed_path = embed_path
+        self.n_ctx = n_ctx
+        self.n_threads = n_threads
+        self.n_batch = n_batch
+        self.n_gpu_layers = n_gpu_layers
 
     def run(self):
         try:
             client = LocalLLMClient(
                 model_path=self.chat_path,
                 embed_model_path=self.embed_path,
-                n_ctx=4096,
-                n_threads=4,
+                n_ctx=self.n_ctx,
+                n_threads=self.n_threads,
+                n_batch=self.n_batch,
+                n_gpu_layers=self.n_gpu_layers,
             )
             self.finished.emit(client)
         except Exception as e:
@@ -390,20 +404,42 @@ class _SLMLoadThread(QThread):
 
 
 class _SLMDownloadThread(QThread):
-    """Скачивает модели SLM в фоне."""
+    """Скачивает выбранную chat-модель и общую embedding-модель."""
 
-    finished = Signal(str, str)
+    finished = Signal(str, str)  # chat_path, embed_path (может быть "")
+    progress = Signal(str)       # строка статуса
     error = Signal(str)
+
+    def __init__(
+        self,
+        model_repo: str,
+        model_file: str,
+        embed_repo: str,
+        embed_file: str,
+    ):
+        super().__init__()
+        self.model_repo = model_repo
+        self.model_file = model_file
+        self.embed_repo = embed_repo
+        self.embed_file = embed_file
 
     def run(self):
         try:
-            chat = download_chat_model()
-            embed = download_embed_model()
-            self.finished.emit(str(chat), str(embed) if embed else "")
+            self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
+            chat = download_model(self.model_repo, self.model_file)
+
+            embed_path = ""
+            try:
+                self.progress.emit(f"Скачивание embedding-модели {self.embed_file}...")
+                embed = download_model(self.embed_repo, self.embed_file)
+                embed_path = str(embed)
+            except Exception as e:
+                logger.warning(f"Embedding-модель не скачана: {e}")
+
+            self.finished.emit(str(chat), embed_path)
         except Exception as e:
             logger.exception("Ошибка скачивания SLM")
             self.error.emit(str(e))
-
 
 class WebSearchThread(QThread):
     """Поток для интернет-поиска и генерации ответа через router."""

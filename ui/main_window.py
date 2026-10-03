@@ -647,6 +647,11 @@ class MainWindow(QMainWindow):
         manage_models_action.triggered.connect(self._open_model_manager)
         view_menu.addAction(manage_models_action)
 
+        view_menu.addSeparator()
+        slm_models_action = QAction("Локальные модели (SLM)...", self)
+        slm_models_action.triggered.connect(self._open_slm_manager)
+        view_menu.addAction(slm_models_action)
+
         view_menu.addAction(self.theme_action)
 
         view_menu.addSeparator()
@@ -1123,6 +1128,24 @@ class MainWindow(QMainWindow):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
         dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
         dlg.exec()
+
+    def _open_slm_manager(self):
+        """Открывает диалог управления локальными SLM-моделями."""
+        from core.config import load_config
+
+        from ui.dialogs.slm_models_dialog import SLMModelsDialog
+
+        dlg = SLMModelsDialog(self.config, self)
+        dlg.exec()
+
+        if dlg.changed():
+            try:
+                self.config = load_config()
+            except Exception as e:
+                logger.warning(f"Не удалось перезагрузить конфиг: {e}")
+
+            if hasattr(self, "chat_panel") and self.chat_panel:
+                self.chat_panel.reload_slm()
 
     def _start_model_check(self):
         """Запускает или останавливает проверку моделей."""

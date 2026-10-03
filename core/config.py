@@ -68,16 +68,54 @@ class ModelConfig(BaseModel):
         return v
 
 
+class SLMModelInfo(BaseModel):
+    """Описание одной доступной локальной SLM-модели."""
+
+    id: str
+    repo: str
+    file: str
+    display_name: str
+    size_mb: int = 0
+
+
+_DEFAULT_SLM_MODELS: list[dict] = [
+    {
+        "id": "qwen2.5-7b-instruct",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 7B (умная, рекомендуется)",
+        "size_mb": 4680,
+    },
+    {
+        "id": "qwen2.5-3b-instruct",
+        "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 3B (баланс)",
+        "size_mb": 2030,
+    },
+    {
+        "id": "qwen2.5-1.5b-instruct",
+        "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 1.5B (быстрая, для слабых машин)",
+        "size_mb": 1120,
+    },
+]
+
 class SLMConfig(BaseModel):
     """Конфигурация встроенной SLM (llama.cpp)."""
+
     enabled: bool = True
-    auto_download: bool = True
-    # chat_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-    # chat_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    chat_model_repo: str = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-    chat_model_file: str = "qwen2.5-3b-instruct-q4_k_m.gguf"
-    embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
-    embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+
+    # Активная модель (id из available_models)
+    selected_model: str = "qwen2.5-7b-instruct"
+
+    # Каталог доступных моделей
+    available_models: list[SLMModelInfo] = Field(
+        default_factory=lambda: [SLMModelInfo(**m) for m in _DEFAULT_SLM_MODELS]
+    )
+
+    # Общие параметры инференса
     n_ctx: int = 4096
     n_threads: int = 4
     n_batch: int = 512
@@ -85,6 +123,22 @@ class SLMConfig(BaseModel):
     max_tokens: int = 1024
     temperature: float = 0.7
 
+    # Embedding-модель (одна, не участвует в выборе)
+    embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+    embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+
+    def get_selected_info(self) -> SLMModelInfo | None:
+        """Возвращает SLMModelInfo для активной модели."""
+        for m in self.available_models:
+            if m.id == self.selected_model:
+                return m
+        return self.available_models[0] if self.available_models else None
+
+    def get_model_by_id(self, model_id: str) -> SLMModelInfo | None:
+        for m in self.available_models:
+            if m.id == model_id:
+                return m
+        return None
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""

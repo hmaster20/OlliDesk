@@ -109,13 +109,36 @@ class ChatPanel(QWidget):
     # ---------------------------------------------------------
 
     def _detect_backends(self):
+        """Полная детекция бэкендов при старте панели."""
         self._check_ollama_async()
+        self._detect_and_load_slm()
 
+    def _detect_and_load_slm(self):
+        """Проверяет наличие файла активной SLM и загружает/скачивает её."""
         chat_path, embed_path = get_model_paths()
         if chat_path:
             self._load_slm_async(chat_path, embed_path)
         elif self._config_slm_enabled():
             self._download_and_load_slm()
+
+    def reload_slm(self):
+        """Перезагружает локальную SLM (после смены активной модели в UI)."""
+        # Сбрасываем текущий клиент
+        self._router.set_local_slm(None)
+        self._router.set_slm_available(False)
+        self._slm_client = None
+        self._slm_loading = False
+
+        # Останавливаем загрузку, если она идёт
+        if self._slm_load_thread and self._slm_load_thread.isRunning():
+            self._slm_load_thread.quit()
+            self._slm_load_thread.wait(1000)
+        if self._slm_download_thread and self._slm_download_thread.isRunning():
+            self._slm_download_thread.quit()
+            self._slm_download_thread.wait(1000)
+
+        self.status_label.setText("⏳ Перезагрузка локальной модели...")
+        QTimer.singleShot(50, self._detect_and_load_slm)
 
     def _config_slm_enabled(self) -> bool:
         try:
@@ -146,16 +169,6 @@ class ChatPanel(QWidget):
                     "⚠️ Ollama не найден. Используется резервный режим (погода/время/дата)."
                 )
 
-    def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
-        if self._slm_loading or self._slm_client is not None:
-            return
-        self._slm_loading = True
-        self.status_label.setText("⏳ Загрузка локальной модели...")
-
-        self._slm_load_thread = _SLMLoadThread(chat_path, embed_path)
-        self._slm_load_thread.finished.connect(self._on_slm_loaded)
-        self._slm_load_thread.error.connect(self._on_slm_error)
-        self._slm_load_thread.start()
 
     @Slot(object)
     def _on_slm_loaded(self, client):
@@ -167,22 +180,83 @@ class ChatPanel(QWidget):
         if self._router.active_backend == BackendType.LOCAL_SLM:
             self.status_label.setText("✅ Локальная модель загружена")
 
+    def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
+        if self._slm_loading or self._slm_client is not None:
+            return
+
+        # Параметры инференса — из конфига
+        n_ctx, n_threads, n_batch, n_gpu_layers = 4096, 4, 512, 0
+        try:
+            from core.config import load_config
+
+            slm = load_config().slm
+            n_ctx = slm.n_ctx
+            n_threads = slm.n_threads
+            n_batch = slm.n_batch
+            n_gpu_layers = slm.n_gpu_layers
+        except Exception:
+            pass
+
+        self._slm_loading = True
+        self.status_label.setText("⏳ Загрузка локальной модели...")
+
+        self._slm_load_thread = _SLMLoadThread(
+            chat_path,
+            embed_path,
+            n_ctx=n_ctx,
+            n_threads=n_threads,
+            n_batch=n_batch,
+            n_gpu_layers=n_gpu_layers,
+        )
+        self._slm_load_thread.finished.connect(self._on_slm_loaded)
+        self._slm_load_thread.error.connect(self._on_slm_error)
+        self._slm_load_thread.start()
+
+    def _download_and_load_slm(self):
+        if self._slm_loading or self._slm_client is not None:
+            return
+
+        try:
+            from core.config import load_config
+
+            slm = load_config().slm
+        except Exception as e:
+            logger.warning(f"Не удалось загрузить конфиг SLM: {e}")
+            return
+
+        if not slm.enabled:
+            return
+
+        info = slm.get_selected_info()
+        if not info:
+            logger.warning("Не найдена активная SLM-модель в конфиге")
+            return
+
+        self._slm_loading = True
+        self.status_label.setText(
+            f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)..."
+        )
+
+        self._slm_download_thread = _SLMDownloadThread(
+            model_repo=info.repo,
+            model_file=info.file,
+            embed_repo=slm.embed_model_repo,
+            embed_file=slm.embed_model_file,
+        )
+        self._slm_download_thread.progress.connect(self._on_slm_progress)
+        self._slm_download_thread.finished.connect(self._on_slm_downloaded)
+        self._slm_download_thread.error.connect(self._on_slm_error)
+        self._slm_download_thread.start()
+
+    @Slot(str)
+    def _on_slm_progress(self, message: str):
+        self.status_label.setText(f"⏳ {message}")
+
     @Slot(str)
     def _on_slm_error(self, error_msg: str):
         self._slm_loading = False
         logger.error(f"Ошибка загрузки SLM: {error_msg}")
         self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
-
-    def _download_and_load_slm(self):
-        if self._slm_loading or self._slm_client is not None:
-            return
-        self._slm_loading = True
-        self.status_label.setText("⏳ Скачивание локальной модели (~1.1 ГБ)...")
-
-        self._slm_download_thread = _SLMDownloadThread()
-        self._slm_download_thread.finished.connect(self._on_slm_downloaded)
-        self._slm_download_thread.error.connect(self._on_slm_error)
-        self._slm_download_thread.start()
 
     @Slot(str, str)
     def _on_slm_downloaded(self, chat_path: str, embed_path: str):
