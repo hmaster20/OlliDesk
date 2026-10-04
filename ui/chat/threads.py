@@ -14,7 +14,7 @@ from agents.agent_loop import (
     AgentIterationLimitError,
     AgentLoop,
 )
-from agents.download_slm import download_model
+from agents.download_slm import download_model, get_model_parts
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
@@ -406,7 +406,7 @@ class _SLMLoadThread(QThread):
 class _SLMDownloadThread(QThread):
     """Скачивает выбранную chat-модель и общую embedding-модель."""
 
-    finished = Signal(str, str)
+    finished = Signal(str, str)   # chat_path, embed_path
     progress = Signal(str)
     error = Signal(str)
 
@@ -416,32 +416,25 @@ class _SLMDownloadThread(QThread):
         model_file: str,
         embed_repo: str,
         embed_file: str,
-        is_split: bool = False,
-        parts: int = 1,
     ):
         super().__init__()
         self.model_repo = model_repo
         self.model_file = model_file
         self.embed_repo = embed_repo
         self.embed_file = embed_file
-        self.is_split = is_split
-        self.parts = parts
 
     def run(self):
         try:
-            if self.is_split:
+            # --- Автоопределение числа частей через HF ---
+            parts = get_model_parts(self.model_repo, self.model_file)
+            if parts > 1:
                 self.progress.emit(
-                    f"Скачивание {self.model_file} ({self.parts} частей)..."
+                    f"Скачивание {self.model_file} ({parts} частей)..."
                 )
             else:
                 self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
 
-            chat = download_model(
-                self.model_repo,
-                self.model_file,
-                is_split=self.is_split,
-                parts=self.parts,
-            )
+            chat = download_model(self.model_repo, self.model_file)
 
             embed_path = ""
             try:
@@ -457,6 +450,7 @@ class _SLMDownloadThread(QThread):
         except Exception as e:
             logger.exception("Ошибка скачивания SLM")
             self.error.emit(str(e))
+
 
 class WebSearchThread(QThread):
     """Поток для интернет-поиска и генерации ответа через router."""

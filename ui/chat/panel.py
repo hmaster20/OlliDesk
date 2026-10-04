@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from agents.agent_loop import AgentContext
 from agents.download_slm import get_model_paths
+from agents.gpu_utils import detect_optimal_gpu_layers
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
@@ -123,13 +124,11 @@ class ChatPanel(QWidget):
 
     def reload_slm(self):
         """Перезагружает локальную SLM (после смены активной модели в UI)."""
-        # Сбрасываем текущий клиент
         self._router.set_local_slm(None)
         self._router.set_slm_available(False)
         self._slm_client = None
         self._slm_loading = False
 
-        # Останавливаем загрузку, если она идёт
         if self._slm_load_thread and self._slm_load_thread.isRunning():
             self._slm_load_thread.quit()
             self._slm_load_thread.wait(1000)
@@ -169,7 +168,6 @@ class ChatPanel(QWidget):
                     "⚠️ Ollama не найден. Используется резервный режим (погода/время/дата)."
                 )
 
-
     @Slot(object)
     def _on_slm_loaded(self, client):
         self._slm_client = client
@@ -185,7 +183,8 @@ class ChatPanel(QWidget):
             return
 
         # Параметры инференса — из конфига
-        n_ctx, n_threads, n_batch, n_gpu_layers = 4096, 4, 512, 0
+        n_ctx, n_threads, n_batch = 4096, 4, 512
+        n_gpu_layers = 0
         try:
             from core.config import load_config
 
@@ -193,9 +192,14 @@ class ChatPanel(QWidget):
             n_ctx = slm.n_ctx
             n_threads = slm.n_threads
             n_batch = slm.n_batch
-            n_gpu_layers = slm.n_gpu_layers
-        except Exception:
-            pass
+            # Автоопределение VRAM (или явное значение из конфига)
+            n_gpu_layers = detect_optimal_gpu_layers(
+                model_path=chat_path,
+                preferred=slm.n_gpu_layers,
+                auto=slm.auto_gpu_layers,
+            )
+        except Exception as e:
+            logger.debug(f"Не удалось прочитать параметры SLM из конфига: {e}")
 
         self._slm_loading = True
         self.status_label.setText("⏳ Загрузка локальной модели...")
@@ -232,6 +236,17 @@ class ChatPanel(QWidget):
             logger.warning("Не найдена активная SLM-модель в конфиге")
             return
 
+        # Защита от случайного выбора embed-модели в качестве chat
+        if info.kind != "chat":
+            logger.error(
+                f"Активная SLM-модель '{info.id}' имеет kind='{info.kind}', "
+                f"а для чата нужна kind='chat'. Загрузка отменена."
+            )
+            self.status_label.setText(
+                f"⚠️ Модель '{info.display_name}' не подходит для чата."
+            )
+            return
+
         self._slm_loading = True
         self.status_label.setText(
             f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)..."
@@ -242,8 +257,6 @@ class ChatPanel(QWidget):
             model_file=info.file,
             embed_repo=slm.embed_model_repo,
             embed_file=slm.embed_model_file,
-            is_split=info.is_split,
-            parts=info.parts,
         )
         self._slm_download_thread.progress.connect(self._on_slm_progress)
         self._slm_download_thread.finished.connect(self._on_slm_downloaded)
@@ -505,7 +518,6 @@ class ChatPanel(QWidget):
                 return
             text = self.input_edit.toPlainText()
             if not text:
-                # Нечего подсвечивать — не трогаем формат/курсор.
                 return
             self.input_edit.blockSignals(True)
             try:
@@ -687,9 +699,6 @@ class ChatPanel(QWidget):
         if not text:
             return
 
-        # ФИКС: забираем текст и сразу очищаем ввод — до любых ветвлений.
-        # Это гарантирует, что поле ввода не «залипнет» ни при обычной
-        # отправке, ни при @web-запросе.
         self.input_edit.clear()
         self.input_edit.setFocus()
 
@@ -717,7 +726,6 @@ class ChatPanel(QWidget):
             self._start_agent(text, mode)
 
     def _start_web_search(self, query: str):
-        # Очистка поля ввода — ответственность вызывающего (_send_message).
         if not query.strip():
             self._add_message("system", "⚠️ Укажите запрос после @web")
             return

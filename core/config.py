@@ -23,7 +23,7 @@ class ModelRole(StrEnum):
 class ToolPolicy(StrEnum):
     """Политика выполнения инструмента."""
 
-    AUTO = "auto"  # Выполнять без подтверждения
+    AUTO = "auto"          # Выполнять без подтверждения
     ASK_FIRST = "ask_first"  # Требовать подтверждения пользователя
     EXCLUDED = "excluded"  # Исключить из использования
 
@@ -31,13 +31,13 @@ class ToolPolicy(StrEnum):
 class AgentMode(StrEnum):
     """Режим работы агента."""
 
-    CHAT = "chat"  # Только диалог, без инструментов
-    PLAN = "plan"  # Read-only инструменты (чтение файлов, поиск)
-    AGENT = "agent"  # Все инструменты (чтение, запись, выполнение)
+    CHAT = "chat"    # Только диалог, без инструментов
+    PLAN = "plan"    # Read-only инструменты
+    AGENT = "agent"  # Все инструменты
 
 
 class ModelConfig(BaseModel):
-    """Конфигурация одной модели."""
+    """Конфигурация одной модели Ollama."""
 
     name: str
     provider: Literal["ollama", "openai", "openai-compatible"]
@@ -48,13 +48,13 @@ class ModelConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 2048
     context_length: int = 8192
-    keep_alive: int = 1800  # секунды, для Ollama
+    keep_alive: int = 1800
     reasoning: bool = False
 
     @field_validator("temperature")
     @classmethod
     def validate_temperature(cls, v: float) -> float:
-        """Проверяет, что temperature в диапазоне [0, 2]."""
+        """temperature ∈ [0, 2]."""
         if not 0 <= v <= 2:
             raise ValueError(f"temperature must be in [0, 2], got {v}")
         return v
@@ -62,21 +62,25 @@ class ModelConfig(BaseModel):
     @field_validator("max_tokens")
     @classmethod
     def validate_max_tokens(cls, v: int) -> int:
-        """Проверяет, что max_tokens > 0."""
+        """max_tokens > 0."""
         if v <= 0:
             raise ValueError(f"max_tokens must be > 0, got {v}")
         return v
 
+
 class SLMModelInfo(BaseModel):
-    """Описание одной доступной локальной SLM-модели."""
+    """Описание одной доступной локальной SLM-модели (GGUF).
+
+    kind="chat"  — используется как chat-модель (загружается с chat_format="chatml")
+    kind="embed" — используется как embedding-модель (загружается с embedding=True)
+    """
 
     id: str
     repo: str
     file: str
     display_name: str
     size_mb: int = 0
-    is_split: bool = False   # модель разбита на части на HF
-    parts: int = 1           # количество частей (если is_split=True)
+    kind: Literal["chat", "embed"] = "chat"
 
 
 _DEFAULT_SLM_MODELS: list[dict] = [
@@ -86,8 +90,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 7B (умная, рекомендуется)",
         "size_mb": 4680,
-        "is_split": True,
-        "parts": 2,
+        "kind": "chat",
     },
     {
         "id": "qwen2.5-3b-instruct",
@@ -95,8 +98,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 3B (баланс)",
         "size_mb": 2030,
-        "is_split": False,
-        "parts": 1,
+        "kind": "chat",
     },
     {
         "id": "qwen2.5-1.5b-instruct",
@@ -104,48 +106,73 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "display_name": "Qwen 2.5 1.5B (быстрая, для слабых машин)",
         "size_mb": 1120,
-        "is_split": False,
-        "parts": 1,
+        "kind": "chat",
     },
 ]
+
 
 class SLMConfig(BaseModel):
     """Конфигурация встроенной SLM (llama.cpp)."""
 
     enabled: bool = True
 
-    # Активная модель (id из available_models)
+    # Активная chat-модель (id из available_models, kind="chat")
     selected_model: str = "qwen2.5-7b-instruct"
 
-    # Каталог доступных моделей
+    # Каталог доступных моделей.
+    # Embedding-модель сюда НЕ добавляем — она задаётся отдельно ниже.
     available_models: list[SLMModelInfo] = Field(
         default_factory=lambda: [SLMModelInfo(**m) for m in _DEFAULT_SLM_MODELS]
     )
 
-    # Общие параметры инференса
+    # --- Параметры инференса ---
     n_ctx: int = 4096
     n_threads: int = 4
     n_batch: int = 512
+
+    # GPU:
+    #   auto_gpu_layers=True  → n_gpu_layers определяется автоматически
+    #                            через nvidia-smi и размер модели
+    #   auto_gpu_layers=False → используется значение n_gpu_layers как есть
+    #                            (0 = CPU-only, -1 = все слои на GPU, N>0 = N слоёв)
+    auto_gpu_layers: bool = True
     n_gpu_layers: int = 0
+
     max_tokens: int = 1024
     temperature: float = 0.7
 
-    # Embedding-модель (одна, не участвует в выборе)
+    # --- Embedding-модель (одна, отдельно, не участвует в выборе chat) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
     embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
+    # --- Хелперы ---
+
+    def get_chat_models(self) -> list[SLMModelInfo]:
+        """Только chat-модели (фильтрует embed)."""
+        return [m for m in self.available_models if m.kind == "chat"]
+
     def get_selected_info(self) -> SLMModelInfo | None:
-        """Возвращает SLMModelInfo для активной модели."""
+        """SLMModelInfo активной chat-модели.
+
+        Ищем по id среди chat-моделей. Если не нашли — отдаём первую chat.
+        Никогда не возвращаем embed-модель.
+        """
         for m in self.available_models:
-            if m.id == self.selected_model:
+            if m.kind == "chat" and m.id == self.selected_model:
                 return m
-        return self.available_models[0] if self.available_models else None
+        # fallback — первая доступная chat
+        for m in self.available_models:
+            if m.kind == "chat":
+                return m
+        return None
 
     def get_model_by_id(self, model_id: str) -> SLMModelInfo | None:
+        """Модель по id (любого kind). Для UI-таблицы."""
         for m in self.available_models:
             if m.id == model_id:
                 return m
         return None
+
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
@@ -199,13 +226,13 @@ class AppConfig(BaseModel):
     @field_validator("recent_projects")
     @classmethod
     def validate_recent_projects(cls, v: list[str]) -> list[str]:
-        """Ограничивает список последних проектов до 10 элементов."""
+        """Не больше 10 проектов."""
         return v[:10]
 
     @field_validator("max_file_size_kb")
     @classmethod
     def validate_max_file_size(cls, v: int) -> int:
-        """Проверяет, что max_file_size_kb > 0."""
+        """max_file_size_kb > 0."""
         if v <= 0:
             raise ValueError(f"max_file_size_kb must be > 0, got {v}")
         return v
@@ -220,14 +247,16 @@ class ConfigLoader:
         self.global_config_path = get_app_data_dir() / "config.yaml"
 
     def load_config(self, project_path: Path | None = None) -> AppConfig:
-        """
-        Загружает глобальный и локальный конфиги, мержит с приоритетом локального.
+        """Загружает глобальный и локальный конфиги, мержит (локальный важнее).
+
         Args:
-            project_path: Путь к проекту (опционально)
+            project_path: путь к проекту (опционально)
+
         Returns:
-            AppConfig: Объединенная конфигурация
+            AppConfig
+
         Raises:
-            ConfigError: Если конфиг не найден или невалиден
+            ConfigError: если конфиг невалиден
         """
         global_config = self._load_yaml(self.global_config_path)
 
@@ -244,15 +273,7 @@ class ConfigLoader:
             raise ConfigError(f"Ошибка валидации конфигурации: {e}") from e
 
     def _load_yaml(self, path: Path) -> dict[str, Any]:
-        """
-        Загружает YAML-файл с поддержкой якорей.
-
-        Args:
-            path: Путь к YAML-файлу
-
-        Returns:
-            dict: Распарсенный YAML или пустой словарь, если файл не найден
-        """
+        """Загружает YAML или возвращает пустой dict."""
         if not path.exists():
             logger.debug(f"Конфиг не найден: {path}")
             return {}
@@ -267,38 +288,21 @@ class ConfigLoader:
     def _merge_configs(
         self, global_config: dict[str, Any], local_config: dict[str, Any]
     ) -> dict[str, Any]:
-        """
-        Мержит два конфига с приоритетом локального.
-
-        Args:
-            global_config: Глобальный конфиг
-            local_config: Локальный конфиг
-
-        Returns:
-            dict: Объединенный конфиг
-        """
+        """Мержит два конфига, приоритет — за локальным."""
         merged = global_config.copy()
 
         for key, value in local_config.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                # Рекурсивный мерж для словарей (например, tool_policies)
                 merged[key] = {**merged[key], **value}
             elif key in merged and isinstance(merged[key], list) and isinstance(value, list):
-                # Для списков (например, models) — заменяем полностью
                 merged[key] = value
             else:
-                # Для остальных типов — перезаписываем
                 merged[key] = value
 
         return merged
 
     def save_config(self, config: AppConfig, project_path: Path | None = None) -> None:
-        """
-        Сохраняет конфигурацию в YAML-файл.
-        Args:
-            config: Конфигурация для сохранения
-            project_path: Путь к проекту (опционально)
-        """
+        """Сохраняет конфигурацию в YAML."""
         logger.info(
             f"💾 Сохранение конфига: last_model='{config.last_model}', "
             f"last_mode='{config.last_mode}', project_path={project_path}"
@@ -311,29 +315,28 @@ class ConfigLoader:
             self._save_yaml(config_dict, self.global_config_path)
 
     def _save_yaml(self, data: dict[str, Any], path: Path) -> None:
-        """
-        Сохраняет данные в YAML-файл.
-
-        Args:
-            data: Данные для сохранения
-            path: Путь к файлу
-        """
+        """Сохраняет данные в YAML-файл."""
         path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             with open(path, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                yaml.dump(
+                    data, f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
             logger.info(f"Конфигурация сохранена: {path}")
         except Exception as e:
             raise ConfigError(f"Ошибка сохранения конфигурации {path}: {e}") from e
 
 
-# Глобальный загрузчик (используется в main.py)
+# Глобальный загрузчик
 config_loader = ConfigLoader()
 
 
 def _detect_project_path() -> Path | None:
-    """Определяет путь к проекту, проверяя CWD."""
+    """Определяет путь к проекту по CWD."""
     cwd = Path.cwd()
     if (cwd / ".ollidesk" / "config.yaml").exists():
         return cwd
@@ -341,15 +344,9 @@ def _detect_project_path() -> Path | None:
 
 
 def load_config(project_path: Path | None = None) -> AppConfig:
-    """
-    Загружает конфигурацию (обертка для удобства).
+    """Обёртка загрузки конфига.
 
-    Args:
-        project_path: Путь к проекту (опционально).
-        Если не указан, пытается определить по CWD.
-
-    Returns:
-        AppConfig: Конфигурация
+    Если project_path не указан, пытается определить по CWD.
     """
     if project_path is None:
         project_path = _detect_project_path()
@@ -357,33 +354,17 @@ def load_config(project_path: Path | None = None) -> AppConfig:
 
 
 def save_config(config: AppConfig, project_path: Path | None = None) -> None:
-    """
-    Сохраняет конфигурацию (обертка для удобства).
-
-    Args:
-        config: Конфигурация для сохранения
-        project_path: Путь к проекту (опционально)
-    """
+    """Обёртка сохранения конфига."""
     config_loader.save_config(config, project_path)
-    logger.info(f"Сохранение конфига: last_model={config.last_model}, last_mode={config.last_mode}")
+    logger.info(
+        f"Сохранение конфига: last_model={config.last_model}, "
+        f"last_mode={config.last_mode}"
+    )
 
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
-    """
-    Возвращает первую модель с указанной ролью.
-
-    Args:
-        config: Конфигурация
-        role: Роль модели
-
-    Returns:
-        ModelConfig: Модель с указанной ролью
-
-    Raises:
-        ConfigError: Если модель не найдена
-    """
+    """Возвращает первую модель с указанной ролью."""
     for model in config.models:
         if role in model.roles:
             return model
-
     raise ConfigError(f"Модель с ролью {role.value} не найдена в конфигурации")
