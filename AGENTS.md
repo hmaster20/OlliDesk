@@ -195,6 +195,9 @@ mypy. Не редактируй и не удаляй их без отдельн�
   в `AppConfig` есть секция `confirm` (`enabled`, `web_search`), а `ChatPanel::_apply_config_policies`
   ставит `ToolPolicy.AUTO`, если оба флага выключены. Тумблер — меню File →
   «Подтверждать запросы в интернет».
+  **Для `web_search` секция `confirm` важнее `tool_policies`:** старые записи
+  `tool_policies: {web_search: ask_first}` больше не включают диалог — его включает
+  только `confirm.web_search: true` (или `confirm.enabled: true` для всех инструментов).
 
 ### `fs/` — индекс проекта и RAG
 
