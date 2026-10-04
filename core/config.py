@@ -221,7 +221,7 @@ class AppConfig(BaseModel):
     wizard_dismissed: bool = False
     theme: str = "light"
     last_model: str = ""
-    last_mode: str = "chat"
+    last_mode: str = "agent"
 
     @field_validator("recent_projects")
     @classmethod

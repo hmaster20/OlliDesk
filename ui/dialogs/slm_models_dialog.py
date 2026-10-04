@@ -272,4 +272,87 @@ class SLMModelsDialog(QDialog):
         self._download_thread.progress.connect(
             lambda _id, msg: self.status_label.setText(msg)
         )
-        self._download_thread.finished.connect
+        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.error.connect(self._on_download_error)
+        self._download_thread.start()
+
+    def _on_download_finished(self, model_id: str, success: bool):
+        self._set_busy(False, "")
+        self._populate()
+        if success:
+            self.status_label.setText(f"✅ Модель установлена: {model_id}")
+
+    def _on_download_error(self, model_id: str, error: str):
+        self._set_busy(False, "")
+        QMessageBox.warning(
+            self,
+            "Ошибка скачивания",
+            f"Не удалось скачать {model_id}:\n{error}",
+        )
+
+    def _delete_selected(self):
+        info = self._current_model_info()
+        if not info or not is_model_installed(info.file, repo_id=info.repo):
+            return
+        if info.id == self.config.slm.selected_model:
+            QMessageBox.warning(
+                self,
+                "Активная модель",
+                "Нельзя удалить активную модель. Сначала переключитесь на другую.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Удаление модели",
+            f"Удалить {info.display_name}?\n"
+            f"(будут удалены все части разбитой модели)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if delete_model(info.file, repo_id=info.repo):
+            self.status_label.setText(f"🗑 Удалена: {info.display_name}")
+            self._populate()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось удалить файл модели.")
+
+    def _activate_selected(self):
+        info = self._current_model_info()
+        if not info:
+            return
+        if info.kind != "chat":
+            QMessageBox.information(
+                self,
+                "Недопустимая модель",
+                "Embedding-модель нельзя сделать активной chat-моделью.",
+            )
+            return
+        if not is_model_installed(info.file, repo_id=info.repo):
+            QMessageBox.information(
+                self, "Не установлена", "Сначала скачайте модель."
+            )
+            return
+        if info.id == self.config.slm.selected_model:
+            return
+
+        self.config.slm.selected_model = info.id
+        save_config(self.config)
+        self._changed = True
+        self.status_label.setText(f"✅ Активная модель: {info.display_name}")
+        self._populate()
+
+    def _set_busy(self, busy: bool, message: str):
+        self.progress_bar.setVisible(busy)
+        self.download_btn.setEnabled(not busy)
+        self.delete_btn.setEnabled(not busy)
+        self.activate_btn.setEnabled(not busy)
+        if message:
+            self.status_label.setText(message)
+
+    # ---------- public ----------
+
+    def changed(self) -> bool:
+        """True, если пользователь переключил активную модель."""
+        return self._changed

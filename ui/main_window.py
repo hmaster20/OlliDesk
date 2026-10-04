@@ -864,7 +864,7 @@ class MainWindow(QMainWindow):
                 self.chat_panel.set_model(self.config.last_model)
             if self.config.last_mode:
                 mode_map = {"chat": 0, "plan": 1, "agent": 2}
-                idx = mode_map.get(self.config.last_mode, 0)
+                idx = mode_map.get(self.config.last_mode, 2)
                 self.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self._start_indexing()

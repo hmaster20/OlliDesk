@@ -39,11 +39,24 @@ from ui.chat.message_item import ChatMessageItem
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
-    RouterChatThread,
+    RouterChatThread,          # оставлен для обратной совместимости
     WebSearchThread,
     _OllamaCheckThread,
     _SLMDownloadThread,
     _SLMLoadThread,
+)
+
+# Инструменты, которые в Chat-режиме должны выполняться без подтверждения
+_CHAT_AUTO_TOOLS = (
+    "web_search",
+    "read_file",
+    "search_codebase",
+    "list_directory",
+    "get_weather",
+    "get_current_datetime",
+    "get_exchange_rate",
+    "get_exchange_rates_multi",
+    "get_git_status",
 )
 
 
@@ -142,7 +155,6 @@ class ChatPanel(QWidget):
     def _config_slm_enabled(self) -> bool:
         try:
             from core.config import load_config
-
             cfg = load_config()
             return cfg.slm.enabled
         except Exception:
@@ -165,7 +177,7 @@ class ChatPanel(QWidget):
                 )
             else:
                 self.status_label.setText(
-                    "⚠️ Ollama не найден. Используется резервный режим (погода/время/дата)."
+                    "⚠️ Ollama не найден. Используется резервный режим."
                 )
 
     @Slot(object)
@@ -187,7 +199,6 @@ class ChatPanel(QWidget):
         n_gpu_layers = 0
         try:
             from core.config import load_config
-
             slm = load_config().slm
             n_ctx = slm.n_ctx
             n_threads = slm.n_threads
@@ -222,7 +233,6 @@ class ChatPanel(QWidget):
 
         try:
             from core.config import load_config
-
             slm = load_config().slm
         except Exception as e:
             logger.warning(f"Не удалось загрузить конфиг SLM: {e}")
@@ -411,7 +421,7 @@ class ChatPanel(QWidget):
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
         self.mode_combo.setItemData(
             0,
-            "Chat — Обычный диалог с LLM. Без инструментов, только текст.",
+            "Chat — Обычный диалог с LLM + read-only инструменты.",
             Qt.ItemDataRole.ToolTipRole,
         )
         self.mode_combo.setItemData(
@@ -424,7 +434,7 @@ class ChatPanel(QWidget):
             "Agent — Полный доступ: чтение, запись, Git, поиск.",
             Qt.ItemDataRole.ToolTipRole,
         )
-        self.mode_combo.setCurrentIndex(0)
+        self.mode_combo.setCurrentIndex(2)  # Agent по умолчанию
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
@@ -757,6 +767,7 @@ class ChatPanel(QWidget):
         self._web_thread.start()
 
     def _start_chat(self, text: str):
+        """Запускает Chat через RAG-поиск и ReAct-цикл агента."""
         self._generating = True
         self._set_button_stop()
         self.status_label.setText("Поиск в кодовой базе...")
@@ -824,56 +835,72 @@ class ChatPanel(QWidget):
             self.status_label.setText(f"📚 {sources}")
         self._do_agent(text, mode, context)
 
+    # ---------------------------------------------------------
+    # Универсальный вход в ReAct-цикл
+    # ---------------------------------------------------------
+
     def _do_chat(self, text: str):
-        self.status_label.setText("Генерация ответа...")
+        """Chat-режим: тот же ReAct-цикл, что и Agent, но read-only tools в AUTO."""
+        logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
 
-        chat_messages: list[ChatMessage] = list(self._messages)
+        role_prompt = self.get_current_role_prompt()
+        p_root = Path(self.project_root) if self.project_root else None
+        mode_prompt = (
+            self.prompt_manager.get_prompt("chat", project_root=p_root)
+            if self.prompt_manager
+            else ""
+        )
+        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
-        system_prompt_parts = []
-        if self.prompt_manager:
-            p_root = Path(self.project_root) if self.project_root else None
-            sys_prompt = self.prompt_manager.get_prompt("chat", project_root=p_root)
-            if sys_prompt:
-                system_prompt_parts.append(sys_prompt)
+        raw_cache = getattr(self, "search_cache", None)
 
-        if self._rag_context:
-            system_prompt_parts.append(
-                f"Контекст из кодовой базы:\n{self._rag_context}"
+        context = AgentContext(
+            system_prompt=combined,
+            rag_context=self._rag_context or "",
+            project_root=self.project_root,
+            vector_store=self.vector_store,
+            mode=AgentMode.CHAT,
+            search_cache=cast(Any, raw_cache),
+        )
+
+        client = self._router.active_client
+        if client is None:
+            self._add_message(
+                "system", "⚠️ Нет доступного LLM-бэкенда."
             )
+            self._reset_send_button()
+            return
 
-        if system_prompt_parts:
-            combined = "\n\n".join(system_prompt_parts)
-            chat_messages.insert(0, ChatMessage(role="system", content=combined))
+        registry = self._build_registry()
+        # В Chat все read-only инструменты исполняются без подтверждения
+        for name in _CHAT_AUTO_TOOLS:
+            registry.set_policy(name, ToolPolicy.AUTO)
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
         model_name = self.get_current_model()
-
-        try:
-            registry = self._build_registry()
-        except Exception as e:
-            logger.warning(f"Не удалось собрать registry для Chat: {e}")
-            registry = None
-
-        self._ollama_thread = RouterChatThread(
-            router=self._router,
-            model=model_name,
-            messages=chat_messages,
+        self._agent_thread = AgentChatThread(
+            client=client,
             registry=registry,
-            project_root=self.project_root,
-            vector_store=self.vector_store,
-            search_cache=getattr(self, "search_cache", None),
-            max_iterations=4,
+            model=model_name,
+            context=context,
+            messages_history=list(self._messages),
+            agent_mode=AgentMode.CHAT,
+            max_iterations=5,
         )
 
-        self._ollama_thread.chunk_received.connect(self._on_chunk)
-        self._ollama_thread.thinking_received.connect(self._on_thinking)
-        self._ollama_thread.tool_started.connect(self._on_tool_started)
-        self._ollama_thread.tool_executed.connect(self._on_tool_executed)
-        self._ollama_thread.finish_received.connect(self._on_finish)
-        self._ollama_thread.error_occurred.connect(self._on_chat_error)
-        self._ollama_thread.start()
+        self._agent_thread.chunk_received.connect(self._on_chunk)
+        self._agent_thread.thinking_received.connect(self._on_thinking)
+        self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
+        self._agent_thread.tool_executed.connect(self._on_tool_executed)
+        self._agent_thread.tool_started.connect(self._on_tool_started)
+        self._agent_thread.finish_received.connect(self._on_agent_finish)
+        self._agent_thread.error_occurred.connect(self._on_agent_error)
+        self._agent_thread.tools_status_changed.connect(
+            self._on_tools_status_changed
+        )
+        self._agent_thread.start()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         client = self._router.active_client
@@ -1095,8 +1122,7 @@ class ChatPanel(QWidget):
             )
         else:
             self.tool_status_label.setText(
-                "⚠️ Инструменты отключены — модель не поддерживает вызов инструментов. "
-                "Доступен только текстовый режим."
+                "⚠️ Инструменты отключены — модель не поддерживает вызов инструментов."
             )
             self.tool_status_label.setStyleSheet(
                 "font-size: 12px; padding: 4px 8px; background: #fff3e0; color: #e65100;"

@@ -100,7 +100,7 @@ class OlliDeskApp:
         if self.config.last_mode:
             logger.info(f"Применяю last_mode={self.config.last_mode}")
             mode_map = {"chat": 0, "plan": 1, "agent": 2}
-            idx = mode_map.get(self.config.last_mode, 0)
+            idx = mode_map.get(self.config.last_mode, 2)
             self.main_window.chat_panel.mode_combo.setCurrentIndex(idx)
 
         self.main_window.theme_changed.connect(self._on_theme_changed)

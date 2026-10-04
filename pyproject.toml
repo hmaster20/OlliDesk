@@ -26,6 +26,7 @@ dependencies = [
     # --- SLM (встроенная модель) ---
     "llama-cpp-python>=0.3.0",
     "huggingface-hub>=0.25.0",
+    "hf_xet>=0.1",
 ]
 
 [project.optional-dependencies]

@@ -49,7 +49,7 @@ def read_file(path: str, project_root: str = "") -> str:
     name="list_directory",
     description="Возвращает список файлов и папок в директории",
     policy=ToolPolicy.AUTO,
-    modes=[AgentMode.PLAN, AgentMode.AGENT],
+    modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 def list_directory(path: str, project_root: str = "") -> str:
     """Возвращает содержимое директории.
