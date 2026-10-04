@@ -272,6 +272,9 @@ class MainWindow(QMainWindow):
         self.right_panel.setVisible(False)
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
+        self.chat_panel.directory_attach_requested.connect(
+            self._on_directory_attach_requested
+        )
 
         logger.info("Главное окно создано")
 
@@ -288,6 +291,7 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         left_panel = self._create_left_panel()
+        self.left_panel = left_panel
         self.main_splitter.addWidget(left_panel)
 
         center_panel = self._create_center_panel()
@@ -613,6 +617,14 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        self.confirm_web_search_action = QAction("Подтверждать запросы в интернет", self)
+        self.confirm_web_search_action.setCheckable(True)
+        self.confirm_web_search_action.setChecked(
+            self._config_confirm_web_search()
+        )
+        self.confirm_web_search_action.toggled.connect(self._on_confirm_web_search_toggled)
+        file_menu.addAction(self.confirm_web_search_action)
+
         settings_action = QAction("&Settings...", self)
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
@@ -635,6 +647,13 @@ class MainWindow(QMainWindow):
         self.show_editor_action.setShortcut("Ctrl+Shift+E")
         self.show_editor_action.triggered.connect(self._show_editor_tab)
         view_menu.addAction(self.show_editor_action)
+
+        self.project_structure_action = QAction("Показать/Скрыть &структуру проекта", self)
+        self.project_structure_action.setShortcut("F4")
+        self.project_structure_action.setCheckable(True)
+        self.project_structure_action.setChecked(True)
+        self.project_structure_action.toggled.connect(self._toggle_project_structure)
+        view_menu.addAction(self.project_structure_action)
 
         view_menu.addSeparator()
 
@@ -675,6 +694,36 @@ class MainWindow(QMainWindow):
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _config_confirm_web_search(self) -> bool:
+        """Читает из конфига признак подтверждения web_search.
+
+        Returns:
+            True, если перед запросом в интернет нужно показывать диалог.
+        """
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            return cfg.confirm.enabled or cfg.confirm.web_search
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать настройку confirm: {e}")
+            return False
+
+    @Slot(bool)
+    def _on_confirm_web_search_toggled(self, checked: bool) -> None:
+        """Сохраняет в конфиг признак подтверждения web_search.
+
+        Args:
+            checked: True — показывать диалог, False — выполнять сразу.
+        """
+        try:
+            from core.config import load_config, save_config
+            cfg = load_config()
+            cfg.confirm.web_search = checked
+            save_config(cfg)
+            logger.info(f"Подтверждение web_search: {'вкл' if checked else 'выкл'}")
+        except Exception as e:
+            logger.exception(f"Не удалось сохранить настройку confirm.web_search: {e}")
 
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
@@ -869,6 +918,58 @@ class MainWindow(QMainWindow):
 
         self._start_indexing()
 
+    def _on_directory_attach_requested(self, path_str: str) -> None:
+        """Подключает каталог из команды @dir без пересоздания сессии чата.
+
+        Отличие от `_do_open_project`: текущая сессия и история чата не трогаются,
+        каталог не добавляется в список недавних. Пользователь может держать
+        открытым один проект, а вопросы задавать по другому каталогу.
+
+        Args:
+            path_str: Путь к подключаемому каталогу.
+        """
+        path = Path(path_str).expanduser().resolve()
+        if not path.is_dir():
+            logger.warning(f"@dir: путь недоступен: {path}")
+            return
+
+        logger.info(f"@dir: прикрепляю директорию {path}")
+        self.project_path = path
+        self.project_label.setText(f"Проект: {path.name}")
+
+        self.file_system_model = QFileSystemModel()
+        self.file_system_model.setRootPath(str(path))
+        self.file_tree.setModel(self.file_system_model)
+        self.file_tree.setRootIndex(self.file_system_model.index(str(path)))
+        self.file_tree.hideColumn(1)
+        self.file_tree.hideColumn(2)
+        self.file_tree.hideColumn(3)
+        self.project_title_label.setText(path.name)
+        self._git_delegate.set_repo_path(str(path))
+        self._update_window_title()
+
+        # Индекс хранится в .ollidesk внутри самого каталога
+        self.vector_store = VectorStore(
+            persist_dir=path / ".ollidesk" / "vector_db",
+            embed_client=self.ollama_client,
+            embed_model=self.config.embed_model,
+        )
+        self.chat_panel.set_vector_store(self.vector_store)
+        self.chat_panel.set_project_root(str(path))
+        self.chat_panel.set_project_open(True)
+
+        self._previous_state = self.project_state.load(path)
+        self.reindex_btn.setVisible(True)
+        self.reindex_btn.setEnabled(True)
+
+        # Индексация предыдущего каталога должна завершиться, иначе новая не запустится
+        if self._indexing_thread and self._indexing_thread.isRunning():
+            logger.info("@dir: ждём завершения индексации предыдущего каталога")
+            self._indexing_thread.quit()
+            self._indexing_thread.wait(3000)
+
+        self._start_indexing()
+
     def _reindex_project(self) -> None:
         """Запускает полную переиндексацию."""
         if not self.project_path:
@@ -1031,6 +1132,16 @@ class MainWindow(QMainWindow):
         if self.tab_widget.indexOf(self.editor_widget) < 0:
             self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
         self.tab_widget.setCurrentWidget(self.editor_widget)
+
+    @Slot(bool)
+    def _toggle_project_structure(self, visible: bool) -> None:
+        """Показывает или скрывает левую панель со структурой проекта (F4).
+
+        Args:
+            visible: True — показать панель, False — скрыть.
+        """
+        self.left_panel.setVisible(visible)
+        logger.debug(f"Панель структуры проекта: {'показана' if visible else 'скрыта'}")
 
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""

@@ -22,8 +22,8 @@ class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате.
 
     Текст рендерится в QTextBrowser (выделение мышью, Ctrl+C, кликабельные
-    ссылки, встроенное контекстное меню). Кнопка 📋 в правом верхнем углу
-    копирует исходный markdown сообщения в буфер обмена.
+    ссылки, встроенное контекстное меню). Кнопка 📋 под текстом сообщения
+    копирует исходный markdown в буфер обмена.
     """
 
     def __init__(
@@ -78,7 +78,7 @@ class ChatMessageItem(QWidget):
         self.bubble_layout = bubble_layout
         self.text_color = text_color
 
-        # --- Заголовок: имя роли (для assistant/tool) + кнопка «копировать» ---
+        # --- Заголовок: имя роли (для assistant/tool) ---
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(4)
@@ -96,21 +96,6 @@ class ChatMessageItem(QWidget):
             header_row.addWidget(role_label)
 
         header_row.addStretch()
-
-        if is_user or is_assistant:
-            copy_btn = QPushButton("📋")
-            copy_btn.setFixedSize(22, 22)
-            copy_btn.setToolTip("Копировать сообщение (markdown)")
-            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            copy_btn.setStyleSheet(
-                "QPushButton { background: transparent; border: none; color: #888;"
-                " font-size: 12px; padding: 0; }"
-                " QPushButton:hover { background: rgba(128,128,128,0.2);"
-                " border-radius: 3px; color: #ddd; }"
-                " QPushButton:pressed { background: rgba(128,128,128,0.35); }"
-            )
-            copy_btn.clicked.connect(self._copy_to_clipboard)
-            header_row.addWidget(copy_btn)
 
         bubble_layout.addLayout(header_row)
 
@@ -146,6 +131,28 @@ class ChatMessageItem(QWidget):
             f" }}"
         )
         bubble_layout.addWidget(self.content_browser)
+
+        # --- Кнопка «копировать» под текстом сообщения ---
+        if is_user or is_assistant:
+            copy_row = QHBoxLayout()
+            copy_row.setContentsMargins(0, 2, 0, 0)
+            copy_row.setSpacing(4)
+            copy_row.addStretch()
+
+            copy_btn = QPushButton("Копировать")
+            copy_btn.setToolTip("Копировать сообщение (markdown)")
+            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            copy_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid #555;"
+                " border-radius: 10px; color: #888; font-size: 11px; padding: 1px 10px; }"
+                " QPushButton:hover { background: rgba(128,128,128,0.2); color: #ddd; }"
+                " QPushButton:pressed { background: rgba(128,128,128,0.35); }"
+            )
+            copy_btn.clicked.connect(self._copy_to_clipboard)
+            copy_row.addWidget(copy_btn)
+            self.copy_button = copy_btn
+            bubble_layout.addLayout(copy_row)
 
         self._set_content(content)
 

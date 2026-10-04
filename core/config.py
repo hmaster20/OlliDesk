@@ -174,6 +174,18 @@ class SLMConfig(BaseModel):
         return None
 
 
+class ConfirmSettings(BaseModel):
+    """Настройки подтверждения вызова инструментов.
+
+    По умолчанию web_search выполняется без диалога: раздражает подтверждать
+    каждый сетевой запрос. Диалог включается явно через confirm.web_search или
+    общий флаг confirm.enabled.
+    """
+
+    enabled: bool = False
+    web_search: bool = False
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -184,6 +196,7 @@ class AppConfig(BaseModel):
     rerank_model: str | None = None
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
+    confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [

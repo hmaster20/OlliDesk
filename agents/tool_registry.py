@@ -36,7 +36,7 @@ def _type_to_json_schema(tp: type) -> dict[str, Any]:
         return {}
 
 
-_INJECTED_PARAMS = {"vector_store", "project_root"}
+_INJECTED_PARAMS = {"vector_store", "project_root", "search_cache", "attached_files"}
 
 
 def _generate_schema(func: Callable[..., Any]) -> dict[str, Any]:

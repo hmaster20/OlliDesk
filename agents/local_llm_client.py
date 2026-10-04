@@ -85,6 +85,11 @@ class LocalLLMClient:
 
     # --- Отмена ---
 
+    @property
+    def num_ctx(self) -> int:
+        """Размер окна контекста модели в токенах."""
+        return self.n_ctx
+
     def cancel_request(self):
         """Запрашивает отмену текущего стриминга."""
         self._cancel_requested = True

@@ -6,6 +6,7 @@ from enum import Enum, auto
 from loguru import logger
 
 from agents.ollama_client import ChatChunk, ChatMessage, OllamaClient
+from core.context_budget import DEFAULT_NUM_CTX
 
 
 class BackendType(Enum):
@@ -86,6 +87,19 @@ class ModelRouter:
         if self._active_backend == BackendType.LOCAL_SLM:
             return self._local_slm
         return self._rule_based
+
+    @property
+    def num_ctx(self) -> int:
+        """Окно контекста активного бэкенда в токенах.
+
+        Нужно для расчёта бюджета прикреплённых файлов и RAG-контекста.
+        У rule-based бэкенда окна нет — возвращается значение по умолчанию.
+        """
+        client = self.active_client
+        value = getattr(client, "num_ctx", None)
+        if isinstance(value, int) and value > 0:
+            return value
+        return DEFAULT_NUM_CTX
 
     async def chat(
         self,

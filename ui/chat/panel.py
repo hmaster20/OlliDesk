@@ -31,9 +31,11 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
+from core.context_budget import attached_char_budget
 from core.model_registry import ModelRegistry
 from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
+from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
 from ui.chat.message_item import ChatMessageItem
 from ui.chat.threads import (
@@ -57,7 +59,15 @@ _CHAT_AUTO_TOOLS = (
     "get_exchange_rate",
     "get_exchange_rates_multi",
     "get_git_status",
+    "read_attached_file",
 )
+
+# Команды-префиксы для прикрепления путей (в стиле @web)
+_PATH_COMMANDS = ("@dir", "@file", "@path")
+
+# Сколько символов прикрепленного файла показывать в системном промпте,
+# когда остаётся мало контекста (например, файлы уже не помещаются по объёму).
+_MIN_ATTACHED_BUDGET = 600
 
 
 class ChatPanel(QWidget):
@@ -68,6 +78,9 @@ class ChatPanel(QWidget):
     agent_panel_toggle = Signal(bool)
     refresh_models_requested = Signal()
     settings_changed = Signal(dict)
+
+    # Запрос на подключение каталога как проекта (обрабатывает MainWindow)
+    directory_attach_requested = Signal(str)
 
     def __init__(
         self,
@@ -92,6 +105,7 @@ class ChatPanel(QWidget):
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
+        self._attached_files = AttachedFileStore()
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
@@ -304,6 +318,124 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
 
+    # ---------------------------------------------------------
+    # @dir / @file / @path — прикрепление путей
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _extract_path_command(text: str) -> tuple[str, str, str] | None:
+        """Парсит @dir/@file/@path в начале сообщения.
+
+        Args:
+            text: Текст из поля ввода.
+
+        Returns:
+            Кортеж (kind, path, rest), где kind — "dir" | "file" | "path",
+            либо None если сообщение не начинается с path-команды.
+            Путь с пробелами должен быть в кавычках.
+        """
+        for cmd in _PATH_COMMANDS:
+            if not text.startswith(cmd):
+                continue
+
+            kind = cmd[1:]
+            tail = text[len(cmd):].lstrip()
+            if not tail:
+                return (kind, "", "")
+
+            if tail.startswith('"'):
+                end = tail.find('"', 1)
+                if end > 0:
+                    return (kind, tail[1:end], tail[end + 1:].strip())
+                return (kind, tail.lstrip('"'), "")
+
+            parts = tail.split(None, 1)
+            return (kind, parts[0], parts[1] if len(parts) > 1 else "")
+
+        return None
+
+    def _attach_file(self, path: Path) -> None:
+        """Читает файл и добавляет его в хранилище прикреплённых файлов.
+
+        Args:
+            path: Путь к файлу.
+        """
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            logger.error(f"@file: ошибка чтения {path}: {e}")
+            self._add_message("system", f"❌ Не удалось прочитать файл: {e}")
+            return
+
+        attached = self._attached_files.add(path, content)
+        logger.info(f"@file: прикреплён {path} ({attached.size_chars} символов)")
+        self._add_message(
+            "system",
+            f"📎 Прикреплён файл: {attached.name} "
+            f"({attached.lines} строк, {attached.size_chars} символов). "
+            "В контекст попадёт только начало и конец, остальное — "
+            "через инструмент read_attached_file.",
+        )
+
+    def _handle_path_command(self, kind: str, path_str: str, rest: str) -> None:
+        """Обрабатывает команду @dir/@file/@path.
+
+        Args:
+            kind: Тип команды — "dir", "file" или "path".
+            path_str: Указанный путь.
+            rest: Текст после пути — уходит обычным сообщением.
+        """
+        if not path_str:
+            self._add_message("system", f"⚠️ Укажите путь после @{kind}")
+            return
+
+        path = Path(path_str).expanduser().resolve()
+        if not path.exists():
+            self._add_message("system", f"❌ Путь не найден: {path}")
+            return
+
+        if kind == "path":
+            kind = "dir" if path.is_dir() else "file"
+
+        if kind == "dir":
+            if not path.is_dir():
+                self._add_message(
+                    "system", f"❌ Не директория: {path} (используйте @file)"
+                )
+                return
+            self._add_message(
+                "system",
+                f"📁 Прикреплена директория: {path} — идёт индексация, "
+                "инструменты поиска по коду работают по ней.",
+            )
+            self.directory_attach_requested.emit(str(path))
+        elif not path.is_file():
+            self._add_message("system", f"❌ Не файл: {path} (используйте @dir)")
+            return
+        else:
+            self._attach_file(path)
+
+        if rest:
+            self.input_edit.setPlainText(rest)
+            self._send_message()
+
+    def _attached_context(self) -> str:
+        """Собирает блок контекста из прикреплённых файлов с учётом окна модели.
+
+        Returns:
+            Текст для системного промпта или пустая строка.
+        """
+        if not self._attached_files:
+            return ""
+
+        budget = attached_char_budget(self._router.num_ctx)
+
+        # RAG-контекст тоже занимает место — делим бюджет пополам.
+        if self._rag_context:
+            budget = max(_MIN_ATTACHED_BUDGET, budget // 2)
+
+        return self._attached_files.render(budget)
+
     def _update_bubble_width(self, widget: QWidget | None = None) -> None:
         viewport = self.scroll_area.viewport()
         if not viewport:
@@ -499,7 +631,8 @@ class ChatPanel(QWidget):
 
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText(
-            "Введите сообщение... (CTRL + Enter — отправить)"
+            "Введите сообщение... (CTRL+Enter — отправить, @web — поиск, "
+            "@file — прикрепить файл, @dir — прикрепить папку)"
         )
         self.input_edit.setFixedHeight(100)
         self.input_edit.setStyleSheet(
@@ -538,7 +671,8 @@ class ChatPanel(QWidget):
                 cursor.setCharFormat(QTextCharFormat())
                 cursor.clearSelection()
 
-                for m in re.finditer(r"^@web(?=\s|$)", text):
+                pattern = r"^(@web|@dir|@file|@path)(?=\s|$)"
+                for m in re.finditer(pattern, text, re.MULTILINE):
                     start, end = m.start(), m.end()
                     cursor.setPosition(start)
                     cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
@@ -635,6 +769,7 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._rag_context = None
+        self._attached_files.clear()
         if not keep_session:
             self._session_id = None
         self._last_assistant_widget = None
@@ -718,6 +853,11 @@ class ChatPanel(QWidget):
                 self._start_web_search(query)
             else:
                 self._add_message("system", "⚠️ Укажите запрос после @web")
+            return
+
+        parsed = self._extract_path_command(text)
+        if parsed is not None:
+            self._handle_path_command(*parsed)
             return
 
         self._create_session()
@@ -854,13 +994,18 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
+        merged_context = "\n\n".join(
+            filter(None, [self._attached_context(), self._rag_context or ""])
+        )
+
         context = AgentContext(
             system_prompt=combined,
-            rag_context=self._rag_context or "",
+            rag_context=merged_context,
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=AgentMode.CHAT,
             search_cache=cast(Any, raw_cache),
+            attached_files=self._attached_files if self._attached_files else None,
         )
 
         client = self._router.active_client
@@ -871,10 +1016,7 @@ class ChatPanel(QWidget):
             self._reset_send_button()
             return
 
-        registry = self._build_registry()
-        # В Chat все read-only инструменты исполняются без подтверждения
-        for name in _CHAT_AUTO_TOOLS:
-            registry.set_policy(name, ToolPolicy.AUTO)
+        registry = self._build_registry(AgentMode.CHAT)
 
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -887,7 +1029,7 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=AgentMode.CHAT,
-            max_iterations=5,
+            max_iterations=7,
         )
 
         self._agent_thread.chunk_received.connect(self._on_chunk)
@@ -923,13 +1065,18 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
+        merged_context = "\n\n".join(
+            filter(None, [self._attached_context(), rag_context])
+        )
+
         context = AgentContext(
             system_prompt=combined,
-            rag_context=rag_context,
+            rag_context=merged_context,
             project_root=self.project_root,
             vector_store=self.vector_store,
             mode=mode,
             search_cache=cast(Any, raw_cache),
+            attached_files=self._attached_files if self._attached_files else None,
         )
 
         self._current_assistant_content = ""
@@ -938,7 +1085,7 @@ class ChatPanel(QWidget):
         model_name = self.get_current_model()
         self._agent_thread = AgentChatThread(
             client=client,
-            registry=self._build_registry(),
+            registry=self._build_registry(mode),
             model=model_name,
             context=context,
             messages_history=list(self._messages),
@@ -957,8 +1104,12 @@ class ChatPanel(QWidget):
         )
         self._agent_thread.start()
 
-    def _build_registry(self) -> ToolRegistry:
-        """Строит реестр инструментов для агента и чата."""
+    def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
+        """Строит реестр инструментов для агента и чата.
+
+        Args:
+            mode: Режим агента. В CHAT read-only инструменты получают AUTO.
+        """
         from tools.codebase_search import search_codebase
         from tools.current_datetime import get_current_datetime
         from tools.exchange_rate import (
@@ -988,10 +1139,44 @@ class ChatPanel(QWidget):
         registry.register(tool_create_snapshot)
         registry.register(tool_undo_snapshot)
 
+        # Инструмент дочитывания нужен только когда есть прикреплённые файлы
+        if self._attached_files:
+            from tools.attached_files import read_attached_file
+
+            registry.register(read_attached_file)
+
+        # Порядок политик: декоратор → режим агента → config.yaml → панель UI
+        if mode == AgentMode.CHAT:
+            for name in _CHAT_AUTO_TOOLS:
+                registry.set_policy(name, ToolPolicy.AUTO)
+
+        self._apply_config_policies(registry)
+
         for tool_name, policy in self.tool_policies.items():
             registry.set_policy(tool_name, policy)
 
         return registry
+
+    def _apply_config_policies(self, registry: ToolRegistry) -> None:
+        """Применяет политики из конфигурации: `tool_policies` и `confirm`.
+
+        Args:
+            registry: Реестр, собранный из функций-инструментов.
+        """
+        try:
+            from core.config import load_config
+            cfg = load_config()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать политики из конфига: {e}")
+            return
+
+        for tool_name, policy in cfg.tool_policies.items():
+            registry.set_policy(tool_name, policy)
+
+        # Диалог подтверждения для web_search выключен по умолчанию
+        confirm = cfg.confirm
+        if not (confirm.enabled or confirm.web_search):
+            registry.set_policy("web_search", ToolPolicy.AUTO)
 
     @Slot(str, str, str)
     def _on_tool_call_detected(
@@ -1013,6 +1198,7 @@ class ChatPanel(QWidget):
             "get_git_status": "Статус Git",
             "create_snapshot": "Создание снапшота Git",
             "undo_last_snapshot": "Откат снапшота Git",
+            "read_attached_file": "Чтение прикреплённого файла",
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
@@ -1049,6 +1235,7 @@ class ChatPanel(QWidget):
             "get_git_status": "🔎 Проверка Git-статуса",
             "create_snapshot": "📸 Создание снапшота Git",
             "undo_last_snapshot": "⏪ Откат снапшота Git",
+            "read_attached_file": "📄 Дочитывание файла",
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         self.status_label.setText(f"{label}: {arg_summary}")
@@ -1167,12 +1354,13 @@ class ChatPanel(QWidget):
     def set_project_open(self, is_open: bool):
         if not is_open:
             self.input_edit.setPlaceholderText(
-                "Введите сообщение... (@web для поиска в интернете)"
+                "Введите сообщение... (@web — поиск, @file/@dir/@path — прикрепить)"
             )
             self.status_label.setText("Проект не открыт (RAG недоступен)")
         else:
             self.input_edit.setPlaceholderText(
-                "Введите сообщение... (CTRL+Enter — отправить, @web — поиск)"
+                "Введите сообщение... (CTRL+Enter — отправить, @web — поиск, "
+                "@file — прикрепить файл, @dir — прикрепить папку)"
             )
             self.status_label.setText("Готов к работе")
         self.send_btn.setVisible(True)

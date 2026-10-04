@@ -8,6 +8,7 @@ import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from core.context_budget import DEFAULT_NUM_CTX
 from core.exceptions import ModelNotFoundError, OllamaConnectionError, ToolsNotSupportedError
 
 
@@ -75,16 +76,23 @@ class ChatOptions(BaseModel):
 class OllamaClient:
     """Асинхронный клиент Ollama API."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 300.0,
+        num_ctx: int = DEFAULT_NUM_CTX,
+    ):
         """
         Инициализация клиента.
 
         Args:
             base_url: Базовый URL Ollama API
             timeout: Таймаут запросов в секундах
+            num_ctx: Размер окна контекста модели в токенах
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.num_ctx = num_ctx
         self._client: httpx.AsyncClient | None = None
         self._cancel_requested = False
 

@@ -31,6 +31,7 @@ class AgentContext:
     max_tokens: int = 4096
     mode: AgentMode = AgentMode.AGENT
     search_cache: object = None
+    attached_files: object = None
 
 
 # --- System prompt ---------------------------------------------------------
@@ -58,6 +59,15 @@ _TOOL_USE_INSTRUCTION = """
   3. Observation — результат вернётся тебе автоматически.
   4. Next Thought — достаточно ли данных? Если нет, повтори цикл.
   5. Final Answer — когда данных достаточно, сформируй ответ.
+
+ВАЖНО про повторы:
+  • Получил результат инструмента — ИСПОЛЬЗУЙ его и сразу дай ответ пользователю.
+  • НЕ вызывай один и тот же инструмент дважды подряд с одинаковыми аргументами:
+    результат не изменится, а ответ задержится.
+  • Если данных не хватает — вызывай ДРУГОЙ инструмент или с другими аргументами
+    (другой запрос, другой файл, другая валюта).
+  • Если результат инструмента не помог — скажи об этом пользователю прямо,
+    а не повторяй тот же вызов.
 """.strip()
 
 
@@ -329,6 +339,8 @@ class AgentLoop:
                         extra["vector_store"] = context.vector_store
                     if context.search_cache:
                         extra["search_cache"] = context.search_cache
+                    if context.attached_files:
+                        extra["attached_files"] = context.attached_files
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
 

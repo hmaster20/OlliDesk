@@ -107,6 +107,29 @@ class TestAppConfig:
         config = AppConfig(default_model="test", embed_model="test")
         assert config.models == []
 
+    def test_confirm_defaults_to_no_dialog(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        assert config.confirm.enabled is False
+        assert config.confirm.web_search is False
+
+    def test_confirm_from_yaml(self):
+        config = AppConfig.model_validate(
+            {**SAMPLE_GLOBAL_CONFIG, "confirm": {"web_search": True}}
+        )
+        assert config.confirm.web_search is True
+        assert config.confirm.enabled is False
+
+    def test_confirm_survives_dump(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        restored = AppConfig.model_validate(config.model_dump())
+        assert restored.confirm == config.confirm
+
+    def test_tool_policies_from_yaml(self):
+        config = AppConfig.model_validate(
+            {**SAMPLE_GLOBAL_CONFIG, "tool_policies": {"write_file": "ask_first"}}
+        )
+        assert config.tool_policies["write_file"] == ToolPolicy.ASK_FIRST
+
 
 class TestConfigLoader:
     def test_load_global_only(self, tmp_path: Path):
