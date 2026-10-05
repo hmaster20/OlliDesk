@@ -105,6 +105,7 @@ packages = ["agents", "core", "fs", "state", "tools", "ui"]
 
 [dependency-groups]
 dev = [
+    "bump-my-version>=1.5,<2.0",
     "mypy>=1.19.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -112,3 +113,28 @@ dev = [
     "pytest-mock>=3.15.1",
     "ruff>=0.15.20",
 ]
+
+# Релизный процесс — docs/VERSION.md. `bump-my-version bump patch|minor`
+# поднимает версию в pyproject.toml и core/_version.py, затем вызывает git-cliff,
+# делает релизный коммит и ставит тег v{new_version}.
+[tool.bumpversion]
+current_version = "0.1.2"
+parse = "(?P<major>\\d+)\\.(\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+commit = true
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+commit_message = "chore: release v{new_version}"
+message = "chore: release v{new_version}\n\n{current_version} -> {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+
+[[tool.bumpversion.files]]
+filename = "core/_version.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+[[tool.bumpversion.hooks]]
+setup = "git cliff --tag v{new_version} -o CHANGELOG.md"

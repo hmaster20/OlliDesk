@@ -6,6 +6,7 @@ from loguru import logger
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
+from core._version import get_version
 from core.config import AppConfig, load_config
 from core.exceptions import ConfigError
 from core.logger import setup_logger
@@ -81,7 +82,7 @@ class OlliDeskApp:
         logger.info("Запуск OlliDesk...")
 
         self.app = QApplication(sys.argv)
-        self.app.setApplicationVersion("0.1.1")
+        self.app.setApplicationVersion(get_version())
         self.app.setApplicationName("OlliDesk")
         self.app.setOrganizationName("OlliDesk")
 

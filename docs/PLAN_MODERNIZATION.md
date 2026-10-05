@@ -43,15 +43,23 @@
 
 ## Фаза 1 — Технический долг (блокирует всё остальное)
 
-### 1.1 Версия приложения в двух местах
-- [ ] Убрать хардкод `"0.1.1"` в `core/app.py::OlliDeskApp.run`.
-- [ ] Читать версию через `importlib.metadata.version("ollidesk")` с фолбэком на `pyproject.toml`
-      (`tomllib`, Python 3.11+) и, наконец, `"0.0.0-unknown"`.
-- [ ] Вынести в `core/_version.py` как единый источник (вариант 3 из `docs/VERSION.md`).
-- [ ] Возвращать `bump-my-version` в dev-зависимости и в `[tool.bumpversion]`
-      (после удаления `.pre-commit-config.yaml_`, который не работает).
+### 1.1 Версия приложения в двух местах — **СДЕЛАНО** (коммит `VERSION1`)
+- [x] Убран хардкод `"0.1.1"` в `core/app.py::OlliDeskApp.run` — там расходилась
+      с `pyproject.toml` (`0.1.2`), из-за чего в Qt и в «О программе» была старая цифра.
+- [x] Новый `core/_version.py` — единственный источник версии для кода (вариант 3 из
+      `docs/VERSION.md`). `get_version()` сначала спрашивает метаданные установленного
+      пакета (`importlib.metadata.version("ollidesk")`), а если пакет не установлен —
+      отдаёт `__version__` из файла. Ветку с `tomllib` из плана убрали как избыточную:
+      `_version.py` покрывает тот же случай (запуск из исходников) без чтения диска,
+      зато дополнительно работает внутри PyInstaller-бинарника, где метаданные пакета
+      могут не попасть в сборку.
+- [x] `bump-my-version` возвращён в `[dependency-groups].dev` и настроен в
+      `[tool.bumpversion]`: поднимает версию в `pyproject.toml` и `core/_version.py`,
+      хук вызывает `git cliff`, релизный коммит и тег `v{new_version}`.
+      Конфиг проверен `bump-my-version show current_version` (видит `0.1.2`) и
+      пробным `bump patch --dry-run`.
 
-**Файлы:** `core/app.py`, `pyproject.toml`, новый `core/_version.py`.
+**Файлы:** `core/app.py`, `core/_version.py`, `pyproject.toml`.
 
 ### 1.2 Починить линтер — **СДЕЛАНО** (коммиты `be88307`, `55f99ac`, `f4307da`)
 - [x] `ruff check .` → 0 ошибок. Ошибки сгруппированы:
