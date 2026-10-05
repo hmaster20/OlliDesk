@@ -2,10 +2,11 @@
 
 from collections.abc import AsyncIterator
 from enum import Enum, auto
+from typing import Any
 
 from loguru import logger
 
-from agents.ollama_client import ChatChunk, ChatMessage, OllamaClient
+from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, OllamaClient
 from core.context_budget import DEFAULT_NUM_CTX
 from core.exceptions import EmbedderError
 
@@ -56,12 +57,12 @@ class ModelRouter:
         """Устанавливает Ollama-клиент."""
         self._ollama = client
 
-    def set_local_slm(self, client) -> None:
-        """Устанавливает локальный SLM-клиент."""
+    def set_local_slm(self, client: Any) -> None:
+        """Установить клиент локальной SLM-модели."""
         self._local_slm = client
 
-    def set_rule_based(self, client) -> None:
-        """Устанавливает rule-based fallback."""
+    def set_rule_based(self, client: Any) -> None:
+        """Установить клиент rule-based fallback."""
         self._rule_based = client
 
     def set_ollama_available(self, available: bool) -> None:
@@ -123,7 +124,7 @@ class ModelRouter:
             else f"Эмбеддинги: {self._embed_preference.name}"
         )
 
-    def _client_for(self, backend: BackendType):
+    def _client_for(self, backend: BackendType) -> Any:
         """Клиент для указанного типа бэкенда, если он доступен."""
         if backend is BackendType.OLLAMA and self._ollama is not None:
             return self._ollama
@@ -153,7 +154,7 @@ class ModelRouter:
         return self._active_backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
 
     @property
-    def active_client(self):
+    def active_client(self) -> Any:
         """Возвращает активный клиент."""
         if self._active_backend == BackendType.OLLAMA:
             return self._ollama
@@ -179,7 +180,7 @@ class ModelRouter:
         model: str,
         messages: list[ChatMessage],
         tools: list | None = None,
-        options=None,
+        options: ChatOptions | None = None,
         stream: bool = True,
     ) -> AsyncIterator[ChatChunk]:
         """Маршрутизирует запрос к активному бэкенду."""

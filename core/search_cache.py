@@ -9,7 +9,7 @@ class SearchCache:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cache (
@@ -36,7 +36,7 @@ class SearchCache:
                 conn.commit()
         return None
 
-    def set(self, query: str, result: str):
+    def set(self, query: str, result: str) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO cache (query, result, timestamp) VALUES (?, ?, ?)",

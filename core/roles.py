@@ -22,13 +22,13 @@ class RoleDefinition(BaseModel):
 class RoleManager:
     """Управляет загрузкой ролей из ~/.ollidesk/roles/."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.roles_dir = get_app_data_dir() / "roles"
         self.roles: dict[str, RoleDefinition] = {}
         self._ensure_defaults()
         self._load_roles()
 
-    def _ensure_defaults(self):
+    def _ensure_defaults(self) -> None:
         self.roles_dir.mkdir(parents=True, exist_ok=True)
         defaults = {
             "default.md": self._get_default_prompt(),
@@ -55,7 +55,7 @@ class RoleManager:
         if created:
             self._load_roles()
 
-    def _load_roles(self):
+    def _load_roles(self) -> None:
         """Загружает роли из Markdown файлов с YAML frontmatter."""
         self.roles.clear()
         for file_path in self.roles_dir.glob("*.md"):

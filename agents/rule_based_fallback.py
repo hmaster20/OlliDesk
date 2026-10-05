@@ -1,12 +1,13 @@
 """Rule-based обработчик простых запросов без LLM."""
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 from loguru import logger
 
-from agents.ollama_client import ChatChunk, ChatMessage
+from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions
 
 
 class RuleBasedFallback:
@@ -31,7 +32,7 @@ class RuleBasedFallback:
         re.IGNORECASE,
     )
 
-    def __init__(self, weather_tool=None):
+    def __init__(self, weather_tool: Callable[[str], Awaitable[str]] | None = None) -> None:
         """Инициализация.
 
         Args:
@@ -40,7 +41,7 @@ class RuleBasedFallback:
         self._weather_tool = weather_tool
         self._cancel_requested = False
 
-    def cancel_request(self):
+    def cancel_request(self) -> None:
         """Отменяет запрос."""
         self._cancel_requested = True
 
@@ -49,7 +50,7 @@ class RuleBasedFallback:
         """True если запрос отменён."""
         return self._cancel_requested
 
-    def reset_cancel(self):
+    def reset_cancel(self) -> None:
         """Сбрасывает флаг отмены."""
         self._cancel_requested = False
 
@@ -58,9 +59,9 @@ class RuleBasedFallback:
         model: str = "",
         messages: list[ChatMessage] | None = None,
         tools: list | None = None,
-        options=None,
+        options: ChatOptions | None = None,
         stream: bool = True,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Обрабатывает запрос через правила."""
         if not messages:

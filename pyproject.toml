@@ -82,9 +82,18 @@ check_untyped_defs = true           # Но внутри функций код в
 disallow_untyped_calls = false      # Уберет ошибки [no-untyped-call]
 disallow_any_generics = false       # Уберет ошибки [type-arg] для dict без указания типов
 
+# Фаза 1.3: инфраструктура и агенты уже с полными аннотациями — включаем строгие
+# правила для них. ui/ и tests/ пока остаются на общих послаблениях.
 [[tool.mypy.overrides]]
-module = "ui.dialogs.wizard"
-ignore_errors = true
+module = [
+    "core.*",
+    "agents.*",
+    "fs.*",
+    "state.*",
+    "tools.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

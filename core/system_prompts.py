@@ -7,13 +7,13 @@ from core.utils import get_app_data_dir
 
 
 class SystemPromptManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.prompts_dir = get_app_data_dir() / "system_prompts"
         self.prompts_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_defaults()
-        self._cache = {}
+        self._cache: dict[str, str] = {}
 
-    def _ensure_defaults(self):
+    def _ensure_defaults(self) -> None:
         # Создать файлы с дефолтными промтами, если их нет
         defaults = {
             "chat.md": "Ты — полезный AI-ассистент. Отвечай на русском языке, будь лаконичен и полезен.",
@@ -78,7 +78,7 @@ class SystemPromptManager:
     def _render(self, template: str, context: dict) -> str:
         """Заменяет {{key}} на значения из контекста."""
 
-        def repl(match):
+        def repl(match: re.Match[str]) -> str:
             key = match.group(1).strip()
             return str(context.get(key, match.group(0)))
 

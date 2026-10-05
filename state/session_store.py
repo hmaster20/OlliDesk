@@ -33,7 +33,7 @@ class SessionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         """Инициализирует базу данных."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""

@@ -23,13 +23,13 @@ class ModelInfo(BaseModel):
 class ModelRegistry:
     """Управляет справочником моделей и их локальным статусом."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # C:\Users\<USERNAME>\.ollidesk\model_registry.yaml
         self.file_path = get_app_data_dir() / "model_registry.yaml"
         self.models: dict[str, ModelInfo] = {}
         self._load_or_create()
 
-    def _load_or_create(self):
+    def _load_or_create(self) -> None:
         if self.file_path.exists():
             try:
                 with open(self.file_path, encoding="utf-8") as f:
@@ -43,7 +43,7 @@ class ModelRegistry:
         else:
             self._create_default()
 
-    def _create_default(self):
+    def _create_default(self) -> None:
         """Создает файл с дефолтным справочником популярных моделей."""
         logger.info("Создаю дефолтный справочник моделей (model_registry.yaml)")
         defaults = {
@@ -87,7 +87,7 @@ class ModelRegistry:
         self.models = defaults
         self.save()
 
-    def save(self):
+    def save(self) -> None:
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             data = {"models": {k: v.model_dump() for k, v in self.models.items()}}
@@ -97,7 +97,7 @@ class ModelRegistry:
         except Exception as e:
             logger.error(f"Ошибка сохранения model_registry.yaml: {e}")
 
-    def sync_with_ollama(self, ollama_model_names: list[str]):
+    def sync_with_ollama(self, ollama_model_names: list[str]) -> None:
         """Обновляет флаг is_local и добавляет неизвестные Ollama модели в реестр."""
         ollama_set = set(ollama_model_names)
         for key in self.models:
@@ -120,7 +120,7 @@ class ModelRegistry:
     def get_all_models(self) -> dict[str, ModelInfo]:
         return self.models
 
-    def update_tool_support(self, model_name: str, supports: bool):
+    def update_tool_support(self, model_name: str, supports: bool) -> None:
         if model_name in self.models:
             self.models[model_name].supports_tools = supports
             self.models[model_name].last_checked = datetime.now().isoformat()

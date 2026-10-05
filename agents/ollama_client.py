@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from types import TracebackType
 from typing import Any, Literal, cast
 
 import httpx
@@ -101,12 +102,17 @@ class OllamaClient:
         self._client: httpx.AsyncClient | None = None
         self._cancel_requested = False
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "OllamaClient":
         """Контекстный менеджер: вход."""
         self._client = httpx.AsyncClient(timeout=self.timeout)
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Контекстный менеджер: выход."""
         if self._client:
             await self._client.aclose()
@@ -150,7 +156,7 @@ class OllamaClient:
         except Exception:
             return False
 
-    def cancel_request(self):
+    def cancel_request(self) -> None:
         """Отменяет текущий стриминг-запрос (безопасно из любого потока)."""
         self._cancel_requested = True
 
@@ -159,7 +165,7 @@ class OllamaClient:
         """True если запрос отменён."""
         return self._cancel_requested
 
-    def reset_cancel(self):
+    def reset_cancel(self) -> None:
         """Сбрасывает флаг отмены."""
         self._cancel_requested = False
 

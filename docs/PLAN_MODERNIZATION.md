@@ -118,11 +118,29 @@
         `tools/web_search.py`) — `duckduckgo-search` и `ddgs` экспортируют одно имя `DDGS`,
         и mypy анализировал обе ветки `try/except ImportError` как переопределение.
         Удалён устаревший `duckduckgo-search` (новое имя — `ddgs`), fallback-импорт убран.
-- [ ] Снять послабления (`disallow_untyped_defs`, `disallow_incomplete_defs`) хотя бы
-      для `core/`, `agents/`, `fs/`, `state/`, `tools/`. **Отдельная задача:** потребует
-      аннотаций во всех публичных функциях этих пакетов.
-- [ ] Убрать `ignore_errors = true` для `ui/dialogs/wizard.py` (модуль ~260 строк).
-      Сейчас его ошибок не видно — но вместе с `ruff format` их может вскрыть общий прогон.
+- [x] Снять послабления для `core/`, `agents/`, `fs/`, `state/`, `tools/` — 33 функции
+      в 9 файлах получили аннотации. Включено точечным override в `pyproject.toml`
+      (`disallow_untyped_defs` + `disallow_incomplete_defs` только для этих пакетов),
+      глобальные послабления не тронуты — `ui/` и `tests/` пока на общих настройках:
+  - `core/search_cache.py`, `core/roles.py`, `core/model_registry.py`,
+    `state/session_store.py` — добавлены `-> None`.
+  - `core/system_prompts.py` — `-> None`, `re.Match[str]` для `repl()` и
+    `dict[str, str]` для `_cache` (последнее вскрылось только после типизации `__init__`).
+  - `agents/ollama_client.py` — `__aenter__ -> "OllamaClient"` (строка, т.к. класс
+    определён ниже), `__aexit__` с `type[BaseException] | None` / `TracebackType | None`.
+  - `agents/rule_based_fallback.py` — `weather_tool: Callable[[str], Awaitable[str]] | None`,
+    `options: ChatOptions | None`, `**kwargs: Any`.
+  - `agents/model_router.py` — `Any` на клиентах: общего базового класса у бэкендов нет,
+    контракт держится на duck-типинге, поэтому `_client_for()` и `active_client`
+    возвращают `Any`, а `set_local_slm`/`set_rule_based` принимают `Any`.
+  - `agents/local_llm_client.py` — `Iterator[tuple[int, int]]` для `_iter_json_spans`,
+    `list[list[float]]` для `_embed`.
+- [x] Убрать `ignore_errors = true` для `ui/dialogs/wizard.py` — под ним было 15 ошибок,
+      и все от одной причины: страницы наследуют `QWizard`, у которого есть метод
+      `wizard()`, а страницы затирали его атрибутом `self.wizard = wizard`. Из-за
+      `# type: ignore[assignment]` mypy считал атрибут методом и давал 13 `attr-defined`.
+      Атрибут переименован в `self.setup_wizard` — исчезли и `ignore`, и ошибки.
+      Проверено: все 4 страницы создаются, ссылка на мастер жива (offscreen-прогон).
 - [x] ~~Добавить `ui/unused` в `exclude` mypy~~ — **снято**: каталоги удалены в 1.4,
       `exclude` из `pyproject.toml` тоже убран.
 - [ ] `fs/vector_store.py` — заменить `cast(Any, ...)`/`# type: ignore` на нормальную обёртку

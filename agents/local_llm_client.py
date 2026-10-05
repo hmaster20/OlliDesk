@@ -6,7 +6,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -110,7 +110,7 @@ class LocalLLMClient:
         """Размер окна контекста модели в токенах."""
         return self.n_ctx
 
-    def cancel_request(self):
+    def cancel_request(self) -> None:
         """Запрашивает отмену текущего стриминга."""
         self._cancel_requested = True
 
@@ -119,7 +119,7 @@ class LocalLLMClient:
         """True если запрос отменён."""
         return self._cancel_requested
 
-    def reset_cancel(self):
+    def reset_cancel(self) -> None:
         """Сбрасывает флаг отмены."""
         self._cancel_requested = False
 
@@ -165,7 +165,7 @@ class LocalLLMClient:
             with contextlib.suppress(RuntimeError):
                 asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
 
-        def _generate():
+        def _generate() -> None:
             """Синхронная генерация в отдельном потоке."""
             cancelled = False
             full_text_parts: list[str] = []
@@ -343,7 +343,7 @@ class LocalLLMClient:
         return ToolCall(name=name, arguments=args)
 
     @staticmethod
-    def _iter_json_spans(text: str):
+    def _iter_json_spans(text: str) -> Iterator[tuple[int, int]]:
         """Возвращает (start, end) для каждого сбалансированного {...} блока."""
         stack: list[int] = []
         for i, ch in enumerate(text):
@@ -465,7 +465,7 @@ class LocalLLMClient:
         # не сужает тип атрибута, проверенный выше.
         embed_llm = self.embed_llm
 
-        def _embed():
+        def _embed() -> list[list[float]]:
             return [list(embed_llm.embed(t)) for t in texts]
 
         return await asyncio.to_thread(_embed)

@@ -127,7 +127,7 @@ class ProjectSelectionPage(QWizardPage):
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.wizard = wizard  # type: ignore[assignment]
+        self.setup_wizard = wizard
         self.setTitle("Выбор папки проекта")
         self.setSubTitle("Укажите папку, в которой будет храниться конфигурация проекта")
 
@@ -154,7 +154,7 @@ class ProjectSelectionPage(QWizardPage):
         folder = QFileDialog.getExistingDirectory(self, "Выберите папку проекта")
         if folder:
             self.path_edit.setText(folder)
-            self.wizard.project_path = Path(folder)
+            self.setup_wizard.project_path = Path(folder)
 
 
 class OllamaConnectionPage(QWizardPage):
@@ -162,7 +162,7 @@ class OllamaConnectionPage(QWizardPage):
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.wizard = wizard  # type: ignore[assignment]
+        self.setup_wizard = wizard
         self.setTitle("Подключение к Ollama")
         self.setSubTitle("Укажите адрес Ollama API и проверьте подключение")
 
@@ -192,7 +192,7 @@ class OllamaConnectionPage(QWizardPage):
     def _check_connection(self) -> None:
         """Проверяет подключение к Ollama."""
         url = self.url_edit.text().strip()
-        self.wizard.ollama_base_url = url
+        self.setup_wizard.ollama_base_url = url
 
         self.status_label.setText("Статус: Проверка...")
         self.status_label.setStyleSheet("color: orange; padding: 10px;")
@@ -204,10 +204,12 @@ class OllamaConnectionPage(QWizardPage):
             response.raise_for_status()
             data = response.json()
 
-            self.wizard.available_models = [m["name"] for m in data.get("models", [])]
+            self.setup_wizard.available_models = [m["name"] for m in data.get("models", [])]
 
-            if self.wizard.available_models:
-                self.status_label.setText(f"✅ Успешно! Найдено моделей: {len(self.wizard.available_models)}")
+            if self.setup_wizard.available_models:
+                self.status_label.setText(
+                    f"✅ Успешно! Найдено моделей: {len(self.setup_wizard.available_models)}"
+                )
                 self.status_label.setStyleSheet("color: green; padding: 10px;")
             else:
                 self.status_label.setText(
@@ -232,7 +234,7 @@ class ModelSelectionPage(QWizardPage):
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.wizard = wizard  # type: ignore[assignment]
+        self.setup_wizard = wizard
         self.setTitle("Выбор моделей")
         self.setSubTitle("Выберите модели для чата и векторизации")
 
@@ -254,7 +256,7 @@ class ModelSelectionPage(QWizardPage):
     @override
     def initializePage(self) -> None:
         """Инициализирует страницу (загружает список моделей)."""
-        models = self.wizard.available_models
+        models = self.setup_wizard.available_models
 
         # Фильтруем модели для чата (исключаем embed-модели)
         chat_models = [m for m in models if "embed" not in m.lower()]
@@ -275,10 +277,10 @@ class ModelSelectionPage(QWizardPage):
     @override
     def validatePage(self) -> bool:
         """Валидирует страницу перед переходом к следующей."""
-        self.wizard.selected_chat_model = self.chat_model_combo.currentText()
-        self.wizard.selected_embed_model = self.embed_model_combo.currentText()
+        self.setup_wizard.selected_chat_model = self.chat_model_combo.currentText()
+        self.setup_wizard.selected_embed_model = self.embed_model_combo.currentText()
 
-        if not self.wizard.selected_chat_model or not self.wizard.selected_embed_model:
+        if not self.setup_wizard.selected_chat_model or not self.setup_wizard.selected_embed_model:
             QMessageBox.warning(self, "Ошибка", "Выберите обе модели")
             return False
 
@@ -290,7 +292,7 @@ class ConfirmationPage(QWizardPage):
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.wizard = wizard  # type: ignore[assignment]
+        self.setup_wizard = wizard
         self.setTitle("Подтверждение")
         self.setSubTitle("Проверьте настройки перед сохранением")
 
@@ -309,13 +311,13 @@ class ConfirmationPage(QWizardPage):
     def initializePage(self) -> None:
         """Инициализирует страницу (показывает сводку)."""
         summary = f"""
-        <b>Папка проекта:</b> {self.wizard.project_path or 'Не указана'}<br>
-        <b>Ollama URL:</b> {self.wizard.ollama_base_url}<br>
-        <b>Модель для чата:</b> {self.wizard.selected_chat_model}<br>
-        <b>Модель для эмбеддингов:</b> {self.wizard.selected_embed_model}<br>
+        <b>Папка проекта:</b> {self.setup_wizard.project_path or 'Не указана'}<br>
+        <b>Ollama URL:</b> {self.setup_wizard.ollama_base_url}<br>
+        <b>Модель для чата:</b> {self.setup_wizard.selected_chat_model}<br>
+        <b>Модель для эмбеддингов:</b> {self.setup_wizard.selected_embed_model}<br>
         <br>
         Конфигурация будет сохранена в:<br>
         • <code>~/.ollidesk/config.yaml</code> (глобально)<br>
-        • <code>{self.wizard.project_path}/.ollidesk/config.yaml</code> (локально)
+        • <code>{self.setup_wizard.project_path}/.ollidesk/config.yaml</code> (локально)
         """
         self.summary_label.setText(summary)
