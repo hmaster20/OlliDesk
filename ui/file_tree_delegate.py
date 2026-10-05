@@ -49,32 +49,6 @@ class GitStatusDelegate(QStyledItemDelegate):
 
     def _refresh(self):
         """Парсит git status --porcelain для корня репозитория."""
-        # self._status_map.clear()
-        # if not self._repo_path:
-        #     self.parent().update()
-        #     return
-        # try:
-        #     result = subprocess.run(
-        #         ["git", "status", "--porcelain"],
-        #         capture_output=True, text=True, cwd=self._repo_path,
-        #         timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
-        #     )
-        #     if result.returncode != 0:
-        #         self.parent().update()
-        #         return
-        #     for line in result.stdout.splitlines():
-        #         if len(line) < 3:
-        #             continue
-        #         raw_status = line[:2]
-        #         rel_path = line[3:].strip()
-        #         normalised = rel_path.replace("\\", "/")
-        #         symbol = raw_status.strip() or raw_status[0]
-        #         self._status_map[normalised] = symbol
-        #     self.parent().update()
-        # except FileNotFoundError:
-        #     pass
-        # except Exception as exc:
-        #     logger.debug(f"Git status refresh error: {exc}")
 
         self._status_map.clear()
 
@@ -125,36 +99,6 @@ class GitStatusDelegate(QStyledItemDelegate):
             if file_path.startswith(rel_path + "/"):
                 return sym
         return None
-
-    # def initStyleOption(self, option: QStyleOptionViewItem, index):
-    #     """Настраивает опции отображения, устанавливая цвет текста по Git."""
-    #     super().initStyleOption(option, index)
-
-    #     if not self._repo_path or not self._status_map:
-    #         return
-
-    #     file_name = index.data(Qt.ItemDataRole.DisplayRole)
-    #     if not file_name:
-    #         return
-
-    #     parts = []
-    #     idx = index
-    #     while idx.isValid():
-    #         data = idx.data(Qt.ItemDataRole.DisplayRole)
-    #         if data:
-    #             parts.insert(0, data)
-    #         idx = idx.parent()
-    #     if len(parts) < 2:
-    #         return
-    #     rel_path = "/".join(parts[1:])
-
-    #     symbol = self._status_for(rel_path)
-    #     if not symbol:
-    #         return
-
-    #     color = _GIT_COLORS.get(symbol)
-    #     if color:
-    #         option.palette.setColor(option.palette.ColorRole.Text, color)
 
     def initStyleOption(self, option: QStyleOptionViewItem, index):
         """Настраивает опции отображения, устанавливая цвет текста по Git."""

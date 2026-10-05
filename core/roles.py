@@ -89,9 +89,6 @@ class RoleManager:
             )
         logger.info(f"Загружено ролей: {len(self.roles)}")
 
-    # def get_role(self, role_id: str) -> RoleDefinition:
-    #     return self.roles.get(role_id, self.roles["default"])
-
     def get_all_roles(self) -> list[RoleDefinition]:
         return list(self.roles.values())
 

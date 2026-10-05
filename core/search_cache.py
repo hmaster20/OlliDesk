@@ -19,22 +19,6 @@ class SearchCache:
                 )
             """)
 
-    # def get(self, query: str, max_age_hours: int = 24) -> str | None:
-    #     with sqlite3.connect(self.db_path) as conn:
-    #         cur = conn.execute(
-    #             "SELECT result, timestamp FROM cache WHERE query = ?",
-    #             (query,)
-    #         )
-    #         row = cur.fetchone()
-    #         if row:
-    #             result, ts_str = row
-    #             ts = datetime.fromisoformat(ts_str)
-    #             if datetime.now() - ts < timedelta(hours=max_age_hours):
-    #                 return result
-    #             conn.execute("DELETE FROM cache WHERE query = ?", (query,))
-    #             conn.commit()
-    #     return None
-
     def get(self, query: str, max_age_hours: int = 24) -> str | None:
         from typing import cast
 

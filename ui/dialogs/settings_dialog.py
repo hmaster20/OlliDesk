@@ -118,18 +118,6 @@ class SettingsDialog(QDialog):
         self._config: AppConfig = config
         self._project_path: Path | None = project_path
 
-        # 2. Объявляем типы UI элементов, чтобы mypy точно знал их тип (особенно .value())
-        # self._global_ignore_editor: ExcludePatternEditor
-        # self._global_ext_editor: ExtensionsEditor
-        # self._global_max_size: QSpinBox
-        # self._global_chunk_size: QSpinBox
-        # self._global_chunk_overlap: QSpinBox
-
-        # self._local_ignore_editor: ExcludePatternEditor
-        # self._local_ext_editor: ExtensionsEditor
-        # self._local_max_size: QSpinBox
-        # self._local_chunk_size: QSpinBox
-
         self.setWindowTitle("Настройки OlliDesk")
         self.setMinimumSize(700, 500)
 

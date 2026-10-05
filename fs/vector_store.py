@@ -188,35 +188,6 @@ class VectorStore:
         if file_filter:
             where_filter = {"file_path": {"$in": file_filter}}
 
-        # Поиск
-        # results = self.collection.query(
-        #     query_embeddings=query_embedding,
-        #     n_results=n_results,
-        #     where=where_filter,
-        #     include=["documents", "metadatas", "distances"],
-        # )  # type: ignore
-
-        # Это вариант 2 переделки Поиск строка 127
-        # # Убедитесь, что эти импорты есть в начале файла:
-        # # from chromadb.api.types import Where, Include
-
-        # # 1. Приводим query_embedding к типу Sequence[float]
-        # # (если ищем по одному вектору) или к нужному списку
-        # casted_embedding = [list(query_embedding[0])] if query_embedding else None
-
-        # # 2. Явно указываем тип для фильтра where
-        # casted_where: Where | None = where_filter
-
-        # # 3. Приводим список строк к типу списка IncludeEnum
-        # include_modes: Include = ["documents", "metadatas", "distances"] # type: ignore[assignment]
-
-        # results = self.collection.query(
-        #     query_embeddings=casted_embedding,  # type: ignore[arg-type]
-        #     n_results=n_results,
-        #     where=casted_where,
-        #     include=include_modes,
-        # )
-
         # 1. Приводим фильтр к типу Any, чтобы mypy не проверял сложную структуру dict
         casted_where = cast(Any, where_filter)
 
@@ -230,31 +201,6 @@ class VectorStore:
             where=casted_where,
             include=include_modes,
         )
-
-        # Преобразование результатов
-        # search_results = []
-        # if results["documents"] and results["documents"][0]:
-        #     for i, doc in enumerate(results["documents"][0]):
-        #         metadata = results["metadatas"][0][i]
-        #         distance = results["distances"][0][i]
-        #         score = max(0.0, min(1.0, 1 - distance))  # Cosine distance -> similarity
-
-        #         chunk = TextChunk(
-        #             id=results["ids"][0][i],
-        #             file_path=metadata["file_path"],
-        #             content=doc,
-        #             start_line=metadata["start_line"],
-        #             end_line=metadata["end_line"],
-        #             metadata={"language": metadata.get("language", "unknown")},
-        #         )
-
-        #         search_results.append(
-        #             SearchResult(
-        #                 chunk=chunk,
-        #                 score=score,
-        #                 file_path=metadata["file_path"],
-        #             )
-        #         )
 
         search_results = []
 
@@ -310,12 +256,6 @@ class VectorStore:
         """
         if not file_paths:
             return
-
-        # Получение ID чанков для удаления
-        # results = self.collection.get(
-        #     where={"file_path": {"$in": file_paths}},
-        #     include=[],
-        # )
 
         results = self.collection.get(
             where=cast(Any, {"file_path": {"$in": file_paths}}),

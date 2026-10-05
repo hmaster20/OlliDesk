@@ -25,14 +25,6 @@ os.environ.update(
 logging.getLogger("posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-# # Мок для posthog, чтобы избежать ошибок capture()
-# _posthog_mock = types.ModuleType("posthog")
-# _posthog_mock.capture = lambda *a, **kw: None
-# _posthog_mock.identify = lambda *a, **kw: None
-# _posthog_mock.flush = lambda *a, **kw: None
-# _posthog_mock.disabled = True
-# sys.modules["posthog"] = _posthog_mock
-
 
 # Создаем класс-заглушку с нужными атрибутами
 class PosthogMock:

@@ -84,26 +84,6 @@ class EditorWidget(QWidget):
         self._setup_ui()
         self._setup_bridge()
 
-    # def _setup_ui(self):
-    #     layout = QVBoxLayout(self)
-    #     layout.setContentsMargins(0, 0, 0, 0)
-
-    #     try:
-    #         self.web_view = QWebEngineView()
-    #     except Exception as e:
-    #         logger.error(f"Не удалось создать QWebEngineView: {e}")
-    #         self.web_view = QLabel("WebEngine недоступен")
-    #         self.web_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    #         self.web_view.setStyleSheet("color: #888; font-size: 16px; padding: 20px;")
-
-    #     layout.addWidget(self.web_view)
-
-    #     if isinstance(self.web_view, QWebEngineView):
-    #         html_path = get_resource_path("ui/web_editor/editor.html")
-    #         if not html_path.exists():
-    #             logger.error(f"editor.html не найден: {html_path}")
-    #         self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
-    #         self._setup_bridge()   # настройка моста только для WebEngine
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -130,18 +110,6 @@ class EditorWidget(QWidget):
             self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
             self._setup_bridge()  # настройка моста только для WebEngine
 
-    # def _setup_bridge(self):
-    #     """Настраивает QWebChannel."""
-    #     self.bridge = PythonBridge(self)
-
-    #     channel = QWebChannel(self.web_view.page())
-    #     channel.registerObject("pythonBridge", self.bridge)
-    #     self.web_view.page().setWebChannel(channel)
-
-    #     # Пробрасываем сигналы в JS
-    #     self.bridge.file_content_ready.connect(self._on_file_content_ready)
-    #     self.bridge.file_write_result.connect(self._on_file_write_result)
-
     def _setup_bridge(self):
         """Настраивает QWebChannel."""
         # 1. Гарантируем, что мост настраивается только для QWebEngineView
@@ -158,18 +126,6 @@ class EditorWidget(QWidget):
         # Пробрасываем сигналы в JS
         self.bridge.file_content_ready.connect(self._on_file_content_ready)
         self.bridge.file_write_result.connect(self._on_file_write_result)
-
-    # @Slot(str, str)
-    # def _on_file_content_ready(self, request_id: str, content: str) -> None:
-    #     """Отправляет содержимое файла в JS."""
-    #     escaped = json.dumps({"requestId": request_id, "content": content})
-    #     self.web_view.page().runJavaScript(f"onFileContentReady({escaped})")
-
-    # @Slot(str, bool)
-    # def _on_file_write_result(self, request_id: str, success: bool) -> None:
-    #     """Отправляет результат записи в JS."""
-    #     escaped = json.dumps({"requestId": request_id, "success": success})
-    #     self.web_view.page().runJavaScript(f"onFileWriteResult({escaped})")
 
     @Slot(str, str)
     def _on_file_content_ready(self, request_id: str, content: str) -> None:
@@ -199,18 +155,6 @@ class EditorWidget(QWidget):
         """Устанавливает функцию записи файла."""
         self.bridge.set_file_writer(writer)
 
-    # def open_file(self, file_path: str):
-    #     """
-    #     Открывает файл в редакторе.
-
-    #     Args:
-    #         file_path: Путь к файлу
-    #     """
-    #     self.current_file = file_path
-    #     escaped = json.dumps(file_path)
-    #     self.web_view.page().runJavaScript(f"openFile({escaped})")
-    #     logger.info(f"Открыт файл в редакторе: {file_path}")
-
     def open_file(self, file_path: str):
         """
         Открывает файл в редакторе.
@@ -228,33 +172,6 @@ class EditorWidget(QWidget):
         escaped = json.dumps(file_path)
         self.web_view.page().runJavaScript(f"openFile({escaped})")
         logger.info(f"Открыт файл в редакторе: {file_path}")
-
-    # def show_diff(self, original: str, modified: str, language: str = "plaintext"):
-    #     """
-    #     Показывает Diff Viewer.
-
-    #     Args:
-    #         original: Оригинальный текст
-    #         modified: Измененный текст
-    #         language: Язык для подсветки
-    #     """
-    #     original_escaped = (
-    #         original.replace("\\", "\\\\")
-    #         .replace("'", "\\'")
-    #         .replace("\n", "\\n")
-    #         .replace("\r", "")
-    #     )
-    #     modified_escaped = (
-    #         modified.replace("\\", "\\\\")
-    #         .replace("'", "\\'")
-    #         .replace("\n", "\\n")
-    #         .replace("\r", "")
-    #     )
-
-    #     self.web_view.page().runJavaScript(
-    #         f"showDiff('{original_escaped}', '{modified_escaped}', '{language}')"
-    #     )
-    #     logger.info("Diff Viewer открыт")
 
     def show_diff(self, original: str, modified: str, language: str = "plaintext"):
         """
@@ -281,23 +198,6 @@ class EditorWidget(QWidget):
             f"showDiff('{original_escaped}', '{modified_escaped}', '{language}')"
         )
         logger.info("Diff Viewer открыт")
-
-    # def accept_diff(self):
-    #     """Принимает изменения в Diff Viewer."""
-    #     self.web_view.page().runJavaScript("acceptDiff()")
-
-    # def reject_diff(self):
-    #     """Отклоняет изменения в Diff Viewer."""
-    #     self.web_view.page().runJavaScript("rejectDiff()")
-
-    # def get_content(self, callback):
-    #     """
-    #     Получает содержимое редактора.
-
-    #     Args:
-    #         callback: Функция для возврата результата
-    #     """
-    #     self.web_view.page().runJavaScript("getContent()", callback)
 
     def accept_diff(self):
         """Принимает изменения в Diff Viewer."""
