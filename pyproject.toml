@@ -37,8 +37,6 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.3",
     "mypy>=1.9",
-    "black>=24.0",
-    "isort>=5.13",
 ]
 
 [tool.ruff]
@@ -70,15 +68,9 @@ ignore-names = [
     "resizeEvent",
 ]
 
-# Black это более простая альтернатива Ruff
-[tool.black]
-line-length = 110
-target-version = ["py312"]
-
-[tool.isort]
-profile = "black"
-line_length = 110
-# Black
+# Форматирование и импорты - только ruff (Black-совместимый режим).
+# black и isort удалены из dev-зависимостей: в CI их не было, а ruff
+# покрывает и форматирование, и сортировку импортов (правило I).
 
 [tool.mypy]
 python_version = "3.12"
