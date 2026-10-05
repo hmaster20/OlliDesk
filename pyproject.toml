@@ -119,7 +119,7 @@ dev = [
 # делает релизный коммит и ставит тег v{new_version}.
 [tool.bumpversion]
 current_version = "0.1.2"
-parse = "(?P<major>\\d+)\\.(\\d+)\\.(?P<patch>\\d+)"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 commit = true
 tag = true
