@@ -41,7 +41,6 @@ from ui.chat.message_item import ChatMessageItem
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
-    RouterChatThread,  # оставлен для обратной совместимости
     WebSearchThread,
     _OllamaCheckThread,
     _SLMDownloadThread,
@@ -73,7 +72,6 @@ _MIN_ATTACHED_BUDGET = 600
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
 
-    tool_requested = Signal(str, str, str)
     mode_changed = Signal(str)
     agent_panel_toggle = Signal(bool)
     refresh_models_requested = Signal()
@@ -101,7 +99,6 @@ class ChatPanel(QWidget):
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-        self._ollama_thread: RouterChatThread | None = None
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
@@ -782,9 +779,6 @@ class ChatPanel(QWidget):
     def _stop_generation(self):
         self._generating = False
 
-        if self._ollama_thread and self._ollama_thread.isRunning():
-            self._ollama_thread.cancel()
-
         if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
             self._agent_thread.client.cancel_request()
 
@@ -801,13 +795,6 @@ class ChatPanel(QWidget):
             if self._rag_thread.isRunning():
                 self._rag_thread.terminate()
                 self._rag_thread.wait(500)
-
-        if self._ollama_thread and self._ollama_thread.isRunning():
-            self._ollama_thread.quit()
-            self._ollama_thread.wait(1000)
-            if self._ollama_thread.isRunning():
-                self._ollama_thread.terminate()
-                self._ollama_thread.wait(500)
 
         if self._agent_thread and self._agent_thread.isRunning():
             self._agent_thread.quit()

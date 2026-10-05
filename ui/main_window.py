@@ -397,7 +397,6 @@ class MainWindow(QMainWindow):
             model=default_model,
         )
         self.chat_panel.set_project_open(False)
-        self.chat_panel.mode_changed.connect(self._on_chat_mode_changed)
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
 
         self.chat_panel.set_registry(self.model_registry)
@@ -1093,19 +1092,11 @@ class MainWindow(QMainWindow):
         self.index_progress.setVisible(False)
         self.index_status_label.setVisible(False)
 
-    def _on_chat_mode_changed(self, mode: str) -> None:
-        """Настраивает правую панель при смене режима."""
-        if hasattr(self, 'right_panel'):
-            self._update_right_panel_for_mode(mode)
-
     def _toggle_side_panel(self) -> None:
         """Переключает видимость правой панели."""
         if hasattr(self, 'right_panel'):
             visible = not self.right_panel.isVisible()
             self.right_panel.setVisible(visible)
-
-    def _update_right_panel_for_mode(self, mode: str) -> None:
-        """Скрывает настройки агента — доступны только через шестерёнку."""
 
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""

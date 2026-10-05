@@ -1,7 +1,5 @@
 """Диалог подтверждения выполнения инструмента агента."""
 
-import difflib
-
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -12,20 +10,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-
-def _compute_diff(original: str, modified: str) -> str:
-    """Создаёт унифицированный diff между двумя строками."""
-    original_lines = original.splitlines(keepends=True)
-    modified_lines = modified.splitlines(keepends=True)
-    diff = difflib.unified_diff(
-        original_lines,
-        modified_lines,
-        fromfile="original",
-        tofile="modified",
-        lineterm="",
-    )
-    return "".join(diff)
 
 
 class ToolConfirmationDialog(QDialog):
