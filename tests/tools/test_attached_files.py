@@ -36,7 +36,9 @@ class TestAttachedFileStore:
         store.add(path, "old")
         store.add(path, "new")
         assert len(store) == 1
-        assert store.find(str(path)).content == "new"
+        found = store.find(str(path))
+        assert found is not None
+        assert found.content == "new"
 
     def test_clear(self, tmp_path: Path):
         store = AttachedFileStore()

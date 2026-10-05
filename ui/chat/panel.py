@@ -753,8 +753,11 @@ class ChatPanel(QWidget):
     def _clear_chat(self, keep_session: bool = False):
         while self.scroll_layout.count() > 1:
             item = self.scroll_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item is None:
+                break
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         self._messages.clear()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
@@ -1349,7 +1352,10 @@ class ChatPanel(QWidget):
         else:
             for i in range(self.model_combo.count()):
                 model_data = self.model_combo.itemData(i)
-                if model_data and (info := self.registry.get(model_data)) is not None and info.is_local:
+                if not model_data:
+                    continue
+                found = self.registry.get(model_data)
+                if found is not None and found.is_local:
                     self.model_combo.setCurrentIndex(i)
                     break
             else:

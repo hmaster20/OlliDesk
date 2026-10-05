@@ -1,6 +1,6 @@
 """Тесты реестра инструментов."""
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -28,7 +28,7 @@ def probe_tool(
 
 
 def _schema_props(registry: ToolRegistry, mode: AgentMode = AgentMode.CHAT) -> dict[str, Any]:
-    return registry.get_schemas(mode)[0].function["parameters"]
+    return cast(dict[str, Any], registry.get_schemas(mode)[0].function["parameters"])
 
 
 class TestSchemaGeneration:

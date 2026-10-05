@@ -182,7 +182,7 @@ class SLMModelsDialog(QDialog):
         """Реальный размер на диске: для split — сумма всех частей."""
 
         from agents.download_slm import (
-            _split_part_name,  # type: ignore[attr-defined]
+            _split_part_name,
             get_model_parts,
         )
 

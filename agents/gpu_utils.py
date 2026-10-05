@@ -25,7 +25,7 @@ def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
     try:
         creationflags = 0
         if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            creationflags = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
             cmd,
             capture_output=True,

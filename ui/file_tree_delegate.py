@@ -129,5 +129,4 @@ class GitStatusDelegate(QStyledItemDelegate):
 
         color = _GIT_COLORS.get(symbol)
         if color:
-            # 2. Исправляем [attr-defined]: глушим ошибку генерации типов Qt для palette
-            option.palette.setColor(option.palette.ColorRole.Text, color)  # type: ignore[attr-defined]
+            option.palette.setColor(option.palette.ColorRole.Text, color)

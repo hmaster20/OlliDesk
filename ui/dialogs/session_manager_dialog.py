@@ -58,21 +58,29 @@ class SessionManagerDialog(QDialog):
             self.table.setItem(i, 2, QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M")))
             self.table.setItem(i, 3, QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M")))
 
-    def _load_selected(self):
+    def _selected_session_id(self) -> str | None:
+        """Возвращает ID выбранной сессии или None, если строка не выбрана."""
         row = self.table.currentRow()
         if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if item is None:
+            return None
+        return item.text()
+
+    def _load_selected(self):
+        session_id = self._selected_session_id()
+        if session_id is None:
             return
-        session_id = self.table.item(row, 0).text()
         history = self.session_store.get_history(session_id, limit=1000)
         self.chat_panel.set_session_id(session_id)
         self.chat_panel.load_history(history)
         self.accept()
 
     def _delete_selected(self):
-        row = self.table.currentRow()
-        if row < 0:
+        session_id = self._selected_session_id()
+        if session_id is None:
             return
-        session_id = self.table.item(row, 0).text()
         if (
             QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?")
             == QMessageBox.StandardButton.Yes
@@ -81,10 +89,9 @@ class SessionManagerDialog(QDialog):
             self._refresh()
 
     def _export_selected(self):
-        row = self.table.currentRow()
-        if row < 0:
+        session_id = self._selected_session_id()
+        if session_id is None:
             return
-        session_id = self.table.item(row, 0).text()
         path, _ = QFileDialog.getSaveFileName(
             self, "Экспортировать сессию", f"{session_id}.txt", "Text files (*.txt)"
         )
