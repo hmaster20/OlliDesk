@@ -1,7 +1,7 @@
 """Векторное хранилище на основе ChromaDB."""
 
 from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import chromadb
 from chromadb.config import Settings
@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from core.exceptions import EmbedderError
+from fs.chroma_adapter import ChromaCollection, ChunkMetadata, where_file_paths
 from fs.indexer import TextChunk
 
 
@@ -72,9 +73,11 @@ class VectorStore:
         )
 
         # Получение или создание коллекции
-        self.collection = self.client.get_or_create_collection(
-            name="codebase",
-            metadata={"hnsw:space": "cosine"},
+        self.collection = ChromaCollection(
+            self.client.get_or_create_collection(
+                name="codebase",
+                metadata={"hnsw:space": "cosine"},
+            )
         )
 
         logger.info(f"VectorStore инициализирован: {self.persist_dir}")
@@ -133,12 +136,12 @@ class VectorStore:
             # Подготовка данных для ChromaDB
             ids = [chunk.id for chunk in batch]
             documents = [chunk.content for chunk in batch]
-            metadatas = [
+            metadatas: list[ChunkMetadata] = [
                 {
                     "file_path": chunk.file_path,
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
-                    "language": chunk.metadata.get("language", "unknown"),
+                    "language": str(chunk.metadata.get("language", "unknown")),
                 }
                 for chunk in batch
             ]
@@ -146,9 +149,9 @@ class VectorStore:
             # Добавление в коллекцию
             self.collection.add(
                 ids=ids,
-                embeddings=embeddings,  # type: ignore[arg-type]
+                embeddings=embeddings,
                 documents=documents,
-                metadatas=metadatas,  # type: ignore[arg-type]
+                metadatas=metadatas,
             )
 
             logger.debug(f"Добавлено чанков: {len(batch)}")
@@ -183,64 +186,40 @@ class VectorStore:
             logger.warning(f"RAG-поиск недоступен: {e}")
             return []
 
-        # Подготовка фильтра
-        where_filter = None
-        if file_filter:
-            where_filter = {"file_path": {"$in": file_filter}}
+        where = where_file_paths(file_filter) if file_filter else None
 
-        # 1. Приводим фильтр к типу Any, чтобы mypy не проверял сложную структуру dict
-        casted_where = cast(Any, where_filter)
-
-        # 2. Приводим список строк к Any, чтобы избежать ошибок IncludeEnum
-        include_modes = cast(Any, ["documents", "metadatas", "distances"])
-
-        # 3. Делаем вызов. Добавляем точечный игнор только для query_embeddings
-        results = self.collection.query(
-            query_embeddings=query_embedding,  # type: ignore[arg-type]
+        page = self.collection.query(
+            embedding=query_embedding[0],
             n_results=n_results,
-            where=casted_where,
-            include=include_modes,
+            where=where,
         )
 
-        search_results = []
+        ids = page["ids"]
+        documents = page["documents"]
+        metadatas = page["metadatas"]
+        distances = page["distances"]
 
-        # Гарантируем mypy, что списки документов, метаданных, дистанций и id существуют
-        if (
-            results["documents"]
-            and results["documents"][0]
-            and results["metadatas"]
-            and results["metadatas"][0]
-            and results["distances"]
-            and results["distances"][0]
-            and results["ids"]
-            and results["ids"][0]
-        ):
-            for i, doc in enumerate(results["documents"][0]):
-                metadata = results["metadatas"][0][i]
-                distance = results["distances"][0][i]
-                score = max(0.0, min(1.0, 1 - distance))  # Cosine distance -> similarity
+        search_results: list[SearchResult] = []
 
-                # Извлекаем и строго приводим типы метаданных для mypy
-                # Если в метаданных оказывается None или другой тип, используем фолбеки
-                file_path = str(metadata.get("file_path", ""))
-                start_line = int(metadata.get("start_line", 0))
-                end_line = int(metadata.get("end_line", 0))
-                language = str(metadata.get("language", "unknown"))
+        if ids and documents and metadatas and distances:
+            for i, doc in enumerate(documents):
+                metadata = metadatas[i]
+                score = max(0.0, min(1.0, 1 - distances[i]))  # Cosine distance -> similarity
 
                 chunk = TextChunk(
-                    id=results["ids"][0][i],
-                    file_path=file_path,
+                    id=ids[i],
+                    file_path=metadata["file_path"],
                     content=doc,
-                    start_line=start_line,
-                    end_line=end_line,
-                    metadata={"language": language},
+                    start_line=metadata["start_line"],
+                    end_line=metadata["end_line"],
+                    metadata={"language": metadata["language"]},
                 )
 
                 search_results.append(
                     SearchResult(
                         chunk=chunk,
                         score=score,
-                        file_path=file_path,
+                        file_path=metadata["file_path"],
                     )
                 )
 
@@ -257,20 +236,19 @@ class VectorStore:
         if not file_paths:
             return
 
-        results = self.collection.get(
-            where=cast(Any, {"file_path": {"$in": file_paths}}),
-            include=[],
-        )
+        ids = self.collection.get_ids(where_file_paths(file_paths))
 
-        if results["ids"]:
-            self.collection.delete(ids=results["ids"])
-            logger.info(f"Удалено чанков: {len(results['ids'])}")
+        if ids:
+            self.collection.delete(ids)
+            logger.info(f"Удалено чанков: {len(ids)}")
 
     async def clear(self) -> None:
         """Очищает хранилище."""
         self.client.delete_collection("codebase")
-        self.collection = self.client.get_or_create_collection(
-            name="codebase",
-            metadata={"hnsw:space": "cosine"},
+        self.collection = ChromaCollection(
+            self.client.get_or_create_collection(
+                name="codebase",
+                metadata={"hnsw:space": "cosine"},
+            )
         )
         logger.info("VectorStore очищен")
