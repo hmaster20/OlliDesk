@@ -4,6 +4,7 @@
 NVIDIA/драйвера возвращает None, и вызывающий код откатывается к CPU-only.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,33 @@ def get_total_vram_mb() -> int | None:
         return int(out.strip().splitlines()[0].strip())
     except ValueError:
         return None
+
+
+def detect_optimal_threads() -> int:
+    """Определяет число потоков для CPU-инференса llama.cpp.
+
+    Берём число **физических** ядер: на гиперпоточном CPU два логических
+    потока на ядро почти не добавляют скорости генерации, зато делят её между
+    собой. Если psutil недоступен или не знает про ядра — падаем назад на
+    ``os.cpu_count()`` и минимум 2 потока.
+
+    Returns:
+        Число потоков для ``Llama(n_threads=...)``, минимум 2.
+    """
+    physical: int | None = None
+    try:
+        import psutil
+
+        physical = psutil.cpu_count(logical=False)
+    except Exception as e:  # psutil опционален
+        logger.debug(f"psutil недоступен для подсчёта ядер: {e}")
+
+    if not physical:
+        physical = os.cpu_count()
+
+    threads = max(2, physical or 2)
+    logger.info(f"CPU: физических ядер={physical}, n_threads={threads}")
+    return threads
 
 
 def detect_optimal_gpu_layers(

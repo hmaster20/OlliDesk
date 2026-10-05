@@ -4,12 +4,14 @@ import asyncio
 import json
 import re
 import threading
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
 
 
@@ -29,7 +31,7 @@ class LocalLLMClient:
         model_path: str | Path,
         embed_model_path: str | Path | None = None,
         n_ctx: int = 4096,
-        n_threads: int = 4,
+        n_threads: int = 0,
         n_batch: int = 512,
         n_gpu_layers: int = 0,
         verbose: bool = False,
@@ -40,7 +42,8 @@ class LocalLLMClient:
             model_path: Путь к GGUF-файлу chat-модели
             embed_model_path: Путь к GGUF-файлу embedding-модели (опционально)
             n_ctx: Размер контекста в токенах
-            n_threads: Количество потоков CPU
+            n_threads: Количество потоков CPU; 0 или меньше — определить
+                автоматически по числу физических ядер
             n_batch: Размер батча для обработки
             n_gpu_layers: Количество слоёв на GPU (0 = CPU-only)
             verbose: Логирование llama.cpp
@@ -50,38 +53,54 @@ class LocalLLMClient:
         self.model_path = Path(model_path)
         self.embed_model_path = Path(embed_model_path) if embed_model_path else None
         self.n_ctx = n_ctx
-        self.n_threads = n_threads
+        self.n_threads = n_threads if n_threads > 0 else detect_optimal_threads()
+        self.n_gpu_layers = n_gpu_layers
 
         self._cancel_requested = False
         self._lock = threading.Lock()
+        self.load_ms: float = 0.0
+        self.last_stats: dict[str, Any] = {}
 
         if not self.model_path.exists():
             raise FileNotFoundError(f"Модель не найдена: {self.model_path}")
 
-        logger.info(f"Загрузка локальной SLM: {self.model_path.name}")
+        logger.info(
+            f"Загрузка локальной SLM: {self.model_path.name} "
+            f"(n_ctx={self.n_ctx}, n_threads={self.n_threads}, n_gpu_layers={n_gpu_layers})"
+        )
+        load_started = time.perf_counter()
         self.llm = Llama(
             model_path=str(self.model_path),
             n_ctx=n_ctx,
-            n_threads=n_threads,
+            n_threads=self.n_threads,
             n_batch=n_batch,
             n_gpu_layers=n_gpu_layers,
             verbose=verbose,
             chat_format="chatml",  # Qwen2.5 использует ChatML
         )
+        load_ms = (time.perf_counter() - load_started) * 1000
 
         self.embed_llm = None
+        embed_ms = 0.0
         if self.embed_model_path and self.embed_model_path.exists():
             logger.info(f"Загрузка embedding-модели: {self.embed_model_path.name}")
+            embed_started = time.perf_counter()
             self.embed_llm = Llama(
                 model_path=str(self.embed_model_path),
                 n_ctx=512,
-                n_threads=n_threads,
+                n_threads=self.n_threads,
                 n_gpu_layers=0,
                 embedding=True,
                 verbose=verbose,
             )
+            embed_ms = (time.perf_counter() - embed_started) * 1000
 
-        logger.info("Локальная SLM загружена успешно")
+        self.load_ms = load_ms
+        logger.info(
+            f"Локальная SLM загружена за {load_ms:.0f} мс "
+            f"(n_ctx={self.n_ctx}, n_threads={self.n_threads}, n_gpu_layers={n_gpu_layers}"
+            + (f", embed {embed_ms:.0f} мс)" if embed_ms else ")")
+        )
 
     # --- Отмена ---
 
@@ -153,6 +172,9 @@ class LocalLLMClient:
             """Синхронная генерация в отдельном потоке."""
             cancelled = False
             full_text_parts: list[str] = []
+            prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
+            gen_started = time.perf_counter()
+            first_token_at: float | None = None
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
@@ -160,7 +182,7 @@ class LocalLLMClient:
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stream=True,
-                        stop=["<|im_end|>", "<|endoftext|>"],
+                        stop=["", ""],
                     )
                     for chunk in response:
                         if self._cancel_requested:
@@ -169,13 +191,36 @@ class LocalLLMClient:
                         delta = chunk["choices"][0].get("delta", {})
                         content = delta.get("content", "")
                         if content:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
                             full_text_parts.append(content)
 
+                gen_ms = (time.perf_counter() - gen_started) * 1000
+
                 if cancelled:
+                    self.last_stats = self._make_stats(
+                        prompt_chars, 0, gen_ms, None, cancelled=True
+                    )
+                    logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
                     _safe_put(ChatChunk(content="", done=True))
                     return
 
                 full_text = "".join(full_text_parts)
+                tokens = self._count_tokens(full_text)
+                ttft_ms = (
+                    (first_token_at - gen_started) * 1000
+                    if first_token_at is not None
+                    else None
+                )
+                self.last_stats = self._make_stats(
+                    prompt_chars, tokens, gen_ms, ttft_ms
+                )
+                logger.info(
+                    f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
+                    f"({tokens / (gen_ms / 1000):.1f} ток/с)"
+                    + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
+                    + f", промпт ~{prompt_chars} симв."
+                )
 
                 # Попытка распознать tool-call
                 tool_call: ToolCall | None = None
@@ -211,6 +256,36 @@ class LocalLLMClient:
             yield chunk
             if chunk.done:
                 break
+
+    # --- Замеры производительности ---
+
+    def _count_tokens(self, text: str) -> int:
+        """Считает токены текста: токенизатором модели, иначе ~4 симв. на токен."""
+        if not text:
+            return 0
+        try:
+            return len(self.llm.tokenize(text.encode("utf-8"), add_bos=False))
+        except Exception:
+            return max(1, len(text) // 4)
+
+    @staticmethod
+    def _make_stats(
+        prompt_chars: int,
+        tokens: int,
+        gen_ms: float,
+        ttft_ms: float | None,
+        cancelled: bool = False,
+    ) -> dict[str, Any]:
+        """Собирает метрики одного запроса."""
+        seconds = gen_ms / 1000
+        return {
+            "prompt_chars": prompt_chars,
+            "tokens": tokens,
+            "gen_ms": round(gen_ms),
+            "ttft_ms": round(ttft_ms) if ttft_ms is not None else None,
+            "tokens_per_sec": round(tokens / seconds, 1) if seconds > 0 and tokens else 0.0,
+            "cancelled": cancelled,
+        }
 
     # --- Tool-call parsing ---
 

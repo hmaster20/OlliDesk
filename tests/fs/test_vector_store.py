@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.exceptions import EmbedderError
 from fs.indexer import TextChunk
 from fs.vector_store import SearchResult, VectorStore
 
@@ -187,3 +188,70 @@ class TestVectorStore:
         assert result.score == 0.95
         assert result.file_path == "f.py"
         assert result.chunk.content == "code"
+
+
+class TestVectorStoreEmbedder:
+    """Проверки того, что VectorStore больше не завязан на OllamaClient."""
+
+    def test_rejects_object_without_embed(self, tmp_path):
+        with pytest.raises(EmbedderError, match="не умеет считать эмбеддинги"):
+            VectorStore(
+                persist_dir=tmp_path / "vector_db",
+                embed_client=object(),
+                embed_model="nomic-embed-text",
+            )
+
+    def test_accepts_any_object_with_embed(self, tmp_path):
+        class FakeLocalClient:
+            async def embed(self, model, texts):
+                return [[0.1, 0.2, 0.3] for _ in texts]
+
+        store = VectorStore(
+            persist_dir=tmp_path / "vector_db",
+            embed_client=FakeLocalClient(),
+            embed_model="nomic-embed-text",
+        )
+        assert store.embed_model == "nomic-embed-text"
+
+    @pytest.mark.asyncio
+    async def test_add_chunks_raises_on_empty_embeddings(self, vector_store):
+        chunk = TextChunk(
+            id="c1", file_path="main.py", content="code", start_line=1, end_line=1,
+        )
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        with pytest.raises(EmbedderError, match="пустые эмбеддинги"):
+            await vector_store.add_chunks([chunk])
+
+        assert vector_store.collection.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_add_chunks_raises_on_count_mismatch(self, vector_store):
+        chunks = [
+            TextChunk(
+                id=f"c{i}", file_path="main.py", content=f"code{i}",
+                start_line=1, end_line=1,
+            )
+            for i in range(3)
+        ]
+        vector_store.embed_client.embed = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+        with pytest.raises(EmbedderError, match="не совпадают"):
+            await vector_store.add_chunks(chunks)
+
+    @pytest.mark.asyncio
+    async def test_add_chunks_wraps_backend_error(self, vector_store):
+        chunk = TextChunk(
+            id="c1", file_path="main.py", content="code", start_line=1, end_line=1,
+        )
+        vector_store.embed_client.embed = AsyncMock(side_effect=ConnectionError("нет сети"))
+
+        with pytest.raises(EmbedderError, match="нет сети"):
+            await vector_store.add_chunks([chunk])
+
+    @pytest.mark.asyncio
+    async def test_search_degrades_gracefully(self, vector_store):
+        """Поиск не должен ронять чат, если эмбеддинги недоступны."""
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        assert await vector_store.search("hello", n_results=5) == []

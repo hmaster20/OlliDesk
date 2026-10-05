@@ -1,6 +1,7 @@
 """Векторное хранилище на основе ChromaDB."""
 
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import chromadb
 from chromadb.config import Settings
@@ -10,8 +11,23 @@ from typing import cast, Any
 from loguru import logger
 from pydantic import BaseModel
 
-from agents.ollama_client import OllamaClient
+from core.exceptions import EmbedderError
 from fs.indexer import TextChunk
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """Минимальный контракт объекта, умеющего считать эмбеддинги.
+
+    Нужен, чтобы `VectorStore` не зависел от конкретного бэкенда: подойдёт
+    и `OllamaClient`, и `LocalLLMClient`, и `ModelRouter`, который сам
+    переключается между ними.
+    """
+
+    async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Возвращает по одному вектору на каждый текст из ``texts``."""
+        ...
+
 
 class SearchResult(BaseModel):
     """Результат поиска."""
@@ -26,7 +42,7 @@ class VectorStore:
     def __init__(
         self,
         persist_dir: Path,
-        embed_client: OllamaClient,
+        embed_client: Embedder,
         embed_model: str,
     ):
         """
@@ -34,9 +50,19 @@ class VectorStore:
 
         Args:
             persist_dir: Папка для хранения ChromaDB
-            embed_client: Клиент Ollama для эмбеддингов
+            embed_client: Объект с методом ``embed(model, texts)`` —
+                `OllamaClient`, `LocalLLMClient` или `ModelRouter`
             embed_model: Имя модели для эмбеддингов
+
+        Raises:
+            EmbedderError: Если у ``embed_client`` нет метода ``embed``.
         """
+        if not hasattr(embed_client, "embed"):
+            raise EmbedderError(
+                f"Объект {type(embed_client).__name__} не умеет считать эмбеддинги "
+                f"(нет метода embed)"
+            )
+
         self.persist_dir = persist_dir
         self.embed_client = embed_client
         self.embed_model = embed_model
@@ -56,6 +82,39 @@ class VectorStore:
 
         logger.info(f"VectorStore инициализирован: {self.persist_dir}")
 
+    async def _embed(self, texts: list[str]) -> list[list[float]]:
+        """Считает эмбеддинги и проверяет, что их пришло ровно столько, сколько текстов.
+
+        Args:
+            texts: Тексты для векторизации
+
+        Returns:
+            Список векторов той же длины, что и ``texts``
+
+        Raises:
+            EmbedderError: Бэкенд вернул пустой результат, ошибку или
+                неверное число векторов (индекс молча испортился бы).
+        """
+        try:
+            vectors = await self.embed_client.embed(self.embed_model, texts)
+        except Exception as e:
+            raise EmbedderError(
+                f"Не удалось посчитать эмбеддинги через {type(self.embed_client).__name__}: {e}"
+            ) from e
+
+        if not vectors:
+            raise EmbedderError(
+                f"{type(self.embed_client).__name__} вернул пустые эмбеддинги для "
+                f"{len(texts)} текстов. Проверьте, что модель эмбеддингов "
+                f"('{self.embed_model}') загружена и доступна."
+            )
+        if len(vectors) != len(texts):
+            raise EmbedderError(
+                f"Эмбеддингов {len(vectors)}, а текстов {len(texts)} — "
+                f"размерности не совпадают"
+            )
+        return vectors
+
     async def add_chunks(self, chunks: list[TextChunk]) -> None:
         """
         Добавляет чанки в хранилище.
@@ -73,7 +132,7 @@ class VectorStore:
 
             # Векторизация
             texts = [chunk.content for chunk in batch]
-            embeddings = await self.embed_client.embed(self.embed_model, texts)
+            embeddings = await self._embed(texts)
 
             # Подготовка данных для ChromaDB
             ids = [chunk.id for chunk in batch]
@@ -116,9 +175,17 @@ class VectorStore:
 
         Returns:
             list[SearchResult]: Список результатов
+
+        Note:
+            Если эмбеддинги посчитать не удалось, возвращается пустой список:
+                RAG деградирует до «поиск по контексту не работает», но чат
+                и индексация не падают. Причина пишется в лог.
         """
-        # Векторизация запроса
-        query_embedding = await self.embed_client.embed(self.embed_model, [query])
+        try:
+            query_embedding = await self._embed([query])
+        except EmbedderError as e:
+            logger.warning(f"RAG-поиск недоступен: {e}")
+            return []
 
         # Подготовка фильтра
         where_filter = None

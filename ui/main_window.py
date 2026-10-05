@@ -880,7 +880,7 @@ class MainWindow(QMainWindow):
         persist_dir = self.project_path / ".ollidesk" / "vector_db"
         self.vector_store = VectorStore(
             persist_dir=persist_dir,
-            embed_client=self.ollama_client,
+            embed_client=self.chat_panel.router,
             embed_model=self.config.embed_model,
         )
         self.chat_panel.set_vector_store(self.vector_store)
@@ -951,7 +951,7 @@ class MainWindow(QMainWindow):
         # Индекс хранится в .ollidesk внутри самого каталога
         self.vector_store = VectorStore(
             persist_dir=path / ".ollidesk" / "vector_db",
-            embed_client=self.ollama_client,
+            embed_client=self.chat_panel.router,
             embed_model=self.config.embed_model,
         )
         self.chat_panel.set_vector_store(self.vector_store)

@@ -122,6 +122,7 @@ class ChatPanel(QWidget):
 
         self._rule_based = RuleBasedFallback(weather_tool=get_weather)
         self._router.set_rule_based(self._rule_based)
+        self._apply_backend_config()
 
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
@@ -174,6 +175,16 @@ class ChatPanel(QWidget):
         except Exception:
             return True
 
+    def _apply_backend_config(self) -> None:
+        """Передаёт роутеру порядок бэкендов и выбор эмбеддингов из конфига."""
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            self._router.set_priority(list(cfg.backends.priority))
+            self._router.set_embed_backend(cfg.backends.embed_backend)
+        except Exception as e:
+            logger.warning(f"Не удалось применить настройки бэкендов: {e}")
+
     def _check_ollama_async(self):
         self._ollama_check_thread = _OllamaCheckThread(self._ollama_client)
         self._ollama_check_thread.result.connect(self._on_ollama_check_result)
@@ -208,8 +219,8 @@ class ChatPanel(QWidget):
         if self._slm_loading or self._slm_client is not None:
             return
 
-        # Параметры инференса — из конфига
-        n_ctx, n_threads, n_batch = 4096, 4, 512
+        # Параметры инференса — из конфига (n_threads=0 → авто по числу ядер)
+        n_ctx, n_threads, n_batch = 4096, 0, 512
         n_gpu_layers = 0
         try:
             from core.config import load_config
@@ -1330,6 +1341,15 @@ class ChatPanel(QWidget):
 
     def set_vector_store(self, vector_store):
         self.vector_store = vector_store
+
+    @property
+    def router(self) -> ModelRouter:
+        """Роутер бэкендов панели.
+
+        Отдаё наружу как источник эмбеддингов для `VectorStore`: он умеет
+        считать их через любой доступный бэкенд, а не только через Ollama.
+        """
+        return self._router
 
     def set_project_root(self, project_root: str):
         self.project_root = project_root

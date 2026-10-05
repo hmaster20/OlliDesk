@@ -127,7 +127,10 @@ class SLMConfig(BaseModel):
 
     # --- Параметры инференса ---
     n_ctx: int = 4096
-    n_threads: int = 4
+    # n_threads: 0 = авто-определение по числу физических ядер (рекомендуется),
+    # любое другое значение (>0) используется как есть. На гиперпоточном CPU
+    # llama.cpp обычно выигрывает на числе физических ядер, а не логических.
+    n_threads: int = 0
     n_batch: int = 512
 
     # GPU:
@@ -186,6 +189,46 @@ class ConfirmSettings(BaseModel):
     web_search: bool = False
 
 
+class BackendSettings(BaseModel):
+    """Выбор LLM-бэкендов.
+
+    Attributes:
+        priority: Порядок предпочтения для чата. Допустимые значения —
+            ``ollama`` и ``local_slm``. Бэкенды из списка, которых нет или
+            которые недоступны, молча пропускаются; ``rule_based`` всегда
+            последний.
+        embed_backend: Как считать эмбеддинги для RAG: ``auto`` (следовать
+            активному чат-бэкенду, при неудаче пробовать остальные),
+            ``ollama`` или ``local_slm``.
+    """
+
+    priority: list[str] = Field(default_factory=lambda: ["ollama", "local_slm"])
+    embed_backend: str = "auto"
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: list[str]) -> list[str]:
+        """Только известные бэкенды, без повторов."""
+        allowed = {"ollama", "local_slm"}
+        unknown = [b for b in v if b not in allowed]
+        if unknown:
+            raise ValueError(f"Неизвестные бэкенды в priority: {unknown}")
+        seen: list[str] = []
+        for backend in v:
+            if backend not in seen:
+                seen.append(backend)
+        return seen
+
+    @field_validator("embed_backend")
+    @classmethod
+    def validate_embed_backend(cls, v: str) -> str:
+        """Один из auto/ollama/local_slm."""
+        allowed = {"auto", "ollama", "local_slm"}
+        if v not in allowed:
+            raise ValueError(f"embed_backend должен быть одним из {sorted(allowed)}, got {v!r}")
+        return v
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -197,6 +240,7 @@ class AppConfig(BaseModel):
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
+    backends: BackendSettings = Field(default_factory=BackendSettings)
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [

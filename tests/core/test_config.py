@@ -7,9 +7,11 @@ from pydantic import ValidationError
 from core.config import (
     AgentMode,
     AppConfig,
+    BackendSettings,
     ConfigLoader,
     ModelConfig,
     ModelRole,
+    SLMConfig,
     ToolPolicy,
     get_model_by_role,
 )
@@ -316,3 +318,46 @@ class TestEnumValues:
         assert AgentMode.CHAT.value == "chat"
         assert AgentMode.PLAN.value == "plan"
         assert AgentMode.AGENT.value == "agent"
+
+
+class TestBackendSettings:
+    """Настройки выбора бэкендов, которые читает agents/model_router.py."""
+
+    def test_defaults(self):
+        cfg = AppConfig(default_model="m", embed_model="e")
+        assert cfg.backends.priority == ["ollama", "local_slm"]
+        assert cfg.backends.embed_backend == "auto"
+
+    def test_priority_rejects_unknown_backend(self):
+        with pytest.raises(ValidationError):
+            BackendSettings(priority=["ollama", "gpt"])
+
+    def test_priority_deduplicates(self):
+        settings = BackendSettings(priority=["local_slm", "ollama", "local_slm"])
+        assert settings.priority == ["local_slm", "ollama"]
+
+    def test_embed_backend_accepts_known_values(self):
+        for value in ("auto", "ollama", "local_slm"):
+            assert BackendSettings(embed_backend=value).embed_backend == value
+
+    def test_embed_backend_rejects_unknown(self):
+        with pytest.raises(ValidationError):
+            BackendSettings(embed_backend="vllm")
+
+    def test_slm_first_order_preserved(self):
+        cfg = AppConfig(
+            default_model="m",
+            embed_model="e",
+            backends={"priority": ["local_slm", "ollama"]},
+        )
+        assert cfg.backends.priority == ["local_slm", "ollama"]
+
+
+class TestSLMThreads:
+    """n_threads=0 означает авто-определение по числу физических ядер."""
+
+    def test_default_is_auto(self):
+        assert SLMConfig().n_threads == 0
+
+    def test_explicit_value_kept(self):
+        assert SLMConfig(n_threads=6).n_threads == 6
