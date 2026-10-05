@@ -19,7 +19,6 @@ dependencies = [
     "pathspec>=0.12,<0.13",
     "watchdog>=5.0,<5.1",
     "ddgs>=9.1,<10.0",
-    "duckduckgo-search>=8.1,<9.0",
     "curl-cffi>=0.15,<0.16",
     "beautifulsoup4>=4.15,<4.16",
     "pygments>=2.20,<2.21",

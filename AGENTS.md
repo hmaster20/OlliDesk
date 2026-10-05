@@ -343,8 +343,9 @@ Promise. Py → JS: `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get
   не «исправляй» это без причины.
 - Black и isort **удалены** из dev-зависимостей (Фаза 1.2). Форматирование и сортировка импортов —
   только `ruff format` и `ruff check --fix` (правило I001).
-- Текущий базис: `ruff check .` — 0 ошибок, `ruff format --check .` — чисто, `mypy .` — 24 ошибки
-  в 9 файлах. Не усугубляй (см. `docs/PLAN_MODERNIZATION.md`, Фаза 1.3).
+- Текущий базис: `ruff check .` — 0 ошибок, `ruff format --check .` — чисто, `mypy .` — 0 ошибок
+  (`strict = true`, но с послаблениями ниже). Не усугубляй; снятие послаблений — фаза 1.3
+  плана.
 
 **Типизация**
 - mypy `strict = true`, но с послаблениями (`disallow_untyped_defs = false`,

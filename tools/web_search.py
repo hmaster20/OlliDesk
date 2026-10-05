@@ -13,6 +13,7 @@
 
 import asyncio
 import urllib.parse
+from typing import Any
 
 from loguru import logger
 
@@ -50,7 +51,7 @@ async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
     from curl_cffi import requests
 
     def _do() -> str:
-        session = requests.Session()
+        session: requests.Session[Any] = requests.Session()
         resp = session.get(
             "https://yandex.ru/search/",
             params={"text": query},
@@ -60,7 +61,7 @@ async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
         )
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
-        return resp.text
+        return str(resp.text)
 
     html = await asyncio.to_thread(_do)
 
@@ -105,13 +106,10 @@ async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
 
 
 async def _search_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
-    """DuckDuckGo через ddgs (или duckduckgo_search как fallback)."""
+    """DuckDuckGo через ddgs."""
 
     def _do() -> list[dict]:
-        try:
-            from ddgs import DDGS  # новый пакет (июль 2025+)
-        except ImportError:
-            from duckduckgo_search import DDGS  # старый пакет
+        from ddgs import DDGS
 
         with DDGS() as ddgs:
             return list(
@@ -144,7 +142,7 @@ async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]
     from curl_cffi import requests
 
     def _do() -> str:
-        session = requests.Session()
+        session: requests.Session[Any] = requests.Session()
         resp = session.post(
             "https://html.duckduckgo.com/html/",
             data={"q": query, "ia": "web"},
@@ -154,7 +152,7 @@ async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]
         )
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
-        return resp.text
+        return str(resp.text)
 
     html = await asyncio.to_thread(_do)
     soup = BeautifulSoup(html, "html.parser")
@@ -201,8 +199,8 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
 
     last_err: Exception | None = None
 
-    def _fetch(base: str) -> dict:
-        session = requests.Session()
+    def _fetch(base: str) -> dict[str, Any]:
+        session: requests.Session[Any] = requests.Session()
         resp = session.get(
             f"{base}/search",
             params={"q": query, "format": "json"},
@@ -212,7 +210,8 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
         )
         if resp.status_code != 200:
             raise RuntimeError(f"{base} HTTP {resp.status_code}")
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     for base in _SEARX_INSTANCES:
         try:

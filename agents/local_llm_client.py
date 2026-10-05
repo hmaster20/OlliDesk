@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -175,7 +175,10 @@ class LocalLLMClient:
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
-                        messages=chat_messages,
+                        # llama-cpp-python ждёт типизированные ChatCompletionRequest*Message,
+                        # а мы собираем обычные dict. Контракт совпадает по полям, поэтому
+                        # различие типов скрываем явно; при 4.8.A уйдёт вместе с MessagePart.
+                        messages=cast(Any, chat_messages),
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stream=True,
@@ -185,8 +188,13 @@ class LocalLLMClient:
                         if self._cancel_requested:
                             cancelled = True
                             break
-                        delta = chunk["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
+                        # ChatCompletionStreamResponse у llama-cpp-python - union, в котором
+                        # часть вариантов является str, поэтому доступ к полям только через Any.
+                        choices = cast(Any, chunk).get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        content = str(delta.get("content") or "")
                         if content:
                             if first_token_at is None:
                                 first_token_at = time.perf_counter()
@@ -453,8 +461,12 @@ class LocalLLMClient:
             logger.warning("Embedding-модель не загружена, RAG недоступен")
             return []
 
+        # Локальная переменная, а не self.embed_llm: внутри вложенной функции mypy
+        # не сужает тип атрибута, проверенный выше.
+        embed_llm = self.embed_llm
+
         def _embed():
-            return [list(self.embed_llm.embed(t)) for t in texts]
+            return [list(embed_llm.embed(t)) for t in texts]
 
         return await asyncio.to_thread(_embed)
 

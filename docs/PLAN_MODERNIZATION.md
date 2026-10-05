@@ -81,38 +81,54 @@
 
 ### 1.3 Типизация
 
-**Правило:** до 1.3 новый код должен проходить `mypy .` без новых ошибок.
+**Правило:** новый код обязан проходить `mypy .` без новых ошибок.
 
 - [x] Починить запуск `mypy .`: в `[tool.mypy]` стоял `python_version = "3.11"`, из-за чего
       mypy спотыкался о стабы зависимостей с синтаксисом 3.12. Заменено на `"3.12"`.
-- [ ] **`mypy .` → 0 ошибок.** Базис зафиксирован: **27 ошибок в 12 файлах** при
-      `python_version = "3.12"`. Разбивка по кодам:
-  - [ ] `unused-ignore` (3) — устаревшие `# type: ignore`: `ui/file_tree_delegate.py:190`,
-        `agents/gpu_utils.py:21`, `ui/dialogs/slm_models_dialog.py:196`. Просто удалить.
-  - [ ] `union-attr` (6) — обращение к `.text` / `.widget()` / `.execute()` / `.embed`
-        без проверки на `None`: `ui/dialogs/session_manager_dialog.py:66,76,85`
-        (`QTableWidgetItem | None` из `item()`), `ui/chat/threads.py:285` (`ToolRegistry | None`),
-        `ui/chat/panel.py:777-778` (`QLayoutItem | None`), `agents/local_llm_client.py:472`
-        (`embed_llm: Llama | None`). Лечится `is None`-guard'ами или `assert`.
-  - [ ] `arg-type` (2) — `llama-cpp-python` типизирован: `agents/local_llm_client.py:181`
-        (`messages: list[dict[str, Any]]` против union из `ChatCompletionRequest*`).
-        Обёрнуть `cast(Any, ...)`; в 4.8.A перепишется вместе с `MessagePart`.
-  - [ ] `no-any-return` / `var-annotated` (7) — `tools/web_search.py:52,62,147,157,204,214`
-        (типы `DDGS` из `duckduckgo_search` и `ddgs` **конфликтуют**: ошибка `assignment`
-        на строке 115 — два пакета экспортируют одно имя; здесь же нужен тайп-алиас
-        для `session`) и `tests/agents/test_tool_registry.py:31`.
-  - [ ] `union-attr` в стриме llama.cpp — `agents/local_llm_client.py:191,196`:
-        `chunk["choices"][0]` типизирован как union, нужен `cast`.
-  - [ ] `assignment` — `ui/chat/panel.py:1418`: `ModelInfo | None` присваивается в переменную
-        типа `ModelInfo`.
-  - [ ] `union-attr` — `tests/tools/test_attached_files.py:39`: `AttachedFile | None`.
+- [x] **`mypy .` → 0 ошибок.** Стартовали с 27 ошибок в 12 файлах, после исключения
+      покрытия тестами — 24 в 9. Разбивка по кодам и как исправлено:
+  - [x] `unused-ignore` (3) — устаревшие `# type: ignore`, под ними ошибок больше нет:
+        `ui/file_tree_delegate.py` (attr-defined на `palette`), `agents/gpu_utils.py`
+        (`subprocess.CREATE_NO_WINDOW`), `ui/dialogs/slm_models_dialog.py` (`_split_part_name`).
+        Удалены вместе с комментариями, которые их описывали.
+  - [x] `union-attr` на результатах Qt (5) — `item()` отдаёт `QTableWidgetItem | None`,
+        `takeAt()` — `QLayoutItem | None`, `widget()` — `QWidget | None`,
+        `self.embed_llm` — `Llama | None`. Лечится `is None`-guard'ами. В
+        `session_manager_dialog` три метода повторяли `item(row, 0).text()` — вынесен
+        `_selected_session_id() -> str | None`. В `local_llm_client.embed` атрибут
+        продублирован локальной переменной: внутри вложенной функции mypy не сужает
+        тип, проверенный выше.
+  - [x] `arg-type` (2) — `llama-cpp-python` типизирован:
+        `messages=cast(Any, chat_messages)` против union из `ChatCompletionRequest*`
+        (контракт по полям совпадает; уйдёт вместе с `MessagePart` в 4.8.A) и
+        `full_text_parts.append` — содержимое delta приведено к `str`.
+  - [x] `union-attr` в стриме llama.cpp (3 на 2 строки) — `ChatCompletionStreamResponse`
+        это union, часть вариантов которого `str`, поэтому `chunk` приведён к `Any`,
+        а доступ к `choices`/`delta` переведён с `[]` на `.get()` с проверкой.
+  - [x] `assignment` (1) — `ui/chat/panel.py`: walrus переиспользовал имя `info` из
+        другого цикла выше, где оно уже было `ModelInfo`, поэтому туда попадал
+        `ModelInfo | None`. Переименовано в `found`, условие развёрнуто без walrus.
+  - [x] `var-annotated` + `no-any-return` (7) — `tools/web_search.py`: `requests.Session`
+        у curl_cffi дженерик (`BaseSession[R]`), поэтому переменная аннотируется
+        `requests.Session[Any]`; `resp.text` приведён к `str`, `resp.json()` присваивается
+        в аннотированный `dict[str, Any]`.
+  - [x] `no-any-return` в тестах (2) — `_schema_props` обёрнут в `cast`,
+        `store.find()` проверяется на `None` через `assert`.
+  - [x] `no-any-return`/`var-annotated` из-за **дубликата пакетов** (7 ошибок в
+        `tools/web_search.py`) — `duckduckgo-search` и `ddgs` экспортируют одно имя `DDGS`,
+        и mypy анализировал обе ветки `try/except ImportError` как переопределение.
+        Удалён устаревший `duckduckgo-search` (новое имя — `ddgs`), fallback-импорт убран.
 - [ ] Снять послабления (`disallow_untyped_defs`, `disallow_incomplete_defs`) хотя бы
-      для `core/`, `agents/`, `fs/`, `state/`, `tools/`.
+      для `core/`, `agents/`, `fs/`, `state/`, `tools/`. **Отдельная задача:** потребует
+      аннотаций во всех публичных функциях этих пакетов.
 - [ ] Убрать `ignore_errors = true` для `ui/dialogs/wizard.py` (модуль ~260 строк).
-- [ ] ~~Добавить `ui/unused` в `exclude` mypy~~ — **снято**: каталоги удалены в 1.4,
+      Сейчас его ошибок не видно — но вместе с `ruff format` их может вскрыть общий прогон.
+- [x] ~~Добавить `ui/unused` в `exclude` mypy~~ — **снято**: каталоги удалены в 1.4,
       `exclude` из `pyproject.toml` тоже убран.
 - [ ] `fs/vector_store.py` — заменить `cast(Any, ...)`/`# type: ignore` на нормальную обёртку
-      над ChromaDB (или тонкий адаптер с Protocols).
+      над ChromaDB (или тонкий адаптер с Protocols). Сейчас в `search()` остались
+      `casted_where` и `include_modes` как `Any` плюс `# type: ignore[arg-type]` на
+      `query_embeddings`; в `_embed` — то же на `add()`.
 - [x] Удалить закомментированные альтернативные реализации (коммит `4e77715`, 307 строк).
       Перед удалением для каждого блока проверено, что живая замена есть:
   - `fs/vector_store.py` — 60 строк: три поколения закомментированных вариантов `query()`
@@ -131,9 +147,10 @@
     `ui/web_editor/download_monaco.py` — неиспользуемый `download_tarball`
   - **Не тронуто** (живая документация, а не код): пояснения к `auto_gpu_layers`/`n_gpu_layers`
     в `core/config.py`, комментарии-пояснения и `TODO` в `fs/indexer.py`
-- [ ] **Дубликат пакетов:** в зависимостях одновременно `duckduckgo-search` и `ddgs`,
-      `tools/web_search.py` импортирует оба (см. также «Быстрый бэклог»). Оставить один —
-      иначе `no-any-return` и путаница между двумя `DDGS` останутся.
+- [x] **Дубликат пакетов:** `duckduckgo-search` и `ddgs` одновременно в зависимостях,
+      `tools/web_search.py` импортировал оба. Удалён устаревший `duckduckgo-search`,
+      остался `ddgs` (новое имя пакета). Fallback-импорт убран — при установленном `ddgs`
+      он всё равно не срабатывал.
 
 ### 1.4 Удаление мёртвого кода — **СДЕЛАНО** (коммиты `0ad6a53`, `4e77715`, `5df9c1a`)
 Каждый пункт предварительно проверен поиском по репозиторию, а не взят из описания.
@@ -726,9 +743,9 @@
       (и транзитивный `diskcache`), в локе их нет. Любой `uv run` / `uv sync` молча
       переписывает лок, и правка попадает в случайный коммит. Перегенерировать один раз
       и держать лок в коммитах; причина — в лок собран до добавления SLM-зависимости.
-- [ ] Проверить зависимость `duckduckgo-search` + `ddgs` — точно дубликаты: оба
-      экспортируют `DDGS` с разными типами, из-за чего mypy даёт `assignment` в
-      `tools/web_search.py:115` (см. 1.3).
+- [x] Дубликат `duckduckgo-search` + `ddgs` — подтвердилось: оба экспортируют `DDGS`
+      с разными типами, из-за чего mypy давал `assignment` в `tools/web_search.py`.
+      Устаревший пакет удалён из зависимостей (см. 1.3).
 - [ ] `pyproject.toml` → `hatchling` вместо `setuptools` (упростит сборку wheel).
 - [ ] `.gitignore` игнорирует `Notes.md`/`Roadmap.md`/`Model.md` по имени — файлы уже
       отслеживаются, но новые такие же будут скрыты. Переименовать правила на `/Notes.md`.
