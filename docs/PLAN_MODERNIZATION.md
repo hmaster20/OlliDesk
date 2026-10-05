@@ -234,9 +234,14 @@
       и 0.9 МБ лежали только в рабочем дереве. Правило `unused` и `exclude` из `pyproject.toml`
       убраны — скрытое состояние хуже видимых untracked-файлов.
 
-### 1.5 Тесты
-- [ ] `tests/tools/` — тесты на остальные 12 инструментов (особенно `_resolve_path` песочницу).
-      Сделано: `tests/tools/test_attached_files.py`.
+### 1.5 Тесты — **В ПРОЦЕССЕ** (коммит `45d3ae4`)
+- [ ] `tests/tools/` — тесты на остальные инструменты.
+      Сделано: `tests/tools/test_attached_files.py`, `tests/tools/test_file_ops.py`
+      (28 тестов, покрытие `tools/file_ops.py` 0% → 95%; отдельно проверены
+      обход песочницы через `..`, коллизия префиксов каталогов и отказ записи за
+      пределы проекта).
+      Осталось: `web_search`, `codebase_search`, `weather`, `exchange_rate`,
+      `current_datetime`, `git_ops_tool`.
 - [x] `tests/agents/test_tool_registry.py` — генерация схем из type hints, фильтрация
       `_INJECTED_PARAMS`, режимы и политики.
 - [x] `tests/core/test_context_budget.py` — оценка токенов, `resolve_num_ctx`, бюджет вложений.
@@ -248,6 +253,12 @@
 - [ ] `tests/ui/` — `ToolConfirmationDialog`, `message_item` (markdown→HTML) на `QApplication`
       из `qtbot`/`pytest-qt`.
 - [ ] Зафиксировать порог покрытия в CI (`--cov-fail-under`).
+
+**Подводный камень, найденный при написании тестов:** `Path.write_text`/`read_text`
+без явного `encoding` берут локальную кодировку, а на Windows-консолях это OEM cp866.
+`tools/file_ops.py` читает как `utf-8`, поэтому тест, писавший файл через
+`write_text("данные")`, получал `U+FFFD` и падал, хотя код был прав. **В тестах всегда
+явный `encoding="utf-8"`** — иначе они зависят от кодовой страницы машины.
 
 ---
 
