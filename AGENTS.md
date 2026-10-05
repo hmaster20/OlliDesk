@@ -132,10 +132,10 @@ mypy. Не редактируй и не удаляй их без отдельн�
 | Модуль | Назначение | Ключевое |
 |---|---|---|
 | `core/app.py` | Bootstrap приложения | `OlliDeskApp`, `main()`; применяет тему, открывает `SetupWizard` при отсутствии конфига |
-| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
+| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
 | `core/logger.py` | Логирование | `setup_logger(dir, level)` — sink в stderr + rotating-файл |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
-| `core/exceptions.py` | Иерархия исключений | `OlliDeskError` + `ConfigError`, `OllamaConnectionError`, `ToolsNotSupportedError`, `ModelNotFoundError`, `IndexingError`, `ToolExecutionError` |
+| `core/exceptions.py` | Иерархия исключений | `OlliDeskError` + `ConfigError`, `OllamaConnectionError`, `ToolsNotSupportedError`, `ModelNotFoundError`, `IndexingError`, `EmbedderError`, `ToolExecutionError` |
 | `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}`, проектный → глобальный поиск |
 | `core/roles.py` | 13 ролей-персон (Markdown + YAML-frontmatter) | `RoleManager`, `RoleDefinition` |
 | `core/model_registry.py` | Каталог моделей + поддержка tool-calling | `ModelRegistry`, `ModelInfo` |
@@ -149,17 +149,28 @@ mypy. Не редактируй и не удаляй их без отдельн�
 | `agents/ollama_client.py` | Wire-типы (`ChatMessage`, `ToolCall`, `ChatChunk`, `ChatOptions`, `ToolSchema`) + асинхронный HTTP/stream-клиент Ollama (`OllamaClient`) |
 | `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext` |
 | `agents/tool_registry.py` | `@tool`-декоратор, генерация JSON Schema из type hints, `ToolRegistry.execute()` |
-| `agents/model_router.py` | Выбор бэкенда с fallback: Ollama → локальный SLM → rule-based |
+| `agents/model_router.py` | Выбор бэкенда по приоритету из конфига с fallback: rule-based в конце. Также перебор бэкендов для эмбеддингов |
 | `agents/local_llm_client.py` | Клиент llama.cpp (GGUF): блокирующий инференс обёрнут в `asyncio`, «мягкий» tool-calling через JSON в тексте |
 | `agents/rule_based_fallback.py` | Ответы без LLM (регулярки: погода, время, дата) |
 | `agents/download_slm.py` | Скачивание/удаление GGUF с HuggingFace, обработка split-GGUF. CLI: `python -m agents.download_slm` |
-| `agents/gpu_utils.py` | Опрос `nvidia-smi`, подбор `n_gpu_layers` |
+| `agents/gpu_utils.py` | Опрос `nvidia-smi`, подбор `n_gpu_layers`, `detect_optimal_threads()` (физические ядра) |
 | `agents/context_compactor.py` | Сжатие истории через LLM. **Экспортируется, но нигде не вызывается** |
 
 Контракт бэкенда (duck-типинг, общего базового класса **нет**):
 `chat()`, `embed()`, `cancel_request()`, `is_cancelled()`, `reset_cancel()`, `check_tools_support()`.
 Дополнительно `ModelRouter.active_client` и `ModelRouter.num_ctx` дают UI доступ к реальному
 окну контекста выбранной модели (Ollama — `ChatOptions.num_ctx`, SLM — `n_ctx`).
+
+`ModelRouter` отвечает и за эмбеддинги: `set_priority()` (порядок бэкендов для чата) и
+`set_embed_backend()` приходят из `core/config.py::BackendSettings`. `embed()` перебирает
+доступные бэкенды (активный → остальные) и бросает `core.exceptions.EmbedderError`, если
+не сработал ни один — так RAG переживает остановку Ollama. `VectorStore` получает
+`ChatPanel.router` и принимает любой объект с методом `embed` (протокол `fs.vector_store.Embedder`),
+поэтому `fs` не импортирует `agents`.
+
+Метрики `LocalLLMClient`: `load_ms` (время загрузки GGUF) и `last_stats`
+(`prompt_chars`, `tokens`, `gen_ms`, `ttft_ms`, `tokens_per_sec`, `cancelled`) —
+в лог пишется строка на каждый запрос.
 
 ### `tools/` — инструменты для модели
 
@@ -206,7 +217,11 @@ mypy. Не редактируй и не удаляй их без отдельн�
   `incremental_scan()` для догрузки только изменений. Модели: `FileMetadata`, `TextChunk`.
 - `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекция `codebase`, косинус),
   батчи по 32, `add_chunks()`, `search()` (перевод расстояния в схожесть), `delete_by_file()`,
-  `clear()`. Модель: `SearchResult`.
+  `clear()`. Модели: `SearchResult`, `Embedder` (протокол). Embedder-параметр — **любой**
+  объект с `async embed(model, texts)`; в UI передаётся `ChatPanel.router`.
+  `_embed()` проверяет, что векторов пришло столько же, сколько текстов, и бросает
+  `EmbedderError`; `search()` при неудаче эмбеддингов логирует предупреждение и
+  возвращает `[]`, чтобы не ронять чат.
 
 Индекс хранится в `<проект>/.ollidesk/vector_db`, состояние — в `~/.ollidesk/project_state.json`.
 
@@ -434,7 +449,8 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
 - Эмбеддинги — `patch.object(vs.embed_client, "embed", AsyncMock(return_value=[[...]]))`.
 - Покрытие: `agents`, `core`, `fs`, `state`, `tools`, `ui`. Фактически тесты есть для
   `core/config.py`, `core/context_budget.py`, `fs/*`, `agents/ollama_client.py`,
-  `agents/tool_registry.py`, `tools/attached_files.py`. Новый код без теста — неоконченная работа.
+  `agents/model_router.py`, `agents/gpu_utils.py`, `agents/tool_registry.py`,
+  `tools/attached_files.py`. Новый код без теста — неоконченная работа.
 
 ## 10. Документация
 
@@ -489,3 +505,9 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
     это обратно.
 11. **`ui/unused/` не исключён из mypy** (в отличие от `unused/`). ruff/black обходят оба
     каталога — не добавляй туда файлы.
+12. **`slm.n_threads = 0` — это «авто», а не «без потоков».** Значение разбирает
+    `detect_optimal_threads()` в `agents/local_llm_client.py` (число физических ядер,
+    минимум 2). Ставь `0`, чтобы не хардкодить.
+13. **Менять модель в середине диалога нельзя.** У моделей разный `n_ctx`, а история
+    чата уже собрана под текущее окно — смена бэкенда переполнит контекст. Это
+    ограничение зафиксировано в Фазе 4.7.D плана.
