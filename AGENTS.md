@@ -133,6 +133,7 @@ OlliDesk/
 | `core/app.py` | Bootstrap приложения | `OlliDeskApp`, `main()`; применяет тему, открывает `SetupWizard` при отсутствии конфига |
 | `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
 | `core/logger.py` | Логирование | `setup_logger(dir, level)` — sink в stderr + rotating-файл |
+| `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
 | `core/exceptions.py` | Иерархия исключений | `OlliDeskError` + `ConfigError`, `OllamaConnectionError`, `ToolsNotSupportedError`, `ModelNotFoundError`, `IndexingError`, `EmbedderError`, `ToolExecutionError` |
 | `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}`, проектный → глобальный поиск |
@@ -482,7 +483,9 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
   `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `upd:`, `add:`.
   Сообщения — по-русски, с указанием области через `|`: `chore: SLM - загрузка | стабилизация`.
 - Версия — SemVer (`docs/VERSION.md`). Сейчас `0.1.2` в `pyproject.toml`.
-  В `core/app.py` версия захардкожена (`0.1.1`) — рассинхрон, см. план модернизации.
+  Единственный источник для кода — `core/_version.py::__version__`, его поднимает
+  `bump-my-version bump patch|minor` вместе с `pyproject.toml`, ставит тег
+  `v{new_version}` и генерирует `CHANGELOG.md` хуком `git cliff`. Вручную не менять.
 - Коммит не делать без явной просьбы пользователя. Перед коммитом проверить
   `git status`, `git diff`, `git log --oneline -10`; в индекс класть только нужные файлы.
 - CHANGELOG генерируется `git cliff --tag v<version> -o CHANGELOG.md`, теги — аннотированные (`-a`).
@@ -491,7 +494,10 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
 
 1. **Qt-объекты только в GUI-потоке.** Никогда не трогай виджеты из `QThread` — только через
    сигналы.
-2. **Версия в двух местах.** `pyproject.toml` и `core/app.py::setApplicationVersion` расходятся.
+2. **Версия — только в `core/_version.py::\__version__`.** В `pyproject.toml` версия
+   живёт для упаковки, и её поднимает `bump-my-version` вместе с `_version.py`.
+   `importlib.metadata` в рантайме **не** используется: метаданные пакета обновляются
+   только при переустановке и сразу после `bump` отдают старую версию.
 3. **`ConfigLoader` — глобальный синглтон** (`core/config.py`, модульный `config_loader`).
    В тестах переопределяй `loader.global_config_path`, а не читай глобальный конфиг.
 4. **`@file` попадает в контекст не целиком.** Промпт получает только начало и конец файла
