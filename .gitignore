@@ -29,7 +29,6 @@ desktop.ini
 # docs/generated/
 
 ui/web_editor/vendor
-unused
 
 # Локальная база и параметризация
 .ollidesk/vector_db

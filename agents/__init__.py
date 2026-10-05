@@ -1,7 +1,6 @@
 """Агенты и клиенты для взаимодействия с LLM."""
 
 from agents.agent_loop import AgentContext, AgentIterationLimitError, AgentLoop
-from agents.context_compactor import compact_messages
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import (
@@ -33,6 +32,5 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "ToolSchema",
-    "compact_messages",
     "tool",
 ]

@@ -56,8 +56,6 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.3",
     "mypy>=1.9",
-    "black>=24.0",
-    "isort>=5.13",
     "bump-my-version>=1.4.1", # <- Строка добавится сама
 ]
 

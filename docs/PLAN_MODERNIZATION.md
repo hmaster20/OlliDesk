@@ -36,7 +36,7 @@
 | **Событийная модель сообщений (`MessagePart`)** | ❌ | `ChatMessage.content` — строка, `reasoning_content` и `tool_calls` живут отдельно |
 | **Композитный пузырь сообщения** | ⚠️ | размышления рисуются курсивом над текстом, вызовы инструментов в чате не видны |
 | **Выполнение shell-команд агентом** | ❌ | — |
-| **Компактор контекста в UI** | ⚠️ | `agents/context_compactor.py` не вызывается |
+| **Компактор контекста в UI** | ❌ | модуль удалён в 1.4, сжатие переписывается в 4.6.B |
 | **Тесты UI / state** | ❌ | покрытие `core`, `fs`, `agents`, `tools/attached_files`, `tools/web_search` (частично) |
 
 ---
@@ -53,21 +53,31 @@
 
 **Файлы:** `core/app.py`, `pyproject.toml`, новый `core/_version.py`.
 
-### 1.2 Починить линтер (базис 21 ошибка)
-- [ ] `ruff check .` → 0 ошибок. Ошибки сгруппированы:
+### 1.2 Починить линтер — **СДЕЛАНО** (коммиты `be88307`, `55f99ac`, `f4307da`)
+- [x] `ruff check .` → 0 ошибок. Ошибки сгруппированы:
   - `I001` (несортированные импорты, 7 файлов) — `ruff check --fix`
   - `F401` неиспользуемые импорты: `agents/download_slm.py` (`shutil`), `fs/vector_store.py`
     (`Where`, `Include`), `main.py` (`types`), `ui/dialogs/slm_models_dialog.py` (`re`)
-  - `E731` lambda в `main.py:37-39` (маппинг `QtMsgType` → loguru) → заменить на `def`
+  - `E731` lambda в `main.py:37-39` (маппинг `QtMsgType` → loguru) → заменены на `def`
   - `SIM102` вложенные `if` в `ui/chat/panel.py:560`
   - `SIM105` `try/except/pass` в `agents/local_llm_client.py:141` → `contextlib.suppress`
-  - `N802` `resizeEvent` (`ui/chat/message_item.py`), `N806` `RESERVE_MB`/`APPROX_LAYERS`
-    (`agents/gpu_utils.py`) — добавить в `ignore-names` или переименовать
-- [ ] Запустить `ruff format .` и зафиксировать результат отдельным коммитом.
-- [ ] Решить, что делать с `quote-style = "preserve"` (сейчас микс `'...'` и `"..."` в одном файле).
-- [ ] Прогнать `black --check .` / `isort --check .`, решить: оставить в CI или удалить из dev.
+  - `N802` `resizeEvent` (`ui/chat/message_item.py`) — добавлен в `ignore-names` рядом с
+    `eventFilter`/`closeEvent`; переименовать override Qt нельзя
+  - `N806` `RESERVE_MB`/`APPROX_LAYERS` (`agents/gpu_utils.py`) → подняты в константы модуля
+    `VRAM_RESERVE_MB` / `APPROX_LAYERS` (заодно видно, что это настраиваемые параметры)
+- [x] Запустить `ruff format .` и зафиксировать результат отдельным коммитом (`55f99ac`).
+      Переформатировано 52 файла; поведение не изменилось.
+- [x] Решено по `quote-style`: оставлен `preserve`. Микс `'...'` и `"..."` в одном файле
+      допускается — нормализация кавычек отдельной задачей не оправдана.
+- [x] `black` и `isort` **удалены** из обеих групп зависимостей
+      (`[project.optional-dependencies].dev` и `[dependency-groups].dev`) и из конфигурации
+      (`[tool.black]`, `[tool.isort]`). В CI их никогда не было, ruff покрывает обе задачи.
+- [x] `target-version` поднят до `py312` в ruff (как mypy). Побочный эффект: `UP035` →
+      `typing.override` вместо `typing_extensions.override` в `ui/dialogs/wizard.py`.
+      ⚠️ Требует подтверждения: `.ollidesk/rules.md` заявляет Python 3.11+. Если 3.11
+      в поддержке, надо оставить `py311` и `typing_extensions.override`.
 
-**Правило:** до 1.2 новый код должен проходить `ruff check` без ошибок.
+**Правило:** новый код обязан проходить `ruff check` и `ruff format --check` без ошибок.
 
 ### 1.3 Типизация
 
@@ -99,25 +109,58 @@
 - [ ] Снять послабления (`disallow_untyped_defs`, `disallow_incomplete_defs`) хотя бы
       для `core/`, `agents/`, `fs/`, `state/`, `tools/`.
 - [ ] Убрать `ignore_errors = true` для `ui/dialogs/wizard.py` (модуль ~260 строк).
-- [ ] Добавить `ui/unused` в `exclude` mypy (сейчас не исключён, в отличие от `unused/`).
+- [ ] ~~Добавить `ui/unused` в `exclude` mypy~~ — **снято**: каталоги удалены в 1.4,
+      `exclude` из `pyproject.toml` тоже убран.
 - [ ] `fs/vector_store.py` — заменить `cast(Any, ...)`/`# type: ignore` на нормальную обёртку
       над ChromaDB (или тонкий адаптер с Protocols).
-- [ ] Удалить закомментированные альтернативные реализации в `fs/vector_store.py`,
-      `ui/web_editor/editor_widget.py`, `ui/main_window.py`, `core/search_cache.py`.
+- [x] Удалить закомментированные альтернативные реализации (коммит `4e77715`, 307 строк).
+      Перед удалением для каждого блока проверено, что живая замена есть:
+  - `fs/vector_store.py` — 60 строк: три поколения закомментированных вариантов `query()`
+    и блок «вариант 2 переделки, строка 127» с подсказками про импорты `Where`/`Include`
+  - `ui/web_editor/editor_widget.py` — 100 строк: старые `_setup_ui`, `_setup_bridge`, слоты,
+    `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get_content` (работа с JS переведена
+    на мост `PythonBridge`)
+  - `ui/file_tree_delegate.py` — 56 строк: superseded-реализация `refresh_status` через
+    `subprocess` и старая переопределённая `initStyleOption`
+  - `ui/main_window.py` — 43 строки: две закомментированные копии `_save_project_state`
+    (одна дублировала другую), неактивная ветка выбора модели, `results = {}`
+  - `core/search_cache.py` — старый `get()` (живой переписан с проверкой TTL),
+    `core/roles.py` — старый `get_role()` (живой с поддержкой `project_path`),
+    `main.py` — старый мок posthog через `types.ModuleType` (заменён классом `PosthogMock`),
+    `ui/dialogs/settings_dialog.py` — атрибуты UI-редакторов настроек индексации,
+    `ui/web_editor/download_monaco.py` — неиспользуемый `download_tarball`
+  - **Не тронуто** (живая документация, а не код): пояснения к `auto_gpu_layers`/`n_gpu_layers`
+    в `core/config.py`, комментарии-пояснения и `TODO` в `fs/indexer.py`
 - [ ] **Дубликат пакетов:** в зависимостях одновременно `duckduckgo-search` и `ddgs`,
       `tools/web_search.py` импортирует оба (см. также «Быстрый бэклог»). Оставить один —
       иначе `no-any-return` и путаница между двумя `DDGS` останутся.
 
-### 1.4 Удаление мёртвого кода
-- [ ] `ui/chat/threads.py`: удалить `OllamaChatThread` (не создаётся) и `RouterChatThread`
-      («back-compat», не создаётся); удалить `ChatPanel._ollama_thread`.
-- [ ] `ui/chat/panel.py`: удалить неиспользуемый сигнал `tool_requested`.
-- [ ] `ui/dialogs/tool_confirmation_dialog.py`: удалить неиспользуемый `_compute_diff`.
-- [ ] `ui/main_window.py`: удалить пустую заглушку `_update_right_panel_for_mode`.
-- [ ] Решить судьбу `agents/context_compactor.py`: либо подключить к `AgentLoop`, либо удалить.
-- [ ] Разобрать `tools/git_ops.py` vs `tools/git_ops_tool.py` — объединить или задокументировать.
-- [ ] Удалить/заархивировать `unused/` и `ui/unused/` (≈40 файлов) — отдельная задача с
-      подтверждением пользователя.
+### 1.4 Удаление мёртвого кода — **СДЕЛАНО** (коммиты `0ad6a53`, `4e77715`, `5df9c1a`)
+Каждый пункт предварительно проверен поиском по репозиторию, а не взят из описания.
+- [x] `ui/chat/threads.py`: удалены `OllamaChatThread` (legacy-режим Chat, не создаётся)
+      и `RouterChatThread` (пометка «оставлен для обратной совместимости» была неверной —
+      потребителей нет ни в одном модуле). Из `__init__.py` убраны оба в `__all__`.
+- [x] `ui/chat/panel.py`: удалён сигнал `tool_requested` (объявлен, ни разу не `emit`/`connect`)
+      и поле `ChatPanel._ollama_thread` — оно всегда было `None`, ни один поток туда не клался,
+      поэтому три блока отмены/остановки в `_stop_generation` были no-op.
+- [x] `ui/dialogs/tool_confirmation_dialog.py`: удалена `_compute_diff` (вызовов нет,
+      вместе с ней ушёл `difflib`).
+- [x] `ui/main_window.py`: удалена пустая заглушка `_update_right_panel_for_mode`, а вместе
+      с ней — вызывавший её `_on_chat_mode_changed` и `connect` в строке 400. Цепочка была
+      целиком no-op: настройки правой панели по режимам так и не реализованы.
+- [x] `agents/context_compactor.py` — **удалён** (решение пользователя). Экспортировался
+      как `compact_messages` через `agents/__init__.py`, но вызовов не было; импорт убран.
+      Сжатие истории планируется переписать заново в Фазе 4.6.B (см. 4.6.B-1.2).
+- [x] `tools/git_ops.py` vs `tools/git_ops_tool.py` — **дублирования нет, план ошибался**.
+      Это два слоя: `git_ops.py` — 3 синхронных хелпера, `git_ops_tool.py` — `@tool`-обёртки.
+      Все три хелпера живы: `get_git_status` (из `git_ops_tool` и `ui/main_window.py:1294`),
+      `create_snapshot` (из `git_ops_tool` и `tools/file_ops.py:9`), `undo_last_snapshot`.
+      `PullThread` и `_DownloadThread` тоже не дублируются: `ollama pull` против GGUF с
+      HuggingFace. Ничего не менялось, пункт закрыт как «проверено, мёртвого нет».
+- [x] `unused/` и `ui/unused/` — **удалены** (решение пользователя). Оказались **не в git**:
+      паттерн `unused` в `.gitignore` (строка 32) игнорировал оба каталога целиком, 53 файла
+      и 0.9 МБ лежали только в рабочем дереве. Правило `unused` и `exclude` из `pyproject.toml`
+      убраны — скрытое состояние хуже видимых untracked-файлов.
 
 ### 1.5 Тесты
 - [ ] `tests/tools/` — тесты на остальные 12 инструментов (особенно `_resolve_path` песочницу).
@@ -197,8 +240,9 @@
 
 ## Фаза 4 — Контекст и промпты
 
-- [ ] Подключить `agents/context_compactor.py` в `AgentLoop`: сжатие истории при >80 % контекста.
-      Приоритет выбрасываемых частей сообщения — **4.8.E**.
+- [ ] Написать заново сжатие истории и подключить его в `AgentLoop`: сжатие при >80 % контекста.
+      Прежняя реализация удалена в 1.4 как мёртвая. Приоритет выбрасываемых частей
+      сообщения — **4.8.E**.
 - [ ] Динамическое формирование системного промпта:
   - токен-бюджет под модель (`ctx`), разделение: инструкции / RAG / tools / правила / история;
   - подстановка имени проекта, языка, структуры каталогов.
@@ -296,8 +340,9 @@
 - [ ] **`temperature` для PLAN/AGENT** (`React.md` 1.1): `ChatOptions(temperature=0.0)` в
       агентных режимах, текущее значение конфига применять только к CHAT. Проверить, что
       `AgentLoop` вообще передаёт `options`.
-- [ ] **Подключить `context_compactor`** (`React.md` 1.2): вызывать `compact_messages` перед
-      каждым `client.chat`, иначе история вылетит за `n_ctx` на длинных сессиях.
+- [ ] **Подключить сжатие истории** (`React.md` 1.2): вызывать компактор перед каждым
+      `client.chat`, иначе история вылетит за `n_ctx` на длинных сессиях. Реализация
+      удалена в 1.4, писать заново (Фаза 4, первый пункт).
 - [ ] **`ChatMessageItem` рендерит `tool_calls`** (`React.md` 9.4): блок
       «🔧 Вызваны: web_search(query=…)» — понадобится после миграции 1.4.
       Полноценный виджет с состоянием и результатом — **4.8.B**; здесь только
@@ -341,7 +386,7 @@
 
 ### 4.6.E — Решения, которые нужно подтвердить
 
-- [ ] `agents/context_compactor.py`: подключать (1.2) или удалять. Сейчас дедкод.
+- [x] `agents/context_compactor.py`: **удалён** в 1.4 (решение пользователя) — писать заново.
 - [ ] Порядок: `React.md` предлагает «день 1 — temperature, compactor, лимит observation,
       agent config». Порядок оставлен автором, реальный приоритет — сначала дедупликат (2.2),
       лимит observation (2.3) и валидация аргументов (3.1): они дают эффект без изменения
@@ -547,8 +592,8 @@
       `AgentChatThread` в UI. Сегодня сигнал один (`chunk_received`), и UI различает
       токен текста и токен размышления по двум разным слотам; сообщение для следующей
       итерации собирается из строки `current_text`.
-- [ ] **Приоритет сжатия в `context_compactor`** (`agents/context_compactor.py`,
-      сейчас не вызывается): первым выбрасывать `ReasoningPart` — они самые объёмные
+- [ ] **Приоритет сжатия в компакторе истории** (модуль удалён в 1.4, писать заново в Фазе 4):
+      первым выбрасывать `ReasoningPart` — они самые объёмные
       и наименее важные для истории; затем результаты инструментов (с учётом лимита
       Observation из 4.6.A); текст диалога — последним. Выполнять **после**
       подключения компактора (Фаза 4 / 4.6.B).
@@ -675,7 +720,8 @@
 
 ## Быстрый бэклог (мелочи)
 
-- [ ] `ruff` вместо `black`/`isort` (быстрее в 30–100 раз, дубли функционала) — обсудить.
+- [x] `ruff` вместо `black`/`isort` — сделано в 1.2: black и isort удалены из обеих групп
+      зависимостей и из конфигурации, `ruff format` + правило I001 закрывают обе задачи.
 - [ ] **`uv.lock` рассинхронизирован с `pyproject.toml`**: объявлен `llama-cpp-python>=0.3.0`
       (и транзитивный `diskcache`), в локе их нет. Любой `uv run` / `uv sync` молча
       переписывает лок, и правка попадает в случайный коммит. Перегенерировать один раз

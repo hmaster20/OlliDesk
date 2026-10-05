@@ -67,13 +67,12 @@ OlliDesk/
 ├── tests/                   # pytest: tests/{core,fs,agents}
 ├── docs/                    # Документация (см. §10)
 ├── .ollidesk/               # Локальная конфигурация OlliDesk для ЭТОГО проекта (tracked)
-├── unused/ , ui/unused/     # Архивные версии UI (gitignored / не импортируются) — НЕ ТРОГАТЬ
 └── .github/workflows/ci.yml # CI: ruff → mypy → pytest → codecov
 ```
 
-**Важно:** `unused/` и `ui/unused/` — это архивные поколения интерфейса (~40 файлов, дубликаты
-`main_window.py` / `chat_panel.py` / `web_editor`). Они не импортируются, `unused/` не проверяется
-mypy. Не редактируй и не удаляй их без отдельной задачи.
+Архивных копий UI в рабочем дереве нет: `unused/` и `ui/unused/` (53 файла, дубликаты
+`main_window.py` / `chat_panel.py` / `web_editor`) удалены в Фазе 1.4 плана модернизации.
+История остаётся в git.
 
 ---
 
@@ -154,7 +153,6 @@ mypy. Не редактируй и не удаляй их без отдельн�
 | `agents/rule_based_fallback.py` | Ответы без LLM (регулярки: погода, время, дата) |
 | `agents/download_slm.py` | Скачивание/удаление GGUF с HuggingFace, обработка split-GGUF. CLI: `python -m agents.download_slm` |
 | `agents/gpu_utils.py` | Опрос `nvidia-smi`, подбор `n_gpu_layers`, `detect_optimal_threads()` (физические ядра) |
-| `agents/context_compactor.py` | Сжатие истории через LLM. **Экспортируется, но нигде не вызывается** |
 
 Контракт бэкенда (duck-типинг, общего базового класса **нет**):
 `chat()`, `embed()`, `cancel_request()`, `is_cancelled()`, `reset_cancel()`, `check_tools_support()`.
@@ -253,7 +251,7 @@ MainWindow (QMainWindow, ui/main_window.py)
 |---|---|---|
 | `ui/main_window.py` | ~1280 | Оболочка, открытие проекта и список последних, оркестрация индексации, меню, переключение темы. Владеет `SessionStore`, `OllamaClient`, `ModelRegistry`, `RoleManager`, `SystemPromptManager`, `FileIndexer`, `SearchCache`. Здесь же `ProjectState`, `IndexingThread`, обработчик `@dir` (`_on_directory_attach_requested`) и F4 (`_toggle_project_structure`) |
 | `ui/chat/panel.py` | ~1500 | Панель чата: выбор роли/модели/режима, стриминг пузырей, подтверждение инструментов, детекция бэкендов, пре-RAG-поиск, команды `@web`/`@dir`/`@file`/`@path`. **Здесь единственное место регистрации инструментов** (`_build_registry`) |
-| `ui/chat/threads.py` | ~520 | Мост async ↔ Qt: 11 `QThread`-классов, каждый запускает `asyncio.run()` |
+| `ui/chat/threads.py` | ~330 | Мост async ↔ Qt: 6 `QThread`-классов, каждый запускает `asyncio.run()` |
 | `ui/chat/message_item.py` | ~250 | Один «пузырь» сообщения: markdown → HTML (вручную, `re` + `pygments`) → `QTextBrowser`; кнопка «Копировать» под текстом |
 | `ui/file_tree_delegate.py` | ~160 | Цвета строк дерева файлов по `git status --porcelain`, дебаунс 500 мс |
 | `ui/theme.py` | ~180 | `LIGHT_STYLESHEET` / `DARK_STYLESHEET` + палитра |
@@ -343,9 +341,10 @@ Promise. Py → JS: `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get
   `quote-style = "preserve"` — **не меняй вид кавычек** у существующих строк.
 - `N802/N806` иногда нарушаются намеренно (методы Qt вроде `resizeEvent`, константы в функциях) —
   не «исправляй» это без причины.
-- Black/isort настроены, но в CI не запускаются. Приоритет — `ruff check --fix` + `ruff format`.
-- Текущий базис: `ruff check .` даёт 21 ошибку. Не усугубляй; чинить — отдельная задача
-  (см. `docs/PLAN_MODERNIZATION.md`).
+- Black и isort **удалены** из dev-зависимостей (Фаза 1.2). Форматирование и сортировка импортов —
+  только `ruff format` и `ruff check --fix` (правило I001).
+- Текущий базис: `ruff check .` — 0 ошибок, `ruff format --check .` — чисто, `mypy .` — 24 ошибки
+  в 9 файлах. Не усугубляй (см. `docs/PLAN_MODERNIZATION.md`, Фаза 1.3).
 
 **Типизация**
 - mypy `strict = true`, но с послаблениями (`disallow_untyped_defs = false`,
@@ -503,8 +502,10 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
    условие для `QWebEngineView`.
 10. **Сессии без проекта** используют `project_path = "global"`, а не `Path.cwd()` — не «чини»
     это обратно.
-11. **`ui/unused/` не исключён из mypy** (в отличие от `unused/`). ruff/black обходят оба
-    каталога — не добавляй туда файлы.
+11. **Каталогов `unused/` и `ui/unused/` больше нет.** Архивные версии UI удалены в Фазе 1.4
+    (53 файла, они даже не были в git — лежали только в рабочем дереве под `.gitignore`).
+    Если снова появится старый дубликат `main_window.py`/`chat_panel.py` — не создавай архив,
+    положись на историю git.
 12. **`slm.n_threads = 0` — это «авто», а не «без потоков».** Значение разбирает
     `detect_optimal_threads()` в `agents/local_llm_client.py` (число физических ядер,
     минимум 2). Ставь `0`, чтобы не хардкодить.
