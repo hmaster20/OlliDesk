@@ -27,9 +27,9 @@ from core.config import AppConfig, SLMModelInfo, save_config
 class _DownloadThread(QThread):
     """Скачивает одну модель в фоне."""
 
-    finished = Signal(str, bool)   # model_id, success
-    progress = Signal(str, str)    # model_id, message
-    error = Signal(str, str)       # model_id, error
+    finished = Signal(str, bool)  # model_id, success
+    progress = Signal(str, str)  # model_id, message
+    error = Signal(str, str)  # model_id, error
 
     def __init__(self, info: SLMModelInfo):
         super().__init__()
@@ -82,12 +82,8 @@ class SLMModelsDialog(QDialog):
 
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(
-            ["Модель", "Ожидаемый размер", "Статус", "Активна", "На диске"]
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
+        self.table.setHorizontalHeaderLabels(["Модель", "Ожидаемый размер", "Статус", "Активна", "На диске"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -146,9 +142,7 @@ class SLMModelsDialog(QDialog):
         chat_models = self.config.slm.get_chat_models()
         if not chat_models:
             # Аварийный случай: не осталось ни одной chat-модели
-            self.status_label.setText(
-                "⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml."
-            )
+            self.status_label.setText("⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml.")
 
         for row, m in enumerate(chat_models):
             self.table.insertRow(row)
@@ -162,9 +156,7 @@ class SLMModelsDialog(QDialog):
             self.table.setItem(row, 1, size_item)
 
             installed = is_model_installed(m.file, repo_id=m.repo)
-            status_item = QTableWidgetItem(
-                "✅ Установлена" if installed else "⬇️ Не скачана"
-            )
+            status_item = QTableWidgetItem("✅ Установлена" if installed else "⬇️ Не скачана")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 2, status_item)
 
@@ -182,9 +174,7 @@ class SLMModelsDialog(QDialog):
         embed_file = self.config.slm.embed_model_file
         embed_installed = is_model_installed(embed_file, repo_id=embed_repo)
         embed_status = "✅ установлена" if embed_installed else "⬇️ не скачана"
-        self.embed_label.setText(
-            f"📎 {embed_file} — {embed_status}"
-        )
+        self.embed_label.setText(f"📎 {embed_file} — {embed_status}")
 
         self._update_buttons()
 
@@ -258,8 +248,7 @@ class SLMModelsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Скачивание модели",
-            f"Скачать {info.display_name} (~{info.size_mb} МБ)?\n"
-            f"Источник: huggingface.co/{info.repo}",
+            f"Скачать {info.display_name} (~{info.size_mb} МБ)?\nИсточник: huggingface.co/{info.repo}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -268,9 +257,7 @@ class SLMModelsDialog(QDialog):
         self._set_busy(True, f"Скачивание {info.display_name}...")
 
         self._download_thread = _DownloadThread(info)
-        self._download_thread.progress.connect(
-            lambda _id, msg: self.status_label.setText(msg)
-        )
+        self._download_thread.progress.connect(lambda _id, msg: self.status_label.setText(msg))
         self._download_thread.finished.connect(self._on_download_finished)
         self._download_thread.error.connect(self._on_download_error)
         self._download_thread.start()
@@ -304,8 +291,7 @@ class SLMModelsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Удаление модели",
-            f"Удалить {info.display_name}?\n"
-            f"(будут удалены все части разбитой модели)",
+            f"Удалить {info.display_name}?\n(будут удалены все части разбитой модели)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -329,9 +315,7 @@ class SLMModelsDialog(QDialog):
             )
             return
         if not is_model_installed(info.file, repo_id=info.repo):
-            QMessageBox.information(
-                self, "Не установлена", "Сначала скачайте модель."
-            )
+            QMessageBox.information(self, "Не установлена", "Сначала скачайте модель.")
             return
         if info.id == self.config.slm.selected_model:
             return

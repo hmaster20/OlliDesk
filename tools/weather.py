@@ -172,13 +172,9 @@ async def _geocode_city(city: str) -> tuple[float, float, str] | None:
                     lon = float(r["longitude"])
                     display_name = r.get("name", name)
                     country = r.get("country", "")
-                    display = (
-                        f"{display_name}, {country}" if country else display_name
-                    )
+                    display = f"{display_name}, {country}" if country else display_name
                     _GEOCODE_CACHE[cache_key] = (lat, lon, display)
-                    logger.debug(
-                        f"Геокодинг '{city}' -> {display} ({lat},{lon})"
-                    )
+                    logger.debug(f"Геокодинг '{city}' -> {display} ({lat},{lon})")
                     return lat, lon, display
             except Exception as e:
                 logger.warning(f"Ошибка геокодинга '{name}': {e}")
@@ -226,17 +222,14 @@ async def get_weather(city: str) -> str:
     lat, lon, display = geo
 
     try:
-        async with httpx.AsyncClient(
-            headers=_HTTP_HEADERS, timeout=15.0
-        ) as client:
+        async with httpx.AsyncClient(headers=_HTTP_HEADERS, timeout=15.0) as client:
             resp = await client.get(
                 "https://api.open-meteo.com/v1/forecast",
                 params={
                     "latitude": lat,
                     "longitude": lon,
                     "current": (
-                        "temperature_2m,relative_humidity_2m,"
-                        "apparent_temperature,weather_code,wind_speed_10m"
+                        "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
                     ),
                     "timezone": "auto",
                 },

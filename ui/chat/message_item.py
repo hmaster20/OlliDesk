@@ -113,15 +113,9 @@ class ChatMessageItem(QWidget):
         self.content_browser.setOpenExternalLinks(True)
         self.content_browser.setReadOnly(True)
         self.content_browser.setFrameShape(QFrame.Shape.NoFrame)
-        self.content_browser.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.content_browser.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.content_browser.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
+        self.content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.content_browser.document().setDocumentMargin(0)
         self.content_browser.setStyleSheet(
             f"QTextBrowser {{"
@@ -261,7 +255,9 @@ class ChatMessageItem(QWidget):
 
             body = re.sub(
                 r"`([^`]+)`",
-                lambda m: f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>',
+                lambda m: (
+                    f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>'
+                ),
                 body,
             )
             body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)

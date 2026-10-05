@@ -207,9 +207,7 @@ class OllamaConnectionPage(QWizardPage):
             self.wizard.available_models = [m["name"] for m in data.get("models", [])]
 
             if self.wizard.available_models:
-                self.status_label.setText(
-                    f"✅ Успешно! Найдено моделей: {len(self.wizard.available_models)}"
-                )
+                self.status_label.setText(f"✅ Успешно! Найдено моделей: {len(self.wizard.available_models)}")
                 self.status_label.setStyleSheet("color: green; padding: 10px;")
             else:
                 self.status_label.setText(

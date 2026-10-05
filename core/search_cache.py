@@ -39,10 +39,7 @@ class SearchCache:
         from typing import cast
 
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute(
-                "SELECT result, timestamp FROM cache WHERE query = ?",
-                (query,)
-            )
+            cur = conn.execute("SELECT result, timestamp FROM cache WHERE query = ?", (query,))
             row = cur.fetchone()
             if row:
                 result, ts_str = row
@@ -55,11 +52,10 @@ class SearchCache:
                 conn.commit()
         return None
 
-
     def set(self, query: str, result: str):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO cache (query, result, timestamp) VALUES (?, ?, ?)",
-                (query, result, datetime.now().isoformat())
+                (query, result, datetime.now().isoformat()),
             )
             conn.commit()

@@ -43,6 +43,7 @@ _SEARX_INSTANCES = (
 # Стратегия 1: Яндекс (парсинг)
 # ---------------------------------------------------------------------------
 
+
 async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
     """Парсит выдачу yandex.ru/search/?text=... через curl_cffi."""
     from bs4 import BeautifulSoup
@@ -72,12 +73,8 @@ async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
 
     # Селекторы Яндекса меняются, поэтому пробуем несколько вариантов.
     for item in soup.select("li.serp-item, li.serp-item_card"):
-        title_el = item.select_one(
-            "h2 a, .organic__url-text, .OrganicTitle-Link"
-        )
-        snippet_el = item.select_one(
-            ".organic__content-wrapper, .OrganicTextContentSpan"
-        )
+        title_el = item.select_one("h2 a, .organic__url-text, .OrganicTitle-Link")
+        snippet_el = item.select_one(".organic__content-wrapper, .OrganicTextContentSpan")
         url_el = item.select_one("a.organic__url, a[href^='http']")
 
         if not title_el:
@@ -106,8 +103,10 @@ async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
 # Стратегия 2: DDGS (ddgs / duckduckgo_search)
 # ---------------------------------------------------------------------------
 
+
 async def _search_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
     """DuckDuckGo через ddgs (или duckduckgo_search как fallback)."""
+
     def _do() -> list[dict]:
         try:
             from ddgs import DDGS  # новый пакет (июль 2025+)
@@ -137,6 +136,7 @@ async def _search_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 # Стратегия 3: DDG HTML (curl_cffi)
 # ---------------------------------------------------------------------------
+
 
 async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]:
     """Прямой парсинг html.duckduckgo.com/html/ через curl_cffi."""
@@ -194,6 +194,7 @@ async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]
 # Стратегия 4: SearXNG
 # ---------------------------------------------------------------------------
 
+
 async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
     """SearXNG публичные инстансы (best-effort)."""
     from curl_cffi import requests
@@ -239,6 +240,7 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 # Публичный инструмент
 # ---------------------------------------------------------------------------
+
 
 @tool(
     name="web_search",
@@ -300,17 +302,13 @@ async def web_search(
                     body = (r.get("body", "") or "")[:400]
                     parts.append(f"{i}. {title}\n   {href}\n   {body}")
                 text = "\n\n".join(parts)
-                logger.info(
-                    f"web_search: '{query}' via {name}, {len(results)} results"
-                )
+                logger.info(f"web_search: '{query}' via {name}, {len(results)} results")
                 if search_cache:
                     search_cache.set(query, text)
                 return text
             errors.append(f"{name}: no results")
         except Exception as e:
-            logger.warning(
-                f"web_search {name} failed: {type(e).__name__}: {e}"
-            )
+            logger.warning(f"web_search {name} failed: {type(e).__name__}: {e}")
             errors.append(f"{name}: {type(e).__name__}")
 
     logger.error(f"web_search: all strategies failed for '{query}': {errors}")

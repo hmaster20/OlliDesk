@@ -113,9 +113,7 @@ class TestExecute:
         async def afetch(query: str) -> str:
             return f"got {query}"
 
-        result = await _registry_with(afetch).execute(
-            ToolCall(name="afetch", arguments={"query": "y"})
-        )
+        result = await _registry_with(afetch).execute(ToolCall(name="afetch", arguments={"query": "y"}))
         assert result.content == "got y"
 
     @pytest.mark.asyncio

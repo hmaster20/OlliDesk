@@ -28,6 +28,7 @@ class Embedder(Protocol):
 
 class SearchResult(BaseModel):
     """Результат поиска."""
+
     chunk: TextChunk
     score: float
     file_path: str
@@ -56,8 +57,7 @@ class VectorStore:
         """
         if not hasattr(embed_client, "embed"):
             raise EmbedderError(
-                f"Объект {type(embed_client).__name__} не умеет считать эмбеддинги "
-                f"(нет метода embed)"
+                f"Объект {type(embed_client).__name__} не умеет считать эмбеддинги (нет метода embed)"
             )
 
         self.persist_dir = persist_dir
@@ -107,8 +107,7 @@ class VectorStore:
             )
         if len(vectors) != len(texts):
             raise EmbedderError(
-                f"Эмбеддингов {len(vectors)}, а текстов {len(texts)} — "
-                f"размерности не совпадают"
+                f"Эмбеддингов {len(vectors)}, а текстов {len(texts)} — размерности не совпадают"
             )
         return vectors
 
@@ -125,7 +124,7 @@ class VectorStore:
         # Батчевая обработка
         batch_size = 32
         for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
+            batch = chunks[i : i + batch_size]
 
             # Векторизация
             texts = [chunk.content for chunk in batch]
@@ -147,9 +146,9 @@ class VectorStore:
             # Добавление в коллекцию
             self.collection.add(
                 ids=ids,
-                embeddings=embeddings,   # type: ignore[arg-type]
+                embeddings=embeddings,  # type: ignore[arg-type]
                 documents=documents,
-                metadatas=metadatas,     # type: ignore[arg-type]
+                metadatas=metadatas,  # type: ignore[arg-type]
             )
 
             logger.debug(f"Добавлено чанков: {len(batch)}")
@@ -232,7 +231,6 @@ class VectorStore:
             include=include_modes,
         )
 
-
         # Преобразование результатов
         # search_results = []
         # if results["documents"] and results["documents"][0]:
@@ -262,10 +260,14 @@ class VectorStore:
 
         # Гарантируем mypy, что списки документов, метаданных, дистанций и id существуют
         if (
-            results["documents"] and results["documents"][0]
-            and results["metadatas"] and results["metadatas"][0]
-            and results["distances"] and results["distances"][0]
-            and results["ids"] and results["ids"][0]
+            results["documents"]
+            and results["documents"][0]
+            and results["metadatas"]
+            and results["metadatas"][0]
+            and results["distances"]
+            and results["distances"][0]
+            and results["ids"]
+            and results["ids"][0]
         ):
             for i, doc in enumerate(results["documents"][0]):
                 metadata = results["metadatas"][0][i]
@@ -296,7 +298,6 @@ class VectorStore:
                     )
                 )
 
-
         logger.debug(f"Найдено результатов: {len(search_results)}")
         return search_results
 
@@ -320,7 +321,6 @@ class VectorStore:
             where=cast(Any, {"file_path": {"$in": file_paths}}),
             include=[],
         )
-
 
         if results["ids"]:
             self.collection.delete(ids=results["ids"])

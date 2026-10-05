@@ -100,9 +100,10 @@ class IndexingThread(QThread):
         except Exception as e:
             self.indexing_error.emit(str(e))
 
+
 class ModelCheckThread(QThread):
-    progress = Signal(str, int, int)          # model_name, current, total
-    model_checked = Signal(str, bool)         # model_name, supports_tools
+    progress = Signal(str, int, int)  # model_name, current, total
+    model_checked = Signal(str, bool)  # model_name, supports_tools
     finished = Signal(dict)
 
     def __init__(self, base_url: str, registry: ModelRegistry):
@@ -117,10 +118,12 @@ class ModelCheckThread(QThread):
 
     def run(self):
         import asyncio
+
         asyncio.run(self._check())
 
     async def _check(self):
         from agents.ollama_client import OllamaClient
+
         client = OllamaClient(base_url=self.base_url)
 
         # results = {}
@@ -129,7 +132,8 @@ class ModelCheckThread(QThread):
 
         # Собираем модели для проверки
         models_to_check = [
-            name for name, info in self.registry.models.items()
+            name
+            for name, info in self.registry.models.items()
             if info.is_local and info.supports_tools is None
         ]
         total = len(models_to_check)
@@ -147,13 +151,14 @@ class ModelCheckThread(QThread):
                     supports = await client.check_tools_support(model)
                     results[model] = supports
                     self.registry.update_tool_support(model, supports)
-                    self.model_checked.emit(model, supports)   # <-- новый сигнал
+                    self.model_checked.emit(model, supports)  # <-- новый сигнал
                 except Exception as e:
                     logger.error(f"Ошибка проверки модели {model}: {e}")
                     results[model] = False
                     self.registry.update_tool_support(model, False)
                     self.model_checked.emit(model, False)
         self.finished.emit(results)
+
 
 class ProjectState:
     """Управление состоянием проекта для инкрементальной индексации."""
@@ -212,6 +217,7 @@ class ProjectState:
         if self.state_file.exists():
             self.state_file.unlink()
 
+
 class MainWindow(QMainWindow):
     """Главное окно приложения."""
 
@@ -250,6 +256,7 @@ class MainWindow(QMainWindow):
 
         # Инициализация менеджера ролей
         from core.roles import RoleManager
+
         self.role_manager = RoleManager()
 
         # Инициализация менеджера промптов
@@ -272,9 +279,7 @@ class MainWindow(QMainWindow):
         self.right_panel.setVisible(False)
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
-        self.chat_panel.directory_attach_requested.connect(
-            self._on_directory_attach_requested
-        )
+        self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
 
         logger.info("Главное окно создано")
 
@@ -321,18 +326,14 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.project_icon_label)
 
         self.project_title_label = QLabel("Проект")
-        self.project_title_label.setStyleSheet(
-            "font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;"
-        )
+        self.project_title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;")
         header_layout.addWidget(self.project_title_label)
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
         # Кнопка Reindex наверху
         self.reindex_btn = QPushButton("🔄 Переиндексировать")
-        self.reindex_btn.setStyleSheet(
-            "font-size: 13px; padding: 8px; margin: 4px 10px;"
-        )
+        self.reindex_btn.setStyleSheet("font-size: 13px; padding: 8px; margin: 4px 10px;")
         self.reindex_btn.clicked.connect(self._reindex_project)
         self.reindex_btn.setVisible(False)
         layout.addWidget(self.reindex_btn)
@@ -344,9 +345,7 @@ class MainWindow(QMainWindow):
         self.file_tree.setIndentation(16)
         self.file_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
-        self.file_tree.setStyleSheet(
-            "font-size: 13px; border: none;"
-        )
+        self.file_tree.setStyleSheet("font-size: 13px; border: none;")
         self.file_tree.doubleClicked.connect(self._on_file_tree_clicked)
         self.file_tree.clicked.connect(self._on_file_tree_clicked)
         self._git_delegate = GitStatusDelegate(self.file_tree)
@@ -365,9 +364,7 @@ class MainWindow(QMainWindow):
         self.index_progress.setRange(0, 100)
         self.index_progress.setValue(0)
         self.index_progress.setVisible(False)
-        self.index_progress.setStyleSheet(
-            "font-size: 12px; padding: 2px; margin: 4px 10px;"
-        )
+        self.index_progress.setStyleSheet("font-size: 12px; padding: 2px; margin: 4px 10px;")
         layout.addWidget(self.index_progress)
 
         # Статус индексации
@@ -393,11 +390,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
 
-        default_model = (
-            self.config.default_model
-            if hasattr(self.config, "default_model")
-            else "llama3.2"
-        )
+        default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
             base_url="http://localhost:11434",
@@ -426,6 +419,7 @@ class MainWindow(QMainWindow):
         self.config.last_model = settings.get("model", "")
         self.config.last_mode = settings.get("mode", "chat")
         from core.config import save_config
+
         logger.info(f"⚙️ settings_changed: model={settings.get('model')}, mode={settings.get('mode')}")
         save_config(self.config)
 
@@ -490,9 +484,7 @@ class MainWindow(QMainWindow):
 
         self.temp_value_label = QLabel("0.70")
         self.temp_value_label.setStyleSheet("font-size: 12px; color: gray; padding: 0 10px;")
-        self.temp_slider.valueChanged.connect(
-            lambda v: self.temp_value_label.setText(f"{v / 100:.2f}")
-        )
+        self.temp_slider.valueChanged.connect(lambda v: self.temp_value_label.setText(f"{v / 100:.2f}"))
         layout.addWidget(self.temp_value_label)
 
         # Max tokens
@@ -619,9 +611,7 @@ class MainWindow(QMainWindow):
 
         self.confirm_web_search_action = QAction("Подтверждать запросы в интернет", self)
         self.confirm_web_search_action.setCheckable(True)
-        self.confirm_web_search_action.setChecked(
-            self._config_confirm_web_search()
-        )
+        self.confirm_web_search_action.setChecked(self._config_confirm_web_search())
         self.confirm_web_search_action.toggled.connect(self._on_confirm_web_search_toggled)
         file_menu.addAction(self.confirm_web_search_action)
 
@@ -703,6 +693,7 @@ class MainWindow(QMainWindow):
         """
         try:
             from core.config import load_config
+
             cfg = load_config()
             return cfg.confirm.enabled or cfg.confirm.web_search
         except Exception as e:
@@ -718,6 +709,7 @@ class MainWindow(QMainWindow):
         """
         try:
             from core.config import load_config, save_config
+
             cfg = load_config()
             cfg.confirm.web_search = checked
             save_config(cfg)
@@ -752,6 +744,7 @@ class MainWindow(QMainWindow):
 
     def _do_check_ollama(self) -> None:
         """Выполняет проверку Ollama."""
+
         async def _check():
             try:
                 async with self.ollama_client as client:
@@ -790,7 +783,7 @@ class MainWindow(QMainWindow):
                 # Используем моржовый оператор (:=), чтобы сохранить объект и проверить его на None
                 first_local = next(
                     (m for m in models if (info := self.model_registry.get(m)) is not None and info.is_local),
-                    models[0]
+                    models[0],
                 )
                 self.chat_panel.set_model(first_local)
                 # иначе оставляем текущую
@@ -859,6 +852,7 @@ class MainWindow(QMainWindow):
                 projects.remove(path)
                 self.config.recent_projects = projects[:10]
                 from core.config import save_config
+
                 save_config(self.config)
                 self._update_recent_projects_menu()
 
@@ -1013,9 +1007,7 @@ class MainWindow(QMainWindow):
         if total > 0:
             self.index_progress.setRange(0, total)
             self.index_progress.setValue(current)
-            self.index_status_label.setText(
-                f"⏳ Индексация: {current}/{total} файлов"
-            )
+            self.index_status_label.setText(f"⏳ Индексация: {current}/{total} файлов")
 
     @Slot()
     def _on_index_finished(self):
@@ -1118,6 +1110,7 @@ class MainWindow(QMainWindow):
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""
         from core.config import ToolPolicy
+
         policy = ToolPolicy.AUTO if checked else ToolPolicy.EXCLUDED
         self.chat_panel.set_tool_policy(tool_key, policy)
 
@@ -1146,9 +1139,11 @@ class MainWindow(QMainWindow):
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""
         from ui.dialogs.wizard import SetupWizard
+
         wizard = SetupWizard()
         if wizard.exec():
             from core.config import load_config
+
             try:
                 self.config = load_config()
                 if self.chat_panel:
@@ -1158,6 +1153,7 @@ class MainWindow(QMainWindow):
                     self.chat_panel.set_model(default)
                     self.chat_panel.set_project_open(self.project_path is not None)
                 from core.config import save_config
+
                 save_config(self.config)
             except Exception as e:
                 logger.error(f"Ошибка загрузки конфига после визарда: {e}")
@@ -1167,10 +1163,12 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         """Открывает диалог настроек."""
         from ui.dialogs.settings_dialog import SettingsDialog
+
         dlg = SettingsDialog(config=self.config, project_path=self.project_path, parent=self)
         if dlg.exec():
             # Перезагружаем конфиг
             from core.config import load_config
+
             try:
                 self.config = load_config(self.project_path)
                 # Обновляем индексер с новым конфигом
@@ -1190,21 +1188,22 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About OlliDesk",
-            "OlliDesk v1.0.0\n\n"
-            "Локальный AI-ассистент для написания кода.\n\n"
-            "Powered by Ollama + PySide6",
+            "OlliDesk v1.0.0\n\nЛокальный AI-ассистент для написания кода.\n\nPowered by Ollama + PySide6",
         )
 
     def closeEvent(self, event):
         logger.info("Закрытие главного окна")
         # Сохраняем глобальные (last_model, last_mode) всегда
-        self._save_project_settings() # сохраняет проектные (model, mode) в .ollidesk/project_settings.yaml
+        self._save_project_settings()  # сохраняет проектные (model, mode) в .ollidesk/project_settings.yaml
         if self.chat_panel:
             self.config.last_model = self.chat_panel.get_current_model()
             mode_map = {0: "chat", 1: "plan", 2: "agent"}
             self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
             from core.config import save_config
-            logger.info(f"🔄 closeEvent: last_model='{self.config.last_model}', last_mode='{self.config.last_mode}'")
+
+            logger.info(
+                f"🔄 closeEvent: last_model='{self.config.last_model}', last_mode='{self.config.last_mode}'"
+            )
             save_config(self.config)
             logger.info("✅ Конфиг сохранён в closeEvent")
         self._stop_all_threads()
@@ -1228,6 +1227,7 @@ class MainWindow(QMainWindow):
         # Останавливаем клиент Ollama
         if hasattr(self, 'ollama_client') and self.ollama_client:
             import asyncio
+
             try:
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self.ollama_client.__aexit__(None, None, None))
@@ -1237,6 +1237,7 @@ class MainWindow(QMainWindow):
 
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
+
         dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
         dlg.exec()
 
@@ -1263,7 +1264,11 @@ class MainWindow(QMainWindow):
             self._stop_model_check()
             return
 
-        if hasattr(self, '_model_check_thread') and self._model_check_thread and self._model_check_thread.isRunning():
+        if (
+            hasattr(self, '_model_check_thread')
+            and self._model_check_thread
+            and self._model_check_thread.isRunning()
+        ):
             return
 
         self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
@@ -1271,10 +1276,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.refresh_models_btn.setText("⏹ Стоп")
         self._is_checking = True
 
-        self._model_check_thread = ModelCheckThread(
-            self.ollama_client.base_url,
-            self.model_registry
-        )
+        self._model_check_thread = ModelCheckThread(self.ollama_client.base_url, self.model_registry)
         self._model_check_thread.progress.connect(self._on_model_check_progress)
         self._model_check_thread.model_checked.connect(self._on_model_checked)
         self._model_check_thread.finished.connect(self._on_model_check_finished)
@@ -1317,5 +1319,6 @@ class MainWindow(QMainWindow):
 
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog
+
         dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
         dlg.exec()

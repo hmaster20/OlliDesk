@@ -145,9 +145,7 @@ class LocalLLMClient:
             tool_instruction = self._build_tool_instruction(tools)
             # Вставляем инструкцию как САМОЕ ПЕРВОЕ system-сообщение
             if chat_messages and chat_messages[0].get("role") == "system":
-                chat_messages[0]["content"] = (
-                    tool_instruction + "\n\n" + chat_messages[0]["content"]
-                )
+                chat_messages[0]["content"] = tool_instruction + "\n\n" + chat_messages[0]["content"]
             else:
                 chat_messages.insert(0, {"role": "system", "content": tool_instruction})
 
@@ -197,23 +195,15 @@ class LocalLLMClient:
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 if cancelled:
-                    self.last_stats = self._make_stats(
-                        prompt_chars, 0, gen_ms, None, cancelled=True
-                    )
+                    self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
                     _safe_put(ChatChunk(content="", done=True))
                     return
 
                 full_text = "".join(full_text_parts)
                 tokens = self._count_tokens(full_text)
-                ttft_ms = (
-                    (first_token_at - gen_started) * 1000
-                    if first_token_at is not None
-                    else None
-                )
-                self.last_stats = self._make_stats(
-                    prompt_chars, tokens, gen_ms, ttft_ms
-                )
+                ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
+                self.last_stats = self._make_stats(prompt_chars, tokens, gen_ms, ttft_ms)
                 logger.info(
                     f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
                     f"({tokens / (gen_ms / 1000):.1f} ток/с)"
@@ -227,13 +217,8 @@ class LocalLLMClient:
                     tool_call = self._parse_tool_call(full_text)
 
                 if tool_call is not None:
-                    logger.info(
-                        f"SLM: распознан tool_call → {tool_call.name}"
-                        f"({tool_call.arguments})"
-                    )
-                    _safe_put(
-                        ChatChunk(content="", tool_calls=[tool_call], done=False)
-                    )
+                    logger.info(f"SLM: распознан tool_call → {tool_call.name}({tool_call.arguments})")
+                    _safe_put(ChatChunk(content="", tool_calls=[tool_call], done=False))
                     _safe_put(ChatChunk(content="", done=True))
                 else:
                     if full_text:
@@ -421,6 +406,7 @@ class LocalLLMClient:
             lines.append(f"- {name}({args_str}): {desc}")
 
         return "\n".join(lines)
+
     # --- Конвертация сообщений ---
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:

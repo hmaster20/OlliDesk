@@ -11,9 +11,7 @@ import urllib.request
 from pathlib import Path
 
 MONACO_VERSION = "0.45.0"
-MONACO_URL = (
-    f"https://registry.npmjs.org/monaco-editor/-/monaco-editor-{MONACO_VERSION}.tgz"
-)
+MONACO_URL = f"https://registry.npmjs.org/monaco-editor/-/monaco-editor-{MONACO_VERSION}.tgz"
 VENDOR_DIR = Path(__file__).parent / "vendor"
 TARGET_DIR = VENDOR_DIR / "monaco"
 
@@ -25,6 +23,7 @@ TARGET_DIR = VENDOR_DIR / "monaco"
 #         data = resp.read()
 #         print(f"  Загружено {len(data) / 1024 / 1024:.1f} MB")
 #         return data
+
 
 def download_tarball(url: str) -> bytes:
     """Скачивает tarball по URL."""

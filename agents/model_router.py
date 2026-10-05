@@ -12,6 +12,7 @@ from core.exceptions import EmbedderError
 
 class BackendType(Enum):
     """Тип доступного бэкенда."""
+
     OLLAMA = auto()
     LOCAL_SLM = auto()
     RULE_BASED = auto()
@@ -133,8 +134,7 @@ class ModelRouter:
     def _embed_order(self) -> list[BackendType]:
         """Порядок попыток для эмбеддингов."""
         available = [
-            b for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
-            if self._client_for(b) is not None
+            b for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM) if self._client_for(b) is not None
         ]
         if self._embed_preference is not None:
             available.sort(key=lambda b: b is not self._embed_preference)
@@ -187,7 +187,7 @@ class ModelRouter:
         if client is None:
             yield ChatChunk(
                 content="Ни один бэкенд LLM не доступен. "
-                        "Запустите Ollama или дождитесь загрузки локальной модели.",
+                "Запустите Ollama или дождитесь загрузки локальной модели.",
                 done=True,
             )
             return
@@ -243,9 +243,7 @@ class ModelRouter:
                 return vectors
             problems.append(f"{backend.name}: пустой результат")
 
-        raise EmbedderError(
-            "Не удалось посчитать эмбеддинги для RAG. " + "; ".join(problems)
-        )
+        raise EmbedderError("Не удалось посчитать эмбеддинги для RAG. " + "; ".join(problems))
 
     def cancel_request(self) -> None:
         """Отменяет текущий запрос."""

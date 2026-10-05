@@ -1,4 +1,3 @@
-
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -74,7 +73,10 @@ class SessionManagerDialog(QDialog):
         if row < 0:
             return
         session_id = self.table.item(row, 0).text()
-        if QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?") == QMessageBox.StandardButton.Yes:
+        if (
+            QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?")
+            == QMessageBox.StandardButton.Yes
+        ):
             self.session_store.delete_session(session_id)
             self._refresh()
 
@@ -83,7 +85,9 @@ class SessionManagerDialog(QDialog):
         if row < 0:
             return
         session_id = self.table.item(row, 0).text()
-        path, _ = QFileDialog.getSaveFileName(self, "Экспортировать сессию", f"{session_id}.txt", "Text files (*.txt)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспортировать сессию", f"{session_id}.txt", "Text files (*.txt)"
+        )
         if path:
             messages = self.session_store.get_history(session_id, limit=1000)
             with open(path, "w", encoding="utf-8") as f:

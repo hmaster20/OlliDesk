@@ -173,14 +173,7 @@ class TestOllamaClient:
         mock_response.json.return_value = {
             "message": {
                 "content": "",
-                "tool_calls": [
-                    {
-                        "function": {
-                            "name": "read_file",
-                            "arguments": {"path": "main.py"}
-                        }
-                    }
-                ],
+                "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "main.py"}}}],
             },
             "done": True,
         }
@@ -207,8 +200,9 @@ class TestOllamaClient:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.stream.side_effect = httpx.ConnectError("connection refused")
         messages = [ChatMessage(role="user", content="hi")]
-        with patch.object(client, "_get_client", return_value=mock_client), pytest.raises(
-            OllamaConnectionError, match="Не удалось подключиться"
+        with (
+            patch.object(client, "_get_client", return_value=mock_client),
+            pytest.raises(OllamaConnectionError, match="Не удалось подключиться"),
         ):
             async for _ in client.chat(model="test-model", messages=messages):
                 pass
@@ -236,9 +230,7 @@ class TestOllamaClient:
     async def test_embed_success(self, client):
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        }
+        mock_response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = mock_response
@@ -277,9 +269,7 @@ class TestOllamaClient:
         options = ChatOptions(temperature=0.5)
 
         with patch.object(client, "_get_client", return_value=mock_client):
-            async for _ in client.chat(
-                model="test", messages=messages, options=options, stream=False
-            ):
+            async for _ in client.chat(model="test", messages=messages, options=options, stream=False):
                 pass
 
         call_kwargs = mock_client.post.call_args[1]

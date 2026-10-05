@@ -42,8 +42,7 @@ async def compact_messages(
         return messages
 
     logger.info(
-        f"Контекст ({estimated_tokens} токенов) превышает 80% лимита "
-        f"({threshold}). Запускаю сжатие..."
+        f"Контекст ({estimated_tokens} токенов) превышает 80% лимита ({threshold}). Запускаю сжатие..."
     )
 
     system_parts = []

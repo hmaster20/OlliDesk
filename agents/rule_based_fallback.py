@@ -67,9 +67,7 @@ class RuleBasedFallback:
             yield ChatChunk(content="Не понял запрос.", done=True)
             return
 
-        last_user = next(
-            (m for m in reversed(messages) if m.role == "user"), None
-        )
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
         if not last_user:
             yield ChatChunk(content="Не понял запрос.", done=True)
             return
@@ -97,18 +95,31 @@ class RuleBasedFallback:
         if self.DATE_PATTERN.search(text):
             now = datetime.now()
             months = [
-                "", "января", "февраля", "марта", "апреля", "мая", "июня",
-                "июля", "августа", "сентября", "октября", "ноября", "декабря",
+                "",
+                "января",
+                "февраля",
+                "марта",
+                "апреля",
+                "мая",
+                "июня",
+                "июля",
+                "августа",
+                "сентября",
+                "октября",
+                "ноября",
+                "декабря",
             ]
             days = [
-                "понедельник", "вторник", "среда", "четверг",
-                "пятница", "суббота", "воскресенье",
+                "понедельник",
+                "вторник",
+                "среда",
+                "четверг",
+                "пятница",
+                "суббота",
+                "воскресенье",
             ]
             yield ChatChunk(
-                content=(
-                    f"Сегодня {now.day} {months[now.month]} {now.year} года, "
-                    f"{days[now.weekday()]}."
-                ),
+                content=(f"Сегодня {now.day} {months[now.month]} {now.year} года, {days[now.weekday()]}."),
                 done=True,
             )
             return

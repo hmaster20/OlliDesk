@@ -64,7 +64,11 @@ class ExcludePatternEditor(QWidget):
             self._list.takeItem(row)
 
     def get_patterns(self) -> list[str]:
-        return [self._list.item(i).text().strip() for i in range(self._list.count()) if self._list.item(i).text().strip()]
+        return [
+            self._list.item(i).text().strip()
+            for i in range(self._list.count())
+            if self._list.item(i).text().strip()
+        ]
 
 
 class ExtensionsEditor(QWidget):
@@ -147,7 +151,9 @@ class SettingsDialog(QDialog):
             self._tabs.addTab(self._local_tab, "Проект (не открыт)")
 
         # Кнопки
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -295,6 +301,7 @@ class SettingsDialog(QDialog):
                 local_path.parent.mkdir(parents=True, exist_ok=True)
 
                 import yaml
+
                 with open(local_path, "w", encoding="utf-8") as f:
                     yaml.dump(local_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

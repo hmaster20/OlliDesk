@@ -101,6 +101,7 @@ def tool(
         policy: Политика выполнения
         modes: Режимы агента, в которых доступен инструмент
     """
+
     def decorator(func: F) -> F:
         tool_meta: dict[str, Any] = {
             "name": name,
@@ -111,6 +112,7 @@ def tool(
         }
         func._tool_meta = tool_meta  # type: ignore[attr-defined]
         return func
+
     return decorator
 
 
@@ -166,8 +168,11 @@ class ToolRegistry:
     def get_all_tools(self) -> list[dict[str, Any]]:
         """Возвращает список всех зарегистрированных инструментов."""
         return [
-            {"name": name, "description": meta.get("description", ""),
-             "policy": meta.get("policy", ToolPolicy.AUTO)}
+            {
+                "name": name,
+                "description": meta.get("description", ""),
+                "policy": meta.get("policy", ToolPolicy.AUTO),
+            }
             for name, meta in self._tools.items()
         ]
 

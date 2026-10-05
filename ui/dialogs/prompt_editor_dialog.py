@@ -1,4 +1,5 @@
 """Диалог редактирования системных промтов и ролей."""
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt

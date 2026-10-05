@@ -13,11 +13,13 @@ from PySide6.QtWidgets import QApplication
 from core.app import main
 
 # Отключаем телеметрию ChromaDB (posthog)
-os.environ.update({
-    "CHROMA_TELEMETRY_ENABLED": "false",
-    "POSTHOG_DISABLED": "1",
-    "CHROMA_API_TELEMETRY_ENABLED": "false",
-})
+os.environ.update(
+    {
+        "CHROMA_TELEMETRY_ENABLED": "false",
+        "POSTHOG_DISABLED": "1",
+        "CHROMA_API_TELEMETRY_ENABLED": "false",
+    }
+)
 
 # Подавляем телеметрию posthog принудительно
 logging.getLogger("posthog").setLevel(logging.CRITICAL)
@@ -30,6 +32,7 @@ logging.getLogger("chromadb").setLevel(logging.WARNING)
 # _posthog_mock.flush = lambda *a, **kw: None
 # _posthog_mock.disabled = True
 # sys.modules["posthog"] = _posthog_mock
+
 
 # Создаем класс-заглушку с нужными атрибутами
 class PosthogMock:
@@ -44,9 +47,11 @@ class PosthogMock:
 
     disabled = True
 
+
 # Приводим к Any, чтобы Python разрешил подменить им целый модуль в sys.modules
 _posthog_mock: Any = PosthogMock()
 sys.modules["posthog"] = _posthog_mock
+
 
 # Настройка обработчика сообщений Qt
 def qt_message_handler(mode, context, message):
@@ -61,12 +66,15 @@ def qt_message_handler(mode, context, message):
     elif mode == QtMsgType.QtFatalMsg:
         logger.critical(f"Qt FATAL: {message}")
 
+
 qInstallMessageHandler(qt_message_handler)
+
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
     logger.error("Необработанное исключение:")
     logger.error("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
     # Можно показать диалог с ошибкой
+
 
 sys.excepthook = global_exception_handler
 

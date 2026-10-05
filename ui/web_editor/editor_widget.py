@@ -128,9 +128,7 @@ class EditorWidget(QWidget):
             if not html_path.exists():
                 logger.error(f"editor.html не найден: {html_path}")
             self.web_view.setUrl(QUrl.fromLocalFile(str(html_path)))
-            self._setup_bridge()   # настройка моста только для WebEngine
-
-
+            self._setup_bridge()  # настройка моста только для WebEngine
 
     # def _setup_bridge(self):
     #     """Настраивает QWebChannel."""
@@ -160,7 +158,6 @@ class EditorWidget(QWidget):
         # Пробрасываем сигналы в JS
         self.bridge.file_content_ready.connect(self._on_file_content_ready)
         self.bridge.file_write_result.connect(self._on_file_write_result)
-
 
     # @Slot(str, str)
     # def _on_file_content_ready(self, request_id: str, content: str) -> None:
@@ -193,7 +190,6 @@ class EditorWidget(QWidget):
 
         escaped = json.dumps({"requestId": request_id, "success": success})
         self.web_view.page().runJavaScript(f"onFileWriteResult({escaped})")
-
 
     def set_file_reader(self, reader):
         """Устанавливает функцию чтения файла."""
@@ -270,16 +266,10 @@ class EditorWidget(QWidget):
             language: Язык для подсветки
         """
         original_escaped = (
-            original.replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\n", "\\n")
-            .replace("\r", "")
+            original.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
         )
         modified_escaped = (
-            modified.replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\n", "\\n")
-            .replace("\r", "")
+            modified.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
         )
 
         # Гарантируем mypy и рантайму, что JS-код отправляется только в QWebEngineView
@@ -291,7 +281,6 @@ class EditorWidget(QWidget):
             f"showDiff('{original_escaped}', '{modified_escaped}', '{language}')"
         )
         logger.info("Diff Viewer открыт")
-
 
     # def accept_diff(self):
     #     """Принимает изменения в Diff Viewer."""

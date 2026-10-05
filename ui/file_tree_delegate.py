@@ -88,8 +88,11 @@ class GitStatusDelegate(QStyledItemDelegate):
         try:
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
-                capture_output=True, text=True, cwd=self._repo_path,
-                timeout=5, creationflags=subprocess.CREATE_NO_WINDOW,
+                capture_output=True,
+                text=True,
+                cwd=self._repo_path,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode != 0:
                 if parent_widget:
@@ -110,9 +113,6 @@ class GitStatusDelegate(QStyledItemDelegate):
             pass
         except Exception as exc:
             logger.debug(f"Git status refresh error: {exc}")
-
-
-
 
     def _status_for(self, file_path: str) -> str | None:
         """Возвращает Git-символ статуса для относительного пути."""

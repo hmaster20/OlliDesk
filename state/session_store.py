@@ -12,6 +12,7 @@ from agents.ollama_client import ChatMessage
 
 class SessionInfo(BaseModel):
     """Информация о сессии."""
+
     id: str
     project_path: str
     created_at: datetime
@@ -71,8 +72,7 @@ class SessionStore:
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO sessions "
-                "(id, project_path, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (id, project_path, created_at, updated_at) VALUES (?, ?, ?, ?)",
                 (session_id, project_path, now, now),
             )
             conn.commit()
@@ -116,8 +116,7 @@ class SessionStore:
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT role, content FROM messages "
-                "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
                 (session_id, limit),
             )
             rows = cursor.fetchall()
@@ -145,8 +144,7 @@ class SessionStore:
                 )
             else:
                 cursor = conn.execute(
-                    "SELECT id, project_path, created_at, updated_at FROM sessions "
-                    "ORDER BY updated_at DESC"
+                    "SELECT id, project_path, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
                 )
             rows = cursor.fetchall()
 

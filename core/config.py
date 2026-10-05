@@ -13,6 +13,7 @@ from core.exceptions import ConfigError
 
 class ModelRole(StrEnum):
     """Роль модели в системе."""
+
     CHAT = "chat"
     EMBED = "embed"
     RERANK = "rerank"
@@ -23,7 +24,7 @@ class ModelRole(StrEnum):
 class ToolPolicy(StrEnum):
     """Политика выполнения инструмента."""
 
-    AUTO = "auto"          # Выполнять без подтверждения
+    AUTO = "auto"  # Выполнять без подтверждения
     ASK_FIRST = "ask_first"  # Требовать подтверждения пользователя
     EXCLUDED = "excluded"  # Исключить из использования
 
@@ -31,8 +32,8 @@ class ToolPolicy(StrEnum):
 class AgentMode(StrEnum):
     """Режим работы агента."""
 
-    CHAT = "chat"    # Только диалог, без инструментов
-    PLAN = "plan"    # Read-only инструменты
+    CHAT = "chat"  # Только диалог, без инструментов
+    PLAN = "plan"  # Read-only инструменты
     AGENT = "agent"  # Все инструменты
 
 
@@ -301,6 +302,7 @@ class ConfigLoader:
     def __init__(self) -> None:
         """Инициализация загрузчика."""
         from core.utils import get_app_data_dir
+
         self.global_config_path = get_app_data_dir() / "config.yaml"
 
     def load_config(self, project_path: Path | None = None) -> AppConfig:
@@ -342,9 +344,7 @@ class ConfigLoader:
         except yaml.YAMLError as e:
             raise ConfigError(f"Ошибка парсинга YAML {path}: {e}") from e
 
-    def _merge_configs(
-        self, global_config: dict[str, Any], local_config: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _merge_configs(self, global_config: dict[str, Any], local_config: dict[str, Any]) -> dict[str, Any]:
         """Мержит два конфига, приоритет — за локальным."""
         merged = global_config.copy()
 
@@ -378,7 +378,8 @@ class ConfigLoader:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 yaml.dump(
-                    data, f,
+                    data,
+                    f,
                     default_flow_style=False,
                     allow_unicode=True,
                     sort_keys=False,
@@ -413,10 +414,7 @@ def load_config(project_path: Path | None = None) -> AppConfig:
 def save_config(config: AppConfig, project_path: Path | None = None) -> None:
     """Обёртка сохранения конфига."""
     config_loader.save_config(config, project_path)
-    logger.info(
-        f"Сохранение конфига: last_model={config.last_model}, "
-        f"last_mode={config.last_mode}"
-    )
+    logger.info(f"Сохранение конфига: last_model={config.last_model}, last_mode={config.last_mode}")
 
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:

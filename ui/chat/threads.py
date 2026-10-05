@@ -112,9 +112,7 @@ class AgentChatThread(QThread):
         self._tool_response = (approved, arguments)
         self._tool_event.set()
 
-    async def _on_tool_request(
-        self, name: str, description: str, arguments: dict
-    ) -> bool:
+    async def _on_tool_request(self, name: str, description: str, arguments: dict) -> bool:
         args_json = json.dumps(arguments, ensure_ascii=False)
         self.tool_call_detected.emit(name, description, args_json)
 
@@ -227,9 +225,7 @@ class RouterChatThread(QThread):
             self.error_occurred.emit(f"Ошибка: {e}")
 
     async def _stream_simple(self):
-        async for chunk in self.router.chat(
-            model=self.model, messages=self.messages, stream=True
-        ):
+        async for chunk in self.router.chat(model=self.model, messages=self.messages, stream=True):
             if chunk.reasoning_content:
                 self.thinking_received.emit(chunk.reasoning_content)
             if chunk.content:
@@ -319,9 +315,7 @@ class RagSearchThread(QThread):
 
     async def _search(self):
         try:
-            results = await self.vector_store.search(
-                self.query, n_results=self.n_results
-            )
+            results = await self.vector_store.search(self.query, n_results=self.n_results)
             if results:
                 context_parts = []
                 source_parts = []
@@ -331,9 +325,7 @@ class RagSearchThread(QThread):
                         f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"
                         f"```\n{r.chunk.content}\n```"
                     )
-                    source_parts.append(
-                        f"{r.file_path}:{r.chunk.start_line}-{r.chunk.end_line}"
-                    )
+                    source_parts.append(f"{r.file_path}:{r.chunk.start_line}-{r.chunk.end_line}")
 
                 context = "\n\n".join(context_parts)
                 sources = ", ".join(source_parts[:3])
@@ -406,7 +398,7 @@ class _SLMLoadThread(QThread):
 class _SLMDownloadThread(QThread):
     """Скачивает выбранную chat-модель и общую embedding-модель."""
 
-    finished = Signal(str, str)   # chat_path, embed_path
+    finished = Signal(str, str)  # chat_path, embed_path
     progress = Signal(str)
     error = Signal(str)
 
@@ -428,9 +420,7 @@ class _SLMDownloadThread(QThread):
             # --- Автоопределение числа частей через HF ---
             parts = get_model_parts(self.model_repo, self.model_file)
             if parts > 1:
-                self.progress.emit(
-                    f"Скачивание {self.model_file} ({parts} частей)..."
-                )
+                self.progress.emit(f"Скачивание {self.model_file} ({parts} частей)...")
             else:
                 self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
 
@@ -438,9 +428,7 @@ class _SLMDownloadThread(QThread):
 
             embed_path = ""
             try:
-                self.progress.emit(
-                    f"Скачивание embedding-модели {self.embed_file}..."
-                )
+                self.progress.emit(f"Скачивание embedding-модели {self.embed_file}...")
                 embed = download_model(self.embed_repo, self.embed_file)
                 embed_path = str(embed)
             except Exception as e:
@@ -489,9 +477,7 @@ class WebSearchThread(QThread):
             )
 
             if not search_results or "Ничего не найдено" in search_results:
-                self.error_occurred.emit(
-                    "Поиск не дал результатов. Попробуйте уточнить запрос."
-                )
+                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
                 return
 
             system_prompt = (
@@ -506,9 +492,7 @@ class WebSearchThread(QThread):
                 ChatMessage(role="user", content=user_content),
             ]
 
-            async for chunk in self.router.chat(
-                model=self.model, messages=messages, stream=True
-            ):
+            async for chunk in self.router.chat(model=self.model, messages=messages, stream=True):
                 if chunk.reasoning_content:
                     self.thinking_received.emit(chunk.reasoning_content)
                 if chunk.content:

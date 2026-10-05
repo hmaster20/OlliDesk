@@ -1,4 +1,5 @@
 """Диалог управления реестром моделей."""
+
 import subprocess
 import sys
 
@@ -22,8 +23,9 @@ from core.model_registry import ModelInfo, ModelRegistry
 
 class PullThread(QThread):
     """Поток для выполнения ollama pull."""
+
     finished = Signal(str, bool)  # model_name, success
-    progress = Signal(str)        # строка вывода
+    progress = Signal(str)  # строка вывода
 
     def __init__(self, model_name: str):
         super().__init__()
@@ -145,6 +147,7 @@ class ModelManagerDialog(QDialog):
         """Синхронизирует реестр с Ollama (обновляет локальность)."""
         # Получаем список моделей из Ollama
         import httpx
+
         try:
             resp = httpx.get(f"{self.ollama_url}/api/tags", timeout=5)
             if resp.status_code == 200:
@@ -152,7 +155,9 @@ class ModelManagerDialog(QDialog):
                 ollama_models = [m["name"] for m in data.get("models", [])]
                 self.registry.sync_with_ollama(ollama_models)
                 self.populate_table()
-                QMessageBox.information(self, "Синхронизация", f"Обновлено. Найдено {len(ollama_models)} моделей.")
+                QMessageBox.information(
+                    self, "Синхронизация", f"Обновлено. Найдено {len(ollama_models)} моделей."
+                )
             else:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось получить список моделей: {resp.status_code}")
         except Exception as e:
@@ -161,9 +166,10 @@ class ModelManagerDialog(QDialog):
     def pull_model(self, model_name: str):
         """Запускает загрузку модели через ollama pull."""
         reply = QMessageBox.question(
-            self, "Подтверждение",
+            self,
+            "Подтверждение",
             f"Загрузить модель '{model_name}'?\nЭто может занять время.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -194,23 +200,31 @@ class ModelManagerDialog(QDialog):
         import asyncio
 
         from agents.ollama_client import OllamaClient
+
         async def check():
             client = OllamaClient(base_url=self.ollama_url)
             async with client:
                 return await client.check_tools_support(model_name)
+
         try:
             loop = asyncio.new_event_loop()
             supports = loop.run_until_complete(check())
             loop.close()
             self.registry.update_tool_support(model_name, supports)
             self.populate_table()
-            QMessageBox.information(self, "Результат", f"Модель '{model_name}' {'поддерживает' if supports else 'не поддерживает'} инструменты.")
+            QMessageBox.information(
+                self,
+                "Результат",
+                f"Модель '{model_name}' {'поддерживает' if supports else 'не поддерживает'} инструменты.",
+            )
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось проверить: {e}")
 
     def add_model(self):
         """Ручное добавление модели в реестр."""
-        model_name, ok = QInputDialog.getText(self, "Добавить модель", "Введите имя модели (например, llama3.2):")
+        model_name, ok = QInputDialog.getText(
+            self, "Добавить модель", "Введите имя модели (например, llama3.2):"
+        )
         if ok and model_name.strip():
             if model_name in self.registry.models:
                 QMessageBox.warning(self, "Ошибка", "Модель уже существует в реестре.")
@@ -221,7 +235,7 @@ class ModelManagerDialog(QDialog):
                 description="Пользовательская модель. Отредактируйте описание вручную.",
                 recommended_modes=["chat"],
                 supports_tools=None,
-                is_local=False
+                is_local=False,
             )
             self.registry.save()
             self.populate_table()
@@ -235,9 +249,10 @@ class ModelManagerDialog(QDialog):
             return
         # Спрашиваем подтверждение
         reply = QMessageBox.question(
-            self, "Подтверждение",
+            self,
+            "Подтверждение",
             f"Будет загружено {len(to_pull)} моделей. Продолжить?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -271,4 +286,5 @@ class ModelManagerDialog(QDialog):
         self.progress_bar.setValue(self.progress_bar.value() + 1)
         # Задержка, чтобы не перегружать сеть
         from PySide6.QtCore import QTimer
+
         QTimer.singleShot(1000, self.pull_all_next)

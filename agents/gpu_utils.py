@@ -48,11 +48,13 @@ def get_free_vram_mb() -> int | None:
     if shutil.which("nvidia-smi") is None:
         return None
 
-    out = _run([
-        "nvidia-smi",
-        "--query-gpu=memory.free",
-        "--format=csv,noheader,nounits",
-    ])
+    out = _run(
+        [
+            "nvidia-smi",
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+        ]
+    )
     if not out:
         return None
 
@@ -68,11 +70,13 @@ def get_total_vram_mb() -> int | None:
     """Общая VRAM первой NVIDIA-карты в МБ, или None."""
     if shutil.which("nvidia-smi") is None:
         return None
-    out = _run([
-        "nvidia-smi",
-        "--query-gpu=memory.total",
-        "--format=csv,noheader,nounits",
-    ])
+    out = _run(
+        [
+            "nvidia-smi",
+            "--query-gpu=memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+    )
     if not out:
         return None
     try:
@@ -142,10 +146,7 @@ def detect_optimal_gpu_layers(
     # Без него 4-гиговая карта уйдёт в OOM при offload.
     available_mb = max(0, free_mb - VRAM_RESERVE_MB)
 
-    logger.info(
-        f"GPU: free={free_mb} МБ, модель={model_mb} МБ, "
-        f"доступно после резерва={available_mb} МБ"
-    )
+    logger.info(f"GPU: free={free_mb} МБ, модель={model_mb} МБ, доступно после резерва={available_mb} МБ")
 
     if available_mb <= 0:
         logger.info("Недостаточно свободной VRAM → n_gpu_layers=0")
@@ -160,8 +161,5 @@ def detect_optimal_gpu_layers(
     # Типичная LLM имеет 24–40 слоёв; берём 32 как безопасную оценку.
     ratio = available_mb / model_mb
     layers = max(0, min(APPROX_LAYERS, int(APPROX_LAYERS * ratio)))
-    logger.info(
-        f"Частичный offload: {layers} из ~{APPROX_LAYERS} слоёв "
-        f"(ratio={ratio:.2f})"
-    )
+    logger.info(f"Частичный offload: {layers} из ~{APPROX_LAYERS} слоёв (ratio={ratio:.2f})")
     return layers

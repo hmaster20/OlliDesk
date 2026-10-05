@@ -14,18 +14,14 @@ class TestDetectOptimalThreads:
         psutil_stub = MagicMock()
         psutil_stub.cpu_count.side_effect = RuntimeError("нет psutil")
 
-        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch(
-            "os.cpu_count", return_value=12
-        ):
+        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch("os.cpu_count", return_value=12):
             assert detect_optimal_threads() == 12
 
     def test_minimum_is_two(self):
         psutil_stub = MagicMock()
         psutil_stub.cpu_count.side_effect = RuntimeError("нет psutil")
 
-        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch(
-            "os.cpu_count", return_value=1
-        ):
+        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch("os.cpu_count", return_value=1):
             assert detect_optimal_threads() == 2
 
     def test_single_core_machine(self):
@@ -36,9 +32,7 @@ class TestDetectOptimalThreads:
         psutil_stub = MagicMock()
         psutil_stub.cpu_count.side_effect = RuntimeError("нет psutil")
 
-        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch(
-            "os.cpu_count", return_value=None
-        ):
+        with patch.dict("sys.modules", {"psutil": psutil_stub}), patch("os.cpu_count", return_value=None):
             assert detect_optimal_threads() == 2
 
     def test_never_exceeds_logical_count(self):

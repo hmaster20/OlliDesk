@@ -28,7 +28,7 @@ class SystemPromptManager:
                 "Тебе доступны все инструменты: чтение, запись, Git, поиск.\n"
                 "Используй их для автономного выполнения задачи.\n"
                 "Отвечай на русском языке."
-            )
+            ),
         }
         for filename, content in defaults.items():
             file_path = self.prompts_dir / filename
@@ -77,7 +77,9 @@ class SystemPromptManager:
 
     def _render(self, template: str, context: dict) -> str:
         """Заменяет {{key}} на значения из контекста."""
+
         def repl(match):
             key = match.group(1).strip()
             return str(context.get(key, match.group(0)))
+
         return re.sub(r'\{\{\s*(\w+)\s*\}\}', repl, template)

@@ -38,6 +38,7 @@ def _load_config_or_wizard() -> AppConfig | None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     import yaml
+
                     data = yaml.safe_load(f) or {}
                 if data.get("wizard_dismissed"):
                     logger.info("Визард отключён пользователем, использую конфиг по умолчанию")
@@ -142,7 +143,9 @@ class OlliDeskApp:
         self.config.theme = theme
         self._apply_theme(theme)
         from core.config import save_config
+
         save_config(self.config)
+
 
 def main() -> int:
     """
@@ -152,6 +155,7 @@ def main() -> int:
     """
     app = OlliDeskApp()
     return app.run()
+
 
 if __name__ == "__main__":
     sys.exit(main())

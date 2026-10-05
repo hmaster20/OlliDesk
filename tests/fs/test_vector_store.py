@@ -59,14 +59,18 @@ class TestVectorStore:
     async def test_add_chunks_multiple(self, vector_store):
         chunks = [
             TextChunk(
-                id=f"chunk_{i}", file_path=f"file{i}.py",
-                content=f"content{i}", start_line=1, end_line=1,
+                id=f"chunk_{i}",
+                file_path=f"file{i}.py",
+                content=f"content{i}",
+                start_line=1,
+                end_line=1,
             )
             for i in range(5)
         ]
 
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3]] * 5),
         ):
             await vector_store.add_chunks(chunks)
@@ -84,7 +88,8 @@ class TestVectorStore:
         )
 
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
         ):
             await vector_store.add_chunks([chunk])
@@ -101,22 +106,24 @@ class TestVectorStore:
         chunks = [
             TextChunk(id="c1", file_path="main.py", content="main code", start_line=1, end_line=1),
             TextChunk(
-                id="c2", file_path="utils.py", content="utility code",
-                start_line=1, end_line=1,
+                id="c2",
+                file_path="utils.py",
+                content="utility code",
+                start_line=1,
+                end_line=1,
             ),
         ]
 
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
         ):
             await vector_store.add_chunks(chunks)
 
             embed_for_search = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
             with patch.object(vector_store.embed_client, "embed", embed_for_search):
-                results = await vector_store.search(
-                    "code", n_results=5, file_filter=["main.py"]
-                )
+                results = await vector_store.search("code", n_results=5, file_filter=["main.py"])
 
         assert len(results) >= 1
         for r in results:
@@ -133,7 +140,8 @@ class TestVectorStore:
         )
 
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
         ):
             await vector_store.add_chunks([chunk])
@@ -159,7 +167,8 @@ class TestVectorStore:
         )
 
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
         ):
             await vector_store.add_chunks([chunk])
@@ -173,7 +182,8 @@ class TestVectorStore:
     @pytest.mark.asyncio
     async def test_search_no_results(self, vector_store):
         with patch.object(
-            vector_store.embed_client, "embed",
+            vector_store.embed_client,
+            "embed",
             AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
         ):
             results = await vector_store.search("something", n_results=5)
@@ -182,8 +192,11 @@ class TestVectorStore:
 
     def test_search_result_model(self):
         chunk = TextChunk(
-            id="test", file_path="f.py", content="code",
-            start_line=1, end_line=2,
+            id="test",
+            file_path="f.py",
+            content="code",
+            start_line=1,
+            end_line=2,
         )
         result = SearchResult(chunk=chunk, score=0.95, file_path="f.py")
         assert result.score == 0.95
@@ -217,7 +230,11 @@ class TestVectorStoreEmbedder:
     @pytest.mark.asyncio
     async def test_add_chunks_raises_on_empty_embeddings(self, vector_store):
         chunk = TextChunk(
-            id="c1", file_path="main.py", content="code", start_line=1, end_line=1,
+            id="c1",
+            file_path="main.py",
+            content="code",
+            start_line=1,
+            end_line=1,
         )
         vector_store.embed_client.embed = AsyncMock(return_value=[])
 
@@ -230,8 +247,11 @@ class TestVectorStoreEmbedder:
     async def test_add_chunks_raises_on_count_mismatch(self, vector_store):
         chunks = [
             TextChunk(
-                id=f"c{i}", file_path="main.py", content=f"code{i}",
-                start_line=1, end_line=1,
+                id=f"c{i}",
+                file_path="main.py",
+                content=f"code{i}",
+                start_line=1,
+                end_line=1,
             )
             for i in range(3)
         ]
@@ -243,7 +263,11 @@ class TestVectorStoreEmbedder:
     @pytest.mark.asyncio
     async def test_add_chunks_wraps_backend_error(self, vector_store):
         chunk = TextChunk(
-            id="c1", file_path="main.py", content="code", start_line=1, end_line=1,
+            id="c1",
+            file_path="main.py",
+            content="code",
+            start_line=1,
+            end_line=1,
         )
         vector_store.embed_client.embed = AsyncMock(side_effect=ConnectionError("нет сети"))
 

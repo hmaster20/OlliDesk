@@ -1,4 +1,5 @@
 """Реестр моделей: справочник с описаниями и кэш возможностей."""
+
 from datetime import datetime
 
 import yaml
@@ -10,6 +11,7 @@ from core.utils import get_app_data_dir
 
 class ModelInfo(BaseModel):
     """Информация о модели в реестре."""
+
     name: str
     description: str = "Пользовательская модель. Отредактируйте описание в model_registry.yaml"
     recommended_modes: list[str] = Field(default_factory=lambda: ["chat"])
@@ -17,8 +19,10 @@ class ModelInfo(BaseModel):
     last_checked: str | None = None
     is_local: bool = False  # Скачана ли модель в Ollama
 
+
 class ModelRegistry:
     """Управляет справочником моделей и их локальным статусом."""
+
     def __init__(self):
         # C:\Users\<USERNAME>\.ollidesk\model_registry.yaml
         self.file_path = get_app_data_dir() / "model_registry.yaml"
@@ -47,38 +51,38 @@ class ModelRegistry:
                 name="Qwen 2.5 Coder 7B",
                 description="Отличная сбалансированная модель для написания и рефакторинга кода. Быстрая и эффективная.",
                 recommended_modes=["chat", "plan", "agent"],
-                supports_tools=True
+                supports_tools=True,
             ),
             "qwen2.5-coder:32b": ModelInfo(
                 name="Qwen 2.5 Coder 32B",
                 description="Продвинутая версия для сложных архитектурных задач и рефакторинга больших файлов.",
                 recommended_modes=["plan", "agent"],
-                supports_tools=True
+                supports_tools=True,
             ),
             "llama3.1:70b": ModelInfo(
                 name="Llama 3.1 70B",
                 description="Мощная коммерческая модель для сложных логических задач и агентных сценариев. Требует ~40-60 ГБ RAM.",
                 recommended_modes=["agent", "plan"],
-                supports_tools=True
+                supports_tools=True,
             ),
             "qwen2.5:72b": ModelInfo(
                 name="Qwen 2.5 72B",
                 description="Одна из лучших открытых моделей общего назначения. Идеальна для глубокого анализа кода.",
                 recommended_modes=["agent", "plan", "chat"],
-                supports_tools=True
+                supports_tools=True,
             ),
             "deepseek-r1:70b": ModelInfo(
                 name="DeepSeek R1 Distill Llama 70B",
                 description="Продвинутая модель с цепочкой рассуждений (Reasoning). Идеальна для тяжелых логических задач и планирования.",
                 recommended_modes=["plan", "agent"],
-                supports_tools=True
+                supports_tools=True,
             ),
             "command-r-plus": ModelInfo(
                 name="Command R+ (104B)",
                 description="Огромная модель, отлично справляется с RAG и сложными агентными workflows. Требует ~60+ ГБ RAM.",
                 recommended_modes=["agent"],
-                supports_tools=True
-            )
+                supports_tools=True,
+            ),
         }
         self.models = defaults
         self.save()
@@ -106,7 +110,7 @@ class ModelRegistry:
                     description="Модель добавлена из Ollama. Вы можете отредактировать её описание в model_registry.yaml",
                     recommended_modes=["chat"],
                     supports_tools=None,
-                    is_local=True
+                    is_local=True,
                 )
         self.save()
 

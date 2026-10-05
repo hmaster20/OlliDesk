@@ -116,9 +116,7 @@ class TestAppConfig:
         assert config.confirm.web_search is False
 
     def test_confirm_from_yaml(self):
-        config = AppConfig.model_validate(
-            {**SAMPLE_GLOBAL_CONFIG, "confirm": {"web_search": True}}
-        )
+        config = AppConfig.model_validate({**SAMPLE_GLOBAL_CONFIG, "confirm": {"web_search": True}})
         assert config.confirm.web_search is True
         assert config.confirm.enabled is False
 

@@ -1,4 +1,5 @@
 """Менеджер ролей и системных промтов."""
+
 from pathlib import Path
 
 import yaml
@@ -10,14 +11,17 @@ from core.utils import get_app_data_dir
 
 class RoleDefinition(BaseModel):
     """Описание роли."""
+
     id: str
     name: str
     icon: str = "🤖"
     description: str = ""
     system_prompt: str = ""
 
+
 class RoleManager:
     """Управляет загрузкой ролей из ~/.ollidesk/roles/."""
+
     def __init__(self):
         self.roles_dir = get_app_data_dir() / "roles"
         self.roles: dict[str, RoleDefinition] = {}
@@ -78,8 +82,10 @@ class RoleManager:
         # Если по какой-то причине default не загрузился, добавляем хардкодный
         if "default" not in self.roles:
             self.roles["default"] = RoleDefinition(
-                id="default", name="Ассистент OlliDesk", icon="🤖",
-                system_prompt=self._get_default_prompt().split("---", 2)[-1].strip()
+                id="default",
+                name="Ассистент OlliDesk",
+                icon="🤖",
+                system_prompt=self._get_default_prompt().split("---", 2)[-1].strip(),
             )
         logger.info(f"Загружено ролей: {len(self.roles)}")
 

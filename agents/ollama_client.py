@@ -14,6 +14,7 @@ from core.exceptions import ModelNotFoundError, OllamaConnectionError, ToolsNotS
 
 class OllamaModelInfo(BaseModel):
     """Информация о модели Ollama."""
+
     name: str
     size: int
     digest: str
@@ -22,6 +23,7 @@ class OllamaModelInfo(BaseModel):
 
 class ToolCall(BaseModel):
     """Вызов инструмента."""
+
     id: str = Field(default_factory=lambda: f"call_{id(object())}")
     name: str
     arguments: dict[str, Any]
@@ -29,6 +31,7 @@ class ToolCall(BaseModel):
 
 class ChatMessage(BaseModel):
     """Сообщение в чате."""
+
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     images: list[str] | None = None  # base64
@@ -42,8 +45,7 @@ class ChatMessage(BaseModel):
             data["images"] = self.images
         if self.tool_calls:
             data["tool_calls"] = [
-                {"function": {"name": tc.name, "arguments": tc.arguments}}
-                for tc in self.tool_calls
+                {"function": {"name": tc.name, "arguments": tc.arguments}} for tc in self.tool_calls
             ]
         if self.role == "tool" and self.name:
             data["name"] = self.name
@@ -52,6 +54,7 @@ class ChatMessage(BaseModel):
 
 class ChatChunk(BaseModel):
     """Один токен из стрима."""
+
     content: str = ""
     reasoning_content: str = ""
     tool_calls: list[ToolCall] | None = None
@@ -60,12 +63,14 @@ class ChatChunk(BaseModel):
 
 class ToolSchema(BaseModel):
     """JSON-схема инструмента для Ollama."""
+
     type: Literal["function"] = "function"
     function: dict[str, Any]
 
 
 class ChatOptions(BaseModel):
     """Опции чата."""
+
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 40
@@ -232,9 +237,10 @@ class OllamaClient:
                                     content=msg.get("content", ""),
                                     reasoning_content=msg.get("reasoning_content", ""),
                                     tool_calls=[
-                                        ToolCall(**tc["function"])
-                                        for tc in msg.get("tool_calls", [])
-                                    ] if msg.get("tool_calls") else None,
+                                        ToolCall(**tc["function"]) for tc in msg.get("tool_calls", [])
+                                    ]
+                                    if msg.get("tool_calls")
+                                    else None,
                                     done=chunk_data.get("done", False),
                                 )
                                 yield chunk
@@ -259,10 +265,9 @@ class OllamaClient:
                 yield ChatChunk(
                     content=msg.get("content", ""),
                     reasoning_content=msg.get("reasoning_content", ""),
-                    tool_calls=[
-                        ToolCall(**tc["function"])
-                        for tc in msg.get("tool_calls", [])
-                    ] if msg.get("tool_calls") else None,
+                    tool_calls=[ToolCall(**tc["function"]) for tc in msg.get("tool_calls", [])]
+                    if msg.get("tool_calls")
+                    else None,
                     done=True,
                 )
 
@@ -322,7 +327,7 @@ class OllamaClient:
             function={
                 "name": "check_tools_support",
                 "description": "Dummy tool to check support",
-                "parameters": {"type": "object", "properties": {}}
+                "parameters": {"type": "object", "properties": {}},
             }
         )
         client = await self._get_client()

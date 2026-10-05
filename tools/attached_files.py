@@ -147,12 +147,7 @@ class AttachedFileStore:
         tail = attached.content[-tail_size:] if tail_size > 0 else ""
         skipped = attached.size_chars - len(head) - len(tail)
 
-        return (
-            f"{header}\n{hint}\n"
-            f"```\n{head}\n"
-            f"... [пропущено ~{skipped} символов] ...\n"
-            f"{tail}\n```"
-        )
+        return f"{header}\n{hint}\n```\n{head}\n... [пропущено ~{skipped} символов] ...\n{tail}\n```"
 
 
 @tool(
@@ -196,16 +191,12 @@ def read_attached_file(
         size = min(max(1, int(limit)), READ_CHUNK_CHARS)
 
         if start >= attached.size_chars:
-            return (
-                f"Смещение {start} выходит за конец файла "
-                f"({attached.size_chars} символов)."
-            )
+            return f"Смещение {start} выходит за конец файла ({attached.size_chars} символов)."
 
-        chunk = attached.content[start:start + size]
+        chunk = attached.content[start : start + size]
         end = start + len(chunk)
         next_hint = (
-            f"\n\nПродолжение: read_attached_file(path=\"{attached.name}\", "
-            f"offset={end})"
+            f"\n\nПродолжение: read_attached_file(path=\"{attached.name}\", offset={end})"
             if end < attached.size_chars
             else "\n\nЭто конец файла."
         )

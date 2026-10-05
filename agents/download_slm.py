@@ -61,9 +61,7 @@ def _detect_parts_via_hf(repo_id: str, filename: str) -> int | None:
 
     # Вариант 2: разбитый — ищем все <stem>-NNNNN-of-MMMMM.gguf
     stem = filename.removesuffix(".gguf")
-    pattern = re.compile(
-        rf"^{re.escape(stem)}-(\d{{5}})-of-(\d{{5}})\.gguf$"
-    )
+    pattern = re.compile(rf"^{re.escape(stem)}-(\d{{5}})-of-(\d{{5}})\.gguf$")
     max_total = 0
     for f in files:
         m = pattern.match(f)
@@ -74,10 +72,7 @@ def _detect_parts_via_hf(repo_id: str, filename: str) -> int | None:
 
     if max_total > 0:
         _HF_PARTS_CACHE[key] = max_total
-        logger.info(
-            f"HF: {repo_id}/{filename} разбит на {max_total} частей "
-            f"(определено автоматически)"
-        )
+        logger.info(f"HF: {repo_id}/{filename} разбит на {max_total} частей (определено автоматически)")
         return max_total
 
     logger.debug(f"HF: {repo_id}/{filename} — не найден")
@@ -110,6 +105,7 @@ def is_model_split(repo_id: str, filename: str) -> bool:
 # ---------------------------------------------------------------------------
 # Пути и базовые утилиты
 # ---------------------------------------------------------------------------
+
 
 def get_models_dir() -> Path:
     """Каталог моделей (~/.ollidesk/models), создаёт при необходимости."""
@@ -169,6 +165,7 @@ def get_model_path(
 # Скачивание разбитой модели
 # ---------------------------------------------------------------------------
 
+
 def _download_split_model(
     repo_id: str,
     filename: str,
@@ -188,9 +185,7 @@ def _download_split_model(
     stem = filename.removesuffix(".gguf")
     pattern = f"{stem}-*-of-{parts:05d}.gguf"
 
-    logger.info(
-        f"Скачивание разбитой модели {filename} ({parts} частей) из {repo_id}..."
-    )
+    logger.info(f"Скачивание разбитой модели {filename} ({parts} частей) из {repo_id}...")
 
     snapshot_download(
         repo_id=repo_id,
@@ -203,24 +198,20 @@ def _download_split_model(
         name = _split_part_name(stem, i, parts)
         part_path = target_dir / name
         if not part_path.exists():
-            raise FileNotFoundError(
-                f"Часть модели не найдена после скачивания: {name}"
-            )
+            raise FileNotFoundError(f"Часть модели не найдена после скачивания: {name}")
         if i == 1:
             first_part = part_path
         logger.info(f"  ✓ Часть {i}/{parts}: {name}")
 
     assert first_part is not None
-    logger.info(
-        f"Разбитая модель готова: {first_part.name} "
-        f"(+ ещё {parts - 1} частей в той же папке)"
-    )
+    logger.info(f"Разбитая модель готова: {first_part.name} (+ ещё {parts - 1} частей в той же папке)")
     return first_part
 
 
 # ---------------------------------------------------------------------------
 # Публичная функция скачивания
 # ---------------------------------------------------------------------------
+
 
 def download_model(
     repo_id: str,
@@ -256,10 +247,7 @@ def download_model(
         # чтобы он не сбивал с толку.
         stale = target_dir / filename
         if stale.exists():
-            logger.info(
-                f"Удаляю устаревший объединённый файл: {stale.name} "
-                f"(будет заменён split-частями)"
-            )
+            logger.info(f"Удаляю устаревший объединённый файл: {stale.name} (будет заменён split-частями)")
             try:
                 stale.unlink()
             except OSError as e:
@@ -288,6 +276,7 @@ def download_model(
 # ---------------------------------------------------------------------------
 # Удаление
 # ---------------------------------------------------------------------------
+
 
 def delete_model(
     filename: str,
@@ -333,6 +322,7 @@ def delete_model(
 # Embedding-модель
 # ---------------------------------------------------------------------------
 
+
 def download_embed_model(target_dir: Path | None = None) -> Path | None:
     """Скачивает embedding-модель (общую для RAG)."""
     try:
@@ -345,6 +335,7 @@ def download_embed_model(target_dir: Path | None = None) -> Path | None:
 # ---------------------------------------------------------------------------
 # Получение путей для текущей активной SLM
 # ---------------------------------------------------------------------------
+
 
 def get_model_paths() -> tuple[Path | None, Path | None]:
     """Возвращает (chat_path, embed_path) для активной SLM.
@@ -381,6 +372,7 @@ def get_model_paths() -> tuple[Path | None, Path | None]:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """CLI: скачать активную chat-модель + embedding."""

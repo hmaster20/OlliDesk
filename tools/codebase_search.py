@@ -14,9 +14,7 @@ from core.config import AgentMode, ToolPolicy
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
-async def search_codebase(
-    query: str, n_results: int = 5, vector_store: Any = None
-) -> str:
+async def search_codebase(query: str, n_results: int = 5, vector_store: Any = None) -> str:
     """Ищет релевантные фрагменты кода по запросу.
 
     Args:

@@ -175,9 +175,7 @@ class TestReadAttachedFile:
     def test_limit_is_capped(self, tmp_path: Path):
         store = AttachedFileStore()
         store.add(tmp_path / "a.py", "A" * (READ_CHUNK_CHARS * 2))
-        result = read_attached_file(
-            "a.py", offset=0, limit=READ_CHUNK_CHARS * 5, attached_files=store
-        )
+        result = read_attached_file("a.py", offset=0, limit=READ_CHUNK_CHARS * 5, attached_files=store)
         assert "Это конец файла" not in result
 
     def test_offset_beyond_eof(self, tmp_path: Path):

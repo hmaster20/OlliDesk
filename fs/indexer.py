@@ -13,6 +13,7 @@ from core.config import AppConfig
 
 class FileMetadata(BaseModel):
     """Метаданные файла."""
+
     path: str  # относительно корня проекта
     absolute_path: Path
     sha256: str
@@ -23,6 +24,7 @@ class FileMetadata(BaseModel):
 
 class TextChunk(BaseModel):
     """Чанк текста из файла."""
+
     id: str  # hash(file_path + chunk_index)
     file_path: str
     content: str
@@ -32,22 +34,89 @@ class TextChunk(BaseModel):
 
 
 BINARY_EXTENSIONS: set[str] = {
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif', '.psd',
-    '.mp3', '.mp4', '.wav', '.ogg', '.flac', '.avi', '.mkv', '.mov', '.wmv', '.webm', '.m4a', '.aac',
-    '.ttf', '.otf', '.woff', '.woff2', '.eot',
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz', '.lzma',
-    '.exe', '.dll', '.so', '.dylib', '.o', '.obj', '.lib',
-    '.pyc', '.pyo', '.pyd',
-    '.class', '.jar', '.war',
-    '.bin', '.dat', '.db', '.sqlite', '.sqlite3',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.deb', '.rpm', '.apk', '.ipa',
-    '.iso', '.img',
-    '.pak', '.vpk',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.bmp',
+    '.ico',
+    '.webp',
+    '.tiff',
+    '.tif',
+    '.psd',
+    '.mp3',
+    '.mp4',
+    '.wav',
+    '.ogg',
+    '.flac',
+    '.avi',
+    '.mkv',
+    '.mov',
+    '.wmv',
+    '.webm',
+    '.m4a',
+    '.aac',
+    '.ttf',
+    '.otf',
+    '.woff',
+    '.woff2',
+    '.eot',
+    '.zip',
+    '.tar',
+    '.gz',
+    '.bz2',
+    '.xz',
+    '.7z',
+    '.rar',
+    '.zst',
+    '.lz',
+    '.lzma',
+    '.exe',
+    '.dll',
+    '.so',
+    '.dylib',
+    '.o',
+    '.obj',
+    '.lib',
+    '.pyc',
+    '.pyo',
+    '.pyd',
+    '.class',
+    '.jar',
+    '.war',
+    '.bin',
+    '.dat',
+    '.db',
+    '.sqlite',
+    '.sqlite3',
+    '.pdf',
+    '.doc',
+    '.docx',
+    '.xls',
+    '.xlsx',
+    '.ppt',
+    '.pptx',
+    '.deb',
+    '.rpm',
+    '.apk',
+    '.ipa',
+    '.iso',
+    '.img',
+    '.pak',
+    '.vpk',
 }
 
 ARCHIVE_EXTENSIONS: set[str] = {
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz', '.lzma',
+    '.zip',
+    '.tar',
+    '.gz',
+    '.bz2',
+    '.xz',
+    '.7z',
+    '.rar',
+    '.zst',
+    '.lz',
+    '.lzma',
 }
 
 
@@ -255,7 +324,6 @@ class FileIndexer:
                 logger.debug(f"Удален файл: {path}")
 
         logger.info(
-            f"Инкрементальный скан: {len(new_or_modified)} новых/измененных, "
-            f"{len(deleted)} удаленных"
+            f"Инкрементальный скан: {len(new_or_modified)} новых/измененных, {len(deleted)} удаленных"
         )
         return new_or_modified, deleted

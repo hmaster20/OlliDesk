@@ -23,6 +23,7 @@ class AgentError(OlliDeskError):
 @dataclass
 class AgentContext:
     """Контекст для запуска агента."""
+
     system_prompt: str = ""
     rag_context: str = ""
     project_root: str = ""
@@ -170,7 +171,7 @@ class AgentLoop:
                 if stack:
                     stack.pop()
                     if not stack and start is not None:
-                        candidate = text[start:i + 1]
+                        candidate = text[start : i + 1]
                         try:
                             parsed = _json.loads(candidate)
                             if "name" in parsed and "arguments" in parsed:
@@ -190,9 +191,7 @@ class AgentLoop:
                                 )
                         except _json.JSONDecodeError:
                             repaired = candidate
-                            repaired = re.sub(
-                                r"(?<={|,)\s*(\w+)\s*:", r' "\1":', repaired
-                            )
+                            repaired = re.sub(r"(?<={|,)\s*(\w+)\s*:", r' "\1":', repaired)
                             repaired = re.sub(r"(?<!\\)'", '"', repaired)
                             repaired = re.sub(r",\s*}", "}", repaired)
                             try:
@@ -282,10 +281,7 @@ class AgentLoop:
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
-                logger.warning(
-                    f"Модель {self.model} не поддерживает нативные tools, "
-                    f"повтор без tools"
-                )
+                logger.warning(f"Модель {self.model} не поддерживает нативные tools, повтор без tools")
                 tools_to_send = None
                 if on_tools_disabled:
                     await on_tools_disabled()
@@ -299,9 +295,7 @@ class AgentLoop:
                 if extracted_calls:
                     pending_tool_calls = extracted_calls
                     current_text = ""
-                    logger.debug(
-                        f"Извлечено {len(pending_tool_calls)} текстовых tool_calls"
-                    )
+                    logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
 
             # --- Исполняем ---
             if pending_tool_calls and tools_to_send:
@@ -318,9 +312,7 @@ class AgentLoop:
 
                     if policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
-                        approved = await on_tool_request(
-                            tc.name, description, tc.arguments
-                        )
+                        approved = await on_tool_request(tc.name, description, tc.arguments)
                         if not approved:
                             messages.append(
                                 _create_tool_result_message(
@@ -362,6 +354,4 @@ class AgentLoop:
 
             return current_text
 
-        raise AgentIterationLimitError(
-            f"Агент превысил лимит итераций ({max_iterations})"
-        )
+        raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})")

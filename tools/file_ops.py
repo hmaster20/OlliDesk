@@ -110,16 +110,11 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
         snapshot_status = None
         if project_root:
             repo_path = Path(project_root)
-            snapshot_status = create_snapshot(
-                repo_path, message=f"Before agent write: {file_path.name}"
-            )
+            snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
         if snapshot_status:
-            return (
-                f"Файл успешно обновлён: {file_path.name}. "
-                "Создан Git-снапшот для отката."
-            )
+            return f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
         return (
             f"Файл успешно обновлён: {file_path.name}. "
             "(Git-снапшот не создан – проверьте наличие репозитория или наличие изменений.)"
@@ -128,6 +123,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
+
 
 def _resolve_path(path: str, project_root: str) -> Path | None:
     """Безопасно резолвит путь, не давая выйти за пределы project_root.

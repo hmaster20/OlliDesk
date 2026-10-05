@@ -86,16 +86,11 @@ async def get_exchange_rate(base: str = "USD", target: str = "RUB") -> str:
 
 @tool(
     name="get_exchange_rates_multi",
-    description=(
-        "Возвращает несколько курсов к рублю за один вызов "
-        "(например, USD и EUR одновременно)."
-    ),
+    description=("Возвращает несколько курсов к рублю за один вызов (например, USD и EUR одновременно)."),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
-async def get_exchange_rates_multi(
-    base: str = "USD,EUR", target: str = "RUB"
-) -> str:
+async def get_exchange_rates_multi(base: str = "USD,EUR", target: str = "RUB") -> str:
     """Возвращает несколько курсов к target.
 
     Args:

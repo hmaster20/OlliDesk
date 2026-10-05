@@ -170,6 +170,7 @@ class ChatPanel(QWidget):
     def _config_slm_enabled(self) -> bool:
         try:
             from core.config import load_config
+
             cfg = load_config()
             return cfg.slm.enabled
         except Exception:
@@ -179,6 +180,7 @@ class ChatPanel(QWidget):
         """Передаёт роутеру порядок бэкендов и выбор эмбеддингов из конфига."""
         try:
             from core.config import load_config
+
             cfg = load_config()
             self._router.set_priority(list(cfg.backends.priority))
             self._router.set_embed_backend(cfg.backends.embed_backend)
@@ -197,13 +199,9 @@ class ChatPanel(QWidget):
             self.status_label.setText("✅ Ollama подключён")
         else:
             if self._slm_client is not None:
-                self.status_label.setText(
-                    "✅ Локальная модель загружена (Ollama недоступен)"
-                )
+                self.status_label.setText("✅ Локальная модель загружена (Ollama недоступен)")
             else:
-                self.status_label.setText(
-                    "⚠️ Ollama не найден. Используется резервный режим."
-                )
+                self.status_label.setText("⚠️ Ollama не найден. Используется резервный режим.")
 
     @Slot(object)
     def _on_slm_loaded(self, client):
@@ -224,6 +222,7 @@ class ChatPanel(QWidget):
         n_gpu_layers = 0
         try:
             from core.config import load_config
+
             slm = load_config().slm
             n_ctx = slm.n_ctx
             n_threads = slm.n_threads
@@ -258,6 +257,7 @@ class ChatPanel(QWidget):
 
         try:
             from core.config import load_config
+
             slm = load_config().slm
         except Exception as e:
             logger.warning(f"Не удалось загрузить конфиг SLM: {e}")
@@ -277,15 +277,11 @@ class ChatPanel(QWidget):
                 f"Активная SLM-модель '{info.id}' имеет kind='{info.kind}', "
                 f"а для чата нужна kind='chat'. Загрузка отменена."
             )
-            self.status_label.setText(
-                f"⚠️ Модель '{info.display_name}' не подходит для чата."
-            )
+            self.status_label.setText(f"⚠️ Модель '{info.display_name}' не подходит для чата.")
             return
 
         self._slm_loading = True
-        self.status_label.setText(
-            f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)..."
-        )
+        self.status_label.setText(f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)...")
 
         self._slm_download_thread = _SLMDownloadThread(
             model_repo=info.repo,
@@ -320,9 +316,7 @@ class ChatPanel(QWidget):
     # UI
     # ---------------------------------------------------------
 
-    def _add_message(
-        self, role: str, content: str, mode_name: str = ""
-    ) -> ChatMessageItem:
+    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
         widget = ChatMessageItem(role, content, mode_name=mode_name)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
@@ -350,14 +344,14 @@ class ChatPanel(QWidget):
                 continue
 
             kind = cmd[1:]
-            tail = text[len(cmd):].lstrip()
+            tail = text[len(cmd) :].lstrip()
             if not tail:
                 return (kind, "", "")
 
             if tail.startswith('"'):
                 end = tail.find('"', 1)
                 if end > 0:
-                    return (kind, tail[1:end], tail[end + 1:].strip())
+                    return (kind, tail[1:end], tail[end + 1 :].strip())
                 return (kind, tail.lstrip('"'), "")
 
             parts = tail.split(None, 1)
@@ -410,9 +404,7 @@ class ChatPanel(QWidget):
 
         if kind == "dir":
             if not path.is_dir():
-                self._add_message(
-                    "system", f"❌ Не директория: {path} (используйте @file)"
-                )
+                self._add_message("system", f"❌ Не директория: {path} (используйте @file)")
                 return
             self._add_message(
                 "system",
@@ -461,9 +453,7 @@ class ChatPanel(QWidget):
             max_width = int(scroll_width * ratios.get(role, 0.90))
             bubble.setMaximumWidth(max_width)
             bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-            )
+            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         if widget is not None and isinstance(widget, ChatMessageItem):
             apply_policy(widget.bubble, widget.role)
@@ -548,9 +538,7 @@ class ChatPanel(QWidget):
         top_bar.addWidget(self.refresh_models_btn)
 
         self.model_status_label = QLabel("")
-        self.model_status_label.setStyleSheet(
-            "font-size: 12px; padding: 4px 8px; color: gray;"
-        )
+        self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
         top_bar.addWidget(self.model_status_label)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
@@ -610,12 +598,8 @@ class ChatPanel(QWidget):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.setStyleSheet(
             "QScrollArea { border: 1px solid #ccc; border-radius: 4px; background: transparent; }"
         )
@@ -632,8 +616,7 @@ class ChatPanel(QWidget):
 
         self.status_label = QLabel("Готов к работе")
         self.status_label.setStyleSheet(
-            "font-size: 12px; color: gray; padding: 4px 8px;"
-            " background: #f5f5f5; border-radius: 4px;"
+            "font-size: 12px; color: gray; padding: 4px 8px; background: #f5f5f5; border-radius: 4px;"
         )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -691,9 +674,7 @@ class ChatPanel(QWidget):
                     fmt.setForeground(QColor("#42a5f5"))
                     fmt.setFontWeight(QFont.Weight.Bold)
                     fmt.setBackground(QColor("#e3f2fd"))
-                    fmt.setUnderlineStyle(
-                        QTextCharFormat.UnderlineStyle.SingleUnderline
-                    )
+                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
                     fmt.setUnderlineColor(QColor("#42a5f5"))
                     cursor.mergeCharFormat(fmt)
             finally:
@@ -804,18 +785,10 @@ class ChatPanel(QWidget):
         if self._ollama_thread and self._ollama_thread.isRunning():
             self._ollama_thread.cancel()
 
-        if (
-            self._agent_thread
-            and self._agent_thread.isRunning()
-            and self._agent_thread.client
-        ):
+        if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
             self._agent_thread.client.cancel_request()
 
-        if (
-            hasattr(self, "_web_thread")
-            and self._web_thread
-            and self._web_thread.isRunning()
-        ):
+        if hasattr(self, "_web_thread") and self._web_thread and self._web_thread.isRunning():
             self._web_thread.quit()
             self._web_thread.wait(1000)
             if self._web_thread.isRunning():
@@ -927,9 +900,7 @@ class ChatPanel(QWidget):
 
         if self.vector_store:
             self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
-            self._rag_thread.results_ready.connect(
-                lambda ctx, src: self._on_rag_results(ctx, src)
-            )
+            self._rag_thread.results_ready.connect(lambda ctx, src: self._on_rag_results(ctx, src))
             self._rag_thread.search_error.connect(self._on_rag_error)
             self._rag_thread.finished.connect(lambda: self._do_chat(text))
             self._rag_thread.start()
@@ -973,16 +944,12 @@ class ChatPanel(QWidget):
             self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
             )
-            self._rag_thread.search_error.connect(
-                lambda err: self._do_agent(text, mode, "")
-            )
+            self._rag_thread.search_error.connect(lambda err: self._do_agent(text, mode, ""))
             self._rag_thread.start()
         else:
             self._do_agent(text, mode, "")
 
-    def _on_agent_rag_ready(
-        self, context: str, sources: str, text: str, mode: AgentMode
-    ):
+    def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
         if sources:
             self.status_label.setText(f"📚 {sources}")
         self._do_agent(text, mode, context)
@@ -998,17 +965,13 @@ class ChatPanel(QWidget):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt("chat", project_root=p_root)
-            if self.prompt_manager
-            else ""
+            self.prompt_manager.get_prompt("chat", project_root=p_root) if self.prompt_manager else ""
         )
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
         raw_cache = getattr(self, "search_cache", None)
 
-        merged_context = "\n\n".join(
-            filter(None, [self._attached_context(), self._rag_context or ""])
-        )
+        merged_context = "\n\n".join(filter(None, [self._attached_context(), self._rag_context or ""]))
 
         context = AgentContext(
             system_prompt=combined,
@@ -1022,9 +985,7 @@ class ChatPanel(QWidget):
 
         client = self._router.active_client
         if client is None:
-            self._add_message(
-                "system", "⚠️ Нет доступного LLM-бэкенда."
-            )
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
             self._reset_send_button()
             return
 
@@ -1051,35 +1012,27 @@ class ChatPanel(QWidget):
         self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
-        self._agent_thread.tools_status_changed.connect(
-            self._on_tools_status_changed
-        )
+        self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.start()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         client = self._router.active_client
         if client is None:
-            self._add_message(
-                "system", "⚠️ Нет доступного LLM-бэкенда для агента."
-            )
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
             self._reset_send_button()
             return
 
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt(mode.value, project_root=p_root)
-            if self.prompt_manager
-            else ""
+            self.prompt_manager.get_prompt(mode.value, project_root=p_root) if self.prompt_manager else ""
         )
 
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
         raw_cache = getattr(self, "search_cache", None)
 
-        merged_context = "\n\n".join(
-            filter(None, [self._attached_context(), rag_context])
-        )
+        merged_context = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
 
         context = AgentContext(
             system_prompt=combined,
@@ -1111,9 +1064,7 @@ class ChatPanel(QWidget):
         self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
-        self._agent_thread.tools_status_changed.connect(
-            self._on_tools_status_changed
-        )
+        self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.start()
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
@@ -1177,6 +1128,7 @@ class ChatPanel(QWidget):
         """
         try:
             from core.config import load_config
+
             cfg = load_config()
         except Exception as e:
             logger.warning(f"Не удалось прочитать политики из конфига: {e}")
@@ -1191,9 +1143,7 @@ class ChatPanel(QWidget):
             registry.set_policy("web_search", ToolPolicy.AUTO)
 
     @Slot(str, str, str)
-    def _on_tool_call_detected(
-        self, name: str, description: str, arguments_json: str
-    ):
+    def _on_tool_call_detected(self, name: str, description: str, arguments_json: str):
         from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
 
         arguments = json.loads(arguments_json)
@@ -1293,9 +1243,7 @@ class ChatPanel(QWidget):
 
     def _send_finished(self):
         if self._current_assistant_content:
-            assistant_message = ChatMessage(
-                role="assistant", content=self._current_assistant_content
-            )
+            assistant_message = ChatMessage(role="assistant", content=self._current_assistant_content)
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
@@ -1414,11 +1362,7 @@ class ChatPanel(QWidget):
         else:
             for i in range(self.model_combo.count()):
                 model_data = self.model_combo.itemData(i)
-                if (
-                    model_data
-                    and (info := self.registry.get(model_data)) is not None
-                    and info.is_local
-                ):
+                if model_data and (info := self.registry.get(model_data)) is not None and info.is_local:
                     self.model_combo.setCurrentIndex(i)
                     break
             else:
@@ -1539,7 +1483,7 @@ class ChatPanel(QWidget):
         text = self.model_combo.currentText()
         for prefix in ("✅ ", "⬇️ "):
             if text.startswith(prefix):
-                return text[len(prefix):]
+                return text[len(prefix) :]
         return text or "llama3.2"
 
     @Slot()
