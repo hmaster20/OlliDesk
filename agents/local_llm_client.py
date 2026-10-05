@@ -1,6 +1,7 @@
 """Клиент встроенной SLM через llama.cpp (fallback для Ollama)."""
 
 import asyncio
+import contextlib
 import json
 import re
 import threading
@@ -162,11 +163,9 @@ class LocalLLMClient:
         queue: asyncio.Queue[ChatChunk | None] = asyncio.Queue()
 
         def _safe_put(chunk: ChatChunk) -> None:
-            try:
+            # Loop уже закрыт — просто игнорируем
+            with contextlib.suppress(RuntimeError):
                 asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
-            except RuntimeError:
-                # Loop уже закрыт — просто игнорируем
-                pass
 
         def _generate():
             """Синхронная генерация в отдельном потоке."""

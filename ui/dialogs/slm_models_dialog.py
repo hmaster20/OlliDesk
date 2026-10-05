@@ -190,7 +190,6 @@ class SLMModelsDialog(QDialog):
 
     def _real_size_str(self, filename: str, repo_id: str) -> str:
         """Реальный размер на диске: для split — сумма всех частей."""
-        import re as _re
 
         from agents.download_slm import (
             _split_part_name,  # type: ignore[attr-defined]

@@ -4,14 +4,13 @@ import logging
 import os
 import sys
 import traceback
-import types
+from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from core.app import main
-from typing import Any
 
 # Отключаем телеметрию ChromaDB (posthog)
 os.environ.update({
@@ -34,9 +33,15 @@ logging.getLogger("chromadb").setLevel(logging.WARNING)
 
 # Создаем класс-заглушку с нужными атрибутами
 class PosthogMock:
-    capture = lambda *a, **kw: None
-    identify = lambda *a, **kw: None
-    flush = lambda *a, **kw: None
+    def capture(*a, **kw):
+        pass
+
+    def identify(*a, **kw):
+        pass
+
+    def flush(*a, **kw):
+        pass
+
     disabled = True
 
 # Приводим к Any, чтобы Python разрешил подменить им целый модуль в sys.modules

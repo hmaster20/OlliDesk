@@ -41,7 +41,7 @@ from ui.chat.message_item import ChatMessageItem
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
-    RouterChatThread,          # оставлен для обратной совместимости
+    RouterChatThread,  # оставлен для обратной совместимости
     WebSearchThread,
     _OllamaCheckThread,
     _SLMDownloadThread,
@@ -702,14 +702,15 @@ class ChatPanel(QWidget):
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self.input_edit and event.type() == QEvent.Type.KeyPress:
-            if isinstance(event, QKeyEvent):
-                if (
-                    event.key() == Qt.Key.Key_Return
-                    and event.modifiers() == Qt.KeyboardModifier.ControlModifier
-                ):
-                    self._toggle_send_stop()
-                    return True
+        if (
+            obj is self.input_edit
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Return
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self._toggle_send_stop()
+            return True
 
         if obj is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
             self._update_bubble_width()

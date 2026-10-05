@@ -12,6 +12,13 @@ from pathlib import Path
 
 from loguru import logger
 
+# Резерв под KV-кэш, compute-буферы и фрагментацию драйвера: без него
+# 4-гиговая карта уходит в OOM при частичном offload.
+VRAM_RESERVE_MB = 700
+
+# Типичная LLM имеет 24–40 слоёв; 32 — безопасная оценка для расчёта offload.
+APPROX_LAYERS = 32
+
 
 def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
     """Запускает команду и возвращает stdout или None при ошибке."""
@@ -133,8 +140,7 @@ def detect_optimal_gpu_layers(
 
     # Резерв под KV-кэш, compute-буферы, фрагментацию драйвера.
     # Без него 4-гиговая карта уйдёт в OOM при offload.
-    RESERVE_MB = 700
-    available_mb = max(0, free_mb - RESERVE_MB)
+    available_mb = max(0, free_mb - VRAM_RESERVE_MB)
 
     logger.info(
         f"GPU: free={free_mb} МБ, модель={model_mb} МБ, "
@@ -152,7 +158,6 @@ def detect_optimal_gpu_layers(
 
     # Иначе — пропорциональный offload.
     # Типичная LLM имеет 24–40 слоёв; берём 32 как безопасную оценку.
-    APPROX_LAYERS = 32
     ratio = available_mb / model_mb
     layers = max(0, min(APPROX_LAYERS, int(APPROX_LAYERS * ratio)))
     logger.info(

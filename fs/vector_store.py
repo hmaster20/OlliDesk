@@ -1,13 +1,10 @@
 """Векторное хранилище на основе ChromaDB."""
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import chromadb
 from chromadb.config import Settings
-from chromadb.api.types import Where, Include
-from typing import cast, Any
-
 from loguru import logger
 from pydantic import BaseModel
 

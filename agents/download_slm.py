@@ -1,7 +1,6 @@
 """Скачивание и управление локальными SLM-моделями (GGUF, llama.cpp)."""
 
 import re
-import shutil
 from pathlib import Path
 
 from loguru import logger

@@ -1,13 +1,12 @@
 """Кастомный делегат для подсветки Git-статуса в дереве файлов."""
 
 import subprocess
+from typing import cast
 
 from loguru import logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
-from typing import cast
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QWidget
 
 _GIT_COLORS = {
     "M": QColor("#e06c75"),

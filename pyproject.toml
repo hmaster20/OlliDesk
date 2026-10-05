@@ -43,7 +43,10 @@ dev = [
 
 [tool.ruff]
 line-length = 110 # Максимальная длина строки (символов)
-target-version = "py311"
+target-version = "py312"
+# Архивные поколения интерфейса: не импортируются и не проверяются.
+# Форматировать их нельзя — см. AGENTS.md §12.11.
+exclude = ["unused", "ui/unused"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
@@ -64,12 +67,13 @@ ignore-names = [
     "keyPressEvent",
     "initStyleOption",
     "closeEvent",
+    "resizeEvent",
 ]
 
 # Black это более простая альтернатива Ruff
 [tool.black]
 line-length = 110
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.isort]
 profile = "black"
@@ -92,6 +96,7 @@ disallow_any_generics = false       # Уберет ошибки [type-arg] дл�
 exclude = [
     '.venv',
     'unused',
+    'ui/unused',
 ]
 
 [[tool.mypy.overrides]]

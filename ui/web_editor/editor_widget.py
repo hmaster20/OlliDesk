@@ -1,8 +1,9 @@
 """Виджет редактора на базе QWebEngineView."""
 
 import json
+
 from loguru import logger
-from PySide6.QtCore import Qt, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget

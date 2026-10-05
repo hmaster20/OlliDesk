@@ -1243,7 +1243,6 @@ class MainWindow(QMainWindow):
     def _open_slm_manager(self):
         """Открывает диалог управления локальными SLM-моделями."""
         from core.config import load_config
-
         from ui.dialogs.slm_models_dialog import SLMModelsDialog
 
         dlg = SLMModelsDialog(self.config, self)

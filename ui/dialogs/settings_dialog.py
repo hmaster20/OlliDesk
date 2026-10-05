@@ -1,8 +1,7 @@
 """Диалог настроек OlliDesk — глобальные и локальные (проектные) конфиги."""
 
-from typing import Any
-
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (

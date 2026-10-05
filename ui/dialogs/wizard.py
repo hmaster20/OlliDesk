@@ -1,6 +1,7 @@
 """Визард первого запуска OlliDesk."""
 
 from pathlib import Path
+from typing import override
 
 import httpx
 from loguru import logger
@@ -18,7 +19,6 @@ from PySide6.QtWidgets import (
     QWizard,
     QWizardPage,
 )
-from typing_extensions import override
 
 from core.config import AppConfig, ModelConfig, ModelRole, ToolPolicy, save_config
 
