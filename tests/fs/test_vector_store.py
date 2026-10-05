@@ -1,10 +1,11 @@
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from core.exceptions import EmbedderError
 from fs.indexer import TextChunk
-from fs.vector_store import SearchResult, VectorStore
+from fs.vector_store import Embedder, SearchResult, VectorStore
 
 
 @pytest.fixture
@@ -197,7 +198,7 @@ class TestVectorStoreEmbedder:
         with pytest.raises(EmbedderError, match="не умеет считать эмбеддинги"):
             VectorStore(
                 persist_dir=tmp_path / "vector_db",
-                embed_client=object(),
+                embed_client=cast(Embedder, object()),
                 embed_model="nomic-embed-text",
             )
 
@@ -208,7 +209,7 @@ class TestVectorStoreEmbedder:
 
         store = VectorStore(
             persist_dir=tmp_path / "vector_db",
-            embed_client=FakeLocalClient(),
+            embed_client=cast(Embedder, FakeLocalClient()),
             embed_model="nomic-embed-text",
         )
         assert store.embed_model == "nomic-embed-text"

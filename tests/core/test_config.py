@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -345,10 +346,11 @@ class TestBackendSettings:
             BackendSettings(embed_backend="vllm")
 
     def test_slm_first_order_preserved(self):
+        # Именно так секция приходит из config.yaml — сырым словарём.
         cfg = AppConfig(
             default_model="m",
             embed_model="e",
-            backends={"priority": ["local_slm", "ollama"]},
+            backends=cast(BackendSettings, {"priority": ["local_slm", "ollama"]}),
         )
         assert cfg.backends.priority == ["local_slm", "ollama"]
 

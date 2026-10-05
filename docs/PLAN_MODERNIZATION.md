@@ -70,7 +70,33 @@
 **Правило:** до 1.2 новый код должен проходить `ruff check` без ошибок.
 
 ### 1.3 Типизация
-- [ ] `mypy .` — снять послабления (`disallow_untyped_defs`, `disallow_incomplete_defs`) хотя бы
+
+**Правило:** до 1.3 новый код должен проходить `mypy .` без новых ошибок.
+
+- [x] Починить запуск `mypy .`: в `[tool.mypy]` стоял `python_version = "3.11"`, из-за чего
+      mypy спотыкался о стабы зависимостей с синтаксисом 3.12. Заменено на `"3.12"`.
+- [ ] **`mypy .` → 0 ошибок.** Базис зафиксирован: **27 ошибок в 12 файлах** при
+      `python_version = "3.12"`. Разбивка по кодам:
+  - [ ] `unused-ignore` (3) — устаревшие `# type: ignore`: `ui/file_tree_delegate.py:190`,
+        `agents/gpu_utils.py:21`, `ui/dialogs/slm_models_dialog.py:196`. Просто удалить.
+  - [ ] `union-attr` (6) — обращение к `.text` / `.widget()` / `.execute()` / `.embed`
+        без проверки на `None`: `ui/dialogs/session_manager_dialog.py:66,76,85`
+        (`QTableWidgetItem | None` из `item()`), `ui/chat/threads.py:285` (`ToolRegistry | None`),
+        `ui/chat/panel.py:777-778` (`QLayoutItem | None`), `agents/local_llm_client.py:472`
+        (`embed_llm: Llama | None`). Лечится `is None`-guard'ами или `assert`.
+  - [ ] `arg-type` (2) — `llama-cpp-python` типизирован: `agents/local_llm_client.py:181`
+        (`messages: list[dict[str, Any]]` против union из `ChatCompletionRequest*`).
+        Обёрнуть `cast(Any, ...)`; в 4.8.A перепишется вместе с `MessagePart`.
+  - [ ] `no-any-return` / `var-annotated` (7) — `tools/web_search.py:52,62,147,157,204,214`
+        (типы `DDGS` из `duckduckgo_search` и `ddgs` **конфликтуют**: ошибка `assignment`
+        на строке 115 — два пакета экспортируют одно имя; здесь же нужен тайп-алиас
+        для `session`) и `tests/agents/test_tool_registry.py:31`.
+  - [ ] `union-attr` в стриме llama.cpp — `agents/local_llm_client.py:191,196`:
+        `chunk["choices"][0]` типизирован как union, нужен `cast`.
+  - [ ] `assignment` — `ui/chat/panel.py:1418`: `ModelInfo | None` присваивается в переменную
+        типа `ModelInfo`.
+  - [ ] `union-attr` — `tests/tools/test_attached_files.py:39`: `AttachedFile | None`.
+- [ ] Снять послабления (`disallow_untyped_defs`, `disallow_incomplete_defs`) хотя бы
       для `core/`, `agents/`, `fs/`, `state/`, `tools/`.
 - [ ] Убрать `ignore_errors = true` для `ui/dialogs/wizard.py` (модуль ~260 строк).
 - [ ] Добавить `ui/unused` в `exclude` mypy (сейчас не исключён, в отличие от `unused/`).
@@ -78,6 +104,9 @@
       над ChromaDB (или тонкий адаптер с Protocols).
 - [ ] Удалить закомментированные альтернативные реализации в `fs/vector_store.py`,
       `ui/web_editor/editor_widget.py`, `ui/main_window.py`, `core/search_cache.py`.
+- [ ] **Дубликат пакетов:** в зависимостях одновременно `duckduckgo-search` и `ddgs`,
+      `tools/web_search.py` импортирует оба (см. также «Быстрый бэклог»). Оставить один —
+      иначе `no-any-return` и путаница между двумя `DDGS` останутся.
 
 ### 1.4 Удаление мёртвого кода
 - [ ] `ui/chat/threads.py`: удалить `OllamaChatThread` (не создаётся) и `RouterChatThread`
@@ -647,7 +676,13 @@
 ## Быстрый бэклог (мелочи)
 
 - [ ] `ruff` вместо `black`/`isort` (быстрее в 30–100 раз, дубли функционала) — обсудить.
-- [ ] Проверить зависимость `duckduckgo-search` + `ddgs` — возможно, дубликаты.
+- [ ] **`uv.lock` рассинхронизирован с `pyproject.toml`**: объявлен `llama-cpp-python>=0.3.0`
+      (и транзитивный `diskcache`), в локе их нет. Любой `uv run` / `uv sync` молча
+      переписывает лок, и правка попадает в случайный коммит. Перегенерировать один раз
+      и держать лок в коммитах; причина — в лок собран до добавления SLM-зависимости.
+- [ ] Проверить зависимость `duckduckgo-search` + `ddgs` — точно дубликаты: оба
+      экспортируют `DDGS` с разными типами, из-за чего mypy даёт `assignment` в
+      `tools/web_search.py:115` (см. 1.3).
 - [ ] `pyproject.toml` → `hatchling` вместо `setuptools` (упростит сборку wheel).
 - [ ] `.gitignore` игнорирует `Notes.md`/`Roadmap.md`/`Model.md` по имени — файлы уже
       отслеживаются, но новые такие же будут скрыты. Переименовать правила на `/Notes.md`.
@@ -674,3 +709,4 @@
 | 2026-10-04 | `React.md` разобран и перенесён в Фазу 4.6 с приоритетами Сейчас/Потом/Позже | Файл был одноразовым разбором; задачи из него разложены по плану, часть уже закрыта |
 | 2026-10-05 | `docs/UI.md` разобран и перенесён в Фазу 4.8, сам файл удалён | Разбор интерфейса смешан с изменением типа `ChatMessage` — в общий список задач это не помещается. Отдельная фаза с порядком: сначала `MessagePart`, потом виджеты. Часть пунктов при проверке по коду оказалась уже сделанной (показ рассуждений, статус инструмента в статус-строке, `show_diff`) — помечено в тексте, а не выдано за новую работу |
 | 2026-10-05 | `run_shell_command` включается в план (4.8.C), но с жёсткими рамками: только PowerShell, `ASK_FIRST`, режим `AGENT`, черный список **плюс** границы по корню проекта | Пользователь решил, что агент без shell в Windows ограничен. Чёрный список сам по себе обходится (`cmd /c`, `-EncodedCommand`), поэтому границей безопасности сделана песочница путей из `tools/file_ops.py` |
+| 2026-10-05 | `mypy .` запущен, в Фазе 1.3 зафиксирован реальный базис — 27 ошибок в 12 файлах | Раньше пункт был «снять послабления» без цифр. Ошибки сгруппированы по кодам и файлам, чтобы 1.3 была такой же конкретной, как 1.2; часть ошибок перепишется сама при 4.8.A (`local_llm_client.py:181`) |
