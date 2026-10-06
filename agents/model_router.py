@@ -260,3 +260,9 @@ class ModelRouter:
         if client and hasattr(client, "is_cancelled"):
             return bool(client.is_cancelled)
         return False
+
+    def reset_cancel(self) -> None:
+        """Сбрасывает флаг отмены на активном бэкенде."""
+        client = self.active_client
+        if client and hasattr(client, "reset_cancel"):
+            client.reset_cancel()

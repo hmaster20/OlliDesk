@@ -38,3 +38,7 @@ class LLMBackend(Protocol):
     def is_cancelled(self) -> bool:
         """True, если текущий запрос отменён."""
         ...
+
+    def reset_cancel(self) -> None:
+        """Сбрасывает флаг отмены текущего запроса."""
+        ...
