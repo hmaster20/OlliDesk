@@ -44,6 +44,10 @@ class LLMBackend(Protocol):
         """Сбрасывает флаг отмены текущего запроса."""
         ...
 
+    async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Получить эмбеддинги для текста."""
+        ...
+
     async def __aenter__(self) -> "LLMBackend":
         return self
 
