@@ -34,3 +34,5 @@ __all__ = [
     "ToolSchema",
     "tool",
 ]
+
+from .base import LLMBackend  # noqa: F401

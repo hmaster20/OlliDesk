@@ -6,7 +6,8 @@ from typing import Any
 
 from loguru import logger
 
-from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, OllamaClient
+from agents.base import LLMBackend
+from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions
 from core.context_budget import DEFAULT_NUM_CTX
 from core.exceptions import EmbedderError
 
@@ -41,7 +42,7 @@ class ModelRouter:
     """
 
     def __init__(self) -> None:
-        self._ollama: OllamaClient | None = None
+        self._ollama: LLMBackend | None = None
         self._local_slm = None
         self._rule_based = None
         self._active_backend: BackendType = BackendType.NONE
@@ -53,7 +54,7 @@ class ModelRouter:
         ]
         self._embed_preference: BackendType | None = None
 
-    def set_ollama(self, client: OllamaClient) -> None:
+    def set_ollama(self, client: LLMBackend) -> None:
         """Устанавливает Ollama-клиент."""
         self._ollama = client
 

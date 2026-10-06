@@ -6,7 +6,8 @@ from typing import Any
 
 from loguru import logger
 
-from agents.ollama_client import ChatMessage, OllamaClient, ToolCall
+from agents.base import LLMBackend
+from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
@@ -137,7 +138,7 @@ class AgentLoop:
     инструменты накладываются через ToolRegistry.get_schemas(mode).
     """
 
-    def __init__(self, client: OllamaClient, registry: ToolRegistry, model: str):
+    def __init__(self, client: LLMBackend, registry: ToolRegistry, model: str):
         """
         Args:
             client: Клиент LLM (OllamaClient, LocalLLMClient, ModelRouter)
