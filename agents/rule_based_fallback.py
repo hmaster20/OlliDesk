@@ -166,3 +166,14 @@ class RuleBasedFallback:
     def check_tools_support(self, model: str) -> bool:
         """Rule-based fallback не поддерживает инструменты."""
         return False
+
+    async def __aenter__(self) -> "RuleBasedFallback":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        return None

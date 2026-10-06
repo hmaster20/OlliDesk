@@ -473,3 +473,14 @@ class LocalLLMClient:
     def check_tools_support(self, model: str) -> bool:
         """SLM поддерживает инструменты через JSON-парсинг."""
         return True
+
+    async def __aenter__(self) -> "LocalLLMClient":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        return None
