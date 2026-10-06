@@ -43,8 +43,8 @@ class ModelRouter:
 
     def __init__(self) -> None:
         self._ollama: LLMBackend | None = None
-        self._local_slm = None
-        self._rule_based = None
+        self._local_slm: LLMBackend | None = None
+        self._rule_based: LLMBackend | None = None
         self._active_backend: BackendType = BackendType.NONE
         self._ollama_available = False
         self._slm_available = False
@@ -58,11 +58,11 @@ class ModelRouter:
         """Устанавливает Ollama-клиент."""
         self._ollama = client
 
-    def set_local_slm(self, client: Any) -> None:
+    def set_local_slm(self, client: LLMBackend | None) -> None:
         """Установить клиент локальной SLM-модели."""
         self._local_slm = client
 
-    def set_rule_based(self, client: Any) -> None:
+    def set_rule_based(self, client: LLMBackend | None) -> None:
         """Установить клиент rule-based fallback."""
         self._rule_based = client
 
