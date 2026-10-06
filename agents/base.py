@@ -1,6 +1,7 @@
 """Базовые Protocol-контракты для LLM-бэкендов."""
 
 from collections.abc import AsyncIterator
+from types import TracebackType
 from typing import Protocol, runtime_checkable
 
 from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, ToolSchema
@@ -42,3 +43,14 @@ class LLMBackend(Protocol):
     def reset_cancel(self) -> None:
         """Сбрасывает флаг отмены текущего запроса."""
         ...
+
+    async def __aenter__(self) -> "LLMBackend":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        return None

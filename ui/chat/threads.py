@@ -14,6 +14,7 @@ from agents.agent_loop import (
     AgentIterationLimitError,
     AgentLoop,
 )
+from agents.base import LLMBackend
 from agents.download_slm import download_model, get_model_parts
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import ModelRouter
@@ -37,7 +38,7 @@ class AgentChatThread(QThread):
 
     def __init__(
         self,
-        client: OllamaClient,
+        client: LLMBackend,
         registry: ToolRegistry,
         model: str,
         context: AgentContext,
