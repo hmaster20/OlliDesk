@@ -872,6 +872,8 @@ class MainWindow(QMainWindow):
             embed_model=self.config.embed_model,
         )
         self.chat_panel.set_vector_store(self.vector_store)
+        # Пересоздаём индексер с путём проекта, чтобы подхватить игнор-файлы
+        self.indexer = FileIndexer(self.config, self.project_path)
 
         # Загружаем последнюю сессию для этого проекта
         sessions = self.session_store.list_sessions(str(project_path))
@@ -945,6 +947,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))
         self.chat_panel.set_project_open(True)
+        # Пересоздаём индексер для нового каталога
+        self.indexer = FileIndexer(self.config, self.project_path)
 
         self._previous_state = self.project_state.load(path)
         self.reindex_btn.setVisible(True)
