@@ -151,10 +151,10 @@ class LocalLLMClient:
 
         # Параметры генерации
         temperature = 0.7
-        max_tokens = 1024
+        max_tokens = 512  # безопаснее для 4K контекста
         if options:
             temperature = getattr(options, "temperature", 0.7)
-            max_tokens = getattr(options, "num_predict", 1024)
+            max_tokens = getattr(options, "num_predict", 512)
 
         # Запускаем генерацию в отдельном потоке
         loop = asyncio.get_event_loop()

@@ -261,7 +261,7 @@ class MainWindow(QMainWindow):
         self.prompt_manager = SystemPromptManager()
 
         # Индексация
-        self.indexer = FileIndexer(config)
+        self.indexer = FileIndexer(config, self.project_path)
         self.vector_store: VectorStore | None = None
         self._indexing_thread: IndexingThread | None = None
 
@@ -1120,7 +1120,7 @@ class MainWindow(QMainWindow):
             try:
                 self.config = load_config(self.project_path)
                 # Обновляем индексер с новым конфигом
-                self.indexer = FileIndexer(self.config)
+                self.indexer = FileIndexer(self.config, self.project_path)
                 logger.info("Настройки сохранены, конфиг перезагружен")
             except Exception as e:
                 logger.error(f"Ошибка перезагрузки конфига: {e}")

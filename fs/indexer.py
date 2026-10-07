@@ -123,17 +123,40 @@ ARCHIVE_EXTENSIONS: set[str] = {
 class FileIndexer:
     """Индексатор файлов проекта."""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, project_path: Path | None = None):
         """
         Инициализация индексатора.
 
         Args:
             config: Конфигурация приложения
+            project_path: Путь к проекту (для загрузки дополнительных игнор-файлов)
         """
         self.config = config
+        self.project_path = project_path
+
+        ignored_patterns = list(config.ignored_patterns)
+
+        # Загружаем дополнительные игнор-файлы проекта
+        if project_path:
+            for ignore_file in [
+                project_path / ".ollideskignore",
+                project_path / ".indexignore",
+                project_path / ".ollidesk" / "indexignore",
+            ]:
+                try:
+                    if ignore_file.exists():
+                        content = ignore_file.read_text(encoding="utf-8")
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                ignored_patterns.append(line)
+                        logger.info(f"Загружены игнор-паттерны из {ignore_file}")
+                except Exception as e:
+                    logger.debug(f"Не удалось прочитать {ignore_file}: {e}")
+
         self.ignored_spec = pathspec.PathSpec.from_lines(
             "gitwildmatch",
-            config.ignored_patterns,
+            ignored_patterns,
         )
         self.allowed_extensions = set(config.index_extensions)
         self.max_file_size = config.max_file_size_kb * 1024
