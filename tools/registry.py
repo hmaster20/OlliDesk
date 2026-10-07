@@ -34,9 +34,9 @@ ALL_TOOLS = [
     exchange_rate.get_exchange_rate,
     exchange_rate.get_exchange_rates_multi,
     # git_ops_tool
-    git_ops_tool.get_git_status,
-    git_ops_tool.create_snapshot,
-    git_ops_tool.undo_last_snapshot,
+    git_ops_tool.tool_git_status,
+    git_ops_tool.tool_create_snapshot,
+    git_ops_tool.tool_undo_snapshot,
     # attached_files
     attached_files.read_attached_file,
 ]
