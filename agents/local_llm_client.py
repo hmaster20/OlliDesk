@@ -15,6 +15,19 @@ from loguru import logger
 from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
 
+# Языковая директива идёт в самое НАЧАЛО системного сообщения: при обрезке
+# контекста `_fit_messages` сохраняет голову промпта, поэтому инструкция не
+# потеряется. Qwen2.5 (7B, q4) склонен «соскакивать» на китайский — низкая
+# температура плюс явный запрет других языков это подавляют.
+_LANGUAGE_INSTRUCTION = (
+    "ВАЖНО: отвечай на языке пользователя. Если запрос на русском — пиши "
+    "ТОЛЬКО на русском, без слов, фраз и иероглифов на других языках."
+)
+
+# Температура по умолчанию для встроенной SLM: ниже, чем у Ollama-моделей,
+# чтобы снизить дрейф языка и повысить дисциплину вызовов инструментов.
+_DEFAULT_TEMPERATURE = 0.3
+
 
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
@@ -140,23 +153,14 @@ class LocalLLMClient:
         """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
         self.reset_cancel()
 
-        # Формируем сообщения для llama.cpp
-        chat_messages = self._convert_messages(messages)
-
-        # Если есть инструменты — добавляем инструкцию в system prompt
-        if tools:
-            tool_instruction = self._build_tool_instruction(tools)
-            # Вставляем инструкцию как САМОЕ ПЕРВОЕ system-сообщение
-            if chat_messages and chat_messages[0].get("role") == "system":
-                chat_messages[0]["content"] = tool_instruction + "\n\n" + chat_messages[0]["content"]
-            else:
-                chat_messages.insert(0, {"role": "system", "content": tool_instruction})
+        # Формируем сообщения для llama.cpp (конвертация + системные инструкции)
+        chat_messages = self._prepare_messages(messages, tools)
 
         # Параметры генерации
-        temperature = 0.7
+        temperature = _DEFAULT_TEMPERATURE
         max_tokens = self.max_tokens
         if options:
-            temperature = getattr(options, "temperature", 0.7)
+            temperature = getattr(options, "temperature", _DEFAULT_TEMPERATURE)
             max_tokens = getattr(options, "num_predict", self.max_tokens)
 
         # Обрезаем историю/контекст, чтобы промпт поместился в окно модели
@@ -188,6 +192,7 @@ class LocalLLMClient:
                         messages=cast(Any, chat_messages),
                         max_tokens=max_tokens,
                         temperature=temperature,
+                        top_p=0.8,
                         stream=True,
                         stop=["<|im_end|>", "<|im_start|>"],
                     )
@@ -498,6 +503,27 @@ class LocalLLMClient:
         return "\n".join(lines)
 
     # --- Конвертация сообщений ---
+
+    def _prepare_messages(self, messages: list[ChatMessage], tools: list[Any] | None) -> list[dict[str, Any]]:
+        """Собирает сообщения для llama.cpp: конвертация + системные инструкции.
+
+        Инструкция по инструментам и языковая директива вставляются в начало
+        системного сообщения — при обрезке контекста ``_fit_messages`` сохраняет
+        голову промпта, поэтому они не потеряются.
+        """
+        chat_messages = self._convert_messages(messages)
+        if tools:
+            chat_messages = self._prepend_system(chat_messages, self._build_tool_instruction(tools))
+        return self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
+
+    @staticmethod
+    def _prepend_system(chat_messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+        """Добавляет текст в начало системного сообщения (или создаёт его)."""
+        if chat_messages and chat_messages[0].get("role") == "system":
+            chat_messages[0]["content"] = text + "\n\n" + str(chat_messages[0]["content"])
+        else:
+            chat_messages.insert(0, {"role": "system", "content": text})
+        return chat_messages
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         """Конвертирует ChatMessage в формат llama.cpp.

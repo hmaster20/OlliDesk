@@ -93,6 +93,14 @@ _TOOL_USE_INSTRUCTION = """
 """.strip()
 
 
+_LANGUAGE_DIRECTIVE = (
+    "ЯЗЫК ОТВЕТА: пиши ТОЛЬКО на русском языке. Не вставляй слова, фразы или "
+    "иероглифы на других языках — даже для технических терминов, если у них "
+    "есть общепринятый русский аналог. Отвечай на другом языке только если "
+    "пользователь явно об этом попросил."
+)
+
+
 _MODE_HINTS = {
     AgentMode.CHAT: (
         "Текущий режим: ЧАТ.\n"
@@ -136,6 +144,8 @@ def _build_system_prompt(context: AgentContext) -> str:
         )
     if context.project_map:
         parts.append(context.project_map)
+
+    parts.append(_LANGUAGE_DIRECTIVE)
 
     return "\n\n".join(parts)
 

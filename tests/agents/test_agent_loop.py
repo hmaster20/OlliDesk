@@ -168,3 +168,19 @@ class TestSystemPromptProjectMap:
         prompt = _build_system_prompt(AgentContext())
 
         assert "Структура проекта:" not in prompt
+
+
+class TestSystemPromptLanguage:
+    """Языковая директива всегда в конце системного промпта."""
+
+    def test_language_directive_present(self):
+        prompt = _build_system_prompt(AgentContext())
+
+        assert "ЯЗЫК ОТВЕТА" in prompt
+        # Директива — последний блок: модели сильнее следуют поздним инструкциям.
+        assert prompt.rstrip().endswith("пользователь явно об этом попросил.")
+
+    def test_language_directive_after_project_map(self):
+        prompt = _build_system_prompt(AgentContext(project_map="Структура проекта:\ncloud/"))
+
+        assert prompt.index("ЯЗЫК ОТВЕТА") > prompt.index("cloud/")

@@ -171,6 +171,13 @@ OlliDesk/
 (`prompt_chars`, `tokens`, `gen_ms`, `ttft_ms`, `tokens_per_sec`, `cancelled`) —
 в лог пишется строка на каждый запрос.
 
+Язык и температура: встроенная SLM склонна к дрейфу языка (Qwen2.5 7B q4 вставлял
+китайские слова в русский текст). Защита двойная: `LocalLLMClient._prepare_messages`
+всегда ставит `_LANGUAGE_INSTRUCTION` в самое НАЧАЛО системного сообщения (там она
+переживает обрезку `_fit_messages`), а `_build_system_prompt` добавляет
+`_LANGUAGE_DIRECTIVE` в конец промпта. Температура по умолчанию — `_DEFAULT_TEMPERATURE = 0.3`
+(AgentLoop не передаёт `options`, поэтому `slm.temperature` из конфига сейчас не влияет).
+
 ### `tools/` — инструменты для модели
 
 Каждая функция помечена `@tool(name, description, policy, modes)`; декоратор **только ставит
