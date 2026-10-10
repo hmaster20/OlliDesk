@@ -334,12 +334,22 @@ class AppConfig(BaseModel):
     theme: str = "light"
     last_model: str = ""
     last_mode: str = "agent"
+    agent_max_iterations: int = 30
+    chat_max_iterations: int = 7
 
     @field_validator("recent_projects")
     @classmethod
     def validate_recent_projects(cls, v: list[str]) -> list[str]:
         """Не больше 10 проектов."""
         return v[:10]
+
+    @field_validator("agent_max_iterations", "chat_max_iterations")
+    @classmethod
+    def validate_iterations(cls, v: int) -> int:
+        """Лимит итераций агента/чата не меньше 1."""
+        if v < 1:
+            raise ValueError(f"iterations must be >= 1, got {v}")
+        return v
 
     @field_validator("max_file_size_kb")
     @classmethod

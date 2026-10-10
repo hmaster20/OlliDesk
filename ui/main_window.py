@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFileSystemModel,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -671,6 +672,11 @@ class MainWindow(QMainWindow):
         manage_sessions_action.triggered.connect(self._open_session_manager)
         view_menu.addAction(manage_sessions_action)
 
+        view_menu.addSeparator()
+        self.agent_iterations_action = QAction("Лимит итераций агента...", self)
+        self.agent_iterations_action.triggered.connect(self._edit_agent_iterations)
+        view_menu.addAction(self.agent_iterations_action)
+
         help_menu = menubar.addMenu("&Help")
 
         wizard_action = QAction("Run Setup &Wizard...", self)
@@ -714,6 +720,30 @@ class MainWindow(QMainWindow):
             logger.info(f"Подтверждение web_search: {'вкл' if checked else 'выкл'}")
         except Exception as e:
             logger.exception(f"Не удалось сохранить настройку confirm.web_search: {e}")
+
+    def _edit_agent_iterations(self) -> None:
+        """Позволяет изменить лимит итераций ReAct-цикла агента через меню."""
+        try:
+            from core.config import load_config, save_config
+
+            cfg = load_config()
+            current = cfg.agent_max_iterations
+            value, ok = QInputDialog.getInt(
+                self,
+                "Лимит итераций агента",
+                "Максимум итераций ReAct-цикла (вызовов инструментов):",
+                current,
+                1,
+                500,
+                1,
+            )
+            if not ok:
+                return
+            cfg.agent_max_iterations = value
+            save_config(cfg)
+            self.status_bar.showMessage(f"Лимит итераций агента: {value}", 4000)
+        except Exception as e:
+            logger.exception(f"Не удалось сохранить лимит итераций агента: {e}")
 
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)

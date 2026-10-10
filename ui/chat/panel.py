@@ -175,6 +175,17 @@ class ChatPanel(QWidget):
         except Exception:
             return True
 
+    def _iteration_limit(self, mode: AgentMode) -> int:
+        """Лимит итераций ReAct-цикла из конфига (agent/chat)."""
+        default = 30 if mode == AgentMode.AGENT else 7
+        try:
+            from core.config import load_config
+
+            cfg = load_config()
+            return cfg.agent_max_iterations if mode == AgentMode.AGENT else cfg.chat_max_iterations
+        except Exception:
+            return default
+
     def _apply_backend_config(self) -> None:
         """Передаёт роутеру порядок бэкендов и выбор эмбеддингов из конфига."""
         try:
@@ -1037,7 +1048,7 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=AgentMode.CHAT,
-            max_iterations=7,
+            max_iterations=self._iteration_limit(AgentMode.CHAT),
         )
 
         self._agent_thread.chunk_received.connect(self._on_chunk)
@@ -1091,6 +1102,7 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=mode,
+            max_iterations=self._iteration_limit(mode),
         )
 
         self._agent_thread.chunk_received.connect(self._on_chunk)

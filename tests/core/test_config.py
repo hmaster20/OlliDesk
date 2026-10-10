@@ -126,6 +126,20 @@ class TestAppConfig:
         restored = AppConfig.model_validate(config.model_dump())
         assert restored.confirm == config.confirm
 
+    def test_iteration_defaults(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        assert config.agent_max_iterations == 30
+        assert config.chat_max_iterations == 7
+
+    def test_iteration_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            AppConfig(default_model="test", embed_model="test", agent_max_iterations=0)
+
+    def test_iteration_survives_dump(self):
+        config = AppConfig(default_model="test", embed_model="test", agent_max_iterations=42)
+        restored = AppConfig.model_validate(config.model_dump())
+        assert restored.agent_max_iterations == 42
+
     def test_tool_policies_from_yaml(self):
         config = AppConfig.model_validate(
             {**SAMPLE_GLOBAL_CONFIG, "tool_policies": {"write_file": "ask_first"}}
