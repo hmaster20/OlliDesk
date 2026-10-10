@@ -17,6 +17,272 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+_CODE_FENCE_RE = re.compile(r"```[ \t]*(?P<lang>[A-Za-z0-9_+#.-]*)[ \t]*\n?(?P<code>.*?)```", re.DOTALL)
+_CODE_PLACEHOLDER_RE = re.compile(r"^\x00CB(\d+)\x00$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_UL_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_OL_RE = re.compile(r"^\s*\d+[.)]\s+(.*)$")
+_HR_RE = re.compile(r"^(-{3,}|\*{3,}|_{3,})$")
+_UL_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)[-*+]\s+(?P<text>.*)$")
+_OL_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)\d+[.)]\s+(?P<text>.*)$")
+
+
+def _render_code_block(code: str, lang: str) -> str:
+    """Подсвечивает код в блоке (pygments) или экранирует как есть."""
+    code = code.rstrip("\n")
+    highlighted: str
+    try:
+        from pygments import highlight as _highlight
+        from pygments.formatters import HtmlFormatter
+        from pygments.lexers import get_lexer_by_name, guess_lexer
+
+        formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+        lexer = get_lexer_by_name(lang, stripall=True) if lang else guess_lexer(code)
+        highlighted = _highlight(code, lexer, formatter).rstrip("\n")
+    except Exception:
+        highlighted = html_mod.escape(code)
+
+    header = ""
+    if lang:
+        header = (
+            '<div style="background:#2f2f3c; padding:3px 12px;'
+            " font-family:'Cascadia Mono','Consolas','Courier New',monospace;"
+            ' font-size:11px; color:#9a9ab0; border-bottom:1px solid #3a3a48;">'
+            f"{html_mod.escape(lang)}</div>"
+        )
+
+    return (
+        '<div style="background:#23232c; border:1px solid #3a3a48; border-radius:8px;'
+        ' margin:8px 0; overflow:hidden;">' + header + '<pre style="margin:0; padding:8px 12px;'
+        " font-family:'Cascadia Mono','Consolas','Courier New',monospace;"
+        ' font-size:13px; color:#e0e0e0;"><code>' + highlighted + "</code></pre></div>"
+    )
+
+
+def _inline(text: str) -> str:
+    """Инлайн-разметка: код, ссылки, жирный/курсив/зачёркнутый, экранирование."""
+    inline_codes: list[str] = []
+
+    def _stash_code(m: re.Match[str]) -> str:
+        inline_codes.append(m.group(1))
+        return f"\x00IC{len(inline_codes) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", _stash_code, text)
+    text = html_mod.escape(text)
+    text = re.sub(
+        r"\[([^\]]+)\]\(([^)\s]+)\)",
+        r'<a href="\2" style="color:#4da3ff; text-decoration:none;">\1</a>',
+        text,
+    )
+    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"<b><i>\1</i></b>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text)
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+    text = re.sub(
+        r"==(.+?)==",
+        r'<span style="background:#ffd54f; color:#1a1a1a; padding:0 3px;'
+        r' border-radius:3px;">\1</span>',
+        text,
+    )
+
+    def _restore_code(m: re.Match[str]) -> str:
+        code = html_mod.escape(inline_codes[int(m.group(1))])
+        return (
+            '<code style="background:#33333d; color:#e8c07d; padding:1px 5px;'
+            " border-radius:3px; font-family:'Cascadia Mono','Consolas',monospace;"
+            f' font-size:13px;">{code}</code>'
+        )
+
+    return re.sub(r"\x00IC(\d+)\x00", _restore_code, text)
+
+
+def _indent_width(raw: str) -> int:
+    """Ширина отступа строки в пробелах (табы раскрываются по 4)."""
+    expanded = raw.expandtabs(4)
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def _collect_list_items(lines: list[str], start: int) -> tuple[list[tuple[int, bool, str]], int]:
+    """Собирает подряд идущие пункты списка: (отступ, нумерованный, текст).
+
+    Пустые строки между пунктами не прерывают список (loose list), если за ними
+    снова идёт пункт списка — иначе нумерация сбрасывалась бы на «1».
+    """
+    items: list[tuple[int, bool, str]] = []
+    i = start
+    n = len(lines)
+    while i < n:
+        raw = lines[i]
+        if not raw.strip():
+            j = i
+            while j < n and not lines[j].strip():
+                j += 1
+            if j < n and (_OL_ITEM_RE.match(lines[j]) or _UL_ITEM_RE.match(lines[j])):
+                i = j
+                continue
+            break
+        m = _OL_ITEM_RE.match(raw)
+        if m:
+            items.append((_indent_width(m.group("indent")), True, m.group("text").strip()))
+            i += 1
+            continue
+        m = _UL_ITEM_RE.match(raw)
+        if m:
+            items.append((_indent_width(m.group("indent")), False, m.group("text").strip()))
+            i += 1
+            continue
+        break
+    return items, i
+
+
+def _render_list_frame(frame: dict) -> str:
+    """Рендерит один уровень списка, разворачивая вложенные уровни в <li>."""
+    tag = "ol" if frame["ordered"] else "ul"
+    parts = [f'<{tag} style="margin:6px 0; padding-left:22px;">']
+    for text, children in frame["items"]:
+        inner = _inline(text)
+        for child in children:
+            inner += _render_list_frame(child)
+        parts.append(f'<li style="margin:3px 0;">{inner}</li>')
+    parts.append(f"</{tag}>")
+    return "".join(parts)
+
+
+def _render_list_tree(items: list[tuple[int, bool, str]]) -> str:
+    """Строит вложенные <ul>/<ol> из плоского списка с отступами."""
+    root: list[dict] = []
+    stack: list[dict] = []
+
+    def _attach(frame: dict) -> None:
+        if stack:
+            parent = stack[-1]
+            if parent["items"]:
+                parent["items"][-1][1].append(frame)
+            else:
+                parent["items"].append(["", [frame]])
+        else:
+            root.append(frame)
+
+    for indent, ordered, text in items:
+        while stack and indent < stack[-1]["indent"]:
+            stack.pop()
+        if not stack:
+            frame = {"indent": indent, "ordered": ordered, "items": []}
+            stack.append(frame)
+            root.append(frame)
+        elif indent > stack[-1]["indent"]:
+            frame = {"indent": indent, "ordered": ordered, "items": []}
+            parent = stack[-1]
+            if parent["items"]:
+                parent["items"][-1][1].append(frame)
+            else:
+                parent["items"].append(["", [frame]])
+            stack.append(frame)
+        elif ordered != stack[-1]["ordered"]:
+            stack.pop()
+            frame = {"indent": indent, "ordered": ordered, "items": []}
+            _attach(frame)
+            stack.append(frame)
+        stack[-1]["items"].append([text, []])
+
+    return "".join(_render_list_frame(frame) for frame in root)
+
+
+def _is_block_start(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    return bool(
+        _HEADING_RE.match(stripped)
+        or _HR_RE.match(stripped)
+        or _UL_RE.match(line)
+        or _OL_RE.match(line)
+        or stripped.startswith(">")
+        or _CODE_PLACEHOLDER_RE.match(stripped)
+    )
+
+
+def _render_blocks(text: str, code_blocks: list[str]) -> str:
+    """Разбирает текст на блочные элементы: заголовки, списки, цитаты, абзацы."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+
+        m = _CODE_PLACEHOLDER_RE.match(stripped)
+        if m:
+            out.append(code_blocks[int(m.group(1))])
+            i += 1
+            continue
+        if not stripped:
+            i += 1
+            continue
+        if _HR_RE.match(stripped):
+            out.append('<hr style="border:none; border-top:1px solid #4a4a55; margin:12px 0;">')
+            i += 1
+            continue
+
+        m = _HEADING_RE.match(stripped)
+        if m:
+            level = len(m.group(1))
+            size = {1: 20, 2: 17, 3: 15}.get(level, 14)
+            out.append(
+                f'<h{level} style="font-size:{size}px; font-weight:600; margin:16px 0 6px 0;">'
+                f"{_inline(m.group(2).strip())}</h{level}>"
+            )
+            i += 1
+            continue
+
+        if stripped.startswith(">"):
+            quote: list[str] = []
+            while i < n and lines[i].strip().startswith(">"):
+                quote.append(re.sub(r"^\s*>\s?", "", lines[i]).strip())
+                i += 1
+            out.append(
+                '<blockquote style="margin:8px 0; padding:4px 12px;'
+                ' border-left:3px solid #5a5a66; color:#b8b8c0;">'
+                + "<br>".join(_inline(q) for q in quote)
+                + "</blockquote>"
+            )
+            continue
+
+        if _UL_RE.match(lines[i]) or _OL_RE.match(lines[i]):
+            items, i = _collect_list_items(lines, i)
+            out.append(_render_list_tree(items))
+            continue
+
+        para: list[str] = []
+        while i < n and lines[i].strip() and not _is_block_start(lines[i]):
+            para.append(lines[i].strip())
+            i += 1
+        out.append('<p style="margin:8px 0;">' + "<br>".join(_inline(p) for p in para) + "</p>")
+
+    return "\n".join(out)
+
+
+def render_markdown(text: str) -> str:
+    """Преобразует markdown-ответ модели в HTML для QTextBrowser.
+
+    Поддерживает заголовки, списки, цитаты, hr, блоки кода с подсветкой,
+    инлайн-код, ссылки, жирный/курсив/зачёркнутый и абзацные отступы.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    code_blocks: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        lang = (m.group("lang") or "").strip()
+        code_blocks.append(_render_code_block(m.group("code"), lang))
+        return f"\x00CB{len(code_blocks) - 1}\x00"
+
+    stashed = _CODE_FENCE_RE.sub(_stash, text)
+    body = _render_blocks(stashed, code_blocks)
+    # Блоки кода, оказавшиеся внутри строки (не на отдельной строке).
+    body = re.sub(r"\x00CB(\d+)\x00", lambda m: code_blocks[int(m.group(1))], body)
+    return f'<div style="line-height:1.45;">{body}</div>'
+
 
 class ChatActivityItem(QWidget):
     """Серая строка-событие о ходе работы агента (журнал фаз).
@@ -242,59 +508,4 @@ class ChatMessageItem(QWidget):
     # ---------------------------------------------------------
 
     def _render_markdown_to_html(self, text: str) -> str:
-        try:
-            from pygments import highlight as pyg_highlight
-            from pygments.formatters import HtmlFormatter
-            from pygments.lexers import get_lexer_by_name, guess_lexer
-
-            formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
-
-            def _code_block(m):
-                lang = m.group(1).strip() or ""
-                code = m.group(2)
-                try:
-                    if lang:
-                        lexer = get_lexer_by_name(lang, stripall=True)
-                    else:
-                        lexer = guess_lexer(code)
-                    highlighted = pyg_highlight(code, lexer, formatter)
-                    return (
-                        f'<div style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
-                        f'margin:4px 0; font-size:13px; overflow-x:auto;">'
-                        f'<pre style="margin:0; font-family:\'Consolas\',\'Courier New\',monospace;">'
-                        f'<code>{highlighted}</code></pre></div>'
-                    )
-                except Exception:
-                    escaped = html_mod.escape(code)
-                    return (
-                        f'<pre style="background:#2d2d2d; padding:4px 8px; border-radius:4px; '
-                        f'margin:4px 0; font-size:13px; overflow-x:auto;"><code>{escaped}</code></pre>'
-                    )
-
-            pattern = r"```(\w*)\s*\n(.*?)```"
-            body = re.sub(pattern, _code_block, text, flags=re.DOTALL)
-
-            body = re.sub(
-                r"`([^`]+)`",
-                lambda m: (
-                    f'<code style="background:#3a3a3a; padding:2px 6px; border-radius:3px; font-size:13px;">{html_mod.escape(m.group(1))}</code>'
-                ),
-                body,
-            )
-            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
-            body = re.sub(r"\*(.+?)\*", r"<i>\1</i>", body)
-            body = re.sub(
-                r"\[([^\]]+)\]\(([^)]+)\)",
-                r'<a href="\2" style="color:#42a5f5;">\1</a>',
-                body,
-            )
-            body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", body, flags=re.MULTILINE)
-            body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", body, flags=re.MULTILINE)
-            body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", body, flags=re.MULTILINE)
-
-            body = body.replace("\n", "<br>")
-            body = re.sub(r"(<br>\s*){2,}", "<br>", body)
-
-            return f"<div style='line-height:1.3;'>{body}</div>"
-        except ImportError:
-            return "<br>".join(html_mod.escape(line) for line in text.split("\n"))
+        return render_markdown(text)
