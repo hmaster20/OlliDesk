@@ -76,6 +76,7 @@ class ChatPanel(QWidget):
     agent_panel_toggle = Signal(bool)
     refresh_models_requested = Signal()
     settings_changed = Signal(dict)
+    backend_status_changed = Signal(str)
 
     # Запрос на подключение каталога как проекта (обрабатывает MainWindow)
     directory_attach_requested = Signal(str)
@@ -123,6 +124,7 @@ class ChatPanel(QWidget):
 
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
+        self._slm_model_name = ""
         self._slm_load_thread: _SLMLoadThread | None = None
         self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
@@ -183,6 +185,23 @@ class ChatPanel(QWidget):
             self._router.set_embed_backend(cfg.backends.embed_backend)
         except Exception as e:
             logger.warning(f"Не удалось применить настройки бэкендов: {e}")
+        self._emit_backend_status()
+
+    def _active_backend_label(self) -> str:
+        """Человекочитаемое описание активного бэкенда и модели."""
+        backend = self._router.active_backend
+        if backend == BackendType.OLLAMA:
+            return f"Ollama: {self.get_current_model()}"
+        if backend == BackendType.LOCAL_SLM:
+            name = self._slm_model_name or "локальная модель"
+            return f"SLM: {name}"
+        if backend == BackendType.RULE_BASED:
+            return "Резервный режим (без LLM)"
+        return "Нет доступного бэкенда"
+
+    def _emit_backend_status(self) -> None:
+        """Сообщает наружу активный бэкенд для статус-бара."""
+        self.backend_status_changed.emit(self._active_backend_label())
 
     def _check_ollama_async(self):
         self._ollama_check_thread = _OllamaCheckThread(self._ollama_client)
@@ -199,16 +218,20 @@ class ChatPanel(QWidget):
                 self.status_label.setText("✅ Локальная модель загружена (Ollama недоступен)")
             else:
                 self.status_label.setText("⚠️ Ollama не найден. Используется резервный режим.")
+        self._emit_backend_status()
 
     @Slot(object)
     def _on_slm_loaded(self, client):
         self._slm_client = client
+        if not self._slm_model_name:
+            self._slm_model_name = Path(client.model_path).stem
         self._router.set_local_slm(client)
         self._router.set_slm_available(True)
         self._slm_loading = False
         logger.info("Локальная SLM загружена и доступна как fallback")
         if self._router.active_backend == BackendType.LOCAL_SLM:
-            self.status_label.setText("✅ Локальная модель загружена")
+            self.status_label.setText(f"✅ Локальная модель загружена: {self._slm_model_name}")
+        self._emit_backend_status()
 
     def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
         if self._slm_loading or self._slm_client is not None:
@@ -217,6 +240,7 @@ class ChatPanel(QWidget):
         # Параметры инференса — из конфига (n_threads=0 → авто по числу ядер)
         n_ctx, n_threads, n_batch = 4096, 0, 512
         n_gpu_layers = 0
+        max_tokens = 1024
         try:
             from core.config import load_config
 
@@ -224,6 +248,13 @@ class ChatPanel(QWidget):
             n_ctx = slm.n_ctx
             n_threads = slm.n_threads
             n_batch = slm.n_batch
+            info = slm.get_selected_info()
+            if info is not None:
+                self._slm_model_name = info.display_name
+                # У модели может быть собственное окно контекста (per-model n_ctx)
+                if info.n_ctx > 0:
+                    n_ctx = info.n_ctx
+            max_tokens = slm.max_tokens
             # Автоопределение VRAM (или явное значение из конфига)
             n_gpu_layers = detect_optimal_gpu_layers(
                 model_path=chat_path,
@@ -243,6 +274,7 @@ class ChatPanel(QWidget):
             n_threads=n_threads,
             n_batch=n_batch,
             n_gpu_layers=n_gpu_layers,
+            max_tokens=max_tokens,
         )
         self._slm_load_thread.finished.connect(self._on_slm_loaded)
         self._slm_load_thread.error.connect(self._on_slm_error)

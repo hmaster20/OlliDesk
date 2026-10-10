@@ -72,17 +72,19 @@ class SLMModelsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "Локальные SLM-модели (GGUF, llama.cpp) используются как fallback, "
-            "когда Ollama недоступен. Рекомендуется <b>Qwen 2.5 7B</b> — она "
-            "умеет вызывать инструменты (поиск в интернете, чтение файлов)."
+            "Локальные SLM-модели (GGUF, llama.cpp) — <b>основной</b> бэкенд: "
+            "работают без Ollama. <b>Qwen 2.5 7B</b> — хороший баланс качества "
+            "и скорости, <b>14B</b> — максимум качества для мощных машин."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: #888; padding: 4px 0 8px 0;")
         layout.addWidget(info)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Модель", "Ожидаемый размер", "Статус", "Активна", "На диске"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(
+            ["Модель", "Ожидаемый размер", "Контекст", "Статус", "Активна", "На диске"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -155,19 +157,24 @@ class SLMModelsDialog(QDialog):
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 1, size_item)
 
+            ctx_value = m.n_ctx if m.n_ctx > 0 else self.config.slm.n_ctx
+            ctx_item = QTableWidgetItem(f"{ctx_value} ток.")
+            ctx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 2, ctx_item)
+
             installed = is_model_installed(m.file, repo_id=m.repo)
             status_item = QTableWidgetItem("✅ Установлена" if installed else "⬇️ Не скачана")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 2, status_item)
+            self.table.setItem(row, 3, status_item)
 
             active = m.id == self.config.slm.selected_model
             active_item = QTableWidgetItem("● Да" if active else "○ Нет")
             active_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 3, active_item)
+            self.table.setItem(row, 4, active_item)
 
             real_size_item = QTableWidgetItem(self._real_size_str(m.file, m.repo))
             real_size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 4, real_size_item)
+            self.table.setItem(row, 5, real_size_item)
 
         # Embed-модель — отдельной строкой ниже
         embed_repo = self.config.slm.embed_model_repo

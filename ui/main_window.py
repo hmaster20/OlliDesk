@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
         self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
+        self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
 
         logger.info("Главное окно создано")
 
@@ -731,9 +732,18 @@ class MainWindow(QMainWindow):
         self.ollama_status_label.setStyleSheet("color: gray; padding: 5px;")
         self.status_bar.addPermanentWidget(self.ollama_status_label)
 
+        self.backend_status_label = QLabel("● Активный бэкенд: определение...")
+        self.backend_status_label.setStyleSheet("color: gray; padding: 5px;")
+        self.status_bar.addPermanentWidget(self.backend_status_label)
+
         self.project_label = QLabel("Проект: не открыт")
         self.project_label.setStyleSheet("padding: 5px;")
         self.status_bar.addWidget(self.project_label)
+
+    @Slot(str)
+    def _on_backend_status_changed(self, label: str) -> None:
+        """Показывает в статус-баре активный LLM-бэкенд и модель."""
+        self.backend_status_label.setText(f"● Модель: {label}")
 
     def _check_ollama_connection(self) -> None:
         """Проверяет подключение к Ollama."""

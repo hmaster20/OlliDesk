@@ -13,6 +13,7 @@ from core.config import (
     ModelConfig,
     ModelRole,
     SLMConfig,
+    SLMModelInfo,
     ToolPolicy,
     get_model_by_role,
 )
@@ -324,7 +325,7 @@ class TestBackendSettings:
 
     def test_defaults(self):
         cfg = AppConfig(default_model="m", embed_model="e")
-        assert cfg.backends.priority == ["ollama", "local_slm"]
+        assert cfg.backends.priority == ["local_slm", "ollama"]
         assert cfg.backends.embed_backend == "auto"
 
     def test_priority_rejects_unknown_backend(self):
@@ -361,3 +362,51 @@ class TestSLMThreads:
 
     def test_explicit_value_kept(self):
         assert SLMConfig(n_threads=6).n_threads == 6
+
+
+class TestSLMModels:
+    """Встроенный каталог SLM-моделей и per-model окно контекста."""
+
+    def test_builtin_models_include_14b(self):
+        ids = {m.id for m in SLMConfig().get_chat_models()}
+        assert "qwen2.5-14b-instruct" in ids
+        assert "qwen2.5-7b-instruct" in ids
+
+    def test_chat_models_have_context(self):
+        for model in SLMConfig().get_chat_models():
+            assert model.n_ctx > 0
+
+    def test_stale_config_list_is_synced(self):
+        # Сохранённый список без 14B должен дополниться встроенными моделями.
+        stale = SLMConfig(
+            available_models=[
+                SLMModelInfo(
+                    id="qwen2.5-7b-instruct",
+                    repo="old/repo",
+                    file="old.gguf",
+                    display_name="Old",
+                    kind="chat",
+                )
+            ],
+        )
+        by_id = {m.id: m for m in stale.available_models}
+        assert "qwen2.5-14b-instruct" in by_id
+        # Метаданные встроенной модели обновляются из кода, а не из YAML.
+        assert by_id["qwen2.5-7b-instruct"].repo == "Qwen/Qwen2.5-7B-Instruct-GGUF"
+        assert by_id["qwen2.5-7b-instruct"].n_ctx > 0
+
+    def test_custom_model_preserved(self):
+        custom = SLMConfig(
+            available_models=[
+                SLMModelInfo(
+                    id="my-custom",
+                    repo="me/custom",
+                    file="custom.gguf",
+                    display_name="Custom",
+                    kind="chat",
+                    n_ctx=2048,
+                )
+            ],
+        )
+        by_id = {m.id: m for m in custom.available_models}
+        assert by_id["my-custom"].n_ctx == 2048

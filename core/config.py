@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.exceptions import ConfigError
 
@@ -82,9 +82,22 @@ class SLMModelInfo(BaseModel):
     display_name: str
     size_mb: int = 0
     kind: Literal["chat", "embed"] = "chat"
+    # Окно контекста этой модели в токенах (0 = взять slm.n_ctx).
+    # Задаётся per-model, потому что маленьким моделям KV-кэш дешёв,
+    # а крупным — большой n_ctx упирается в VRAM/RAM.
+    n_ctx: int = 0
 
 
 _DEFAULT_SLM_MODELS: list[dict] = [
+    {
+        "id": "qwen2.5-14b-instruct",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 14B (максимум качества, нужна мощная машина)",
+        "size_mb": 9000,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
     {
         "id": "qwen2.5-7b-instruct",
         "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
@@ -92,6 +105,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "display_name": "Qwen 2.5 7B (умная, рекомендуется)",
         "size_mb": 4680,
         "kind": "chat",
+        "n_ctx": 8192,
     },
     {
         "id": "qwen2.5-3b-instruct",
@@ -100,6 +114,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "display_name": "Qwen 2.5 3B (баланс)",
         "size_mb": 2030,
         "kind": "chat",
+        "n_ctx": 16384,
     },
     {
         "id": "qwen2.5-1.5b-instruct",
@@ -108,6 +123,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "display_name": "Qwen 2.5 1.5B (быстрая, для слабых машин)",
         "size_mb": 1120,
         "kind": "chat",
+        "n_ctx": 16384,
     },
 ]
 
@@ -125,6 +141,20 @@ class SLMConfig(BaseModel):
     available_models: list[SLMModelInfo] = Field(
         default_factory=lambda: [SLMModelInfo(**m) for m in _DEFAULT_SLM_MODELS]
     )
+
+    @model_validator(mode="after")
+    def _sync_builtin_models(self) -> "SLMConfig":
+        """Обновляет встроенные модели до актуального каталога.
+
+        Сохранённый в config.yaml список мог устареть (например, не знать
+        про 14B или новое n_ctx). Поэтому метаданные встроенных моделей
+        берём из кода, а пользовательские (не из ``_DEFAULT_SLM_MODELS``)
+        оставляем как есть.
+        """
+        default_ids = {d["id"] for d in _DEFAULT_SLM_MODELS}
+        custom = [m for m in self.available_models if m.id not in default_ids]
+        self.available_models = [SLMModelInfo(**d) for d in _DEFAULT_SLM_MODELS] + custom
+        return self
 
     # --- Параметры инференса ---
     n_ctx: int = 4096
@@ -203,7 +233,7 @@ class BackendSettings(BaseModel):
             ``ollama`` или ``local_slm``.
     """
 
-    priority: list[str] = Field(default_factory=lambda: ["ollama", "local_slm"])
+    priority: list[str] = Field(default_factory=lambda: ["local_slm", "ollama"])
     embed_backend: str = "auto"
 
     @field_validator("priority")

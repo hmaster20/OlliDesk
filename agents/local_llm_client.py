@@ -35,6 +35,7 @@ class LocalLLMClient:
         n_threads: int = 0,
         n_batch: int = 512,
         n_gpu_layers: int = 0,
+        max_tokens: int = 1024,
         verbose: bool = False,
     ):
         """Инициализация клиента.
@@ -47,6 +48,7 @@ class LocalLLMClient:
                 автоматически по числу физических ядер
             n_batch: Размер батча для обработки
             n_gpu_layers: Количество слоёв на GPU (0 = CPU-only)
+            max_tokens: Лимит генерируемых токенов на ответ по умолчанию
             verbose: Логирование llama.cpp
         """
         from llama_cpp import Llama
@@ -56,6 +58,7 @@ class LocalLLMClient:
         self.n_ctx = n_ctx
         self.n_threads = n_threads if n_threads > 0 else detect_optimal_threads()
         self.n_gpu_layers = n_gpu_layers
+        self.max_tokens = max_tokens
 
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -151,10 +154,14 @@ class LocalLLMClient:
 
         # Параметры генерации
         temperature = 0.7
-        max_tokens = 512  # безопаснее для 4K контекста
+        max_tokens = self.max_tokens
         if options:
             temperature = getattr(options, "temperature", 0.7)
-            max_tokens = getattr(options, "num_predict", 512)
+            max_tokens = getattr(options, "num_predict", self.max_tokens)
+
+        # Обрезаем историю/контекст, чтобы промпт поместился в окно модели
+        # вместе с ответом. Иначе llama.cpp не сможет декодировать промпт.
+        chat_messages = self._fit_messages(chat_messages, reserve_tokens=max_tokens + 64)
 
         # Запускаем генерацию в отдельном потоке
         loop = asyncio.get_event_loop()
@@ -182,7 +189,7 @@ class LocalLLMClient:
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stream=True,
-                        stop=["", ""],
+                        stop=["<|im_end|>", "<|im_start|>"],
                     )
                     for chunk in response:
                         if self._cancel_requested:
@@ -259,6 +266,81 @@ class LocalLLMClient:
             return len(self.llm.tokenize(text.encode("utf-8"), add_bos=False))
         except Exception:
             return max(1, len(text) // 4)
+
+    def _truncate_text(self, text: str, max_tokens: int) -> str:
+        """Обрезает текст до max_tokens по токенизатору модели."""
+        if max_tokens <= 0:
+            return ""
+        if self._count_tokens(text) <= max_tokens:
+            return text
+        try:
+            tokens = self.llm.tokenize(text.encode("utf-8"), add_bos=False)
+            trimmed = self.llm.detokenize(tokens[:max_tokens]).decode("utf-8", errors="replace")
+            return trimmed + "\n… [контекст обрезан]"
+        except Exception:
+            return text[: max(64, max_tokens * 2)] + "\n… [контекст обрезан]"
+
+    def _fit_messages(
+        self,
+        messages: list[dict[str, Any]],
+        reserve_tokens: int,
+    ) -> list[dict[str, Any]]:
+        """Обрезает промпт под окно контекста модели.
+
+        Системный промпт (с инструкцией по инструментам) и самые свежие
+        сообщения важнее старых: сначала выбрасываем середину диалога, затем
+        при необходимости подрезаем системный промпт и последнее сообщение.
+
+        Args:
+            messages: Сообщения в формате llama.cpp.
+            reserve_tokens: Сколько токенов оставить на генерируемый ответ.
+
+        Returns:
+            Список сообщений, помещающийся в ``n_ctx``.
+        """
+        if not messages:
+            return messages
+
+        budget = max(256, self.n_ctx - reserve_tokens)
+        if sum(self._count_tokens(str(m.get("content") or "")) for m in messages) <= budget:
+            return messages
+
+        system = messages[0] if messages[0].get("role") == "system" else None
+        tail = messages[1:] if system is not None else list(messages)
+        head: list[dict[str, Any]] = []
+
+        system_tokens = 0
+        if system is not None:
+            system_tokens = self._count_tokens(str(system.get("content") or ""))
+            # Системе отдаём не больше 60% бюджета: остальное — история и ответ.
+            max_system = int(budget * 0.6)
+            if system_tokens > max_system:
+                system = dict(system)
+                system["content"] = self._truncate_text(str(system.get("content") or ""), max_system)
+                system_tokens = self._count_tokens(str(system["content"]))
+            head = [system]
+
+        used = system_tokens
+        kept: list[dict[str, Any]] = []
+        for msg in reversed(tail):
+            tokens = self._count_tokens(str(msg.get("content") or ""))
+            if used + tokens > budget:
+                if kept:
+                    break
+                # Даже последнее сообщение не влезло — подрезаем его.
+                msg = dict(msg)
+                msg["content"] = self._truncate_text(str(msg.get("content") or ""), max(64, budget - used))
+                tokens = self._count_tokens(str(msg["content"]))
+            kept.append(msg)
+            used += tokens
+        kept.reverse()
+
+        result = head + kept
+        logger.debug(
+            f"SLM: контекст обрезан {len(messages)} → {len(result)} сообщений "
+            f"(~{used}/{budget} токенов, окно {self.n_ctx})"
+        )
+        return result
 
     @staticmethod
     def _make_stats(
