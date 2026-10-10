@@ -1,5 +1,6 @@
 """Цикл рассуждений и действий (ReAct) агента."""
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,36 +41,50 @@ class AgentContext:
 
 _TOOL_USE_INSTRUCTION = """
 ВАЖНО: у тебя есть ИНСТРУМЕНТЫ (tools), доступные через API.
-Когда пользователь спрашивает про:
-  • текущую дату/время — вызови get_current_datetime
-  • погоду в городе     — вызови get_weather
-  • курсы валют         — вызови get_exchange_rate
-  • свежие новости, ставки ЦБ, версии ПО, релизы, цены, законы,
-    любые данные, которые могли измениться после твоего обучения
-                        — вызови web_search
-  • содержимое файлов проекта — read_file
-  • поиск по кодовой базе     — search_codebase
-  • список файлов в папке     — list_directory
 
-НЕ отвечай «я не могу получить актуальную информацию» — у тебя есть
-инструменты для этого. НЕ советуй пользователю «попробуйте web_search» —
-вызови инструмент САМ.
+Приоритет источников (сверху вниз):
+  1. КОД ПРОЕКТА — главный источник истины. Изучай его инструментами:
+     • list_directory  — обзор структуры (папки, роли, файлы);
+     • read_file       — точное содержимое нужного файла;
+     • search_codebase — смысловой поиск по коду.
+  2. СВОИ ЗНАНИЯ — применяй их, чтобы анализировать код, находить закономерности,
+     ошибки и расхождения с документацией.
+  3. web_search — ТОЛЬКО для внешних/публичных сведений (версии ПО, новости,
+     публичная документация), и только если ты НЕ уверен. НЕ ищи в интернете
+     внутренние детали проекта (имена ролей, внутренние файлы, конфиги) — их там нет.
+     Перед web_search сначала прочитай соответствующий код.
+
+Когда какой инструмент:
+  • содержимое/структура проекта — read_file, list_directory, search_codebase
+  • текущие дата и время         — get_current_datetime
+  • погода в городе              — get_weather
+  • курсы валют                  — get_exchange_rate
+  • внешние/публичные сведения   — web_search (только при сомнении)
+
+НЕ отвечай «я не могу получить актуальную информацию» — у тебя есть инструменты.
+НЕ советуй пользователю «попробуйте web_search» — вызови инструмент САМ.
 
 Порядок работы (ReAct):
-  1. Thought — что нужно узнать, чтобы ответить?
+  1. Thought — что нужно узнать и В КАКИХ ФАЙЛАХ это лежит.
   2. Action  — вызов инструмента (нативный tool_call или JSON в тексте).
   3. Observation — результат вернётся тебе автоматически.
-  4. Next Thought — достаточно ли данных? Если нет, повтори цикл.
-  5. Final Answer — когда данных достаточно, сформируй ответ.
+  4. Next Thought — что ещё прочитать? Если данных достаточно — переходи к ответу.
+  5. Final Answer — структурированный ответ (см. формат ниже).
+
+Формат ответа (обязательно):
+  • Пиши на русском, СТРУКТУРИРОВАННО, в Markdown — НЕ сплошным текстом.
+  • Заголовки разделов — через ## и ###.
+  • Перечисления — нумерованные (1., 2.) или маркированные (- ) списки.
+  • Код, конфиги и правки — в блоках ```язык (например ```yaml).
+  • Указывай относительные пути к разобранным файлам.
+  • Заканчивай кратким выводом и конкретными рекомендациями.
 
 ВАЖНО про повторы:
-  • Получил результат инструмента — ИСПОЛЬЗУЙ его и сразу дай ответ пользователю.
+  • Получил результат инструмента — ИСПОЛЬЗУЙ его и продвигайся к ответу.
   • НЕ вызывай один и тот же инструмент дважды подряд с одинаковыми аргументами:
     результат не изменится, а ответ задержится.
-  • Если данных не хватает — вызывай ДРУГОЙ инструмент или с другими аргументами
-    (другой запрос, другой файл, другая валюта).
-  • Если результат инструмента не помог — скажи об этом пользователю прямо,
-    а не повторяй тот же вызов.
+  • Если данных не хватает — читай ДРУГОЙ файл или вызывай ДРУГОЙ инструмент.
+  • Если результат не помог — скажи об этом прямо, а не повторяй тот же вызов.
 """.strip()
 
 
@@ -77,16 +92,19 @@ _MODE_HINTS = {
     AgentMode.CHAT: (
         "Текущий режим: ЧАТ.\n"
         "Общайся с пользователем, при необходимости используй read-only "
-        "инструменты (дата, погода, курсы, web_search, чтение файлов). "
+        "инструменты (дата, погода, курсы, чтение файлов, web_search). "
         "Запись файлов и git-операции недоступны."
     ),
     AgentMode.PLAN: (
         "Текущий режим: ПЛАН.\n"
-        "Исследуй проект read-only инструментами, составь план действий. "
+        "Сначала изучи структуру и код проекта read-only инструментами, найди "
+        "закономерности и отличия, и только потом составь подробный план. "
         "Запись файлов и git-операции недоступны."
     ),
     AgentMode.AGENT: (
         "Текущий режим: АГЕНТ.\n"
+        "Сначала изучи структуру и код проекта инструментами, опирайся на свои "
+        "знания для анализа, и только при сомнении обращайся к web_search. "
         "У тебя полный доступ: чтение, запись файлов, git-снапшоты, поиск. "
         "Выполняй задачу автономно и пошагово, используя инструменты."
     ),
@@ -148,6 +166,18 @@ class AgentLoop:
         self.client = client
         self.registry = registry
         self.model = model
+
+    @staticmethod
+    def _tool_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:
+        """Строит сигнатуру набора вызовов для обнаружения зацикливания."""
+        sig: list[tuple[str, str]] = []
+        for tc in calls:
+            try:
+                args = json.dumps(tc.arguments, sort_keys=True, ensure_ascii=False)
+            except (TypeError, ValueError):
+                args = str(tc.arguments)
+            sig.append((tc.name, args))
+        return tuple(sorted(sig))
 
     def _extract_tool_calls_from_text(self, text: str) -> list[ToolCall]:
         """Извлекает вызовы инструментов из текстового ответа модели."""
@@ -253,6 +283,8 @@ class AgentLoop:
         if tools_to_send is not None and len(tools_to_send) == 0:
             tools_to_send = None
 
+        prev_signature: tuple[tuple[str, str], ...] | None = None
+
         for iteration in range(max_iterations):
             logger.debug(
                 f"ReAct итерация {iteration + 1}/{max_iterations}, "
@@ -263,7 +295,10 @@ class AgentLoop:
             pending_tool_calls: list[ToolCall] = []
 
             if on_status:
-                await on_status("🤔 Модель думает…" if iteration == 0 else "🤔 Планирует следующий шаг…")
+                if iteration == 0:
+                    await on_status("🤔 Анализирую запрос…")
+                else:
+                    await on_status(f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…")
 
             try:
                 stream = self.client.chat(
@@ -302,6 +337,22 @@ class AgentLoop:
                     pending_tool_calls = extracted_calls
                     current_text = ""
                     logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
+
+            # --- Защита от повторов ---
+            if pending_tool_calls and tools_to_send:
+                if on_status:
+                    names = ", ".join(dict.fromkeys(tc.name for tc in pending_tool_calls))
+                    await on_status(f"🔧 Подготовка вызовов: {names}")
+                signature = self._tool_signature(pending_tool_calls)
+                if signature == prev_signature:
+                    logger.warning("Повтор идентичного набора tool_calls — прерываю цикл")
+                    if on_status:
+                        await on_status("⏹ Обнаружено повторение вызовов — завершаю")
+                    if current_text:
+                        messages.append(ChatMessage(role="assistant", content=current_text))
+                        return current_text
+                    return "Агент остановлен: повторяющиеся вызовы инструментов без прогресса."
+                prev_signature = signature
 
             # --- Исполняем ---
             if pending_tool_calls and tools_to_send:
