@@ -21,6 +21,30 @@ from agents.model_router import ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
+from fs.vector_store import SearchResult
+
+
+def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
+    """Оставляет по одному лучшему чанку на файл.
+
+    Векторный поиск часто возвращает несколько соседних чанков одного файла.
+    Для контекста важнее разнообразие файлов, поэтому оставляем первый
+    (самый близкий) чанк каждого пути.
+
+    Args:
+        results: Результаты поиска, упорядоченные по убыванию схожести.
+
+    Returns:
+        Результаты без повторов по ``file_path``.
+    """
+    seen: set[str] = set()
+    unique: list[SearchResult] = []
+    for r in results:
+        if r.file_path in seen:
+            continue
+        seen.add(r.file_path)
+        unique.append(r)
+    return unique
 
 
 class AgentChatThread(QThread):
@@ -136,11 +160,18 @@ class RagSearchThread(QThread):
     results_ready = Signal(str, str)
     search_error = Signal(str)
 
-    def __init__(self, vector_store, query: str, n_results: int = 5):
+    def __init__(
+        self,
+        vector_store,
+        query: str,
+        n_results: int = 5,
+        file_filter: list[str] | None = None,
+    ):
         super().__init__()
         self.vector_store = vector_store
         self.query = query
         self.n_results = n_results
+        self.file_filter = file_filter
 
     def run(self):
         try:
@@ -153,11 +184,16 @@ class RagSearchThread(QThread):
 
     async def _search(self):
         try:
-            results = await self.vector_store.search(self.query, n_results=self.n_results)
+            results = await self.vector_store.search(
+                self.query,
+                n_results=self.n_results,
+                file_filter=self.file_filter,
+            )
+            results = _dedupe_by_file(results)[: self.n_results]
             if results:
                 context_parts = []
                 source_parts = []
-                for r in results[: self.n_results]:
+                for r in results:
                     context_parts.append(
                         f"### Файл: {r.file_path} "
                         f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"

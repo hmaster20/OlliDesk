@@ -119,3 +119,39 @@ def attached_char_budget(num_ctx: int) -> int:
         Бюджет под прикреплённые файлы в символах.
     """
     return tokens_to_chars(attached_token_budget(num_ctx))
+
+
+def rag_char_budget(num_ctx: int) -> int:
+    """Считает бюджет RAG-контекста в символах.
+
+    RAG и прикреплённые файлы делят общий бюджет ``ATTACHED_CONTEXT_SHARE``
+    пополам, чтобы вместе не вытеснить системный промпт, историю диалога и
+    генерируемый ответ.
+
+    Args:
+        num_ctx: Окно контекста модели в токенах.
+
+    Returns:
+        Бюджет под RAG-контекст в символах.
+    """
+    return max(MIN_ATTACHED_TOKENS, attached_char_budget(num_ctx) // 2)
+
+
+def truncate_to_chars(text: str, max_chars: int) -> str:
+    """Обрезает текст до ``max_chars`` символов, добавляя пометку.
+
+    Args:
+        text: Исходный текст.
+        max_chars: Максимальная длина результата.
+
+    Returns:
+        Текст не длиннее ``max_chars`` (с пометкой об обрезке) либо пустая строка.
+    """
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n… [контекст обрезан]"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)] + marker

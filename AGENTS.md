@@ -221,6 +221,12 @@ OlliDesk/
   `_embed()` проверяет, что векторов пришло столько же, сколько текстов, и бросает
   `EmbedderError`; `search()` при неудаче эмбеддингов логирует предупреждение и
   возвращает `[]`, чтобы не ронять чат.
+- `fs/project_map.py` — компактная карта структуры проекта и определение каталога из
+  запроса. `list_project_files()` переиспользует фильтры `FileIndexer` (без хеширования),
+  `render_project_map()` строит дерево каталогов/файлов, `detect_query_scope()` ищет в
+  тексте запроса существующий каталог (например, «каталоге Cloud» → `cloud`). Карта
+  уходит в системный промпт (`AgentContext.project_map`), найденный каталог сужает
+  RAG-поиск (`ChatPanel._query_scope` → `RagSearchThread.file_filter`).
 - `fs/chroma_adapter.py` — единственное место, где живёт небезопасная граница с ChromaDB.
   chromadb формально типизирован, но в `Collection.add`/`query` внутри `Union` стоят
   инвариантные `List[...]`, из-за чего корректный `list[list[float]]` mypy отвергает —
@@ -298,12 +304,16 @@ Promise. Py → JS: `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get
   ├─ @file <путь> [вопрос]  → AttachedFileStore.add; остаток — обычное сообщение
   ├─ @path <путь> [вопрос]  → авто-детект: каталог → как @dir, иначе как @file
   └─ обычный текст
-       └─(Ctrl+Enter или кнопка)→ AgentChatThread (QThread → asyncio.run)
+       └─(Ctrl+Enter или кнопка)→ RAG-пре-поиск (RagSearchThread):
+       │     detect_query_scope → file_filter на упомянутый каталог,
+       │     дедупликация чанков по файлу, бюджет rag_char_budget(num_ctx)
+       └─ AgentChatThread (QThread → asyncio.run)
            └─ AgentLoop.run(ctx, history, on_token, on_tool_request, ...)
                ├─ _build_system_prompt():
                │    инструкция по tool-calling + подсказка режима
                │    + системный промпт режима (SystemPromptManager, проектный → глобальный)
                │    + контекст: превью @file-вложений + RAG (VectorStore.search)
+               │    + карта структуры проекта (AgentContext.project_map)
                │    + rules.md проекта
                └─ ModelRouter.chat(...) → OllamaClient | LocalLLMClient | RuleBasedFallback
                    ├─ стрим ChatChunk → сигнал chunk_received → пузырь в UI

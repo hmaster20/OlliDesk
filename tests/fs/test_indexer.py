@@ -203,3 +203,11 @@ class TestFileIndexerSync:
 
         ids = [c.id for c in chunks]
         assert len(ids) == len(set(ids)), "Chunk IDs must be unique"
+
+    def test_list_project_files_filters(self, tmp_path, indexer):
+        (tmp_path / "main.py").write_text("x = 1")
+        (tmp_path / "logo.png").write_text("img")
+
+        files = indexer.list_project_files(tmp_path)
+
+        assert files == ["main.py"]

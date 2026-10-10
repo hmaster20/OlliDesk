@@ -30,11 +30,12 @@ from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
-from core.config import AgentMode, ToolPolicy
-from core.context_budget import attached_char_budget
+from core.config import AgentMode, ToolPolicy, load_config
+from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
 from core.model_registry import ModelRegistry
 from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
+from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
 from ui.chat.message_item import ChatActivityItem, ChatMessageItem
@@ -67,6 +68,11 @@ _PATH_COMMANDS = ("@dir", "@file", "@path")
 # Сколько символов прикрепленного файла показывать в системном промпте,
 # когда остаётся мало контекста (например, файлы уже не помещаются по объёму).
 _MIN_ATTACHED_BUDGET = 600
+
+# Сколько чанков запрашивать у векторного поиска перед дедупликацией по файлам.
+# Больше, чем в старом значении (5): нужно разнообразие файлов, а не соседние
+# чанки одного и того же.
+_RAG_N_RESULTS = 8
 
 
 class ChatPanel(QWidget):
@@ -103,6 +109,11 @@ class ChatPanel(QWidget):
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
+        self._rag_scope: tuple[str, list[str]] | None = None
+        self._project_files: list[str] = []
+        self._project_map: str = ""
+        self._project_scan_root: str | None = None
+        self._project_scanned: bool = False
         self._attached_files = AttachedFileStore()
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
@@ -469,6 +480,63 @@ class ChatPanel(QWidget):
         if rest:
             self.input_edit.setPlainText(rest)
             self._send_message()
+
+    def _ensure_project_scan(self) -> None:
+        """Один раз строит список файлов и карту структуры проекта."""
+        root = self.project_root or ""
+        if self._project_scanned and self._project_scan_root == root:
+            return
+
+        self._project_scanned = True
+        self._project_scan_root = root
+        self._project_files = []
+        self._project_map = ""
+
+        if not root:
+            return
+
+        project_path = Path(root)
+        if not project_path.is_dir():
+            return
+
+        try:
+            config = load_config()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать конфиг для карты проекта: {e}")
+            return
+
+        self._project_files = list_project_files(project_path, config)
+        self._project_map = render_project_map(self._project_files)
+
+    def _project_map_text(self) -> str:
+        """Возвращает карту структуры проекта (строит при необходимости)."""
+        self._ensure_project_scan()
+        return self._project_map
+
+    def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
+        """Определяет каталог проекта, упомянутый в запросе, для фокуса поиска."""
+        self._ensure_project_scan()
+        if not self._project_files:
+            return None
+        return detect_query_scope(text, self._project_files)
+
+    def _scope_listing(self) -> str:
+        """Собирает список файлов выбранного каталога для контекста."""
+        if not self._rag_scope:
+            return ""
+        rel, files = self._rag_scope
+        limit = 100
+        shown = files[:limit]
+        lines = [f"Файлы в каталоге `{rel}/` (всего {len(files)}):"]
+        lines.extend(f"- {path}" for path in shown)
+        if len(files) > limit:
+            lines.append(f"… и ещё {len(files) - limit} файлов")
+        return "\n".join(lines)
+
+    def _merge_scope_into_context(self, context: str) -> str:
+        """Добавляет к RAG-контексту листинг выбранного каталога."""
+        listing = self._scope_listing()
+        return "\n\n".join(filter(None, [listing, context]))
 
     def _attached_context(self) -> str:
         """Собирает блок контекста из прикреплённых файлов с учётом окна модели.
@@ -939,10 +1007,18 @@ class ChatPanel(QWidget):
         self._set_button_stop()
         self.status_label.setText("Поиск в кодовой базе...")
         self._rag_context = None
+        self._rag_scope = self._query_scope(text)
 
         if self.vector_store:
             self._show_activity("🔍 Сканирую проект…")
-            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            if self._rag_scope:
+                self._show_activity(f"🎯 Фокус на каталоге: {self._rag_scope[0]}/")
+            self._rag_thread = RagSearchThread(
+                self.vector_store,
+                text,
+                n_results=_RAG_N_RESULTS,
+                file_filter=self._rag_scope[1] if self._rag_scope else None,
+            )
             self._rag_thread.results_ready.connect(lambda ctx, src: self._on_rag_results(ctx, src))
             self._rag_thread.search_error.connect(self._on_rag_error)
             self._rag_thread.finished.connect(lambda: self._do_chat(text))
@@ -952,7 +1028,12 @@ class ChatPanel(QWidget):
 
     @Slot(str, str)
     def _on_rag_results(self, context: str, sources: str):
-        self._rag_context = context
+        merged = self._merge_scope_into_context(context)
+        if merged:
+            budget = rag_char_budget(self._router.num_ctx)
+            self._rag_context = truncate_to_chars(merged, budget)
+        else:
+            self._rag_context = None
         if sources:
             self._show_activity(f"📚 Контекст из проекта: {sources}")
             self.status_label.setText(f"📚 Источники: {sources}")
@@ -982,10 +1063,18 @@ class ChatPanel(QWidget):
         self._generating = True
         self._set_button_stop()
         self.status_label.setText("🤖 Агент думает...")
+        self._rag_scope = self._query_scope(text)
 
         if self.vector_store:
             self._show_activity("🔍 Сканирую проект…")
-            self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
+            if self._rag_scope:
+                self._show_activity(f"🎯 Фокус на каталоге: {self._rag_scope[0]}/")
+            self._rag_thread = RagSearchThread(
+                self.vector_store,
+                text,
+                n_results=_RAG_N_RESULTS,
+                file_filter=self._rag_scope[1] if self._rag_scope else None,
+            )
             self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
             )
@@ -995,10 +1084,14 @@ class ChatPanel(QWidget):
             self._do_agent(text, mode, "")
 
     def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
+        merged = self._merge_scope_into_context(context)
+        if merged:
+            budget = rag_char_budget(self._router.num_ctx)
+            merged = truncate_to_chars(merged, budget)
         if sources:
             self._show_activity(f"📚 Контекст из проекта: {sources}")
             self.status_label.setText(f"📚 {sources}")
-        self._do_agent(text, mode, context)
+        self._do_agent(text, mode, merged)
 
     # ---------------------------------------------------------
     # Универсальный вход в ReAct-цикл
@@ -1023,6 +1116,7 @@ class ChatPanel(QWidget):
             system_prompt=combined,
             rag_context=merged_context,
             project_root=self.project_root,
+            project_map=self._project_map_text(),
             vector_store=self.vector_store,
             mode=AgentMode.CHAT,
             search_cache=cast(Any, raw_cache),
@@ -1085,6 +1179,7 @@ class ChatPanel(QWidget):
             system_prompt=combined,
             rag_context=merged_context,
             project_root=self.project_root,
+            project_map=self._project_map_text(),
             vector_store=self.vector_store,
             mode=mode,
             search_cache=cast(Any, raw_cache),
@@ -1364,6 +1459,9 @@ class ChatPanel(QWidget):
 
     def set_project_root(self, project_root: str):
         self.project_root = project_root
+        self._project_scanned = False
+        self._project_scan_root = None
+        self._rag_scope = None
 
     def get_settings(self) -> dict:
         mode_map = {0: "chat", 1: "plan", 2: "agent"}

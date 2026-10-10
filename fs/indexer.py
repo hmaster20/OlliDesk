@@ -1,6 +1,7 @@
 """Индексатор файлов проекта."""
 
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,64 @@ class FileIndexer:
         self.chunk_size_tokens = config.chunk_size_tokens
         self.chunk_overlap_tokens = config.chunk_overlap_tokens
 
+    def _iter_visible_files(self, project_path: Path) -> Iterator[tuple[Path, str]]:
+        """Перебирает файлы проекта, прошедшие фильтры (без чтения содержимого).
+
+        Выносит общую логику обхода, чтобы `scan_project` и `list_project_files`
+        отбирали ровно один и тот же набор файлов: игнор-паттерны, расширения,
+        бинарные файлы и лимит размера.
+
+        Args:
+            project_path: Путь к проекту.
+
+        Yields:
+            Пары (абсолютный путь, относительный путь со слэшами).
+        """
+        for file_path in project_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            rel_path_str = str(file_path.relative_to(project_path)).replace("\\", "/")
+
+            if self.ignored_spec.match_file(rel_path_str):
+                logger.debug(f"Игнорируется: {rel_path_str}")
+                continue
+
+            if file_path.suffix.lower() not in self.allowed_extensions:
+                logger.debug(f"Неподдерживаемое расширение: {rel_path_str}")
+                continue
+
+            if file_path.suffix.lower() in BINARY_EXTENSIONS:
+                logger.debug(f"Бинарный файл: {rel_path_str}")
+                continue
+
+            try:
+                size = file_path.stat().st_size
+            except OSError as e:
+                logger.debug(f"Не удалось получить размер {rel_path_str}: {e}")
+                continue
+            if size > self.max_file_size:
+                logger.debug(f"Файл слишком большой: {rel_path_str} ({size} bytes)")
+                continue
+
+            yield file_path, rel_path_str
+
+    def list_project_files(self, project_path: Path) -> list[str]:
+        """Возвращает относительные пути файлов проекта без хеширования.
+
+        Нужен для построения карты структуры (`fs.project_map`): она должна
+        показывать ровно те файлы, что попадают в индекс.
+
+        Args:
+            project_path: Путь к проекту.
+
+        Returns:
+            Отсортированный список относительных путей (со слэшами).
+        """
+        paths = sorted(rel for _, rel in self._iter_visible_files(project_path))
+        logger.info(f"Видимых файлов проекта: {len(paths)}")
+        return paths
+
     async def scan_project(self, project_path: Path) -> list[FileMetadata]:
         """
         Обходит проект и возвращает метаданные файлов.
@@ -175,36 +234,7 @@ class FileIndexer:
         """
         files = []
 
-        for file_path in project_path.rglob("*"):
-            if not file_path.is_file():
-                continue
-
-            # Относительный путь
-            rel_path = file_path.relative_to(project_path)
-            rel_path_str = str(rel_path).replace("\\", "/")
-
-            # Проверка на игнорирование
-            if self.ignored_spec.match_file(rel_path_str):
-                logger.debug(f"Игнорируется: {rel_path_str}")
-                continue
-
-            # Проверка расширения
-            if file_path.suffix.lower() not in self.allowed_extensions:
-                logger.debug(f"Неподдерживаемое расширение: {rel_path_str}")
-                continue
-
-            # Пропускаем бинарные файлы и архивы
-            if file_path.suffix.lower() in BINARY_EXTENSIONS:
-                logger.debug(f"Бинарный файл: {rel_path_str}")
-                continue
-
-            # Проверка размера
-            size = file_path.stat().st_size
-            if size > self.max_file_size:
-                logger.debug(f"Файл слишком большой: {rel_path_str} ({size} bytes)")
-                continue
-
-            # Вычисление хэша
+        for file_path, rel_path_str in self._iter_visible_files(project_path):
             sha256 = self._compute_sha256(file_path)
             mtime = file_path.stat().st_mtime
 
@@ -213,7 +243,7 @@ class FileIndexer:
                 absolute_path=file_path,
                 sha256=sha256,
                 mtime=mtime,
-                size_bytes=size,
+                size_bytes=file_path.stat().st_size,
                 extension=file_path.suffix.lower(),
             )
             files.append(metadata)

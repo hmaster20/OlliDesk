@@ -29,6 +29,7 @@ class AgentContext:
     system_prompt: str = ""
     rag_context: str = ""
     project_root: str = ""
+    project_map: str = ""
     vector_store: object = None
     extra_rules: str = ""
     max_tokens: int = 4096
@@ -47,6 +48,10 @@ _TOOL_USE_INSTRUCTION = """
      • list_directory  — обзор структуры (папки, роли, файлы);
      • read_file       — точное содержимое нужного файла;
      • search_codebase — смысловой поиск по коду.
+     В конце промпта есть КАРТА ПРОЕКТА: сверься с ней, чтобы понять, какие
+     каталоги и файлы существуют, и читай нужные по относительному пути.
+     Если вопрос про каталог — изучи ИМЕННО его файлы, не ограничивайся
+     фрагментами, которые уже попали в контекст.
   2. СВОИ ЗНАНИЯ — применяй их, чтобы анализировать код, находить закономерности,
      ошибки и расхождения с документацией.
   3. web_search — ТОЛЬКО для внешних/публичных сведений (версии ПО, новости,
@@ -129,6 +134,8 @@ def _build_system_prompt(context: AgentContext) -> str:
             f"Корень проекта: {context.project_root}\n"
             "Все пути к файлам указывай относительными от корня проекта."
         )
+    if context.project_map:
+        parts.append(context.project_map)
 
     return "\n\n".join(parts)
 

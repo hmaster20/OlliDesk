@@ -8,8 +8,10 @@ from core.context_budget import (
     attached_char_budget,
     attached_token_budget,
     estimate_tokens,
+    rag_char_budget,
     resolve_num_ctx,
     tokens_to_chars,
+    truncate_to_chars,
 )
 
 
@@ -81,3 +83,40 @@ class TestAttachedBudget:
         # бюджет не может превышать половину окна.
         for num_ctx in (4096, 8192, 32768):
             assert attached_token_budget(num_ctx) <= num_ctx // 2
+
+
+class TestRagCharBudget:
+    """Бюджет RAG-контекста."""
+
+    def test_half_of_attached_budget(self):
+        assert rag_char_budget(4096) == attached_char_budget(4096) // 2
+
+    def test_grows_with_context(self):
+        assert rag_char_budget(32768) > rag_char_budget(4096)
+
+    def test_never_below_minimum(self):
+        assert rag_char_budget(16) >= MIN_ATTACHED_TOKENS
+
+    def test_leaves_room_for_attached_files(self):
+        for num_ctx in (4096, 8192, 32768):
+            assert rag_char_budget(num_ctx) + attached_char_budget(num_ctx) // 2 <= num_ctx * CHARS_PER_TOKEN
+
+
+class TestTruncateToChars:
+    """Обрезка текста до бюджета."""
+
+    def test_short_text_unchanged(self):
+        assert truncate_to_chars("коротко", 100) == "коротко"
+
+    def test_long_text_truncated_with_marker(self):
+        result = truncate_to_chars("a" * 500, 100)
+
+        assert len(result) == 100
+        assert result.endswith("[контекст обрезан]")
+
+    def test_zero_budget_returns_empty(self):
+        assert truncate_to_chars("text", 0) == ""
+        assert truncate_to_chars("text", -5) == ""
+
+    def test_tiny_budget_does_not_exceed_limit(self):
+        assert len(truncate_to_chars("a" * 500, 10)) == 10

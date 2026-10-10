@@ -2,7 +2,7 @@
 
 from typing import cast
 
-from agents.agent_loop import AgentContext, AgentLoop
+from agents.agent_loop import AgentContext, AgentLoop, _build_system_prompt
 from agents.base import LLMBackend
 from agents.ollama_client import ChatChunk, ToolCall
 from agents.tool_registry import ToolRegistry, ToolResult
@@ -153,3 +153,18 @@ class TestAgentLoopGuard:
         assert "повторяющиеся вызовы" in result
         assert client.calls == 2
         assert "⏹ Обнаружено повторение вызовов — завершаю" in statuses
+
+
+class TestSystemPromptProjectMap:
+    """Карта проекта попадает в системный промпт."""
+
+    def test_project_map_injected(self):
+        prompt = _build_system_prompt(AgentContext(project_map="Структура проекта:\ncloud/"))
+
+        assert "Структура проекта:" in prompt
+        assert "cloud/" in prompt
+
+    def test_empty_project_map_omitted(self):
+        prompt = _build_system_prompt(AgentContext())
+
+        assert "Структура проекта:" not in prompt
