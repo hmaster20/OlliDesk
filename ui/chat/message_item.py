@@ -18,6 +18,27 @@ from PySide6.QtWidgets import (
 )
 
 
+class ChatActivityItem(QWidget):
+    """Серая строка-событие о ходе работы агента (журнал фаз).
+
+    Отдельный немаркированный элемент ленты: «🤔 Модель думает…»,
+    «🔍 Ищу в кодовой базе…», «🔧 Чтение файла: path=…» и т. п.
+    """
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 1, 8, 1)
+        layout.setSpacing(0)
+
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
+        layout.addWidget(label, 1)
+        self.label = label
+
+
 class ChatMessageItem(QWidget):
     """Виджет одного сообщения в чате.
 

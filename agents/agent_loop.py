@@ -243,6 +243,8 @@ class AgentLoop:
         on_thinking: Callable[[str], Awaitable[None]] | None = None,
         on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        on_status: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
     ) -> str:
         messages = [ChatMessage(role="system", content=_build_system_prompt(context))]
         messages.extend(messages_history)
@@ -259,6 +261,9 @@ class AgentLoop:
 
             current_text = ""
             pending_tool_calls: list[ToolCall] = []
+
+            if on_status:
+                await on_status("🤔 Модель думает…" if iteration == 0 else "🤔 Планирует следующий шаг…")
 
             try:
                 stream = self.client.chat(
@@ -338,6 +343,8 @@ class AgentLoop:
                         await on_tool_start(tc.name, tc.arguments)
 
                     result = await self.registry.execute(tc, **extra)
+                    if on_tool_result:
+                        await on_tool_result(result.name, result.content, result.is_error)
                     messages.append(
                         _create_tool_result_message(
                             tc.id,

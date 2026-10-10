@@ -37,7 +37,7 @@ from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
-from ui.chat.message_item import ChatMessageItem
+from ui.chat.message_item import ChatActivityItem, ChatMessageItem
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -351,6 +351,14 @@ class ChatPanel(QWidget):
         self._update_bubble_width(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
+
+    def _show_activity(self, text: str) -> None:
+        """Добавляет серую строку-событие о ходе работы модели."""
+        if not text:
+            return
+        item = ChatActivityItem(text)
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     # ---------------------------------------------------------
     # @dir / @file / @path — прикрепление путей
@@ -898,6 +906,7 @@ class ChatPanel(QWidget):
         self._set_button_stop()
         self.input_edit.setEnabled(False)
         self.status_label.setText("🌐 Поиск в интернете...")
+        self._show_activity(f"🌐 Ищу в интернете: {query}")
 
         self._web_thread = WebSearchThread(
             router=self._router,
@@ -921,6 +930,7 @@ class ChatPanel(QWidget):
         self._rag_context = None
 
         if self.vector_store:
+            self._show_activity("🔍 Сканирую проект…")
             self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
             self._rag_thread.results_ready.connect(lambda ctx, src: self._on_rag_results(ctx, src))
             self._rag_thread.search_error.connect(self._on_rag_error)
@@ -933,6 +943,7 @@ class ChatPanel(QWidget):
     def _on_rag_results(self, context: str, sources: str):
         self._rag_context = context
         if sources:
+            self._show_activity(f"📚 Контекст из проекта: {sources}")
             self.status_label.setText(f"📚 Источники: {sources}")
 
     @Slot(str)
@@ -962,6 +973,7 @@ class ChatPanel(QWidget):
         self.status_label.setText("🤖 Агент думает...")
 
         if self.vector_store:
+            self._show_activity("🔍 Сканирую проект…")
             self._rag_thread = RagSearchThread(self.vector_store, text, n_results=5)
             self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
@@ -973,6 +985,7 @@ class ChatPanel(QWidget):
 
     def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
         if sources:
+            self._show_activity(f"📚 Контекст из проекта: {sources}")
             self.status_label.setText(f"📚 {sources}")
         self._do_agent(text, mode, context)
 
@@ -1035,6 +1048,7 @@ class ChatPanel(QWidget):
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
+        self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
@@ -1087,6 +1101,7 @@ class ChatPanel(QWidget):
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
+        self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
@@ -1222,7 +1237,19 @@ class ChatPanel(QWidget):
             "read_attached_file": "📄 Дочитывание файла",
         }
         label = tool_labels.get(name, f"🛠️ {name}")
-        self.status_label.setText(f"{label}: {arg_summary}")
+        activity = f"{label}: {arg_summary}" if arg_summary else label
+        self._show_activity(activity)
+        self.status_label.setText(activity)
+
+        # Завершаем текущий пузырь ответа, чтобы дальнейшие события и
+        # следующий фрагмент ответа шли в ленте по порядку.
+        self._last_assistant_widget = None
+        self._current_assistant_content = ""
+
+    @Slot(str)
+    def _on_status_event(self, text: str):
+        self._show_activity(text)
+        self.status_label.setText(text)
 
     @Slot()
     def _on_finish(self):
@@ -1240,6 +1267,7 @@ class ChatPanel(QWidget):
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
+            self._show_activity("✅ Готово")
 
         self._reset_send_button()
         self._current_assistant_content = ""
@@ -1517,6 +1545,7 @@ class ChatPanel(QWidget):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._last_assistant_widget = None
+        self._show_activity("✅ Готово")
         self.status_label.setText("🌐 Поиск завершён")
 
     @Slot(str)

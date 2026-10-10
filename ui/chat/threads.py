@@ -35,6 +35,7 @@ class AgentChatThread(QThread):
     error_occurred = Signal(str)
     iteration_changed = Signal(int, int)
     tools_status_changed = Signal(bool)
+    status_changed = Signal(str)
 
     def __init__(
         self,
@@ -99,6 +100,8 @@ class AgentChatThread(QThread):
                 on_thinking=self._on_thinking,
                 on_tools_disabled=_notify_tools_disabled,
                 on_tool_start=_on_tool_start,
+                on_status=self._on_status,
+                on_tool_result=self._on_tool_result,
             )
 
         try:
@@ -119,6 +122,12 @@ class AgentChatThread(QThread):
 
     async def _on_thinking(self, token: str):
         self.thinking_received.emit(token)
+
+    async def _on_status(self, text: str):
+        self.status_changed.emit(text)
+
+    async def _on_tool_result(self, name: str, content: str, is_error: bool):
+        self.tool_executed.emit(name, content, is_error)
 
 
 class RagSearchThread(QThread):
