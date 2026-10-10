@@ -280,3 +280,84 @@ class TestVectorStoreEmbedder:
         vector_store.embed_client.embed = AsyncMock(return_value=[])
 
         assert await vector_store.search("hello", n_results=5) == []
+
+
+class TestHybridSearch:
+    """Гибридный поиск: BM25 страхует векторную часть и объединяется через RRF."""
+
+    @pytest.mark.asyncio
+    async def test_bm25_rescues_when_embeddings_unavailable(self, vector_store):
+        chunk = TextChunk(
+            id="c1",
+            file_path="a.py",
+            content="def unique_function(): pass",
+            start_line=1,
+            end_line=1,
+        )
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            await vector_store.add_chunks([chunk])
+
+        # Эмбеддер пропал — векторная часть пустая, но BM25 находит по токенам.
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("unique_function", n_results=5)
+
+        assert len(results) == 1
+        assert results[0].file_path == "a.py"
+
+    @pytest.mark.asyncio
+    async def test_chunk_found_by_both_ranked_once(self, vector_store):
+        chunk = TextChunk(
+            id="c1",
+            file_path="a.py",
+            content="def hello(): return 1",
+            start_line=1,
+            end_line=1,
+        )
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            await vector_store.add_chunks([chunk])
+
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            results = await vector_store.search("hello", n_results=10)
+
+        ids = [r.chunk.id for r in results]
+        assert ids == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_bm25_respects_file_filter(self, vector_store):
+        chunks = [
+            TextChunk(id="c1", file_path="main.py", content="token alpha", start_line=1, end_line=1),
+            TextChunk(id="c2", file_path="utils.py", content="token alpha", start_line=1, end_line=1),
+        ]
+        with patch.object(
+            vector_store.embed_client,
+            "embed",
+            AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+        ):
+            await vector_store.add_chunks(chunks)
+
+        # Эмбеддер недоступен, поэтому работает только BM25 — и он тоже фильтрует.
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, file_filter=["utils.py"])
+
+        assert results
+        assert all(r.file_path == "utils.py" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_bm25_cache_invalidated_on_add(self, vector_store):
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            await vector_store.add_chunks(
+                [TextChunk(id="c1", file_path="a.py", content="alpha", start_line=1, end_line=1)]
+            )
+            await vector_store.search("alpha", n_results=5)
+
+            # После добавления нового чанка кэш BM25 должен пересобраться.
+            await vector_store.add_chunks(
+                [TextChunk(id="c2", file_path="b.py", content="beta", start_line=1, end_line=1)]
+            )
+
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+        results = await vector_store.search("beta", n_results=5)
+
+        assert [r.file_path for r in results] == ["b.py"]

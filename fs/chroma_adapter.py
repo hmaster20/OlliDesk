@@ -130,6 +130,20 @@ class ChromaCollection:
             distances=_first_or_empty(raw.get("distances")),
         )
 
+    def get_all(self) -> tuple[list[str], list[str], list[ChunkMetadata]]:
+        """Возвращает все чанки коллекции (для построения BM25-индекса).
+
+        Returns:
+            Кортеж ``(ids, documents, metadatas)`` одинаковой длины.
+        """
+        raw = self._collection.get(
+            include=[IncludeEnum.documents, IncludeEnum.metadatas],
+        )
+        ids = cast(list[str], raw.get("ids") or [])
+        documents = cast(list[str], raw.get("documents") or [])
+        metadatas = cast(list[ChunkMetadata], raw.get("metadatas") or [])
+        return ids, documents, metadatas
+
     def get_ids(self, where: Where) -> list[str]:
         """Возвращает идентификаторы чанков, попадающих под фильтр.
 

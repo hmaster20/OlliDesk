@@ -222,12 +222,22 @@ OlliDesk/
   расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка,
   `incremental_scan()` для догрузки только изменений. Модели: `FileMetadata`, `TextChunk`.
 - `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекция `codebase`, косинус),
-  батчи по 32, `add_chunks()`, `search()` (перевод расстояния в схожесть), `delete_by_file()`,
-  `clear()`. Модели: `SearchResult`, `Embedder` (протокол). Embedder-параметр — **любой**
+  батчи по 32, `add_chunks()`, `search()`, `delete_by_file()`, `clear()`.
+  Модели: `SearchResult`, `Embedder` (протокол). Embedder-параметр — **любой**
   объект с `async embed(model, texts)`; в UI передаётся `ChatPanel.router`.
   `_embed()` проверяет, что векторов пришло столько же, сколько текстов, и бросает
-  `EmbedderError`; `search()` при неудаче эмбеддингов логирует предупреждение и
-  возвращает `[]`, чтобы не ронять чат.
+  `EmbedderError`.
+  **Поиск гибридный** (`search()`): векторная выдача (`_vector_search`, при неудаче
+  эмбеддингов молча пустая) + лексическая (`_bm25_search` поверх `fs/bm25.py`) объединяются
+  через reciprocal rank fusion (`_reciprocal_rank_fusion`, `k=60`, дедуп по `chunk.id`,
+  в `score` кладётся RRF-оценка). Поэтому `search()` не падает при недоступном эмбеддере —
+  BM25 продолжает находить по токенам. BM25-индекс строится лениво из всей коллекции
+  (`_ensure_bm25`, `ChromaCollection.get_all`) и сбрасывается (`_invalidate_bm25`) при
+  `add_chunks`/`delete_by_file`/`clear`.
+- `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
+  приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
+  `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
+  строит `idf`/`tf`/среднюю длину, `search()` возвращает `(индекс документа, оценка)`.
 - `fs/project_map.py` — компактная карта структуры проекта и определение каталога из
   запроса. `list_project_files()` переиспользует фильтры `FileIndexer` (без хеширования),
   `render_project_map()` строит дерево каталогов/файлов, `detect_query_scope()` ищет в

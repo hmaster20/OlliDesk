@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from core.exceptions import EmbedderError
+from fs.bm25 import BM25Index
 from fs.chroma_adapter import ChromaCollection, ChunkMetadata, where_file_paths
 from fs.indexer import TextChunk
 
@@ -33,6 +34,33 @@ class SearchResult(BaseModel):
     chunk: TextChunk
     score: float
     file_path: str
+
+
+def _reciprocal_rank_fusion(*result_lists: list[SearchResult], k: int = 60) -> list[SearchResult]:
+    """Объединяет выдачи разных поисковиков по reciprocal rank fusion.
+
+    RRF не сравнивает «сырые» оценки (у косинуса и BM25 они несопоставимы),
+    а складывает ``1/(k + rank)`` по позициям документа в каждой выдаче.
+    Документ, найденный обоими поисковиками, получает вклад дважды.
+
+    Args:
+        *result_lists: Выдачи (например, векторная и BM25) в порядке приоритета.
+        k: Сглаживание ранга; стандартное значение — 60.
+
+    Returns:
+        Объединённая выдача, отсортированная по убыванию RRF-оценки.
+        В поле ``score`` кладётся RRF-оценка, а не исходная похожесть.
+    """
+    scores: dict[str, float] = {}
+    by_id: dict[str, SearchResult] = {}
+    for results in result_lists:
+        for rank, result in enumerate(results):
+            cid = result.chunk.id
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            by_id.setdefault(cid, result)
+
+    ordered = sorted(scores, key=lambda cid: scores[cid], reverse=True)
+    return [by_id[cid].model_copy(update={"score": scores[cid]}) for cid in ordered]
 
 
 class VectorStore:
@@ -79,6 +107,13 @@ class VectorStore:
                 metadata={"hnsw:space": "cosine"},
             )
         )
+
+        # BM25-индекс строится лениво из всех чанков и сбрасывается при изменении
+        # коллекции (см. `_invalidate_bm25`).
+        self._bm25: BM25Index | None = None
+        self._bm25_ids: list[str] = []
+        self._bm25_docs: list[str] = []
+        self._bm25_metas: list[ChunkMetadata] = []
 
         logger.info(f"VectorStore инициализирован: {self.persist_dir}")
 
@@ -156,6 +191,7 @@ class VectorStore:
 
             logger.debug(f"Добавлено чанков: {len(batch)}")
 
+        self._invalidate_bm25()
         logger.info(f"Всего добавлено чанков: {len(chunks)}")
 
     async def search(
@@ -165,7 +201,7 @@ class VectorStore:
         file_filter: list[str] | None = None,
     ) -> list[SearchResult]:
         """
-        Ищет релевантные чанки.
+        Ищет релевантные чанки (гибридно: векторы + BM25, объединение через RRF).
 
         Args:
             query: Поисковый запрос
@@ -173,21 +209,38 @@ class VectorStore:
             file_filter: Фильтр по файлам (опционально)
 
         Returns:
-            list[SearchResult]: Список результатов
+            list[SearchResult]: Список результатов, отсортированный по RRF-оценке.
 
         Note:
-            Если эмбеддинги посчитать не удалось, возвращается пустой список:
-                RAG деградирует до «поиск по контексту не работает», но чат
-                и индексация не падают. Причина пишется в лог.
+            Если эмбеддинги посчитать не удалось, векторная часть молча деградирует
+            до пустой, а поиск продолжает работать на одном BM25. Так RAG не падает
+            при недоступном эмбеддере; причина пишется в лог.
         """
+        candidate_n = max(n_results, n_results * 3)
+        vector_results = await self._vector_search(query, candidate_n, file_filter)
+        bm25_results = self._bm25_search(query, candidate_n, file_filter)
+
+        fused = _reciprocal_rank_fusion(vector_results, bm25_results)
+        results = fused[:n_results]
+        logger.debug(
+            f"Найдено результатов: {len(results)} (векторы {len(vector_results)}, BM25 {len(bm25_results)})"
+        )
+        return results
+
+    async def _vector_search(
+        self,
+        query: str,
+        n_results: int,
+        file_filter: list[str] | None,
+    ) -> list[SearchResult]:
+        """Векторный поиск; при недоступных эмбеддингах возвращает пустой список."""
         try:
             query_embedding = await self._embed([query])
         except EmbedderError as e:
-            logger.warning(f"RAG-поиск недоступен: {e}")
+            logger.warning(f"Векторный RAG-поиск недоступен: {e}")
             return []
 
         where = where_file_paths(file_filter) if file_filter else None
-
         page = self.collection.query(
             embedding=query_embedding[0],
             n_results=n_results,
@@ -199,32 +252,74 @@ class VectorStore:
         metadatas = page["metadatas"]
         distances = page["distances"]
 
-        search_results: list[SearchResult] = []
-
+        results: list[SearchResult] = []
         if ids and documents and metadatas and distances:
             for i, doc in enumerate(documents):
-                metadata = metadatas[i]
                 score = max(0.0, min(1.0, 1 - distances[i]))  # Cosine distance -> similarity
+                results.append(self._make_result(ids[i], doc, metadatas[i], score))
+        return results
 
-                chunk = TextChunk(
-                    id=ids[i],
-                    file_path=metadata["file_path"],
-                    content=doc,
-                    start_line=metadata["start_line"],
-                    end_line=metadata["end_line"],
-                    metadata={"language": metadata["language"]},
-                )
+    def _bm25_search(
+        self,
+        query: str,
+        n_results: int,
+        file_filter: list[str] | None,
+    ) -> list[SearchResult]:
+        """Лексический поиск BM25; учитывает ``file_filter``."""
+        self._ensure_bm25()
+        if self._bm25 is None:
+            return []
 
-                search_results.append(
-                    SearchResult(
-                        chunk=chunk,
-                        score=score,
-                        file_path=metadata["file_path"],
-                    )
-                )
+        allowed = set(file_filter) if file_filter else None
+        ranked = self._bm25.search(query, top_k=len(self._bm25_docs))
 
-        logger.debug(f"Найдено результатов: {len(search_results)}")
-        return search_results
+        results: list[SearchResult] = []
+        for index, score in ranked:
+            metadata = self._bm25_metas[index]
+            if allowed is not None and metadata["file_path"] not in allowed:
+                continue
+            results.append(self._make_result(self._bm25_ids[index], self._bm25_docs[index], metadata, score))
+            if len(results) >= n_results:
+                break
+        return results
+
+    def _ensure_bm25(self) -> None:
+        """Строит BM25-индекс по всем чанкам коллекции, если он ещё не построен."""
+        if self._bm25 is not None:
+            return
+        ids, documents, metadatas = self.collection.get_all()
+        index = BM25Index()
+        index.build(documents)
+        self._bm25 = index
+        self._bm25_ids = ids
+        self._bm25_docs = documents
+        self._bm25_metas = metadatas
+        logger.debug(f"BM25-индекс построен по {len(documents)} чанкам")
+
+    def _invalidate_bm25(self) -> None:
+        """Сбрасывает кэш BM25 (вызывается после изменения коллекции)."""
+        self._bm25 = None
+        self._bm25_ids = []
+        self._bm25_docs = []
+        self._bm25_metas = []
+
+    @staticmethod
+    def _make_result(
+        chunk_id: str,
+        document: str,
+        metadata: ChunkMetadata,
+        score: float,
+    ) -> SearchResult:
+        """Собирает `SearchResult` из сырых полей чанка."""
+        chunk = TextChunk(
+            id=chunk_id,
+            file_path=metadata["file_path"],
+            content=document,
+            start_line=metadata["start_line"],
+            end_line=metadata["end_line"],
+            metadata={"language": metadata["language"]},
+        )
+        return SearchResult(chunk=chunk, score=score, file_path=metadata["file_path"])
 
     async def delete_by_file(self, file_paths: list[str]) -> None:
         """
@@ -240,6 +335,7 @@ class VectorStore:
 
         if ids:
             self.collection.delete(ids)
+            self._invalidate_bm25()
             logger.info(f"Удалено чанков: {len(ids)}")
 
     async def clear(self) -> None:
@@ -251,4 +347,5 @@ class VectorStore:
                 metadata={"hnsw:space": "cosine"},
             )
         )
+        self._invalidate_bm25()
         logger.info("VectorStore очищен")
