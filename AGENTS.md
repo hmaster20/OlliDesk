@@ -147,7 +147,8 @@ OlliDesk/
 | Модуль | Назначение |
 |---|---|
 | `agents/ollama_client.py` | Wire-типы (`ChatMessage`, `ToolCall`, `ChatChunk`, `ChatOptions`, `ToolSchema`) + асинхронный HTTP/stream-клиент Ollama (`OllamaClient`) |
-| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext` |
+| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext`. Перед циклом прореживает промпт (`_compact_history` → `history_compactor`) |
+| `agents/history_compactor.py` | Сжатие истории при >80 % окна контекста. Детерминированное прореживание по приоритету 4.8.E: сначала опустошение старых tool-результатов, затем отбрасывание старейших реплик целиком; system и последняя реплика сохраняются. `compact_history`, `messages_tokens` |
 | `agents/tool_registry.py` | `@tool`-декоратор, генерация JSON Schema из type hints, `ToolRegistry.execute()` |
 | `agents/model_router.py` | Выбор бэкенда по приоритету из конфига с fallback: rule-based в конце. Также перебор бэкендов для эмбеддингов |
 | `agents/local_llm_client.py` | Клиент llama.cpp (GGUF): блокирующий инференс обёрнут в `asyncio`, «мягкий» tool-calling через JSON в тексте |
@@ -371,6 +372,7 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
                │    + контекст: превью @file-вложений + RAG (VectorStore.search)
                │    + карта структуры проекта (AgentContext.project_map)
                │    + rules.md проекта
+               ├─ _compact_history(): прореживание при >80 % num_ctx
                └─ ModelRouter.chat(...) → OllamaClient | LocalLLMClient | RuleBasedFallback
                    ├─ стрим ChatChunk → сигнал chunk_received → пузырь в UI
                    ├─ reasoning_content → сигнал thinking_received
@@ -525,6 +527,7 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
 - Покрытие: `agents`, `core`, `fs`, `state`, `tools`, `ui`. Фактически тесты есть для
   `core/config.py`, `core/context_budget.py`, `fs/*`, `agents/ollama_client.py`,
   `agents/model_router.py`, `agents/gpu_utils.py`, `agents/tool_registry.py`,
+  `agents/agent_loop.py`, `agents/history_compactor.py`,
   `tools/attached_files.py`. Новый код без теста — неоконченная работа.
 
 ## 10. Документация

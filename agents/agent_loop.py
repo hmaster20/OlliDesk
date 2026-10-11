@@ -8,6 +8,7 @@ from typing import Any
 from loguru import logger
 
 from agents.base import LLMBackend
+from agents.history_compactor import compact_history
 from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
@@ -184,6 +185,17 @@ class AgentLoop:
         self.registry = registry
         self.model = model
 
+    def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        """Прореживает промпт, если он не помещается в окно модели.
+
+        Размер окна берётся у активного бэкенда (`num_ctx`); если он неизвестен,
+        сжатие пропускается — финальную подгонку сделает бэкенд.
+        """
+        num_ctx = getattr(self.client, "num_ctx", None)
+        if not isinstance(num_ctx, int) or num_ctx <= 0:
+            return messages
+        return compact_history(messages, num_ctx)
+
     @staticmethod
     def _tool_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:
         """Строит сигнатуру набора вызовов для обнаружения зацикливания."""
@@ -295,6 +307,7 @@ class AgentLoop:
     ) -> str:
         messages = [ChatMessage(role="system", content=_build_system_prompt(context))]
         messages.extend(messages_history)
+        messages = self._compact_history(messages)
 
         tools_to_send: list | None = self.registry.get_schemas(context.mode)
         if tools_to_send is not None and len(tools_to_send) == 0:
