@@ -26,6 +26,7 @@ class ChunkMetadata(TypedDict):
     start_line: int
     end_line: int
     language: str
+    mtime: float
 
 
 class QueryPage(TypedDict):
@@ -58,6 +59,8 @@ def where_file_paths(paths: list[str]) -> Where:
 def build_where(
     file_filter: list[str] | None = None,
     language: str | None = None,
+    modified_after: float | None = None,
+    modified_before: float | None = None,
 ) -> Where | None:
     """Собирает `where`-фильтр из отдельных условий, объединяя их через `$and`.
 
@@ -67,6 +70,8 @@ def build_where(
     Args:
         file_filter: Ограничить конкретными путями файлов.
         language: Ограничить языком программирования (например, ``python``).
+        modified_after: Только файлы, изменённые не раньше этого unix-времени (включительно).
+        modified_before: Только файлы, изменённые не позже этого unix-времени (включительно).
 
     Returns:
         Фильтр chromadb или ``None``.
@@ -76,6 +81,10 @@ def build_where(
         clauses.append(where_file_paths(file_filter))
     if language:
         clauses.append(cast(Where, {"language": {"$eq": language}}))
+    if modified_after is not None:
+        clauses.append(cast(Where, {"mtime": {"$gte": modified_after}}))
+    if modified_before is not None:
+        clauses.append(cast(Where, {"mtime": {"$lte": modified_before}}))
     if not clauses:
         return None
     if len(clauses) == 1:

@@ -22,3 +22,14 @@ class TestBuildWhere:
     def test_empty_conditions_are_ignored(self):
         assert build_where([], None) is None
         assert build_where([], "") is None
+
+    def test_modified_after_only(self):
+        assert build_where(modified_after=100.0) == {"mtime": {"$gte": 100.0}}
+
+    def test_modified_before_only(self):
+        assert build_where(modified_before=200.0) == {"mtime": {"$lte": 200.0}}
+
+    def test_date_range_combined(self):
+        where = build_where(modified_after=100.0, modified_before=200.0)
+
+        assert where == {"$and": [{"mtime": {"$gte": 100.0}}, {"mtime": {"$lte": 200.0}}]}

@@ -429,6 +429,66 @@ class TestSearchFilters:
 
         assert results == []
 
+    @staticmethod
+    def _dated_chunks() -> list[TextChunk]:
+        return [
+            TextChunk(
+                id="old",
+                file_path="old.py",
+                content="token alpha",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python", "mtime": 1000.0},
+            ),
+            TextChunk(
+                id="new",
+                file_path="new.py",
+                content="token alpha",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python", "mtime": 5000.0},
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_modified_after_bm25(self, vector_store):
+        await self._seed(vector_store, self._dated_chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, modified_after=3000.0)
+
+        assert [r.file_path for r in results] == ["new.py"]
+
+    @pytest.mark.asyncio
+    async def test_modified_before_bm25(self, vector_store):
+        await self._seed(vector_store, self._dated_chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, modified_before=3000.0)
+
+        assert [r.file_path for r in results] == ["old.py"]
+
+    @pytest.mark.asyncio
+    async def test_modified_range_vector(self, vector_store):
+        await self._seed(vector_store, self._dated_chunks())
+
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            results = await vector_store.search("alpha", n_results=5, modified_after=3000.0)
+
+        assert results
+        assert all(r.file_path == "new.py" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_mtime_preserved_in_result(self, vector_store):
+        await self._seed(vector_store, self._dated_chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5)
+
+        by_path = {r.file_path: r for r in results}
+        assert by_path["old.py"].chunk.metadata["mtime"] == 1000.0
+        assert by_path["new.py"].chunk.metadata["mtime"] == 5000.0
+
 
 class _ReversingReranker:
     """Тестовый реранкер: просто переворачивает порядок."""

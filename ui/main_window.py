@@ -86,7 +86,7 @@ class IndexingThread(QThread):
             # Обрабатываем новые и измененные файлы
             for i, file_meta in enumerate(new_or_modified):
                 content = file_meta.absolute_path.read_text(encoding="utf-8", errors="replace")
-                chunks = self.indexer.chunk_file(content, file_meta.path)
+                chunks = self.indexer.chunk_file(content, file_meta.path, file_meta.mtime)
 
                 # Удаляем старые чанки файла (если он был изменен)
                 if file_meta.path in self.previous_state:

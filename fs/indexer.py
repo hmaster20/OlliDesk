@@ -267,13 +267,15 @@ class FileIndexer:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
 
-    def chunk_file(self, content: str, file_path: str) -> list[TextChunk]:
+    def chunk_file(self, content: str, file_path: str, mtime: float | None = None) -> list[TextChunk]:
         """
         Разбивает файл на чанки.
 
         Args:
             content: Содержимое файла
             file_path: Путь к файлу (относительный)
+            mtime: Время изменения файла (unix). Попадает в метаданные чанка,
+                чтобы `VectorStore` мог фильтровать выдачу по дате.
 
         Returns:
             list[TextChunk]: Список чанков
@@ -304,6 +306,7 @@ class FileIndexer:
                 end_line=end_line,
                 metadata={
                     "language": self._detect_language(file_path),
+                    **({"mtime": float(mtime)} if mtime is not None else {}),
                 },
             )
             chunks.append(chunk)

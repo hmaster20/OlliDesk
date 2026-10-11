@@ -301,6 +301,7 @@ class VectorStore:
                         "start_line": chunk.start_line,
                         "end_line": chunk.end_line,
                         "language": str(chunk.metadata.get("language", "unknown")),
+                        "mtime": float(chunk.metadata.get("mtime", 0.0)),
                     }
                     for chunk in batch
                 ]
@@ -324,6 +325,8 @@ class VectorStore:
         file_filter: list[str] | None = None,
         language: str | None = None,
         path_prefix: str | None = None,
+        modified_after: float | None = None,
+        modified_before: float | None = None,
     ) -> list[SearchResult]:
         """
         Ищет релевантные чанки (гибридно: векторы + BM25, объединение через RRF).
@@ -334,6 +337,8 @@ class VectorStore:
             file_filter: Фильтр по конкретным файлам (опционально)
             language: Фильтр по языку программирования, например ``python`` (опционально)
             path_prefix: Ограничить путями, начинающимися с префикса (опционально)
+            modified_after: Только файлы, изменённые не раньше этого unix-времени (опционально)
+            modified_before: Только файлы, изменённые не позже этого unix-времени (опционально)
 
         Returns:
             list[SearchResult]: Список результатов, отсортированный по RRF-оценке.
@@ -341,11 +346,16 @@ class VectorStore:
         Note:
             Если эмбеддинги посчитать не удалось, векторная часть молча деградирует
             до пустой, а поиск продолжает работать на одном BM25. Так RAG не падает
-            при недоступном эмбеддере; причина пишется в лог.
+            при недоступном эмбеддере; причина пишется в лог. Фильтр по дате работает
+            только для чанков, проиндексированных с ``mtime`` (нужна переиндексация).
         """
         candidate_n = max(n_results, n_results * 3)
-        vector_lists = await self._vector_search_lists(query, candidate_n, file_filter, language, path_prefix)
-        bm25_results = self._bm25_search(query, candidate_n, file_filter, language, path_prefix)
+        vector_lists = await self._vector_search_lists(
+            query, candidate_n, file_filter, language, path_prefix, modified_after, modified_before
+        )
+        bm25_results = self._bm25_search(
+            query, candidate_n, file_filter, language, path_prefix, modified_after, modified_before
+        )
 
         fused = _reciprocal_rank_fusion(*vector_lists, bm25_results)
         results = await self._maybe_rerank(query, fused, n_results)
@@ -429,13 +439,15 @@ class VectorStore:
         file_filter: list[str] | None,
         language: str | None,
         path_prefix: str | None,
+        modified_after: float | None = None,
+        modified_before: float | None = None,
     ) -> list[list[SearchResult]]:
         """Векторный поиск по каждой коллекции (модели).
 
         Возвращает по списку на каждую доступную коллекцию; коллекции, для
         которых не удалось посчитать эмбеддинги, молча пропускаются.
         """
-        where = build_where(file_filter, language)
+        where = build_where(file_filter, language, modified_after, modified_before)
         search_results: list[list[SearchResult]] = []
         for model, collection in self._collections.items():
             try:
@@ -479,8 +491,10 @@ class VectorStore:
         file_filter: list[str] | None,
         language: str | None,
         path_prefix: str | None,
+        modified_after: float | None = None,
+        modified_before: float | None = None,
     ) -> list[SearchResult]:
-        """Лексический поиск BM25; учитывает ``file_filter``, ``language`` и ``path_prefix``."""
+        """Лексический поиск BM25; учитывает фильтры ``file_filter``/``language``/``path_prefix``/даты."""
         self._ensure_bm25()
         if self._bm25 is None:
             return []
@@ -497,6 +511,11 @@ class VectorStore:
             if language and metadata["language"] != language:
                 continue
             if path_prefix and not file_path.startswith(path_prefix):
+                continue
+            mtime = float(metadata.get("mtime", 0.0))
+            if modified_after is not None and mtime < modified_after:
+                continue
+            if modified_before is not None and mtime > modified_before:
                 continue
             results.append(self._make_result(self._bm25_ids[index], self._bm25_docs[index], metadata, score))
             if len(results) >= n_results:
@@ -544,7 +563,10 @@ class VectorStore:
             content=document,
             start_line=metadata["start_line"],
             end_line=metadata["end_line"],
-            metadata={"language": metadata["language"]},
+            metadata={
+                "language": metadata["language"],
+                "mtime": float(metadata.get("mtime", 0.0)),
+            },
         )
         return SearchResult(chunk=chunk, score=score, file_path=metadata["file_path"])
 

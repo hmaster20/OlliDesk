@@ -31,7 +31,14 @@ class TestSearchCodebase:
 
         await search_codebase("q", n_results=3, language="python", path="agents", vector_store=store)
 
-        store.search.assert_awaited_once_with("q", n_results=3, language="python", path_prefix="agents")
+        store.search.assert_awaited_once_with(
+            "q",
+            n_results=3,
+            language="python",
+            path_prefix="agents",
+            modified_after=None,
+            modified_before=None,
+        )
 
     @pytest.mark.asyncio
     async def test_defaults_map_to_none(self):
@@ -39,8 +46,37 @@ class TestSearchCodebase:
 
         out = await search_codebase("q", vector_store=store)
 
-        store.search.assert_awaited_once_with("q", n_results=5, language=None, path_prefix=None)
+        store.search.assert_awaited_once_with(
+            "q",
+            n_results=5,
+            language=None,
+            path_prefix=None,
+            modified_after=None,
+            modified_before=None,
+        )
         assert "Ничего не найдено" in out
+
+    @pytest.mark.asyncio
+    async def test_parses_dates(self):
+        store = _store([])
+
+        await search_codebase(
+            "q", modified_after="2026-01-01", modified_before="2026-01-31", vector_store=store
+        )
+
+        kwargs = store.search.await_args.kwargs
+        # modified_after — начало дня, modified_before — конец дня (включительно)
+        assert kwargs["modified_after"] < kwargs["modified_before"]
+        assert kwargs["modified_before"] - kwargs["modified_after"] > 29 * 86400
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_returns_error(self):
+        store = _store([])
+
+        out = await search_codebase("q", modified_after="31-01-2026", vector_store=store)
+
+        assert out.startswith("Ошибка:")
+        store.search.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_clamps_n_results(self):

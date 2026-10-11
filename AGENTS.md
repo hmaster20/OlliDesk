@@ -203,8 +203,10 @@ OlliDesk/
   `attached_files`. `ToolRegistry` отфильтровывает их из JSON-схемы (см. `_INJECTED_PARAMS`).
 - `tools/file_ops.py::_resolve_path` — песочница: `Path.resolve()` + `relative_to(project_root)`;
   выход за пределы проекта запрещён.
-- `tools/codebase_search.py::search_codebase` принимает необязательные `language=` и `path=`
-  (префикс пути) — фильтры уходят в `VectorStore.search` (`language`/`path_prefix`).
+- `tools/codebase_search.py::search_codebase` принимает необязательные `language=`, `path=`
+  (префикс пути) и `modified_after=`/`modified_before=` (даты `YYYY-MM-DD`, преобразуются в
+  unix-границы дня) — фильтры уходят в `VectorStore.search` (`language`/`path_prefix`/
+  `modified_after`/`modified_before`).
 - `tools/git_ops.py` — низкоуровневые хелперы (GitPython/stash), `tools/git_ops_tool.py` — `@tool`-обёртки.
 - `tools/attached_files.py` — хранилище вложений `@file` (`AttachedFileStore.add/find/render`)
   и `read_attached_file(path, offset, limit)`. В промпт уходит только начало и конец файла
@@ -221,8 +223,10 @@ OlliDesk/
 ### `fs/` — индекс проекта и RAG
 
 - `fs/indexer.py` — `FileIndexer`: обход с учётом `.gitignore` (`pathspec`), фильтры по
-  расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка,
-  `incremental_scan()` для догрузки только изменений. Модели: `FileMetadata`, `TextChunk`.
+  расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка
+  (`_detect_language`), `incremental_scan()` для догрузки только изменений.
+  `chunk_file(content, file_path, mtime=None)` кладёт `language` и (если передан) `mtime`
+  в метаданные чанка. Модели: `FileMetadata`, `TextChunk`.
 - `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекции `codebase`/`codebase_<hash>`,
   косинус), батчи по 32, `add_chunks()`, `search()`, `delete_by_file()`, `clear()`.
   Модели: `SearchResult`, `Embedder` (протокол), `Reranker` (протокол).
@@ -244,13 +248,16 @@ OlliDesk/
   в `score` кладётся RRF-оценка). Поэтому `search()` не падает при недоступном эмбеддере —
   BM25 продолжает находить по токенам. BM25-индекс строится лениво из всех коллекций
   (`_ensure_bm25`, `ChromaCollection.get_all`) и сбрасывается (`_invalidate_bm25`) при
-  `add_chunks`/`delete_by_file`/`clear`. `search()` принимает фильтры `language` (уходит
-  в chroma `where` через `build_where`) и `path_prefix` (постфильтр по `file_path`,
-  применяется и к векторной, и к BM25-выдаче). После RRF опциональный `Reranker`
-  переупорядочивает верхушку `rerank_pool` кандидатов; ошибка реранкера не пробрасывается —
-  поиск отдаёт порядок RRF. Порядок кэшируется по ключу `rerank|<sha1>` из запроса и
-  содержимого кандидатов (протокол `RerankCache`, реализация — `core.search_cache.SearchCache`
-  с `get_list`/`set_list`; при промахе или устаревших id — обычный реранк).
+  `add_chunks`/`delete_by_file`/`clear`. `search()` принимает фильтры `language` и
+  `modified_after`/`modified_before` (уходят в chroma `where` через `build_where`) и
+  `path_prefix` (постфильтр по `file_path`, применяется и к векторной, и к BM25-выдаче).
+  Даты хранятся в метаданных чанка как `mtime` (кладёт `FileIndexer.chunk_file`); для
+  старых индексов без `mtime` фильтр по дате их отсечёт — нужна переиндексация. После RRF
+  опциональный `Reranker` переупорядочивает верхушку `rerank_pool` кандидатов; ошибка
+  реранкера не пробрасывается — поиск отдаёт порядок RRF. Порядок кэшируется по ключу
+  `rerank|<sha1>` из запроса и содержимого кандидатов (протокол `RerankCache`, реализация —
+  `core.search_cache.SearchCache` с `get_list`/`set_list`; при промахе или устаревших id —
+  обычный реранк).
 - `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
   приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
   `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
@@ -273,8 +280,9 @@ OlliDesk/
   инвариантные `List[...]`, из-за чего корректный `list[list[float]]` mypy отвергает —
   отсюда три `# type: ignore[arg-type]` с пояснениями. Наружу адаптер отдаёт свои типы
   (`QueryPage`, `ChunkMetadata`), снимает внешний уровень вложенности ответа `query()`
-  и передаёт `IncludeEnum` вместо строк. `build_where(file_filter, language)` собирает
-  `where` из условий через `$and` (строковый префикс chromadb не умеет — он постфильтруется).
+  и передаёт `IncludeEnum` вместо строк. `build_where(file_filter, language, modified_after,
+  modified_before)` собирает `where` из условий через `$and` (строковый префикс chromadb не
+  умеет — он постфильтруется; диапазон дат идёт в `mtime` через `$gte`/`$lte`).
 
 Индекс хранится в `<проект>/.ollidesk/vector_db`, состояние — в `~/.ollidesk/project_state.json`.
 

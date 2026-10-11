@@ -111,6 +111,16 @@ class TestFileIndexer:
         assert chunks[0].start_line == 1
         assert chunks[0].end_line == 3
 
+    async def test_chunk_file_stores_mtime(self, indexer):
+        chunks = indexer.chunk_file("line1\nline2", "test.py", mtime=1234.5)
+
+        assert chunks[0].metadata["mtime"] == 1234.5
+
+    async def test_chunk_file_without_mtime_omits_key(self, indexer):
+        chunks = indexer.chunk_file("line1\nline2", "test.py")
+
+        assert "mtime" not in chunks[0].metadata
+
     async def test_chunk_file_multiple_chunks(self, indexer):
         # chunk_size_tokens=512, token/line~15 => ~34 lines per chunk
         lines = [f"line{i}" for i in range(100)]
