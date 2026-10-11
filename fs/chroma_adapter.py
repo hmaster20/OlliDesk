@@ -55,6 +55,34 @@ def where_file_paths(paths: list[str]) -> Where:
     return cast(Where, {"file_path": {"$in": paths}})
 
 
+def build_where(
+    file_filter: list[str] | None = None,
+    language: str | None = None,
+) -> Where | None:
+    """Собирает `where`-фильтр из отдельных условий, объединяя их через `$and`.
+
+    Отсутствующие условия игнорируются. Если условий нет, возвращается
+    ``None`` — chromadb тогда ищет без фильтра.
+
+    Args:
+        file_filter: Ограничить конкретными путями файлов.
+        language: Ограничить языком программирования (например, ``python``).
+
+    Returns:
+        Фильтр chromadb или ``None``.
+    """
+    clauses: list[Where] = []
+    if file_filter:
+        clauses.append(where_file_paths(file_filter))
+    if language:
+        clauses.append(cast(Where, {"language": {"$eq": language}}))
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return cast(Where, {"$and": clauses})
+
+
 class ChromaCollection:
     """Обёртка над `Collection` с типами, удобными для вызывающего кода."""
 

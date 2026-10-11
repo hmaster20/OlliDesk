@@ -203,6 +203,8 @@ OlliDesk/
   `attached_files`. `ToolRegistry` отфильтровывает их из JSON-схемы (см. `_INJECTED_PARAMS`).
 - `tools/file_ops.py::_resolve_path` — песочница: `Path.resolve()` + `relative_to(project_root)`;
   выход за пределы проекта запрещён.
+- `tools/codebase_search.py::search_codebase` принимает необязательные `language=` и `path=`
+  (префикс пути) — фильтры уходят в `VectorStore.search` (`language`/`path_prefix`).
 - `tools/git_ops.py` — низкоуровневые хелперы (GitPython/stash), `tools/git_ops_tool.py` — `@tool`-обёртки.
 - `tools/attached_files.py` — хранилище вложений `@file` (`AttachedFileStore.add/find/render`)
   и `read_attached_file(path, offset, limit)`. В промпт уходит только начало и конец файла
@@ -233,7 +235,9 @@ OlliDesk/
   в `score` кладётся RRF-оценка). Поэтому `search()` не падает при недоступном эмбеддере —
   BM25 продолжает находить по токенам. BM25-индекс строится лениво из всей коллекции
   (`_ensure_bm25`, `ChromaCollection.get_all`) и сбрасывается (`_invalidate_bm25`) при
-  `add_chunks`/`delete_by_file`/`clear`.
+  `add_chunks`/`delete_by_file`/`clear`. `search()` принимает фильтры `language` (уходит
+  в chroma `where` через `build_where`) и `path_prefix` (постфильтр по `file_path`,
+  применяется и к векторной, и к BM25-выдаче).
 - `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
   приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
   `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
@@ -249,7 +253,8 @@ OlliDesk/
   инвариантные `List[...]`, из-за чего корректный `list[list[float]]` mypy отвергает —
   отсюда три `# type: ignore[arg-type]` с пояснениями. Наружу адаптер отдаёт свои типы
   (`QueryPage`, `ChunkMetadata`), снимает внешний уровень вложенности ответа `query()`
-  и передаёт `IncludeEnum` вместо строк. `cast(Any, ...)` в `fs/` больше нет.
+  и передаёт `IncludeEnum` вместо строк. `build_where(file_filter, language)` собирает
+  `where` из условий через `$and` (строковый префикс chromadb не умеет — он постфильтруется).
 
 Индекс хранится в `<проект>/.ollidesk/vector_db`, состояние — в `~/.ollidesk/project_state.json`.
 

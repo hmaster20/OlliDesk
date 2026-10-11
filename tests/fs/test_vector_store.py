@@ -361,3 +361,70 @@ class TestHybridSearch:
         results = await vector_store.search("beta", n_results=5)
 
         assert [r.file_path for r in results] == ["b.py"]
+
+
+class TestSearchFilters:
+    """Фильтры поиска по языку и префиксу пути."""
+
+    async def _seed(self, vector_store, chunks):
+        embeddings = [[0.1, 0.2, 0.3]] * len(chunks)
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=embeddings)):
+            await vector_store.add_chunks(chunks)
+
+    @staticmethod
+    def _chunks() -> list[TextChunk]:
+        return [
+            TextChunk(
+                id="py",
+                file_path="agents/loop.py",
+                content="token alpha",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python"},
+            ),
+            TextChunk(
+                id="js",
+                file_path="ui/panel.js",
+                content="token alpha",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "javascript"},
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_language_filter_bm25(self, vector_store):
+        await self._seed(vector_store, self._chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, language="python")
+
+        assert [r.file_path for r in results] == ["agents/loop.py"]
+
+    @pytest.mark.asyncio
+    async def test_language_filter_vector(self, vector_store):
+        await self._seed(vector_store, self._chunks())
+
+        with patch.object(vector_store.embed_client, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]])):
+            results = await vector_store.search("alpha", n_results=5, language="javascript")
+
+        assert results
+        assert all(r.file_path == "ui/panel.js" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_path_prefix_filter_bm25(self, vector_store):
+        await self._seed(vector_store, self._chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, path_prefix="agents")
+
+        assert [r.file_path for r in results] == ["agents/loop.py"]
+
+    @pytest.mark.asyncio
+    async def test_combined_filters(self, vector_store):
+        await self._seed(vector_store, self._chunks())
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+        results = await vector_store.search("alpha", n_results=5, language="python", path_prefix="ui")
+
+        assert results == []

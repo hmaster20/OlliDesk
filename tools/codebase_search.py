@@ -10,16 +10,27 @@ from core.config import AgentMode, ToolPolicy
 
 @tool(
     name="search_codebase",
-    description="Ищет информацию в кодовой базе по текстовому запросу через векторный поиск",
+    description=(
+        "Ищет информацию в кодовой базе по текстовому запросу через векторный поиск. "
+        "Можно сузить поиск языком программирования и/или каталогом (префиксом пути)."
+    ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
-async def search_codebase(query: str, n_results: int = 5, vector_store: Any = None) -> str:
+async def search_codebase(
+    query: str,
+    n_results: int = 5,
+    language: str | None = None,
+    path: str | None = None,
+    vector_store: Any = None,
+) -> str:
     """Ищет релевантные фрагменты кода по запросу.
 
     Args:
         query: Текст запроса
         n_results: Количество результатов (max 10)
+        language: Фильтр по языку (python, javascript, typescript, html, css, markdown, json, yaml)
+        path: Ограничить поиск каталогом/префиксом пути (например, ``agents`` или ``ui/chat``)
         vector_store: Экземпляр VectorStore (передаётся через context)
 
     Returns:
@@ -30,7 +41,12 @@ async def search_codebase(query: str, n_results: int = 5, vector_store: Any = No
 
     try:
         n = min(max(n_results, 1), 10)
-        results = await vector_store.search(query, n_results=n)
+        results = await vector_store.search(
+            query,
+            n_results=n,
+            language=language or None,
+            path_prefix=path or None,
+        )
 
         if not results:
             return "Ничего не найдено по запросу."

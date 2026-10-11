@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from core.exceptions import EmbedderError
 from fs.bm25 import BM25Index
-from fs.chroma_adapter import ChromaCollection, ChunkMetadata, where_file_paths
+from fs.chroma_adapter import ChromaCollection, ChunkMetadata, build_where, where_file_paths
 from fs.indexer import TextChunk
 
 
@@ -199,6 +199,8 @@ class VectorStore:
         query: str,
         n_results: int = 10,
         file_filter: list[str] | None = None,
+        language: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """
         Ищет релевантные чанки (гибридно: векторы + BM25, объединение через RRF).
@@ -206,7 +208,9 @@ class VectorStore:
         Args:
             query: Поисковый запрос
             n_results: Количество результатов
-            file_filter: Фильтр по файлам (опционально)
+            file_filter: Фильтр по конкретным файлам (опционально)
+            language: Фильтр по языку программирования, например ``python`` (опционально)
+            path_prefix: Ограничить путями, начинающимися с префикса (опционально)
 
         Returns:
             list[SearchResult]: Список результатов, отсортированный по RRF-оценке.
@@ -217,8 +221,8 @@ class VectorStore:
             при недоступном эмбеддере; причина пишется в лог.
         """
         candidate_n = max(n_results, n_results * 3)
-        vector_results = await self._vector_search(query, candidate_n, file_filter)
-        bm25_results = self._bm25_search(query, candidate_n, file_filter)
+        vector_results = await self._vector_search(query, candidate_n, file_filter, language, path_prefix)
+        bm25_results = self._bm25_search(query, candidate_n, file_filter, language, path_prefix)
 
         fused = _reciprocal_rank_fusion(vector_results, bm25_results)
         results = fused[:n_results]
@@ -232,6 +236,8 @@ class VectorStore:
         query: str,
         n_results: int,
         file_filter: list[str] | None,
+        language: str | None,
+        path_prefix: str | None,
     ) -> list[SearchResult]:
         """Векторный поиск; при недоступных эмбеддингах возвращает пустой список."""
         try:
@@ -240,7 +246,7 @@ class VectorStore:
             logger.warning(f"Векторный RAG-поиск недоступен: {e}")
             return []
 
-        where = where_file_paths(file_filter) if file_filter else None
+        where = build_where(file_filter, language)
         page = self.collection.query(
             embedding=query_embedding[0],
             n_results=n_results,
@@ -255,8 +261,11 @@ class VectorStore:
         results: list[SearchResult] = []
         if ids and documents and metadatas and distances:
             for i, doc in enumerate(documents):
+                metadata = metadatas[i]
+                if path_prefix and not metadata["file_path"].startswith(path_prefix):
+                    continue
                 score = max(0.0, min(1.0, 1 - distances[i]))  # Cosine distance -> similarity
-                results.append(self._make_result(ids[i], doc, metadatas[i], score))
+                results.append(self._make_result(ids[i], doc, metadata, score))
         return results
 
     def _bm25_search(
@@ -264,8 +273,10 @@ class VectorStore:
         query: str,
         n_results: int,
         file_filter: list[str] | None,
+        language: str | None,
+        path_prefix: str | None,
     ) -> list[SearchResult]:
-        """Лексический поиск BM25; учитывает ``file_filter``."""
+        """Лексический поиск BM25; учитывает ``file_filter``, ``language`` и ``path_prefix``."""
         self._ensure_bm25()
         if self._bm25 is None:
             return []
@@ -276,7 +287,12 @@ class VectorStore:
         results: list[SearchResult] = []
         for index, score in ranked:
             metadata = self._bm25_metas[index]
-            if allowed is not None and metadata["file_path"] not in allowed:
+            file_path = metadata["file_path"]
+            if allowed is not None and file_path not in allowed:
+                continue
+            if language and metadata["language"] != language:
+                continue
+            if path_prefix and not file_path.startswith(path_prefix):
                 continue
             results.append(self._make_result(self._bm25_ids[index], self._bm25_docs[index], metadata, score))
             if len(results) >= n_results:
