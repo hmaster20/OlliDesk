@@ -155,12 +155,13 @@ class EditorWidget(QWidget):
         """Устанавливает функцию записи файла."""
         self.bridge.set_file_writer(writer)
 
-    def open_file(self, file_path: str):
+    def open_file(self, file_path: str, line: int = 0):
         """
         Открывает файл в редакторе.
 
         Args:
             file_path: Путь к файлу
+            line: Строка для перехода (1-based); 0 — не переходить
         """
         self.current_file = file_path
 
@@ -170,8 +171,8 @@ class EditorWidget(QWidget):
             return
 
         escaped = json.dumps(file_path)
-        self.web_view.page().runJavaScript(f"openFile({escaped})")
-        logger.info(f"Открыт файл в редакторе: {file_path}")
+        self.web_view.page().runJavaScript(f"openFile({escaped}, {int(line)})")
+        logger.info(f"Открыт файл в редакторе: {file_path}" + (f" (строка {line})" if line else ""))
 
     def show_diff(self, original: str, modified: str, language: str = "plaintext"):
         """

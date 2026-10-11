@@ -281,8 +281,8 @@ MainWindow (QMainWindow, ui/main_window.py)
 |---|---|---|
 | `ui/main_window.py` | ~1280 | Оболочка, открытие проекта и список последних, оркестрация индексации, меню, переключение темы. Владеет `SessionStore`, `OllamaClient`, `ModelRegistry`, `RoleManager`, `SystemPromptManager`, `FileIndexer`, `SearchCache`. Здесь же `ProjectState`, `IndexingThread`, обработчик `@dir` (`_on_directory_attach_requested`) и F4 (`_toggle_project_structure`) |
 | `ui/chat/panel.py` | ~1500 | Панель чата: выбор роли/модели/режима, стриминг пузырей, подтверждение инструментов, детекция бэкендов, пре-RAG-поиск, команды `@web`/`@dir`/`@file`/`@path`. **Здесь единственное место регистрации инструментов** (`_build_registry`) |
-| `ui/chat/threads.py` | ~330 | Мост async ↔ Qt: 6 `QThread`-классов, каждый запускает `asyncio.run()` |
-| `ui/chat/message_item.py` | ~250 | Один «пузырь» сообщения: markdown → HTML (вручную, `re` + `pygments`) → `QTextBrowser`; кнопка «Копировать» под текстом |
+| `ui/chat/threads.py` | ~330 | Мост async ↔ Qt: 6 `QThread`-классов, каждый запускает `asyncio.run()`. `RagSearchThread.results_ready` отдаёт `(context, [(file_path, start, end), ...])` — структурированные источники RAG для кликабельного блока |
+| `ui/chat/message_item.py` | ~250 | Один «пузырь» сообщения: markdown → HTML (вручную, `re` + `pygments`) → `QTextBrowser`; кнопка «Копировать» под текстом. `ChatActivityItem` — серая строка журнала, `ChatSourcesItem` — кликабельные источники RAG (`source_activated`) |
 | `ui/file_tree_delegate.py` | ~160 | Цвета строк дерева файлов по `git status --porcelain`, дебаунс 500 мс |
 | `ui/theme.py` | ~180 | `LIGHT_STYLESHEET` / `DARK_STYLESHEET` + палитра |
 | `ui/dialogs/wizard.py` | ~260 | Мастер первой настройки (4 страницы). В mypy: `ignore_errors = true` |
@@ -292,8 +292,8 @@ MainWindow (QMainWindow, ui/main_window.py)
 | `ui/dialogs/tool_confirmation_dialog.py` | ~152 | Одобрить / отклонить / **отредактировать аргументы** вызова инструмента |
 | `ui/dialogs/session_manager_dialog.py` | ~80 | Таблица сессий: открыть, удалить, экспорт |
 | `ui/dialogs/prompt_editor_dialog.py` | ~115 | Редактор системных промптов и ролей |
-| `ui/web_editor/editor_widget.py` | ~265 | `QWebEngineView` + `PythonBridge` (QWebChannel) |
-| `ui/web_editor/editor.js` | ~300 | Monaco: загрузка файлов, diff-режим, статус-бар |
+| `ui/web_editor/editor_widget.py` | ~265 | `QWebEngineView` + `PythonBridge` (QWebChannel). `open_file(path, line=0)` открывает файл и (при `line>0`) ставит курсор на строку |
+| `ui/web_editor/editor.js` | ~300 | Monaco: загрузка файлов, diff-режим, статус-бар, `openFile(path, line)` с `revealLineInCenter` |
 
 Мост QWebChannel (`PythonBridge`, зарегистрирован как `pythonBridge`):
 
@@ -305,8 +305,9 @@ MainWindow (QMainWindow, ui/main_window.py)
 | Py → JS | `file_write_result` `Signal` | `(str, bool)` → `onFileWriteResult(...)` |
 
 JS выделяет `requestId`, кладёт `resolve` в `pendingRequests` — fire-and-forget превращается в
-Promise. Py → JS: `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get_content` — всё через
-`page().runJavaScript(...)`.
+Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject_diff`, `get_content` — всё через
+`page().runJavaScript(...)`. Клик по источнику RAG (`ChatSourcesItem.source_activated`) идёт в
+`MainWindow.open_file_in_editor`, который открывает файл в редакторе на нужной строке.
 
 ---
 
@@ -323,7 +324,8 @@ Promise. Py → JS: `open_file`, `show_diff`, `accept_diff`, `reject_diff`, `get
   └─ обычный текст
        └─(Ctrl+Enter или кнопка)→ RAG-пре-поиск (RagSearchThread):
        │     detect_query_scope → file_filter на упомянутый каталог,
-       │     дедупликация чанков по файлу, бюджет rag_char_budget(num_ctx)
+       │     дедупликация чанков по файлу, бюджет rag_char_budget(num_ctx);
+       │     источники отдаются в UI как ChatSourcesItem (клик → редактор)
        └─ AgentChatThread (QThread → asyncio.run)
            └─ AgentLoop.run(ctx, history, on_token, on_tool_request, ...)
                ├─ _build_system_prompt():

@@ -43,8 +43,8 @@ async function initEditor() {
         monacoReady = true;
         console.log('Monaco Editor initialized');
 
-        pendingFiles.forEach(function(fp) {
-            _openFile(fp);
+        pendingFiles.forEach(function(item) {
+            _openFile(item.filePath, item.line);
         });
         pendingFiles = [];
     });
@@ -102,15 +102,15 @@ function onFileWriteResult(data) {
     }
 }
 
-function openFile(filePath) {
+function openFile(filePath, line) {
     if (!monacoReady) {
-        pendingFiles.push(filePath);
+        pendingFiles.push({ filePath: filePath, line: line || 0 });
         return;
     }
-    _openFile(filePath);
+    _openFile(filePath, line);
 }
 
-async function _openFile(filePath) {
+async function _openFile(filePath, line) {
     try {
         updateStatusBar('Loading...');
         var content = await readFile(filePath);
@@ -132,6 +132,12 @@ async function _openFile(filePath) {
             console.warn('Failed to set language ' + language + ', fallback to plaintext:', e);
             var model = monaco.editor.createModel(content, 'plaintext');
             monacoEditor.setModel(model);
+        }
+
+        if (line && line > 0) {
+            monacoEditor.revealLineInCenter(line);
+            monacoEditor.setPosition({ lineNumber: line, column: 1 });
+            monacoEditor.focus();
         }
 
         updateStatusBar(filePath);

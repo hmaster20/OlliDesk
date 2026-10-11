@@ -3,7 +3,7 @@
 import html as html_mod
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -303,6 +303,44 @@ class ChatActivityItem(QWidget):
         label.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
         layout.addWidget(label, 1)
         self.label = label
+
+
+class ChatSourcesItem(QWidget):
+    """Блок источников RAG с кликабельными ссылками.
+
+    Каждый источник — кнопка-ссылка вида ``file:строка``; клик испускает
+    ``source_activated`` (относительный путь, строка), а панель открывает
+    файл в редакторе.
+    """
+
+    source_activated = Signal(str, int)
+
+    def __init__(self, sources: list[tuple[str, int, int]], parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 2, 8, 2)
+        layout.setSpacing(0)
+
+        header = QLabel("📚 Источники из проекта (нажмите, чтобы открыть):")
+        header.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
+        layout.addWidget(header)
+
+        for path, start, end in sources:
+            btn = QPushButton(format_source_label(path, start, end))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFlat(True)
+            btn.setStyleSheet(
+                "QPushButton { color: #6ba3d6; font-size: 12px; text-align: left; "
+                "border: none; background: transparent; padding: 0; }"
+                "QPushButton:hover { text-decoration: underline; color: #8bc0f0; }"
+            )
+            btn.clicked.connect(lambda _=False, p=path, s=start: self.source_activated.emit(p, s))
+            layout.addWidget(btn)
+
+
+def format_source_label(file_path: str, start: int, end: int) -> str:
+    """Формирует подпись источника RAG вида ``file:строка`` или ``file:start-end``."""
+    return f"{file_path}:{start}-{end}" if end != start else f"{file_path}:{start}"
 
 
 class ChatMessageItem(QWidget):

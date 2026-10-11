@@ -280,6 +280,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
         self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
         self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
+        self.chat_panel.source_activated.connect(self.open_file_in_editor)
 
         logger.info("Главное окно создано")
 
@@ -450,9 +451,9 @@ class MainWindow(QMainWindow):
             return
         self.tab_widget.removeTab(index)
 
-    def open_file_in_editor(self, file_path: str):
+    def open_file_in_editor(self, file_path: str, line: int = 0):
         """Открывает файл в редакторе."""
-        self.editor_widget.open_file(file_path)
+        self.editor_widget.open_file(file_path, line)
         # Добавляем вкладку обратно, если была закрыта
         index = self.tab_widget.indexOf(self.editor_widget)
         if index < 0:

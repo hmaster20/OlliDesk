@@ -157,7 +157,8 @@ class AgentChatThread(QThread):
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
 
-    results_ready = Signal(str, str)
+    # (context, список источников [(file_path, start_line, end_line), ...])
+    results_ready = Signal(str, list)
     search_error = Signal(str)
 
     def __init__(
@@ -192,20 +193,19 @@ class RagSearchThread(QThread):
             results = _dedupe_by_file(results)[: self.n_results]
             if results:
                 context_parts = []
-                source_parts = []
+                sources: list[tuple[str, int, int]] = []
                 for r in results:
                     context_parts.append(
                         f"### Файл: {r.file_path} "
                         f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"
                         f"```\n{r.chunk.content}\n```"
                     )
-                    source_parts.append(f"{r.file_path}:{r.chunk.start_line}-{r.chunk.end_line}")
+                    sources.append((r.file_path, r.chunk.start_line, r.chunk.end_line))
 
                 context = "\n\n".join(context_parts)
-                sources = ", ".join(source_parts[:3])
                 self.results_ready.emit(context, sources)
             else:
-                self.results_ready.emit("", "")
+                self.results_ready.emit("", [])
         except Exception as e:
             self.search_error.emit(str(e))
 

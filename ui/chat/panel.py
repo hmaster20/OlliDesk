@@ -38,7 +38,7 @@ from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
-from ui.chat.message_item import ChatActivityItem, ChatMessageItem
+from ui.chat.message_item import ChatActivityItem, ChatMessageItem, ChatSourcesItem
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -86,6 +86,9 @@ class ChatPanel(QWidget):
 
     # Запрос на подключение каталога как проекта (обрабатывает MainWindow)
     directory_attach_requested = Signal(str)
+
+    # Клик по источнику RAG: (относительный путь, строка) → открыть в редакторе
+    source_activated = Signal(str, int)
 
     def __init__(
         self,
@@ -381,6 +384,21 @@ class ChatPanel(QWidget):
         item = ChatActivityItem(text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
         QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
+        """Добавляет кликабельный блок источников RAG (файл + строки)."""
+        if not sources:
+            return
+        item = ChatSourcesItem(sources)
+        item.source_activated.connect(self._on_source_activated)
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _on_source_activated(self, file_path: str, line: int) -> None:
+        """Преобразует относительный путь источника в абсолютный и открывает файл."""
+        if self.project_root and not Path(file_path).is_absolute():
+            file_path = str(Path(self.project_root) / file_path)
+        self.source_activated.emit(file_path, line)
 
     # ---------------------------------------------------------
     # @dir / @file / @path — прикрепление путей
@@ -1026,8 +1044,8 @@ class ChatPanel(QWidget):
         else:
             self._do_chat(text)
 
-    @Slot(str, str)
-    def _on_rag_results(self, context: str, sources: str):
+    @Slot(str, list)
+    def _on_rag_results(self, context: str, sources: list):
         merged = self._merge_scope_into_context(context)
         if merged:
             budget = rag_char_budget(self._router.num_ctx)
@@ -1035,8 +1053,9 @@ class ChatPanel(QWidget):
         else:
             self._rag_context = None
         if sources:
-            self._show_activity(f"📚 Контекст из проекта: {sources}")
-            self.status_label.setText(f"📚 Источники: {sources}")
+            self._show_sources(sources)
+            summary = ", ".join(f"{p}:{s}" for p, s, _end in sources[:3])
+            self.status_label.setText(f"📚 Источники: {summary}")
 
     @Slot(str)
     def _on_rag_error(self, error_msg: str):
@@ -1083,14 +1102,15 @@ class ChatPanel(QWidget):
         else:
             self._do_agent(text, mode, "")
 
-    def _on_agent_rag_ready(self, context: str, sources: str, text: str, mode: AgentMode):
+    def _on_agent_rag_ready(self, context: str, sources: list, text: str, mode: AgentMode):
         merged = self._merge_scope_into_context(context)
         if merged:
             budget = rag_char_budget(self._router.num_ctx)
             merged = truncate_to_chars(merged, budget)
         if sources:
-            self._show_activity(f"📚 Контекст из проекта: {sources}")
-            self.status_label.setText(f"📚 {sources}")
+            self._show_sources(sources)
+            summary = ", ".join(f"{p}:{s}" for p, s, _end in sources[:3])
+            self.status_label.setText(f"📚 {summary}")
         self._do_agent(text, mode, merged)
 
     # ---------------------------------------------------------
