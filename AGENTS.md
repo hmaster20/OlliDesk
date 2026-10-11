@@ -131,7 +131,7 @@ OlliDesk/
 | Модуль | Назначение | Ключевое |
 |---|---|---|
 | `core/app.py` | Bootstrap приложения | `OlliDeskApp`, `main()`; применяет тему, открывает `SetupWizard` при отсутствии конфига |
-| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `RerankSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
+| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `RerankSettings`, `EmbedModels`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
 | `core/logger.py` | Логирование | `setup_logger(dir, level)` — sink в stderr + rotating-файл |
 | `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
@@ -223,23 +223,32 @@ OlliDesk/
 - `fs/indexer.py` — `FileIndexer`: обход с учётом `.gitignore` (`pathspec`), фильтры по
   расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка,
   `incremental_scan()` для догрузки только изменений. Модели: `FileMetadata`, `TextChunk`.
-- `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекция `codebase`, косинус),
-  батчи по 32, `add_chunks()`, `search()`, `delete_by_file()`, `clear()`.
-  Модели: `SearchResult`, `Embedder` (протокол). Embedder-параметр — **любой**
-  объект с `async embed(model, texts)`; в UI передаётся `ChatPanel.router`.
-  `_embed()` проверяет, что векторов пришло столько же, сколько текстов, и бросает
-  `EmbedderError`.
-  **Поиск гибридный** (`search()`): векторная выдача (`_vector_search`, при неудаче
-  эмбеддингов молча пустая) + лексическая (`_bm25_search` поверх `fs/bm25.py`) объединяются
+- `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекции `codebase`/`codebase_<hash>`,
+  косинус), батчи по 32, `add_chunks()`, `search()`, `delete_by_file()`, `clear()`.
+  Модели: `SearchResult`, `Embedder` (протокол), `Reranker` (протокол).
+  Embedder-параметр — **любой** объект с `async embed(model, texts)`; в UI передаётся
+  `ChatPanel.router`. `_embed()` проверяет, что векторов пришло столько же, сколько
+  текстов, и бросает `EmbedderError`.
+  **Раздельные модели по типу файла**: `category_for_language()` относит markdown/rst/text/txt
+  к `docs`, остальное — к `code`; `embed_models` (`{"code": ..., "docs": ...}`, из
+  `AppConfig.embed_models`) переопределяет модель категории. Векторы разных моделей
+  несравнимы, поэтому **на каждую уникальную модель — своя коллекция** (`codebase` для
+  модели по умолчанию, иначе `codebase_<sha1[:8]>`); `add_chunks()` раскладывает чанки по
+  коллекциям, `search()` опрашивает все и подаёт выдачи отдельными списками. Без
+  `embed_models` — одна коллекция `codebase` (поведение прежнее). Коллекция модели по
+  умолчанию доступна как свойство `collection`.
+  **Поиск гибридный** (`search()`): векторные выдачи (`_vector_search_lists`, по одной на
+  коллекцию; при неудаче эмбеддингов конкретная коллекция молча пропускается) + лексическая
+  (`_bm25_search` поверх `fs/bm25.py`, единый индекс по всем коллекциям) объединяются
   через reciprocal rank fusion (`_reciprocal_rank_fusion`, `k=60`, дедуп по `chunk.id`,
   в `score` кладётся RRF-оценка). Поэтому `search()` не падает при недоступном эмбеддере —
-  BM25 продолжает находить по токенам. BM25-индекс строится лениво из всей коллекции
+  BM25 продолжает находить по токенам. BM25-индекс строится лениво из всех коллекций
   (`_ensure_bm25`, `ChromaCollection.get_all`) и сбрасывается (`_invalidate_bm25`) при
   `add_chunks`/`delete_by_file`/`clear`. `search()` принимает фильтры `language` (уходит
   в chroma `where` через `build_where`) и `path_prefix` (постфильтр по `file_path`,
   применяется и к векторной, и к BM25-выдаче). После RRF опциональный `Reranker`
-  (протокол рядом с `Embedder`) переупорядочивает верхушку `rerank_pool` кандидатов;
-  ошибка реранкера не пробрасывается — поиск отдаёт порядок RRF.
+  переупорядочивает верхушку `rerank_pool` кандидатов; ошибка реранкера не пробрасывается —
+  поиск отдаёт порядок RRF.
 - `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
   приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
   `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
@@ -373,6 +382,7 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
 | Параметры индексации | `~/.ollidesk/config.yaml`, `ignored_patterns`, `index_extensions`, `chunk_size_tokens` |
 | Бэкенд LLM | `agents/model_router.py` + `core/config.py::ModelConfig` |
 | Реранкинг RAG | `fs/reranker.py` + `core/config.py::RerankSettings` (`enabled`/`model`/`top_k`) |
+| Раздельные эмбеддинги (код/документация) | `core/config.py::EmbedModels` (`code`/`docs`) + `fs/vector_store.py::category_for_language` |
 | Бюджет контекста под модель | `core/context_budget.py` (`CHARS_PER_TOKEN`, `ATTACHED_CONTEXT_SHARE`, `KNOWN_NUM_CTX`) |
 
 ---

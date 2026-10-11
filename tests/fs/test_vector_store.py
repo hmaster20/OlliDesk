@@ -5,7 +5,7 @@ import pytest
 
 from core.exceptions import EmbedderError
 from fs.indexer import TextChunk
-from fs.vector_store import Embedder, SearchResult, VectorStore
+from fs.vector_store import Embedder, SearchResult, VectorStore, category_for_language
 
 
 @pytest.fixture
@@ -493,3 +493,141 @@ class TestRerankerIntegration:
         await vector_store.search("alpha", n_results=5)
 
         assert captured["n"] == 1
+
+
+class TestCategoryForLanguage:
+    def test_docs_languages(self):
+        assert category_for_language("markdown") == "docs"
+        assert category_for_language("rst") == "docs"
+
+    def test_code_languages(self):
+        assert category_for_language("python") == "code"
+        assert category_for_language("unknown") == "code"
+
+
+@pytest.fixture
+def split_client():
+    client = MagicMock()
+    client.embed = AsyncMock(side_effect=lambda model, texts: [[0.1, 0.2, 0.3] for _ in texts])
+    return client
+
+
+@pytest.fixture
+def split_store(tmp_path, split_client):
+    return VectorStore(
+        persist_dir=tmp_path / "vector_db",
+        embed_client=split_client,
+        embed_model="default-model",
+        embed_models={"docs": "doc-model"},
+    )
+
+
+class TestEmbeddingSplit:
+    """Чанки расходятся по коллекциям моделей согласно категории файла."""
+
+    def test_without_split_single_collection(self, tmp_path, embed_client):
+        store = VectorStore(
+            persist_dir=tmp_path / "vector_db",
+            embed_client=embed_client,
+            embed_model="only",
+        )
+        assert store.embed_models == {"code": "only", "docs": "only"}
+        assert list(store._collections) == ["only"]
+
+    @pytest.mark.asyncio
+    async def test_chunks_routed_by_category(self, split_store, split_client):
+        chunks = [
+            TextChunk(
+                id="py",
+                file_path="a.py",
+                content="code",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python"},
+            ),
+            TextChunk(
+                id="md",
+                file_path="a.md",
+                content="doc",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "markdown"},
+            ),
+        ]
+
+        await split_store.add_chunks(chunks)
+
+        assert split_store.collection.count() == 1
+        assert split_store._get_collection("doc-model").count() == 1
+        used = {call.args[0] for call in split_client.embed.call_args_list}
+        assert used == {"default-model", "doc-model"}
+
+    @pytest.mark.asyncio
+    async def test_search_spans_collections(self, split_store):
+        chunks = [
+            TextChunk(
+                id="py",
+                file_path="a.py",
+                content="alpha code",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python"},
+            ),
+            TextChunk(
+                id="md",
+                file_path="a.md",
+                content="alpha doc",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "markdown"},
+            ),
+        ]
+        await split_store.add_chunks(chunks)
+
+        results = await split_store.search("alpha", n_results=5)
+
+        assert {r.file_path for r in results} == {"a.py", "a.md"}
+
+    @pytest.mark.asyncio
+    async def test_delete_by_file_across_collections(self, split_store):
+        chunks = [
+            TextChunk(
+                id="py",
+                file_path="a.py",
+                content="code",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "python"},
+            ),
+            TextChunk(
+                id="md",
+                file_path="a.md",
+                content="doc",
+                start_line=1,
+                end_line=1,
+                metadata={"language": "markdown"},
+            ),
+        ]
+        await split_store.add_chunks(chunks)
+
+        await split_store.delete_by_file(["a.md"])
+
+        assert split_store._get_collection("doc-model").count() == 0
+        assert split_store.collection.count() == 1
+
+    @pytest.mark.asyncio
+    async def test_clear_removes_all_collections(self, split_store):
+        chunk = TextChunk(
+            id="md",
+            file_path="a.md",
+            content="doc",
+            start_line=1,
+            end_line=1,
+            metadata={"language": "markdown"},
+        )
+        await split_store.add_chunks([chunk])
+
+        await split_store.clear()
+
+        assert split_store.collection.count() == 0
+        assert split_store._get_collection("doc-model").count() == 0

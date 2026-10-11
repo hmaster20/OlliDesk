@@ -10,6 +10,7 @@ from core.config import (
     AppConfig,
     BackendSettings,
     ConfigLoader,
+    EmbedModels,
     ModelConfig,
     ModelRole,
     RerankSettings,
@@ -441,3 +442,16 @@ class TestRerankSettings:
     def test_appconfig_has_rerank_default(self):
         config = AppConfig(default_model="m", embed_model="e")
         assert config.rerank.enabled is False
+
+
+class TestEmbedModels:
+    def test_defaults_empty(self):
+        config = AppConfig(default_model="m", embed_model="e")
+        assert config.embed_models.code is None
+        assert config.embed_models.docs is None
+
+    def test_accepts_split_models(self):
+        models = EmbedModels(code="code-embed", docs="doc-embed")
+        config = AppConfig(default_model="m", embed_model="e", embed_models=models)
+        assert config.embed_models.code == "code-embed"
+        assert config.embed_models.docs == "doc-embed"

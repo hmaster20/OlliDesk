@@ -1,5 +1,6 @@
 """Векторное хранилище на основе ChromaDB."""
 
+import hashlib
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -10,8 +11,33 @@ from pydantic import BaseModel
 
 from core.exceptions import EmbedderError
 from fs.bm25 import BM25Index
-from fs.chroma_adapter import ChromaCollection, ChunkMetadata, build_where, where_file_paths
+from fs.chroma_adapter import (
+    ChromaCollection,
+    ChunkMetadata,
+    QueryPage,
+    build_where,
+    where_file_paths,
+)
 from fs.indexer import TextChunk
+
+_DEFAULT_COLLECTION = "codebase"
+
+_DOC_LANGUAGES = {"markdown", "rst", "text", "txt"}
+
+CATEGORIES = ("code", "docs")
+
+
+def category_for_language(language: str) -> str:
+    """Определяет категорию файла по языку: ``docs`` для документации, иначе ``code``.
+
+    Args:
+        language: Значение из ``language`` метаданных чанка
+            (см. `fs.indexer.FileIndexer._detect_language`).
+
+    Returns:
+        ``"docs"`` для markdown/rst/text/txt, иначе ``"code"``.
+    """
+    return "docs" if language in _DOC_LANGUAGES else "code"
 
 
 @runtime_checkable
@@ -88,6 +114,7 @@ class VectorStore:
         embed_model: str,
         reranker: Reranker | None = None,
         rerank_pool: int = 20,
+        embed_models: dict[str, str] | None = None,
     ):
         """
         Инициализация хранилища.
@@ -96,10 +123,16 @@ class VectorStore:
             persist_dir: Папка для хранения ChromaDB
             embed_client: Объект с методом ``embed(model, texts)`` —
                 `OllamaClient`, `LocalLLMClient` или `ModelRouter`
-            embed_model: Имя модели для эмбеддингов
+            embed_model: Модель эмбеддингов по умолчанию (для всех категорий,
+                где отдельная модель не задана)
             reranker: Необязательный реранкер (см. `Reranker`); при ``None``
                 порядок после RRF отдаётся как есть
             rerank_pool: Сколько лучших кандидатов после RRF подавать на реранк
+            embed_models: Необязательная карта ``категория -> модель`` для
+                раздельных эмбеддингов (см. `category_for_language`). Каждая
+                модель получает свою коллекцию (векторы разных моделей
+                несравнимы), а выдачи объединяются через RRF. Пустое значение
+                категории означает ``embed_model``.
 
         Raises:
             EmbedderError: Если у ``embed_client`` нет метода ``embed``.
@@ -115,6 +148,11 @@ class VectorStore:
         self.reranker = reranker
         self.rerank_pool = max(1, rerank_pool)
 
+        override = embed_models or {}
+        self.embed_models: dict[str, str] = {
+            category: (override.get(category) or embed_model) for category in CATEGORIES
+        }
+
         # Инициализация ChromaDB
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(
@@ -122,13 +160,10 @@ class VectorStore:
             settings=Settings(anonymized_telemetry=False),
         )
 
-        # Получение или создание коллекции
-        self.collection = ChromaCollection(
-            self.client.get_or_create_collection(
-                name="codebase",
-                metadata={"hnsw:space": "cosine"},
-            )
-        )
+        # По коллекции на каждую уникальную модель (открываем заранее, чтобы поиск
+        # работал и в новом процессе).
+        self._collections: dict[str, ChromaCollection] = {}
+        self._ensure_collections()
 
         # BM25-индекс строится лениво из всех чанков и сбрасывается при изменении
         # коллекции (см. `_invalidate_bm25`).
@@ -137,13 +172,52 @@ class VectorStore:
         self._bm25_docs: list[str] = []
         self._bm25_metas: list[ChunkMetadata] = []
 
-        logger.info(f"VectorStore инициализирован: {self.persist_dir}")
+        logger.info(
+            f"VectorStore инициализирован: {self.persist_dir} "
+            f"(модели эмбеддингов: {sorted(set(self.embed_models.values()))})"
+        )
 
-    async def _embed(self, texts: list[str]) -> list[list[float]]:
+    @property
+    def collection(self) -> ChromaCollection:
+        """Коллекция модели эмбеддингов по умолчанию (обратная совместимость)."""
+        return self._get_collection(self.embed_model)
+
+    def _ensure_collections(self) -> None:
+        """Открывает коллекции для всех моделей из ``embed_models``."""
+        for model in sorted(set(self.embed_models.values())):
+            self._get_collection(model)
+
+    def _collection_name(self, model: str) -> str:
+        """Имя коллекции для модели: ``codebase`` для модели по умолчанию, иначе с хэшем."""
+        if model == self.embed_model:
+            return _DEFAULT_COLLECTION
+        digest = hashlib.sha1(model.encode("utf-8")).hexdigest()[:8]
+        return f"{_DEFAULT_COLLECTION}_{digest}"
+
+    def _get_collection(self, model: str) -> ChromaCollection:
+        """Возвращает (создавая при необходимости) коллекцию для модели."""
+        collection = self._collections.get(model)
+        if collection is None:
+            collection = ChromaCollection(
+                self.client.get_or_create_collection(
+                    name=self._collection_name(model),
+                    metadata={"hnsw:space": "cosine"},
+                )
+            )
+            self._collections[model] = collection
+        return collection
+
+    def _model_for_chunk(self, chunk: TextChunk) -> str:
+        """Модель эмбеддингов для чанка по его языку (см. `category_for_language`)."""
+        language = str(chunk.metadata.get("language", "unknown"))
+        return self.embed_models[category_for_language(language)]
+
+    async def _embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         """Считает эмбеддинги и проверяет, что их пришло ровно столько, сколько текстов.
 
         Args:
             texts: Тексты для векторизации
+            model: Модель эмбеддингов; при ``None`` — ``embed_model``
 
         Returns:
             Список векторов той же длины, что и ``texts``
@@ -152,8 +226,9 @@ class VectorStore:
             EmbedderError: Бэкенд вернул пустой результат, ошибку или
                 неверное число векторов (индекс молча испортился бы).
         """
+        model = model or self.embed_model
         try:
-            vectors = await self.embed_client.embed(self.embed_model, texts)
+            vectors = await self.embed_client.embed(model, texts)
         except Exception as e:
             raise EmbedderError(
                 f"Не удалось посчитать эмбеддинги через {type(self.embed_client).__name__}: {e}"
@@ -163,7 +238,7 @@ class VectorStore:
             raise EmbedderError(
                 f"{type(self.embed_client).__name__} вернул пустые эмбеддинги для "
                 f"{len(texts)} текстов. Проверьте, что модель эмбеддингов "
-                f"('{self.embed_model}') загружена и доступна."
+                f"('{model}') загружена и доступна."
             )
         if len(vectors) != len(texts):
             raise EmbedderError(
@@ -181,37 +256,41 @@ class VectorStore:
         if not chunks:
             return
 
-        # Батчевая обработка
+        # Группируем чанки по модели эмбеддингов (категории кода/документации
+        # могут обслуживаться разными моделями и жить в разных коллекциях).
+        groups: dict[str, list[TextChunk]] = {}
+        for chunk in chunks:
+            groups.setdefault(self._model_for_chunk(chunk), []).append(chunk)
+
         batch_size = 32
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
+        for model, model_chunks in groups.items():
+            collection = self._get_collection(model)
+            for i in range(0, len(model_chunks), batch_size):
+                batch = model_chunks[i : i + batch_size]
 
-            # Векторизация
-            texts = [chunk.content for chunk in batch]
-            embeddings = await self._embed(texts)
+                texts = [chunk.content for chunk in batch]
+                embeddings = await self._embed(texts, model)
 
-            # Подготовка данных для ChromaDB
-            ids = [chunk.id for chunk in batch]
-            documents = [chunk.content for chunk in batch]
-            metadatas: list[ChunkMetadata] = [
-                {
-                    "file_path": chunk.file_path,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "language": str(chunk.metadata.get("language", "unknown")),
-                }
-                for chunk in batch
-            ]
+                ids = [chunk.id for chunk in batch]
+                documents = [chunk.content for chunk in batch]
+                metadatas: list[ChunkMetadata] = [
+                    {
+                        "file_path": chunk.file_path,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "language": str(chunk.metadata.get("language", "unknown")),
+                    }
+                    for chunk in batch
+                ]
 
-            # Добавление в коллекцию
-            self.collection.add(
-                ids=ids,
-                embeddings=embeddings,
-                documents=documents,
-                metadatas=metadatas,
-            )
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=documents,
+                    metadatas=metadatas,
+                )
 
-            logger.debug(f"Добавлено чанков: {len(batch)}")
+                logger.debug(f"Добавлено чанков: {len(batch)} (модель '{model}')")
 
         self._invalidate_bm25()
         logger.info(f"Всего добавлено чанков: {len(chunks)}")
@@ -243,13 +322,14 @@ class VectorStore:
             при недоступном эмбеддере; причина пишется в лог.
         """
         candidate_n = max(n_results, n_results * 3)
-        vector_results = await self._vector_search(query, candidate_n, file_filter, language, path_prefix)
+        vector_lists = await self._vector_search_lists(query, candidate_n, file_filter, language, path_prefix)
         bm25_results = self._bm25_search(query, candidate_n, file_filter, language, path_prefix)
 
-        fused = _reciprocal_rank_fusion(vector_results, bm25_results)
+        fused = _reciprocal_rank_fusion(*vector_lists, bm25_results)
         results = await self._maybe_rerank(query, fused, n_results)
+        vector_count = sum(len(results_) for results_ in vector_lists)
         logger.debug(
-            f"Найдено результатов: {len(results)} (векторы {len(vector_results)}, BM25 {len(bm25_results)})"
+            f"Найдено результатов: {len(results)} (векторы {vector_count}, BM25 {len(bm25_results)})"
         )
         return results
 
@@ -276,28 +356,41 @@ class VectorStore:
             reranked = pool
         return reranked[:n_results]
 
-    async def _vector_search(
+    async def _vector_search_lists(
         self,
         query: str,
         n_results: int,
         file_filter: list[str] | None,
         language: str | None,
         path_prefix: str | None,
-    ) -> list[SearchResult]:
-        """Векторный поиск; при недоступных эмбеддингах возвращает пустой список."""
-        try:
-            query_embedding = await self._embed([query])
-        except EmbedderError as e:
-            logger.warning(f"Векторный RAG-поиск недоступен: {e}")
-            return []
+    ) -> list[list[SearchResult]]:
+        """Векторный поиск по каждой коллекции (модели).
 
+        Возвращает по списку на каждую доступную коллекцию; коллекции, для
+        которых не удалось посчитать эмбеддинги, молча пропускаются.
+        """
         where = build_where(file_filter, language)
-        page = self.collection.query(
-            embedding=query_embedding[0],
-            n_results=n_results,
-            where=where,
-        )
+        search_results: list[list[SearchResult]] = []
+        for model, collection in self._collections.items():
+            try:
+                query_embedding = await self._embed([query], model)
+            except EmbedderError as e:
+                logger.warning(f"Векторный RAG-поиск недоступен для модели '{model}': {e}")
+                continue
 
+            page = collection.query(
+                embedding=query_embedding[0],
+                n_results=n_results,
+                where=where,
+            )
+            results = self._results_from_page(page, path_prefix)
+            if results:
+                search_results.append(results)
+        return search_results
+
+    @staticmethod
+    def _results_from_page(page: QueryPage, path_prefix: str | None) -> list[SearchResult]:
+        """Собирает `SearchResult` из страницы ChromaDB, отсекая чужой ``path_prefix``."""
         ids = page["ids"]
         documents = page["documents"]
         metadatas = page["metadatas"]
@@ -310,7 +403,7 @@ class VectorStore:
                 if path_prefix and not metadata["file_path"].startswith(path_prefix):
                     continue
                 score = max(0.0, min(1.0, 1 - distances[i]))  # Cosine distance -> similarity
-                results.append(self._make_result(ids[i], doc, metadata, score))
+                results.append(VectorStore._make_result(ids[i], doc, metadata, score))
         return results
 
     def _bm25_search(
@@ -345,10 +438,17 @@ class VectorStore:
         return results
 
     def _ensure_bm25(self) -> None:
-        """Строит BM25-индекс по всем чанкам коллекции, если он ещё не построен."""
+        """Строит BM25-индекс по чанкам всех коллекций, если он ещё не построен."""
         if self._bm25 is not None:
             return
-        ids, documents, metadatas = self.collection.get_all()
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[ChunkMetadata] = []
+        for collection in self._collections.values():
+            c_ids, c_docs, c_metas = collection.get_all()
+            ids.extend(c_ids)
+            documents.extend(c_docs)
+            metadatas.extend(c_metas)
         index = BM25Index()
         index.build(documents)
         self._bm25 = index
@@ -392,21 +492,25 @@ class VectorStore:
         if not file_paths:
             return
 
-        ids = self.collection.get_ids(where_file_paths(file_paths))
+        where = where_file_paths(file_paths)
+        total = 0
+        for collection in self._collections.values():
+            ids = collection.get_ids(where)
+            if ids:
+                collection.delete(ids)
+                total += len(ids)
 
-        if ids:
-            self.collection.delete(ids)
+        if total:
             self._invalidate_bm25()
-            logger.info(f"Удалено чанков: {len(ids)}")
+            logger.info(f"Удалено чанков: {total}")
 
     async def clear(self) -> None:
-        """Очищает хранилище."""
-        self.client.delete_collection("codebase")
-        self.collection = ChromaCollection(
-            self.client.get_or_create_collection(
-                name="codebase",
-                metadata={"hnsw:space": "cosine"},
-            )
-        )
+        """Очищает хранилище (все коллекции ``codebase``/``codebase_*``)."""
+        existing = {collection.name for collection in self.client.list_collections()}
+        for name in existing:
+            if name == _DEFAULT_COLLECTION or name.startswith(f"{_DEFAULT_COLLECTION}_"):
+                self.client.delete_collection(name)
+        self._collections = {}
+        self._ensure_collections()
         self._invalidate_bm25()
         logger.info("VectorStore очищен")

@@ -916,6 +916,7 @@ class MainWindow(QMainWindow):
             embed_model=self.config.embed_model,
             reranker=self._get_reranker(),
             rerank_pool=self.config.rerank.top_k,
+            embed_models=self._embed_models(),
         )
         self.chat_panel.set_vector_store(self.vector_store)
         # Пересоздаём индексер с путём проекта, чтобы подхватить игнор-файлы
@@ -967,6 +968,11 @@ class MainWindow(QMainWindow):
             self._reranker = CrossEncoderReranker(settings.model)
         return self._reranker
 
+    def _embed_models(self) -> dict[str, str]:
+        """Карта ``категория -> модель`` для раздельных эмбеддингов (без ``None``)."""
+        cfg = self.config.embed_models
+        return {category: model for category, model in (("code", cfg.code), ("docs", cfg.docs)) if model}
+
     def _on_directory_attach_requested(self, path_str: str) -> None:
         """Подключает каталог из команды @dir без пересоздания сессии чата.
 
@@ -1004,6 +1010,7 @@ class MainWindow(QMainWindow):
             embed_model=self.config.embed_model,
             reranker=self._get_reranker(),
             rerank_pool=self.config.rerank.top_k,
+            embed_models=self._embed_models(),
         )
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))

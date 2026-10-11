@@ -286,6 +286,24 @@ class RerankSettings(BaseModel):
         return v
 
 
+class EmbedModels(BaseModel):
+    """Раздельные модели эмбеддингов по категории файлов.
+
+    Позволяет обслуживать код и документацию разными моделями (например,
+    code-специализированной для кода и текстовой для markdown). Векторы разных
+    моделей несравнимы, поэтому каждая модель получает свою коллекцию, а выдачи
+    объединяются через RRF (`fs.vector_store.VectorStore`). Пустое значение
+    категории означает общий ``embed_model``.
+
+    Attributes:
+        code: Модель для кода (python, javascript, …); ``None`` — ``embed_model``.
+        docs: Модель для документации (markdown, rst, text); ``None`` — ``embed_model``.
+    """
+
+    code: str | None = None
+    docs: str | None = None
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -293,6 +311,7 @@ class AppConfig(BaseModel):
     schema_version: str = "v1"
     default_model: str
     embed_model: str
+    embed_models: EmbedModels = Field(default_factory=EmbedModels)
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
