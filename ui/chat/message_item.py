@@ -25,6 +25,8 @@ _OL_RE = re.compile(r"^\s*\d+[.)]\s+(.*)$")
 _HR_RE = re.compile(r"^(-{3,}|\*{3,}|_{3,})$")
 _UL_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)[-*+]\s+(?P<text>.*)$")
 _OL_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)\d+[.)]\s+(?P<text>.*)$")
+_TASK_ITEM_RE = re.compile(r"^\[(?P<state>[ xX])\]\s+(?P<text>.*)$")
+_TABLE_SEP_CELL_RE = re.compile(r"^:?-{2,}:?$")
 
 
 def _render_code_block(code: str, lang: str) -> str:
@@ -141,10 +143,15 @@ def _render_list_frame(frame: dict) -> str:
     tag = "ol" if frame["ordered"] else "ul"
     parts = [f'<{tag} style="margin:6px 0; padding-left:22px;">']
     for text, children in frame["items"]:
-        inner = _inline(text)
+        task = _TASK_ITEM_RE.match(text)
+        if task:
+            box = "☑" if task.group("state").lower() == "x" else "☐"
+            inner = f"{box} {_inline(task.group('text'))}"
+        else:
+            inner = _inline(text)
         for child in children:
             inner += _render_list_frame(child)
-        parts.append(f'<li style="margin:3px 0;">{inner}</li>')
+        parts.append(f'<li style="margin:4px 0;">{inner}</li>')
     parts.append(f"</{tag}>")
     return "".join(parts)
 
@@ -189,7 +196,55 @@ def _render_list_tree(items: list[tuple[int, bool, str]]) -> str:
     return "".join(_render_list_frame(frame) for frame in root)
 
 
-def _is_block_start(line: str) -> bool:
+def _split_table_row(line: str) -> list[str]:
+    """Разбивает строку markdown-таблицы на ячейки (без крайних `|`)."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    """True если строка — разделитель markdown-таблицы (`|---|:--:|`)."""
+    cells = _split_table_row(line)
+    return bool(cells) and all(_TABLE_SEP_CELL_RE.match(cell) for cell in cells)
+
+
+def _is_table_start(lines: list[str], i: int) -> bool:
+    """True если с позиции `i` начинается таблица (заголовок + разделитель)."""
+    return (
+        "|" in lines[i] and i + 1 < len(lines) and "|" in lines[i + 1] and _is_table_separator(lines[i + 1])
+    )
+
+
+def _render_table(header: list[str], rows: list[list[str]]) -> str:
+    """Рендерит markdown-таблицу в HTML `<table>` для QTextBrowser."""
+    width = len(header)
+    parts = [
+        '<table border="1" cellspacing="0" cellpadding="5"'
+        ' style="border-collapse:collapse; margin:10px 0; border-color:#4a4a55;">'
+    ]
+    parts.append("<tr>")
+    for cell in header:
+        parts.append(
+            '<th style="background:#2f2f3c; color:#e0e0e0; padding:5px 8px;'
+            f' text-align:left;">{_inline(cell)}</th>'
+        )
+    parts.append("</tr>")
+    for row in rows:
+        padded = (row + [""] * width)[:width]
+        parts.append("<tr>")
+        for cell in padded:
+            parts.append(f'<td style="padding:5px 8px;">{_inline(cell)}</td>')
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def _is_block_start(lines: list[str], i: int) -> bool:
+    line = lines[i]
     stripped = line.strip()
     if not stripped:
         return True
@@ -200,6 +255,7 @@ def _is_block_start(line: str) -> bool:
         or _OL_RE.match(line)
         or stripped.startswith(">")
         or _CODE_PLACEHOLDER_RE.match(stripped)
+        or _is_table_start(lines, i)
     )
 
 
@@ -254,8 +310,18 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
             out.append(_render_list_tree(items))
             continue
 
+        if _is_table_start(lines, i):
+            header = _split_table_row(lines[i])
+            i += 2  # пропускаем заголовок и разделитель
+            rows: list[list[str]] = []
+            while i < n and lines[i].strip() and "|" in lines[i]:
+                rows.append(_split_table_row(lines[i]))
+                i += 1
+            out.append(_render_table(header, rows))
+            continue
+
         para: list[str] = []
-        while i < n and lines[i].strip() and not _is_block_start(lines[i]):
+        while i < n and lines[i].strip() and not _is_block_start(lines, i):
             para.append(lines[i].strip())
             i += 1
         out.append('<p style="margin:8px 0;">' + "<br>".join(_inline(p) for p in para) + "</p>")
@@ -266,10 +332,14 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
 def render_markdown(text: str) -> str:
     """Преобразует markdown-ответ модели в HTML для QTextBrowser.
 
-    Поддерживает заголовки, списки, цитаты, hr, блоки кода с подсветкой,
-    инлайн-код, ссылки, жирный/курсив/зачёркнутый и абзацные отступы.
+    Поддерживает заголовки, списки (в т.ч. чек-листы), таблицы, цитаты, hr,
+    блоки кода с подсветкой, инлайн-код, ссылки, жирный/курсив/зачёркнутый и
+    абзацные отступы. Незакрытый блок кода (типичный при стриминге)
+    достраивается до конца текста, чтобы вывод не «ломался» на каждом токене.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if text.count("```") % 2 == 1:
+        text += "\n```"
     code_blocks: list[str] = []
 
     def _stash(m: re.Match[str]) -> str:
@@ -281,7 +351,7 @@ def render_markdown(text: str) -> str:
     body = _render_blocks(stashed, code_blocks)
     # Блоки кода, оказавшиеся внутри строки (не на отдельной строке).
     body = re.sub(r"\x00CB(\d+)\x00", lambda m: code_blocks[int(m.group(1))], body)
-    return f'<div style="line-height:1.45;">{body}</div>'
+    return f'<div style="line-height:1.5;">{body}</div>'
 
 
 class ChatActivityItem(QWidget):

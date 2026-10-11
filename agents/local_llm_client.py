@@ -28,6 +28,15 @@ _LANGUAGE_INSTRUCTION = (
 # чтобы снизить дрейф языка и повысить дисциплину вызовов инструментов.
 _DEFAULT_TEMPERATURE = 0.3
 
+# Директива по форматированию: идет в голову системного сообщения (рядом с
+# языковой), чтобы пережить обрезку и удержать ответ 7B структурированным.
+_FORMAT_INSTRUCTION = (
+    "ФОРМАТ: отвечай структурированным Markdown. Отделяй смысловые блоки пустой "
+    "строкой, не смешивай их. Заголовки — ## и ###. Перечисления — списками "
+    "(- или 1.), маркер в начале строки. Код, конфиги и команды — ТОЛЬКО в "
+    "блоках ```язык. Не используй LaTeX ($$, \\( \\)) и HTML-теги."
+)
+
 
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
@@ -507,13 +516,14 @@ class LocalLLMClient:
     def _prepare_messages(self, messages: list[ChatMessage], tools: list[Any] | None) -> list[dict[str, Any]]:
         """Собирает сообщения для llama.cpp: конвертация + системные инструкции.
 
-        Инструкция по инструментам и языковая директива вставляются в начало
-        системного сообщения — при обрезке контекста ``_fit_messages`` сохраняет
-        голову промпта, поэтому они не потеряются.
+        Инструкция по инструментам, форматированию и языковая директива
+        вставляются в начало системного сообщения — при обрезке контекста
+        ``_fit_messages`` сохраняет голову промпта, поэтому они не потеряются.
         """
         chat_messages = self._convert_messages(messages)
         if tools:
             chat_messages = self._prepend_system(chat_messages, self._build_tool_instruction(tools))
+        chat_messages = self._prepend_system(chat_messages, _FORMAT_INSTRUCTION)
         return self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
 
     @staticmethod

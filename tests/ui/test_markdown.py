@@ -146,3 +146,61 @@ class TestCodeBlocks:
         assert "До." in html
         assert "После." in html
         assert "<pre" in html
+
+
+class TestStreaming:
+    def test_unterminated_fence_is_closed(self):
+        html = render_markdown("Вот пример:\n\n```python\nprint(1)")
+        assert "<pre" in html
+        assert "print" in html
+        assert "```" not in html
+
+    def test_unterminated_fence_after_closed_block(self):
+        html = render_markdown("```py\na\n```\n\n```py\nb")
+        assert html.count("<pre") == 2
+
+    def test_incomplete_bold_is_left_as_text(self):
+        html = render_markdown("это **незакрытый жирный")
+        assert "незакрытый жирный" in html
+
+
+class TestTables:
+    def test_basic_table(self):
+        md = "| Имя | Роль |\n|---|---|\n| Qwen | chat |\n| Nomic | embed |"
+        html = render_markdown(md)
+        assert "<table" in html
+        assert html.count("<th ") == 2
+        assert html.count("<td ") == 4
+        assert "Qwen" in html
+        assert "Nomic" in html
+        assert "<p " not in html
+
+    def test_table_alignment_separator(self):
+        md = "| A | B |\n|:--|--:|\n| 1 | 2 |"
+        html = render_markdown(md)
+        assert "<table" in html
+        assert "A" in html
+
+    def test_table_row_padded_to_header_width(self):
+        md = "| A | B |\n|---|---|\n| 1 |"
+        html = render_markdown(md)
+        assert html.count("<td ") == 2
+
+    def test_pipe_text_without_separator_is_paragraph(self):
+        html = render_markdown("a | b\nc")
+        assert "<table" not in html
+        assert "<p " in html
+
+
+class TestTaskList:
+    def test_unchecked_and_checked(self):
+        html = render_markdown("- [ ] сделать\n- [x] готово")
+        assert "☐" in html
+        assert "☑" in html
+        assert "сделать" in html
+        assert "готово" in html
+
+    def test_regular_list_has_no_checkbox(self):
+        html = render_markdown("- просто пункт")
+        assert "☐" not in html
+        assert "☑" not in html

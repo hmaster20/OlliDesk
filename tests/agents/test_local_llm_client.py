@@ -7,7 +7,7 @@
 
 from typing import Any, cast
 
-from agents.local_llm_client import _LANGUAGE_INSTRUCTION, LocalLLMClient
+from agents.local_llm_client import _FORMAT_INSTRUCTION, _LANGUAGE_INSTRUCTION, LocalLLMClient
 from agents.ollama_client import ChatMessage, ToolSchema
 
 
@@ -94,7 +94,10 @@ class TestPrepareMessages:
     def test_language_instruction_prepended_to_existing_system(self):
         client = _make_client(n_ctx=4096)
         prepared = client._prepare_messages([ChatMessage(role="system", content="Ты ассистент")], None)
-        assert prepared[0]["content"] == f"{_LANGUAGE_INSTRUCTION}\n\nТы ассистент"
+        content = str(prepared[0]["content"])
+        assert content.startswith(_LANGUAGE_INSTRUCTION)
+        assert _FORMAT_INSTRUCTION in content
+        assert content.endswith("Ты ассистент")
 
     def test_language_instruction_precedes_tool_instruction(self):
         client = _make_client(n_ctx=4096)
@@ -111,5 +114,6 @@ class TestPrepareMessages:
         content = str(prepared[0]["content"])
         assert content.startswith(_LANGUAGE_INSTRUCTION)
         assert "read_file" in content
-        # Языковая директива идёт раньше инструкции по инструментам.
+        # Языковая и форматная директивы идут раньше инструкции по инструментам.
         assert content.index(_LANGUAGE_INSTRUCTION) < content.index("read_file")
+        assert content.index(_FORMAT_INSTRUCTION) < content.index("read_file")

@@ -173,10 +173,11 @@ OlliDesk/
 
 Язык и температура: встроенная SLM склонна к дрейфу языка (Qwen2.5 7B q4 вставлял
 китайские слова в русский текст). Защита двойная: `LocalLLMClient._prepare_messages`
-всегда ставит `_LANGUAGE_INSTRUCTION` в самое НАЧАЛО системного сообщения (там она
-переживает обрезку `_fit_messages`), а `_build_system_prompt` добавляет
-`_LANGUAGE_DIRECTIVE` в конец промпта. Температура по умолчанию — `_DEFAULT_TEMPERATURE = 0.3`
-(AgentLoop не передаёт `options`, поэтому `slm.temperature` из конфига сейчас не влияет).
+ставит `_LANGUAGE_INSTRUCTION` (язык) и `_FORMAT_INSTRUCTION` (Markdown-структура) в самое
+НАЧАЛО системного сообщения (там они переживают обрезку `_fit_messages`), а
+`_build_system_prompt` добавляет `_LANGUAGE_DIRECTIVE` в конец промпта. Температура по
+умолчанию — `_DEFAULT_TEMPERATURE = 0.3` (AgentLoop не передаёт `options`, поэтому
+`slm.temperature` из конфига сейчас не влияет).
 
 ### `tools/` — инструменты для модели
 
@@ -318,7 +319,7 @@ MainWindow (QMainWindow, ui/main_window.py)
 | `ui/main_window.py` | ~1280 | Оболочка, открытие проекта и список последних, оркестрация индексации, меню, переключение темы. Владеет `SessionStore`, `OllamaClient`, `ModelRegistry`, `RoleManager`, `SystemPromptManager`, `FileIndexer`, `SearchCache`. Здесь же `ProjectState`, `IndexingThread`, обработчик `@dir` (`_on_directory_attach_requested`) и F4 (`_toggle_project_structure`) |
 | `ui/chat/panel.py` | ~1500 | Панель чата: выбор роли/модели/режима, стриминг пузырей, подтверждение инструментов, детекция бэкендов, пре-RAG-поиск, команды `@web`/`@dir`/`@file`/`@path`. **Здесь единственное место регистрации инструментов** (`_build_registry`) |
 | `ui/chat/threads.py` | ~330 | Мост async ↔ Qt: 6 `QThread`-классов, каждый запускает `asyncio.run()`. `RagSearchThread.results_ready` отдаёт `(context, [(file_path, start, end), ...])` — структурированные источники RAG для кликабельного блока |
-| `ui/chat/message_item.py` | ~250 | Один «пузырь» сообщения: markdown → HTML (вручную, `re` + `pygments`) → `QTextBrowser`; кнопка «Копировать» под текстом. `ChatActivityItem` — серая строка журнала, `ChatSourcesItem` — кликабельные источники RAG (`source_activated`) |
+| `ui/chat/message_item.py` | ~330 | Один «пузырь» сообщения: markdown → HTML (`render_markdown`, вручную, `re` + `pygments`) → `QTextBrowser`; поддерживает заголовки, вложенные списки, чек-листы (`- [x]`), таблицы, цитаты, блоки кода; незакрытый ``` ``` ``` на стриминге достраивается. Кнопка «Копировать» под текстом. `ChatActivityItem` — серая строка журнала, `ChatSourcesItem` — кликабельные источники RAG (`source_activated`) |
 | `ui/file_tree_delegate.py` | ~160 | Цвета строк дерева файлов по `git status --porcelain`, дебаунс 500 мс |
 | `ui/theme.py` | ~180 | `LIGHT_STYLESHEET` / `DARK_STYLESHEET` + палитра |
 | `ui/dialogs/wizard.py` | ~260 | Мастер первой настройки (4 страницы). В mypy: `ignore_errors = true` |
