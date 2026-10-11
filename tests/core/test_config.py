@@ -12,6 +12,7 @@ from core.config import (
     ConfigLoader,
     ModelConfig,
     ModelRole,
+    RerankSettings,
     SLMConfig,
     SLMModelInfo,
     ToolPolicy,
@@ -424,3 +425,19 @@ class TestSLMModels:
         )
         by_id = {m.id: m for m in custom.available_models}
         assert by_id["my-custom"].n_ctx == 2048
+
+
+class TestRerankSettings:
+    def test_defaults_disabled(self):
+        settings = RerankSettings()
+        assert settings.enabled is False
+        assert settings.top_k == 20
+        assert settings.model
+
+    def test_top_k_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            RerankSettings(top_k=0)
+
+    def test_appconfig_has_rerank_default(self):
+        config = AppConfig(default_model="m", embed_model="e")
+        assert config.rerank.enabled is False

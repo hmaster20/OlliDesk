@@ -131,7 +131,7 @@ OlliDesk/
 | Модуль | Назначение | Ключевое |
 |---|---|---|
 | `core/app.py` | Bootstrap приложения | `OlliDeskApp`, `main()`; применяет тему, открывает `SetupWizard` при отсутствии конфига |
-| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
+| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `RerankSettings`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
 | `core/logger.py` | Логирование | `setup_logger(dir, level)` — sink в stderr + rotating-файл |
 | `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
@@ -237,11 +237,20 @@ OlliDesk/
   (`_ensure_bm25`, `ChromaCollection.get_all`) и сбрасывается (`_invalidate_bm25`) при
   `add_chunks`/`delete_by_file`/`clear`. `search()` принимает фильтры `language` (уходит
   в chroma `where` через `build_where`) и `path_prefix` (постфильтр по `file_path`,
-  применяется и к векторной, и к BM25-выдаче).
+  применяется и к векторной, и к BM25-выдаче). После RRF опциональный `Reranker`
+  (протокол рядом с `Embedder`) переупорядочивает верхушку `rerank_pool` кандидатов;
+  ошибка реранкера не пробрасывается — поиск отдаёт порядок RRF.
 - `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
   приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
   `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
   строит `idf`/`tf`/среднюю длину, `search()` возвращает `(индекс документа, оценка)`.
+- `fs/reranker.py` — `CrossEncoderReranker`: опциональный реранкинг RAG кросс-энкодером
+  `sentence_transformers.CrossEncoder` (модель по умолчанию `BAAI/bge-reranker-v2-m3`).
+  Реализует протокол `fs.vector_store.Reranker`; `VectorStore` прогоняет через него верхушку
+  после RRF (`rerank_pool`) и при падении реранкера возвращает порядок RRF. Импорт torch и
+  загрузка модели — ленивые (внутри `_load`), выключен по умолчанию (`RerankSettings.enabled`).
+  Настраивается в `core/config.py::RerankSettings` (enabled/model/top_k), создаётся в
+  `MainWindow._get_reranker()`.
 - `fs/project_map.py` — компактная карта структуры проекта и определение каталога из
   запроса. `list_project_files()` переиспользует фильтры `FileIndexer` (без хеширования),
   `render_project_map()` строит дерево каталогов/файлов, `detect_query_scope()` ищет в
@@ -363,6 +372,7 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
 | Список и политики инструментов | `ui/chat/panel.py::_build_registry` |
 | Параметры индексации | `~/.ollidesk/config.yaml`, `ignored_patterns`, `index_extensions`, `chunk_size_tokens` |
 | Бэкенд LLM | `agents/model_router.py` + `core/config.py::ModelConfig` |
+| Реранкинг RAG | `fs/reranker.py` + `core/config.py::RerankSettings` (`enabled`/`model`/`top_k`) |
 | Бюджет контекста под модель | `core/context_budget.py` (`CHARS_PER_TOKEN`, `ATTACHED_CONTEXT_SHARE`, `KNOWN_NUM_CTX`) |
 
 ---

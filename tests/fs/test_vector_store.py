@@ -428,3 +428,68 @@ class TestSearchFilters:
         results = await vector_store.search("alpha", n_results=5, language="python", path_prefix="ui")
 
         assert results == []
+
+
+class _ReversingReranker:
+    """Тестовый реранкер: просто переворачивает порядок."""
+
+    async def rerank(self, query, results):
+        return list(reversed(results))
+
+
+class _BoomReranker:
+    async def rerank(self, query, results):
+        raise RuntimeError("reranker unavailable")
+
+
+class TestRerankerIntegration:
+    """`VectorStore.search` применяет реранкер после RRF и терпит его падение."""
+
+    async def _seed_two(self, vector_store):
+        chunks = [
+            TextChunk(id="c1", file_path="a.py", content="token alpha", start_line=1, end_line=1),
+            TextChunk(id="c2", file_path="b.py", content="token alpha", start_line=1, end_line=1),
+        ]
+        with patch.object(
+            vector_store.embed_client,
+            "embed",
+            AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+        ):
+            await vector_store.add_chunks(chunks)
+        # Только BM25, чтобы порядок до реранка был детерминированным.
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+    @pytest.mark.asyncio
+    async def test_reranker_reorders(self, vector_store):
+        await self._seed_two(vector_store)
+        vector_store.reranker = _ReversingReranker()
+
+        results = await vector_store.search("alpha", n_results=5)
+
+        assert [r.chunk.id for r in results] == ["c2", "c1"]
+
+    @pytest.mark.asyncio
+    async def test_reranker_failure_falls_back(self, vector_store):
+        await self._seed_two(vector_store)
+        vector_store.reranker = _BoomReranker()
+
+        results = await vector_store.search("alpha", n_results=5)
+
+        assert [r.chunk.id for r in results] == ["c1", "c2"]
+
+    @pytest.mark.asyncio
+    async def test_rerank_pool_limits_candidates(self, vector_store):
+        await self._seed_two(vector_store)
+        captured: dict = {}
+
+        class _CapturingReranker:
+            async def rerank(self, query, results):
+                captured["n"] = len(results)
+                return results
+
+        vector_store.reranker = _CapturingReranker()
+        vector_store.rerank_pool = 1
+
+        await vector_store.search("alpha", n_results=5)
+
+        assert captured["n"] == 1

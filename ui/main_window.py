@@ -35,6 +35,7 @@ from core.search_cache import SearchCache
 from core.system_prompts import SystemPromptManager
 from core.utils import get_app_data_dir
 from fs.indexer import FileIndexer, FileMetadata
+from fs.reranker import CrossEncoderReranker
 from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
@@ -265,6 +266,8 @@ class MainWindow(QMainWindow):
         self.indexer = FileIndexer(config, self.project_path)
         self.vector_store: VectorStore | None = None
         self._indexing_thread: IndexingThread | None = None
+        # Реранкер создаётся лениво при открытии проекта и кэшируется по имени модели
+        self._reranker: CrossEncoderReranker | None = None
 
         self._model_check_thread: ModelCheckThread | None = None
         self._is_checking = False
@@ -911,6 +914,8 @@ class MainWindow(QMainWindow):
             persist_dir=persist_dir,
             embed_client=self.chat_panel.router,
             embed_model=self.config.embed_model,
+            reranker=self._get_reranker(),
+            rerank_pool=self.config.rerank.top_k,
         )
         self.chat_panel.set_vector_store(self.vector_store)
         # Пересоздаём индексер с путём проекта, чтобы подхватить игнор-файлы
@@ -949,6 +954,19 @@ class MainWindow(QMainWindow):
 
         self._start_indexing()
 
+    def _get_reranker(self) -> CrossEncoderReranker | None:
+        """Возвращает реранкер по текущему конфигу (или ``None``, если выключен).
+
+        Экземпляр кэшируется и пересоздаётся только при смене модели — модель
+        кросс-энкодера загружается лениво, не хочется перезагружать её каждый раз.
+        """
+        settings = self.config.rerank
+        if not settings.enabled:
+            return None
+        if self._reranker is None or self._reranker.model_name != settings.model:
+            self._reranker = CrossEncoderReranker(settings.model)
+        return self._reranker
+
     def _on_directory_attach_requested(self, path_str: str) -> None:
         """Подключает каталог из команды @dir без пересоздания сессии чата.
 
@@ -984,6 +1002,8 @@ class MainWindow(QMainWindow):
             persist_dir=path / ".ollidesk" / "vector_db",
             embed_client=self.chat_panel.router,
             embed_model=self.config.embed_model,
+            reranker=self._get_reranker(),
+            rerank_pool=self.config.rerank.top_k,
         )
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))

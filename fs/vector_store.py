@@ -36,6 +36,21 @@ class SearchResult(BaseModel):
     file_path: str
 
 
+@runtime_checkable
+class Reranker(Protocol):
+    """Контракт реранкера RAG-выдачи.
+
+    Реранкер получает кандидатов после слияния (RRF) и возвращает их в новом
+    порядке — от более релевантных к менее. Подойдёт любой объект с методом
+    ``async rerank(query, results)``; конкретная реализация (кросс-энкодер)
+    живёт в `fs/reranker.py`.
+    """
+
+    async def rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
+        """Переупорядочивает кандидатов по релевантности запросу."""
+        ...
+
+
 def _reciprocal_rank_fusion(*result_lists: list[SearchResult], k: int = 60) -> list[SearchResult]:
     """Объединяет выдачи разных поисковиков по reciprocal rank fusion.
 
@@ -71,6 +86,8 @@ class VectorStore:
         persist_dir: Path,
         embed_client: Embedder,
         embed_model: str,
+        reranker: Reranker | None = None,
+        rerank_pool: int = 20,
     ):
         """
         Инициализация хранилища.
@@ -80,6 +97,9 @@ class VectorStore:
             embed_client: Объект с методом ``embed(model, texts)`` —
                 `OllamaClient`, `LocalLLMClient` или `ModelRouter`
             embed_model: Имя модели для эмбеддингов
+            reranker: Необязательный реранкер (см. `Reranker`); при ``None``
+                порядок после RRF отдаётся как есть
+            rerank_pool: Сколько лучших кандидатов после RRF подавать на реранк
 
         Raises:
             EmbedderError: Если у ``embed_client`` нет метода ``embed``.
@@ -92,6 +112,8 @@ class VectorStore:
         self.persist_dir = persist_dir
         self.embed_client = embed_client
         self.embed_model = embed_model
+        self.reranker = reranker
+        self.rerank_pool = max(1, rerank_pool)
 
         # Инициализация ChromaDB
         self.persist_dir.mkdir(parents=True, exist_ok=True)
@@ -225,11 +247,34 @@ class VectorStore:
         bm25_results = self._bm25_search(query, candidate_n, file_filter, language, path_prefix)
 
         fused = _reciprocal_rank_fusion(vector_results, bm25_results)
-        results = fused[:n_results]
+        results = await self._maybe_rerank(query, fused, n_results)
         logger.debug(
             f"Найдено результатов: {len(results)} (векторы {len(vector_results)}, BM25 {len(bm25_results)})"
         )
         return results
+
+    async def _maybe_rerank(
+        self,
+        query: str,
+        fused: list[SearchResult],
+        n_results: int,
+    ) -> list[SearchResult]:
+        """Прогоняет верхушку выдачи через реранкер, если он задан.
+
+        Реранкер считается на CPU и может упасть (нет модели, нет сети),
+        поэтому ошибка не пробрасывается наружу: поиск возвращает порядок
+        после RRF, а причина пишется в лог.
+        """
+        if self.reranker is None or not fused:
+            return fused[:n_results]
+
+        pool = fused[: self.rerank_pool]
+        try:
+            reranked = await self.reranker.rerank(query, pool)
+        except Exception as e:
+            logger.warning(f"Реранкер недоступен, использую порядок после RRF: {e}")
+            reranked = pool
+        return reranked[:n_results]
 
     async def _vector_search(
         self,

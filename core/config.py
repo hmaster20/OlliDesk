@@ -260,6 +260,32 @@ class BackendSettings(BaseModel):
         return v
 
 
+class RerankSettings(BaseModel):
+    """Реранкинг RAG-выдачи кросс-энкодером (sentence-transformers).
+
+    Кросс-энкодер оценивает пару (запрос, чанк) совместно и точнее би-энкодера
+    векторного поиска, но считается на CPU, а модель скачивается при первом
+    использовании. Поэтому по умолчанию выключен и включается явно.
+
+    Attributes:
+        enabled: Включён ли реранкинг.
+        model: HF-id модели-кросс-энкодера (например, ``BAAI/bge-reranker-v2-m3``).
+        top_k: Сколько лучших кандидатов после RRF подавать на реранк.
+    """
+
+    enabled: bool = False
+    model: str = "BAAI/bge-reranker-v2-m3"
+    top_k: int = 20
+
+    @field_validator("top_k")
+    @classmethod
+    def validate_top_k(cls, v: int) -> int:
+        """top_k не меньше 1."""
+        if v < 1:
+            raise ValueError(f"top_k must be >= 1, got {v}")
+        return v
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -267,11 +293,11 @@ class AppConfig(BaseModel):
     schema_version: str = "v1"
     default_model: str
     embed_model: str
-    rerank_model: str | None = None
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
+    rerank: RerankSettings = Field(default_factory=RerankSettings)
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [
