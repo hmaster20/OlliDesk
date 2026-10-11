@@ -631,3 +631,99 @@ class TestEmbeddingSplit:
 
         assert split_store.collection.count() == 0
         assert split_store._get_collection("doc-model").count() == 0
+
+
+class _DictCache:
+    """Простейший кэш rerank-порядка в памяти."""
+
+    def __init__(self):
+        self.data: dict[str, list[str]] = {}
+
+    def get_list(self, key, max_age_hours=24):
+        return self.data.get(key)
+
+    def set_list(self, key, values):
+        self.data[key] = list(values)
+
+
+class _CountingReranker:
+    def __init__(self):
+        self.calls = 0
+
+    async def rerank(self, query, results):
+        self.calls += 1
+        return list(reversed(results))
+
+
+class TestRerankCacheIntegration:
+    """`VectorStore` кэширует порядок реранка и переиспользует его."""
+
+    async def _seed(self, vector_store):
+        chunks = [
+            TextChunk(id="c1", file_path="a.py", content="token alpha", start_line=1, end_line=1),
+            TextChunk(id="c2", file_path="b.py", content="token alpha", start_line=1, end_line=1),
+        ]
+        with patch.object(
+            vector_store.embed_client,
+            "embed",
+            AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+        ):
+            await vector_store.add_chunks(chunks)
+        vector_store.embed_client.embed = AsyncMock(return_value=[])
+
+    @pytest.mark.asyncio
+    async def test_second_search_hits_cache(self, vector_store):
+        await self._seed(vector_store)
+        reranker = _CountingReranker()
+        vector_store.reranker = reranker
+        vector_store.rerank_cache = _DictCache()
+
+        first = await vector_store.search("alpha", n_results=5)
+        second = await vector_store.search("alpha", n_results=5)
+
+        assert reranker.calls == 1
+        assert [r.chunk.id for r in first] == ["c2", "c1"]
+        assert [r.chunk.id for r in second] == ["c2", "c1"]
+
+    @pytest.mark.asyncio
+    async def test_different_query_not_cached(self, vector_store):
+        await self._seed(vector_store)
+        reranker = _CountingReranker()
+        vector_store.reranker = reranker
+        vector_store.rerank_cache = _DictCache()
+
+        await vector_store.search("alpha", n_results=5)
+        await vector_store.search("token", n_results=5)
+
+        assert reranker.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_stale_ids_fall_back_to_rerank(self, vector_store):
+        await self._seed(vector_store)
+        reranker = _CountingReranker()
+        vector_store.reranker = reranker
+
+        class _StaleCache:
+            def get_list(self, key, max_age_hours=24):
+                return ["ghost"]
+
+            def set_list(self, key, values):
+                pass
+
+        vector_store.rerank_cache = _StaleCache()
+
+        results = await vector_store.search("alpha", n_results=5)
+
+        assert reranker.calls == 1
+        assert [r.chunk.id for r in results] == ["c2", "c1"]
+
+    @pytest.mark.asyncio
+    async def test_no_cache_write_when_reranker_fails(self, vector_store):
+        await self._seed(vector_store)
+        vector_store.reranker = _BoomReranker()
+        cache = _DictCache()
+        vector_store.rerank_cache = cache
+
+        await vector_store.search("alpha", n_results=5)
+
+        assert cache.data == {}

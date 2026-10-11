@@ -917,6 +917,7 @@ class MainWindow(QMainWindow):
             reranker=self._get_reranker(),
             rerank_pool=self.config.rerank.top_k,
             embed_models=self._embed_models(),
+            rerank_cache=self.search_cache,
         )
         self.chat_panel.set_vector_store(self.vector_store)
         # Пересоздаём индексер с путём проекта, чтобы подхватить игнор-файлы
@@ -1011,6 +1012,7 @@ class MainWindow(QMainWindow):
             reranker=self._get_reranker(),
             rerank_pool=self.config.rerank.top_k,
             embed_models=self._embed_models(),
+            rerank_cache=self.search_cache,
         )
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))

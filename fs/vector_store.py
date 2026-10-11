@@ -77,6 +77,24 @@ class Reranker(Protocol):
         ...
 
 
+@runtime_checkable
+class RerankCache(Protocol):
+    """Кэш порядка после реранка: ключ → список id чанков.
+
+    Ключ строится из запроса и содержимого кандидатов, поэтому попадание в кэш
+    безопасно: при изменении чанка меняется и ключ. Реализация по умолчанию —
+    `core.search_cache.SearchCache` (методы ``get_list``/``set_list``).
+    """
+
+    def get_list(self, key: str, max_age_hours: int = 24) -> list[str] | None:
+        """Возвращает сохранённый порядок id или ``None`` при промахе."""
+        ...
+
+    def set_list(self, key: str, values: list[str]) -> None:
+        """Сохраняет порядок id."""
+        ...
+
+
 def _reciprocal_rank_fusion(*result_lists: list[SearchResult], k: int = 60) -> list[SearchResult]:
     """Объединяет выдачи разных поисковиков по reciprocal rank fusion.
 
@@ -115,6 +133,7 @@ class VectorStore:
         reranker: Reranker | None = None,
         rerank_pool: int = 20,
         embed_models: dict[str, str] | None = None,
+        rerank_cache: RerankCache | None = None,
     ):
         """
         Инициализация хранилища.
@@ -133,6 +152,8 @@ class VectorStore:
                 модель получает свою коллекцию (векторы разных моделей
                 несравнимы), а выдачи объединяются через RRF. Пустое значение
                 категории означает ``embed_model``.
+            rerank_cache: Необязательный кэш порядка после реранка (см.
+                `RerankCache`); при ``None`` результат реранка не кэшируется.
 
         Raises:
             EmbedderError: Если у ``embed_client`` нет метода ``embed``.
@@ -146,6 +167,7 @@ class VectorStore:
         self.embed_client = embed_client
         self.embed_model = embed_model
         self.reranker = reranker
+        self.rerank_cache = rerank_cache
         self.rerank_pool = max(1, rerank_pool)
 
         override = embed_models or {}
@@ -343,18 +365,62 @@ class VectorStore:
 
         Реранкер считается на CPU и может упасть (нет модели, нет сети),
         поэтому ошибка не пробрасывается наружу: поиск возвращает порядок
-        после RRF, а причина пишется в лог.
+        после RRF, а причина пишется в лог. Порядок кэшируется по ключу из
+        запроса и содержимого кандидатов (см. `RerankCache`), чтобы повторные
+        запросы не считали кросс-энкодер заново.
         """
         if self.reranker is None or not fused:
             return fused[:n_results]
 
         pool = fused[: self.rerank_pool]
+        cache_key = self._rerank_key(query, pool)
+
+        if self.rerank_cache is not None:
+            cached = self.rerank_cache.get_list(cache_key)
+            if cached is not None:
+                ordered = self._order_by_ids(pool, cached)
+                if ordered is not None:
+                    logger.debug("Порядок реранка взят из кэша")
+                    return ordered[:n_results]
+
         try:
             reranked = await self.reranker.rerank(query, pool)
         except Exception as e:
             logger.warning(f"Реранкер недоступен, использую порядок после RRF: {e}")
             reranked = pool
+        else:
+            if self.rerank_cache is not None:
+                self.rerank_cache.set_list(cache_key, [result.chunk.id for result in reranked])
         return reranked[:n_results]
+
+    @staticmethod
+    def _rerank_key(query: str, pool: list[SearchResult]) -> str:
+        """Ключ кэша реранка: запрос + id и содержимое кандидатов.
+
+        Chunk id не зависит от содержимого (``md5(file_path:chunk_index)``),
+        поэтому в ключ добавлен хэш текста — при правке файла ключ меняется и
+        старый порядок не переиспользуется.
+        """
+        digest = hashlib.sha1(query.encode("utf-8"))
+        for result in pool:
+            digest.update(b"\x00")
+            digest.update(result.chunk.id.encode("utf-8"))
+            digest.update(b"=")
+            digest.update(hashlib.sha1(result.chunk.content.encode("utf-8")).hexdigest().encode("ascii"))
+        return f"rerank|{digest.hexdigest()}"
+
+    @staticmethod
+    def _order_by_ids(
+        pool: list[SearchResult],
+        ids: list[str],
+    ) -> list[SearchResult] | None:
+        """Упорядочивает кандидатов по сохранённым id; ``None`` при несовпадении набора."""
+        by_id = {result.chunk.id: result for result in pool}
+        if set(ids) - by_id.keys():
+            return None
+        ordered = [by_id[cid] for cid in ids if cid in by_id]
+        ordered.extend(result for result in pool if result.chunk.id not in set(ids))
+        return ordered
 
     async def _vector_search_lists(
         self,

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,3 +44,29 @@ class SearchCache:
                 (query, result, datetime.now().isoformat()),
             )
             conn.commit()
+
+    def get_list(self, key: str, max_age_hours: int = 24) -> list[str] | None:
+        """Читает из кэша JSON-список строк (например, порядок id после реранка).
+
+        Args:
+            key: Ключ кэша (для реранка — с префиксом ``rerank|``).
+            max_age_hours: Максимальный возраст записи в часах.
+
+        Returns:
+            Список строк или ``None``, если записи нет, она устарела или
+            в ней лежит не список.
+        """
+        raw = self.get(key, max_age_hours)
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, list):
+            return None
+        return [str(item) for item in data]
+
+    def set_list(self, key: str, values: list[str]) -> None:
+        """Сохраняет в кэш список строк как JSON."""
+        self.set(key, json.dumps(values))

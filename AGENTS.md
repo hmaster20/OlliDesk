@@ -139,7 +139,7 @@ OlliDesk/
 | `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}`, проектный → глобальный поиск |
 | `core/roles.py` | 13 ролей-персон (Markdown + YAML-frontmatter) | `RoleManager`, `RoleDefinition` |
 | `core/model_registry.py` | Каталог моделей + поддержка tool-calling | `ModelRegistry`, `ModelInfo` |
-| `core/search_cache.py` | Кэш результатов web-поиска (SQLite, TTL 24 ч) | `SearchCache.get()/set()` |
+| `core/search_cache.py` | Кэш результатов web-поиска и порядка реранка (SQLite, TTL 24 ч) | `SearchCache.get()/set()`, `get_list()/set_list()` (JSON-список, ключ реранка с префиксом `rerank\|`) |
 | `core/context_budget.py` | Оценка токенов и бюджет контекста под окно модели | `estimate_tokens`, `resolve_num_ctx`, `attached_char_budget`, `KNOWN_NUM_CTX` |
 
 ### `agents/` — работа с LLM
@@ -248,7 +248,9 @@ OlliDesk/
   в chroma `where` через `build_where`) и `path_prefix` (постфильтр по `file_path`,
   применяется и к векторной, и к BM25-выдаче). После RRF опциональный `Reranker`
   переупорядочивает верхушку `rerank_pool` кандидатов; ошибка реранкера не пробрасывается —
-  поиск отдаёт порядок RRF.
+  поиск отдаёт порядок RRF. Порядок кэшируется по ключу `rerank|<sha1>` из запроса и
+  содержимого кандидатов (протокол `RerankCache`, реализация — `core.search_cache.SearchCache`
+  с `get_list`/`set_list`; при промахе или устаревших id — обычный реранк).
 - `fs/bm25.py` — Okapi BM25 без внешних зависимостей (`rank_bm25` не тянем). `tokenize()`
   приводит к нижнему регистру и дробит идентификаторы (snake_case + camelCase,
   `HTTPServer` → `http`, `server`; кириллица через `\w` с `UNICODE`). `BM25Index.build()`
