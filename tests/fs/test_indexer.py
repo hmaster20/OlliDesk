@@ -221,3 +221,53 @@ class TestFileIndexerSync:
         files = indexer.list_project_files(tmp_path)
 
         assert files == ["main.py"]
+
+
+class TestIgnoreFiles:
+    """Загрузка .gitignore / .indexignore / .ollideskignore."""
+
+    async def test_gitignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".gitignore").write_text("secret.py\nbuild/\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "secret.py").write_text("password")
+        build = tmp_path / "build"
+        build.mkdir()
+        (build / "artifact.py").write_text("y = 2")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        paths = {f.path for f in files}
+        assert "keep.py" in paths
+        assert "secret.py" not in paths
+        assert "build/artifact.py" not in paths
+
+    async def test_indexignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".indexignore").write_text("# comment\n\ndraft.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "draft.py").write_text("wip")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}
+
+    async def test_ollideskignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".ollideskignore").write_text("generated.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "generated.py").write_text("auto")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}
+
+    async def test_indexignore_negation_overrides_gitignore(self, tmp_path, config):
+        (tmp_path / ".gitignore").write_text("keep.py\n")
+        (tmp_path / ".indexignore").write_text("!keep.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}

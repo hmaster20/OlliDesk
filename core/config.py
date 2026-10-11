@@ -342,6 +342,8 @@ class AppConfig(BaseModel):
             "*.pyc",
             "*.pyo",
             "*.pyd",
+            "*.min.js",
+            "*.min.css",
             ".DS_Store",
             "Thumbs.db",
             ".ollidesk/vector_db",

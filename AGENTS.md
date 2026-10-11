@@ -226,7 +226,10 @@ OlliDesk/
   расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка
   (`_detect_language`), `incremental_scan()` для догрузки только изменений.
   `chunk_file(content, file_path, mtime=None)` кладёт `language` и (если передан) `mtime`
-  в метаданные чанка. Модели: `FileMetadata`, `TextChunk`.
+  в метаданные чанка. Игнор-паттерны собираются в один `PathSpec` в порядке возрастания
+  приоритета: `config.ignored_patterns` → `.gitignore` проекта → `.ollideskignore` →
+  `.indexignore` → `.ollidesk/indexignore` (позже совпавшее правило выигрывает, поэтому
+  `!pattern` в явном файле вернёт файл в индекс). Модели: `FileMetadata`, `TextChunk`.
 - `fs/vector_store.py` — `VectorStore`: обёртка над ChromaDB (коллекции `codebase`/`codebase_<hash>`,
   косинус), батчи по 32, `add_chunks()`, `search()`, `delete_by_file()`, `clear()`.
   Модели: `SearchResult`, `Embedder` (протокол), `Reranker` (протокол).

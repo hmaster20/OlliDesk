@@ -137,23 +137,21 @@ class FileIndexer:
 
         ignored_patterns = list(config.ignored_patterns)
 
-        # Загружаем дополнительные игнор-файлы проекта
+        # Загружаем игнор-паттерны проекта в порядке возрастания приоритета:
+        # сначала .gitignore, затем явные файлы OlliDesk. При сборке в один
+        # PathSpec последнее совпавшее правило выигрывает, поэтому `!pattern`
+        # в .indexignore/.ollideskignore может вернуть файл в индекс.
         if project_path:
             for ignore_file in [
+                project_path / ".gitignore",
                 project_path / ".ollideskignore",
                 project_path / ".indexignore",
                 project_path / ".ollidesk" / "indexignore",
             ]:
-                try:
-                    if ignore_file.exists():
-                        content = ignore_file.read_text(encoding="utf-8")
-                        for line in content.splitlines():
-                            line = line.strip()
-                            if line and not line.startswith("#"):
-                                ignored_patterns.append(line)
-                        logger.info(f"Загружены игнор-паттерны из {ignore_file}")
-                except Exception as e:
-                    logger.debug(f"Не удалось прочитать {ignore_file}: {e}")
+                lines = self._read_ignore_file(ignore_file)
+                if lines:
+                    ignored_patterns.extend(lines)
+                    logger.info(f"Загружены игнор-паттерны из {ignore_file}: {len(lines)}")
 
         self.ignored_spec = pathspec.PathSpec.from_lines(
             "gitwildmatch",
@@ -163,6 +161,32 @@ class FileIndexer:
         self.max_file_size = config.max_file_size_kb * 1024
         self.chunk_size_tokens = config.chunk_size_tokens
         self.chunk_overlap_tokens = config.chunk_overlap_tokens
+
+    def _read_ignore_file(self, path: Path) -> list[str]:
+        """Читает игнор-файл и возвращает значимые строки.
+
+        Пустые строки и комментарии (`#`) отбрасываются. Ошибка чтения не
+        прерывает индексацию — файл просто пропускается.
+
+        Args:
+            path: Путь к файлу игнор-паттернов.
+
+        Returns:
+            list[str]: Строки-паттерны (без пустых и комментариев).
+        """
+        try:
+            if not path.exists():
+                return []
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"Не удалось прочитать {path}: {e}")
+            return []
+
+        return [
+            stripped
+            for line in content.splitlines()
+            if (stripped := line.strip()) and not stripped.startswith("#")
+        ]
 
     def _iter_visible_files(self, project_path: Path) -> Iterator[tuple[Path, str]]:
         """Перебирает файлы проекта, прошедшие фильтры (без чтения содержимого).
