@@ -5,11 +5,14 @@ from core.context_budget import (
     CHARS_PER_TOKEN,
     DEFAULT_NUM_CTX,
     MIN_ATTACHED_TOKENS,
+    MIN_SYSTEM_TOKENS,
+    SYSTEM_PROMPT_SHARE,
     attached_char_budget,
     attached_token_budget,
     estimate_tokens,
     rag_char_budget,
     resolve_num_ctx,
+    system_prompt_char_budget,
     tokens_to_chars,
     truncate_to_chars,
 )
@@ -83,6 +86,23 @@ class TestAttachedBudget:
         # бюджет не может превышать половину окна.
         for num_ctx in (4096, 8192, 32768):
             assert attached_token_budget(num_ctx) <= num_ctx // 2
+
+
+class TestSystemPromptCharBudget:
+    """Бюджет системного промпта."""
+
+    def test_share_of_context(self):
+        assert system_prompt_char_budget(4096) == int(int(4096 * SYSTEM_PROMPT_SHARE) * CHARS_PER_TOKEN)
+
+    def test_grows_with_context(self):
+        assert system_prompt_char_budget(32768) > system_prompt_char_budget(4096)
+
+    def test_never_below_minimum(self):
+        assert system_prompt_char_budget(16) >= MIN_SYSTEM_TOKENS
+
+    def test_leaves_room_for_history(self):
+        for num_ctx in (4096, 8192, 32768):
+            assert system_prompt_char_budget(num_ctx) <= num_ctx * CHARS_PER_TOKEN // 2
 
 
 class TestRagCharBudget:

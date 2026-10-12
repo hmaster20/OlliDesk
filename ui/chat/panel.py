@@ -75,6 +75,27 @@ _MIN_ATTACHED_BUDGET = 600
 _RAG_N_RESULTS = 8
 
 
+def read_project_rules(project_root: str | None) -> str:
+    """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`).
+
+    Args:
+        project_root: Абсолютный путь к корню проекта (или пусто).
+
+    Returns:
+        Текст правил без крайних пробелов либо пустая строка.
+    """
+    if not project_root:
+        return ""
+    try:
+        rules_file = load_config().rules_file or ".ollidesk/rules.md"
+        path = Path(project_root) / rules_file
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать правила проекта: {e}")
+    return ""
+
+
 class ChatPanel(QWidget):
     """Панель чата с сообщениями, вводом и управлением."""
 
@@ -530,6 +551,23 @@ class ChatPanel(QWidget):
         """Возвращает карту структуры проекта (строит при необходимости)."""
         self._ensure_project_scan()
         return self._project_map
+
+    def _project_name(self) -> str:
+        """Имя открытого проекта (имя каталога)."""
+        return Path(self.project_root).name if self.project_root else ""
+
+    def _template_context(self) -> dict:
+        """Переменные для шаблонов системных промптов (`{{project_name}}` и др.)."""
+        return {
+            "project_name": self._project_name(),
+            "language": "русский",
+            "project_root": self.project_root or "",
+            "project_map": self._project_map_text(),
+        }
+
+    def _project_rules(self) -> str:
+        """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`)."""
+        return read_project_rules(self.project_root)
 
     def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
         """Определяет каталог проекта, упомянутый в запросе, для фокуса поиска."""
@@ -1124,7 +1162,9 @@ class ChatPanel(QWidget):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt("chat", project_root=p_root) if self.prompt_manager else ""
+            self.prompt_manager.get_prompt("chat", project_root=p_root, context=self._template_context())
+            if self.prompt_manager
+            else ""
         )
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
@@ -1136,11 +1176,14 @@ class ChatPanel(QWidget):
             system_prompt=combined,
             rag_context=merged_context,
             project_root=self.project_root,
+            project_name=self._project_name(),
             project_map=self._project_map_text(),
             vector_store=self.vector_store,
+            num_ctx=self._router.num_ctx,
             mode=AgentMode.CHAT,
             search_cache=cast(Any, raw_cache),
             attached_files=self._attached_files if self._attached_files else None,
+            extra_rules=self._project_rules(),
         )
 
         client = self._router.active_client
@@ -1186,7 +1229,9 @@ class ChatPanel(QWidget):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt(mode.value, project_root=p_root) if self.prompt_manager else ""
+            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
+            if self.prompt_manager
+            else ""
         )
 
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
@@ -1199,11 +1244,14 @@ class ChatPanel(QWidget):
             system_prompt=combined,
             rag_context=merged_context,
             project_root=self.project_root,
+            project_name=self._project_name(),
             project_map=self._project_map_text(),
             vector_store=self.vector_store,
+            num_ctx=self._router.num_ctx,
             mode=mode,
             search_cache=cast(Any, raw_cache),
             attached_files=self._attached_files if self._attached_files else None,
+            extra_rules=self._project_rules(),
         )
 
         self._current_assistant_content = ""

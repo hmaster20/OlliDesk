@@ -7,6 +7,7 @@ from agents.base import LLMBackend
 from agents.ollama_client import ChatChunk, ToolCall
 from agents.tool_registry import ToolRegistry, ToolResult
 from core.config import AgentMode, ToolPolicy
+from core.context_budget import system_prompt_char_budget
 
 
 class _FakeClient:
@@ -184,3 +185,56 @@ class TestSystemPromptLanguage:
         prompt = _build_system_prompt(AgentContext(project_map="Структура проекта:\ncloud/"))
 
         assert prompt.index("ЯЗЫК ОТВЕТА") > prompt.index("cloud/")
+
+
+class TestSystemPromptProjectName:
+    """Имя и корень проекта подставляются в промпт."""
+
+    def test_project_name_and_root_injected(self):
+        prompt = _build_system_prompt(AgentContext(project_name="OlliDesk", project_root="D:/proj"))
+
+        assert "Проект: OlliDesk" in prompt
+        assert "Корень проекта: D:/proj" in prompt
+
+    def test_project_block_omitted_without_data(self):
+        prompt = _build_system_prompt(AgentContext())
+
+        assert "Корень проекта:" not in prompt
+
+
+class TestSystemPromptBudget:
+    """Переменные секции промпта укладываются в бюджет окна модели."""
+
+    def test_oversize_rag_truncated(self):
+        prompt = _build_system_prompt(AgentContext(rag_context="слово " * 5000, num_ctx=4096))
+
+        assert len(prompt) <= system_prompt_char_budget(4096)
+        assert "[контекст обрезан]" in prompt
+
+    def test_no_trimming_when_ctx_unknown(self):
+        big = "x" * 50000
+        prompt = _build_system_prompt(AgentContext(rag_context=big, num_ctx=0))
+
+        assert big in prompt
+
+    def test_fixed_instructions_survive_trimming(self):
+        prompt = _build_system_prompt(AgentContext(rag_context="x" * 50000, num_ctx=512))
+
+        assert "ИНСТРУМЕНТЫ" in prompt
+        assert "ЯЗЫК ОТВЕТА" in prompt
+
+    def test_drop_order_rag_before_map(self):
+        project_map = "Карта: cloud/ agents/"
+        prompt = _build_system_prompt(
+            AgentContext(rag_context="R" * 20000, project_map=project_map, num_ctx=4096)
+        )
+
+        assert project_map in prompt
+        assert len(prompt) <= system_prompt_char_budget(4096)
+
+    def test_rules_survive_over_map(self):
+        rules = "Правила проекта: не коммить без просьбы."
+        prompt = _build_system_prompt(AgentContext(project_map="M" * 20000, extra_rules=rules, num_ctx=4096))
+
+        assert rules in prompt
+        assert len(prompt) <= system_prompt_char_budget(4096)

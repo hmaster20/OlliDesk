@@ -12,6 +12,7 @@ from agents.history_compactor import compact_history
 from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
+from core.context_budget import MIN_SECTION_CHARS, system_prompt_char_budget, truncate_to_chars
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
 
 
@@ -30,10 +31,12 @@ class AgentContext:
     system_prompt: str = ""
     rag_context: str = ""
     project_root: str = ""
+    project_name: str = ""
     project_map: str = ""
     vector_store: object = None
     extra_rules: str = ""
     max_tokens: int = 4096
+    num_ctx: int = 0
     mode: AgentMode = AgentMode.AGENT
     search_cache: object = None
     attached_files: object = None
@@ -125,30 +128,91 @@ _MODE_HINTS = {
 }
 
 
+_SECTION_SEP = "\n\n"
+
+
+def _project_block(context: AgentContext) -> str:
+    """Собирает блок о проекте: имя и корень, от которого считаются пути."""
+    lines: list[str] = []
+    if context.project_name:
+        lines.append(f"Проект: {context.project_name}")
+    if context.project_root:
+        lines.append(f"Корень проекта: {context.project_root}")
+        lines.append("Все пути к файлам указывай относительными от корня проекта.")
+    return "\n".join(lines)
+
+
+def _assemble_prompt(pre: list[str], variable: list[tuple[str, str]]) -> str:
+    """Склеивает промпт: фиксированные блоки, переменные секции, языковая директива.
+
+    Языковая директива всегда последняя: модели сильнее следуют поздним инструкциям.
+    """
+    return _SECTION_SEP.join(pre + [text for _, text in variable] + [_LANGUAGE_DIRECTIVE])
+
+
+def _fit_sections(
+    pre: list[str],
+    variable: list[tuple[str, str]],
+    num_ctx: int,
+) -> list[tuple[str, str]]:
+    """Урезает переменные секции, если промпт не влезает в бюджет окна модели.
+
+    Фиксированные блоки (роль, инструкции по tools, подсказка режима, блок
+    проекта) не трогаются. Переменные секции урезаются в порядке приоритета —
+    от наименее важной: RAG → карта проекта → правила. Секцию, которую нельзя
+    урезать до осмысленного размера, выбрасывают целиком. При неизвестном окне
+    (`num_ctx <= 0`) промпт отдаётся без изменений.
+    """
+    if num_ctx <= 0 or not variable:
+        return variable
+    budget = system_prompt_char_budget(num_ctx)
+    if len(_assemble_prompt(pre, variable)) <= budget:
+        return variable
+
+    remaining = list(variable)
+    for key in ("rag", "map", "rules"):
+        if len(_assemble_prompt(pre, remaining)) <= budget:
+            break
+        others = [item for item in remaining if item[0] != key]
+        # Каждая секция добавляет к склейке один разделитель (_SECTION_SEP).
+        allowance = budget - len(_assemble_prompt(pre, others)) - len(_SECTION_SEP)
+        if allowance <= MIN_SECTION_CHARS:
+            remaining = others
+            continue
+        remaining = [
+            (name, truncate_to_chars(value, allowance) if name == key else value) for name, value in remaining
+        ]
+        remaining = [(name, value) for name, value in remaining if value]
+    return remaining
+
+
 def _build_system_prompt(context: AgentContext) -> str:
-    """Собирает system-промпт из контекста, роли и инструкций по tools."""
+    """Собирает system-промпт из контекста, роли и инструкций по tools.
+
+    Фиксированные блоки (роль, instructions, подсказка режима, проект, языковая
+    директива) и переменные секции (правила, карта проекта, RAG) укладываются в
+    бюджет ``system_prompt_char_budget(num_ctx)``; при переполнении переменные
+    секции урезаются в порядке приоритета (см. ``_fit_sections``).
+    """
     base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
 
-    parts = [base_prompt, _TOOL_USE_INSTRUCTION]
+    pre = [base_prompt, _TOOL_USE_INSTRUCTION]
+    pre.append(_MODE_HINTS.get(context.mode, _MODE_HINTS[AgentMode.CHAT]))
+    project_block = _project_block(context)
+    if project_block:
+        pre.append(project_block)
 
-    mode_hint = _MODE_HINTS.get(context.mode, _MODE_HINTS[AgentMode.CHAT])
-    parts.append(mode_hint)
-
-    if context.rag_context:
-        parts.append(f"Контекст из кодовой базы:\n{context.rag_context}")
+    variable: list[tuple[str, str]] = []
     if context.extra_rules:
-        parts.append(f"Дополнительные правила:\n{context.extra_rules}")
-    if context.project_root:
-        parts.append(
-            f"Корень проекта: {context.project_root}\n"
-            "Все пути к файлам указывай относительными от корня проекта."
-        )
+        variable.append(("rules", f"Дополнительные правила:\n{context.extra_rules}"))
     if context.project_map:
-        parts.append(context.project_map)
+        variable.append(("map", context.project_map))
+    if context.rag_context:
+        variable.append(("rag", f"Контекст из кодовой базы:\n{context.rag_context}"))
 
-    parts.append(_LANGUAGE_DIRECTIVE)
+    variable = _fit_sections(pre, variable, context.num_ctx)
 
-    return "\n\n".join(parts)
+    return _assemble_prompt(pre, variable)
 
 
 def _create_tool_result_message(

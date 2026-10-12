@@ -22,6 +22,16 @@ DEFAULT_NUM_CTX = 4096
 # историю диалога и генерируемый ответ.
 ATTACHED_CONTEXT_SHARE = 0.25
 
+# Доля окна контекста под системный промпт (роль, инструкции по tools, правила,
+# карта проекта, RAG). Остальное — история диалога и генерируемый ответ.
+SYSTEM_PROMPT_SHARE = 0.5
+
+# Минимальный бюджет системного промпта, даже если окно совсем маленькое.
+MIN_SYSTEM_TOKENS = 512
+
+# Минимальный размер переменной секции системного промпта: мельче — выбрасываем.
+MIN_SECTION_CHARS = 120
+
 # Минимальный бюджет, даже если окно совсем маленькое.
 MIN_ATTACHED_TOKENS = 256
 
@@ -119,6 +129,21 @@ def attached_char_budget(num_ctx: int) -> int:
         Бюджет под прикреплённые файлы в символах.
     """
     return tokens_to_chars(attached_token_budget(num_ctx))
+
+
+def system_prompt_char_budget(num_ctx: int) -> int:
+    """Считает бюджет системного промпта в символах.
+
+    Системный промпт (роль, инструкции, правила, карта проекта, RAG) не должен
+    занимать всё окно: иначе под историю диалога и ответ не останется места.
+
+    Args:
+        num_ctx: Окно контекста модели в токенах.
+
+    Returns:
+        Бюджет под системный промпт в символах.
+    """
+    return max(MIN_SYSTEM_TOKENS, tokens_to_chars(int(num_ctx * SYSTEM_PROMPT_SHARE)))
 
 
 def rag_char_budget(num_ctx: int) -> int:

@@ -1,3 +1,15 @@
+"""Менеджер системных промптов режимов (chat / plan / agent).
+
+Промпт берётся из `<проект>/.ollidesk/system_prompts/<mode>.md`, иначе из
+`~/.ollidesk/system_prompts/<mode>.md`. Поддерживается подстановка переменных
+вида `{{key}}`. Панель чата передаёт такие значения (`ChatPanel._template_context`):
+
+- `{{project_name}}` — имя открытого проекта (каталога);
+- `{{language}}` — язык ответа (по умолчанию «русский»);
+- `{{project_root}}` — абсолютный путь к корню проекта;
+- `{{project_map}}` — карта структуры проекта (дерево каталогов и файлов).
+"""
+
 import re
 from pathlib import Path
 
@@ -7,8 +19,8 @@ from core.utils import get_app_data_dir
 
 
 class SystemPromptManager:
-    def __init__(self) -> None:
-        self.prompts_dir = get_app_data_dir() / "system_prompts"
+    def __init__(self, prompts_dir: Path | None = None) -> None:
+        self.prompts_dir = prompts_dir or (get_app_data_dir() / "system_prompts")
         self.prompts_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_defaults()
         self._cache: dict[str, str] = {}

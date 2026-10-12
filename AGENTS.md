@@ -136,18 +136,18 @@ OlliDesk/
 | `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
 | `core/exceptions.py` | Иерархия исключений | `OlliDeskError` + `ConfigError`, `OllamaConnectionError`, `ToolsNotSupportedError`, `ModelNotFoundError`, `IndexingError`, `EmbedderError`, `ToolExecutionError` |
-| `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}`, проектный → глобальный поиск |
+| `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}` (`project_name`, `language`, `project_root`, `project_map` — см. `ChatPanel._template_context`), проектный → глобальный поиск |
 | `core/roles.py` | 13 ролей-персон (Markdown + YAML-frontmatter) | `RoleManager`, `RoleDefinition` |
 | `core/model_registry.py` | Каталог моделей + поддержка tool-calling | `ModelRegistry`, `ModelInfo` |
 | `core/search_cache.py` | Кэш результатов web-поиска и порядка реранка (SQLite, TTL 24 ч) | `SearchCache.get()/set()`, `get_list()/set_list()` (JSON-список, ключ реранка с префиксом `rerank\|`) |
-| `core/context_budget.py` | Оценка токенов и бюджет контекста под окно модели | `estimate_tokens`, `resolve_num_ctx`, `attached_char_budget`, `KNOWN_NUM_CTX` |
+| `core/context_budget.py` | Оценка токенов и бюджет контекста под окно модели | `estimate_tokens`, `resolve_num_ctx`, `attached_char_budget`, `system_prompt_char_budget` (`SYSTEM_PROMPT_SHARE`), `rag_char_budget`, `KNOWN_NUM_CTX` |
 
 ### `agents/` — работа с LLM
 
 | Модуль | Назначение |
 |---|---|
 | `agents/ollama_client.py` | Wire-типы (`ChatMessage`, `ToolCall`, `ChatChunk`, `ChatOptions`, `ToolSchema`) + асинхронный HTTP/stream-клиент Ollama (`OllamaClient`) |
-| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext`. Перед циклом прореживает промпт (`_compact_history` → `history_compactor`) |
+| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext`. Системный промпт собирается посекционно и укладывается в `system_prompt_char_budget(num_ctx)` (переменные секции RAG → карта → правила урезаются при переполнении). Перед циклом прореживает промпт (`_compact_history` → `history_compactor`) |
 | `agents/history_compactor.py` | Сжатие истории при >80 % окна контекста. Детерминированное прореживание по приоритету 4.8.E: сначала опустошение старых tool-результатов, затем отбрасывание старейших реплик целиком; system и последняя реплика сохраняются. `compact_history`, `messages_tokens` |
 | `agents/tool_registry.py` | `@tool`-декоратор, генерация JSON Schema из type hints, `ToolRegistry.execute()` |
 | `agents/model_router.py` | Выбор бэкенда по приоритету из конфига с fallback: rule-based в конце. Также перебор бэкендов для эмбеддингов |
@@ -367,11 +367,13 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
        └─ AgentChatThread (QThread → asyncio.run)
            └─ AgentLoop.run(ctx, history, on_token, on_tool_request, ...)
                ├─ _build_system_prompt():
-               │    инструкция по tool-calling + подсказка режима
-               │    + системный промпт режима (SystemPromptManager, проектный → глобальный)
+               │    фиксированные блоки: инструкция по tool-calling + подсказка режима
+               │    + системный промпт режима (SystemPromptManager, {{переменные}}, проектный → глобальный)
+               │    + блок проекта (имя + корень, AgentContext.project_name/project_root)
+               │    переменные секции (урезаются в порядке RAG → карта → правила):
                │    + контекст: превью @file-вложений + RAG (VectorStore.search)
-               │    + карта структуры проекта (AgentContext.project_map)
-               │    + rules.md проекта
+               │    + карта структуры проекта (AgentContext.project_map) + rules.md проекта
+               │    всё укладывается в system_prompt_char_budget(num_ctx)
                ├─ _compact_history(): прореживание при >80 % num_ctx
                └─ ModelRouter.chat(...) → OllamaClient | LocalLLMClient | RuleBasedFallback
                    ├─ стрим ChatChunk → сигнал chunk_received → пузырь в UI
@@ -392,14 +394,14 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
 
 | Что менять | Где |
 |---|---|
-| Системный промпт режима | `~/.ollidesk/system_prompts/*.md` или `<проект>/.ollidesk/system_prompts/` |
+| Системный промпт режима | `~/.ollidesk/system_prompts/*.md` или `<проект>/.ollidesk/system_prompts/` (доступны `{{project_name}}`, `{{language}}`, `{{project_root}}`, `{{project_map}}`) |
 | Правила проекта | `<проект>/.ollidesk/rules.md` (`rules_file` в конфиге) |
 | Список и политики инструментов | `ui/chat/panel.py::_build_registry` |
 | Параметры индексации | `~/.ollidesk/config.yaml`, `ignored_patterns`, `index_extensions`, `chunk_size_tokens` |
 | Бэкенд LLM | `agents/model_router.py` + `core/config.py::ModelConfig` |
 | Реранкинг RAG | `fs/reranker.py` + `core/config.py::RerankSettings` (`enabled`/`model`/`top_k`) |
 | Раздельные эмбеддинги (код/документация) | `core/config.py::EmbedModels` (`code`/`docs`) + `fs/vector_store.py::category_for_language` |
-| Бюджет контекста под модель | `core/context_budget.py` (`CHARS_PER_TOKEN`, `ATTACHED_CONTEXT_SHARE`, `KNOWN_NUM_CTX`) |
+| Бюджет контекста под модель | `core/context_budget.py` (`CHARS_PER_TOKEN`, `ATTACHED_CONTEXT_SHARE`, `SYSTEM_PROMPT_SHARE`, `KNOWN_NUM_CTX`) |
 
 ---
 
@@ -525,7 +527,7 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
 - HTTP мокается подменой приватной фабрики: `patch.object(client, "_get_client", return_value=mock)`.
 - Эмбеддинги — `patch.object(vs.embed_client, "embed", AsyncMock(return_value=[[...]]))`.
 - Покрытие: `agents`, `core`, `fs`, `state`, `tools`, `ui`. Фактически тесты есть для
-  `core/config.py`, `core/context_budget.py`, `fs/*`, `agents/ollama_client.py`,
+  `core/config.py`, `core/context_budget.py`, `core/system_prompts.py`, `fs/*`, `agents/ollama_client.py`,
   `agents/model_router.py`, `agents/gpu_utils.py`, `agents/tool_registry.py`,
   `agents/agent_loop.py`, `agents/history_compactor.py`,
   `tools/attached_files.py`. Новый код без теста — неоконченная работа.
