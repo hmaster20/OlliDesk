@@ -3,10 +3,9 @@
 import asyncio
 import contextlib
 import json
-import re
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +13,7 @@ from loguru import logger
 
 from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
+from agents.tool_call_parser import extract_tool_calls
 
 # Языковая директива идёт в самое НАЧАЛО системного сообщения: при обрезке
 # контекста `_fit_messages` сохраняет голову промпта, поэтому инструкция не
@@ -243,7 +243,7 @@ class LocalLLMClient:
                 # Попытка распознать tool-call
                 tool_call: ToolCall | None = None
                 if tools and full_text.strip():
-                    tool_call = self._parse_tool_call(full_text)
+                    tool_call = self._parse_tool_call(full_text, tools)
 
                 if tool_call is not None:
                     logger.info(f"SLM: распознан tool_call → {tool_call.name}({tool_call.arguments})")
@@ -377,78 +377,15 @@ class LocalLLMClient:
 
     # --- Tool-call parsing ---
 
-    def _parse_tool_call(self, text: str) -> ToolCall | None:
-        """Пытается распарсить JSON-вызов инструмента из ответа модели."""
-        stripped = text.strip()
+    def _parse_tool_call(self, text: str, tools: list[Any] | None = None) -> ToolCall | None:
+        """Распознаёт tool-call в тексте ответа.
 
-        # 1. Убираем markdown-фенсы ```json ... ```
-        m = re.search(r"```(?:json)?\s*\n?(.*?)```", stripped, re.DOTALL)
-        if m:
-            stripped = m.group(1).strip()
-
-        # 2. Пробуем распарсить целиком
-        parsed = self._try_json(stripped)
-        if parsed is not None:
-            return parsed
-
-        # 3. Ищем первое вхождение JSON-объекта с "name"
-        #    (аккуратный поиск по сбалансированным скобкам)
-        for start, end in self._iter_json_spans(stripped):
-            candidate = stripped[start:end]
-            parsed = self._try_json(candidate)
-            if parsed is not None:
-                return parsed
-
-        return None
-
-    @staticmethod
-    def _try_json(text: str) -> ToolCall | None:
-        """Парсит JSON и, если это tool-call, возвращает ToolCall."""
-        try:
-            parsed = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            return None
-
-        if not isinstance(parsed, dict):
-            return None
-
-        name: Any = None
-        args: Any = None
-
-        if "name" in parsed:
-            name = parsed.get("name")
-            args = parsed.get("arguments", {})
-        elif isinstance(parsed.get("function"), dict):
-            func = parsed["function"]
-            name = func.get("name")
-            args = func.get("arguments", {})
-
-        if not isinstance(name, str) or not name:
-            return None
-
-        if not isinstance(args, dict):
-            # Иногда модель отдаёт args как строку с JSON
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except (json.JSONDecodeError, ValueError):
-                    args = {}
-            else:
-                args = {}
-
-        return ToolCall(name=name, arguments=args)
-
-    @staticmethod
-    def _iter_json_spans(text: str) -> Iterator[tuple[int, int]]:
-        """Возвращает (start, end) для каждого сбалансированного {...} блока."""
-        stack: list[int] = []
-        for i, ch in enumerate(text):
-            if ch == "{":
-                stack.append(i)
-            elif ch == "}" and stack:
-                start = stack.pop()
-                if not stack:
-                    yield start, i + 1
+        Поддерживает JSON (``{"name": ..., "arguments": {...}}``) и синтаксис
+        вызова функции (``name("arg")`` / ``name(key=value)``). Второй вариант
+        требует списка инструментов, чтобы отличить вызов от упоминания.
+        """
+        calls = extract_tool_calls(text, tools)
+        return calls[0] if calls else None
 
     # --- Инструкция для модели ---
 

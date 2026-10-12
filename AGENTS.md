@@ -151,7 +151,8 @@ OlliDesk/
 | `agents/history_compactor.py` | Сжатие истории при >80 % окна контекста. Детерминированное прореживание по приоритету 4.8.E: сначала опустошение старых tool-результатов, затем отбрасывание старейших реплик целиком; system и последняя реплика сохраняются. `compact_history`, `messages_tokens` |
 | `agents/tool_registry.py` | `@tool`-декоратор, генерация JSON Schema из type hints, `ToolRegistry.execute()` |
 | `agents/model_router.py` | Выбор бэкенда по приоритету из конфига с fallback: rule-based в конце. Также перебор бэкендов для эмбеддингов |
-| `agents/local_llm_client.py` | Клиент llama.cpp (GGUF): блокирующий инференс обёрнут в `asyncio`, «мягкий» tool-calling через JSON в тексте |
+| `agents/local_llm_client.py` | Клиент llama.cpp (GGUF): блокирующий инференс обёрнут в `asyncio`, «мягкий» tool-calling через JSON или синтаксис вызова функции в тексте |
+| `agents/tool_call_parser.py` | Извлечение текстовых tool-call из ответа: JSON (`{"name": ..., "arguments": {...}}`) и синтаксис `name("arg")` / `name(key=value)` / `Action:`. Позиционные аргументы сопоставляются со схемой (`schema_param_names`). Общий для `AgentLoop` и `LocalLLMClient` |
 | `agents/rule_based_fallback.py` | Ответы без LLM (регулярки: погода, время, дата) |
 | `agents/download_slm.py` | Скачивание/удаление GGUF с HuggingFace, обработка split-GGUF. CLI: `python -m agents.download_slm` |
 | `agents/gpu_utils.py` | Опрос `nvidia-smi`, подбор `n_gpu_layers`, `detect_optimal_threads()` (физические ядра) |
@@ -529,7 +530,7 @@ uv run pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui 
 - Покрытие: `agents`, `core`, `fs`, `state`, `tools`, `ui`. Фактически тесты есть для
   `core/config.py`, `core/context_budget.py`, `core/system_prompts.py`, `fs/*`, `agents/ollama_client.py`,
   `agents/model_router.py`, `agents/gpu_utils.py`, `agents/tool_registry.py`,
-  `agents/agent_loop.py`, `agents/history_compactor.py`,
+  `agents/agent_loop.py`, `agents/history_compactor.py`, `agents/tool_call_parser.py`,
   `tools/attached_files.py`. Новый код без теста — неоконченная работа.
 
 ## 10. Документация

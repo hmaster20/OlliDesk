@@ -10,6 +10,7 @@ from loguru import logger
 from agents.base import LLMBackend
 from agents.history_compactor import compact_history
 from agents.ollama_client import ChatMessage, ToolCall
+from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.context_budget import MIN_SECTION_CHARS, system_prompt_char_budget, truncate_to_chars
@@ -272,89 +273,14 @@ class AgentLoop:
             sig.append((tc.name, args))
         return tuple(sorted(sig))
 
-    def _extract_tool_calls_from_text(self, text: str) -> list[ToolCall]:
-        """Извлекает вызовы инструментов из текстового ответа модели."""
-        import json as _json
-        import re
+    def _extract_tool_calls_from_text(self, text: str, tools: list | None = None) -> list[ToolCall]:
+        """Извлекает вызовы инструментов из текстового ответа модели.
 
-        code_block_pattern = r"```(?:json)?\s*\n?(.*?)```"
-        match = re.search(code_block_pattern, text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-
-        extracted: list[ToolCall] = []
-        stack: list[str] = []
-        start = None
-
-        for i, ch in enumerate(text):
-            if ch == "{":
-                if not stack:
-                    start = i
-                stack.append(ch)
-            elif ch == "}":
-                if stack:
-                    stack.pop()
-                    if not stack and start is not None:
-                        candidate = text[start : i + 1]
-                        try:
-                            parsed = _json.loads(candidate)
-                            if "name" in parsed and "arguments" in parsed:
-                                extracted.append(
-                                    ToolCall(
-                                        name=parsed["name"],
-                                        arguments=parsed["arguments"],
-                                    )
-                                )
-                            elif "function" in parsed and "name" in parsed["function"]:
-                                func = parsed["function"]
-                                extracted.append(
-                                    ToolCall(
-                                        name=func["name"],
-                                        arguments=func.get("arguments", {}),
-                                    )
-                                )
-                        except _json.JSONDecodeError:
-                            repaired = candidate
-                            repaired = re.sub(r"(?<={|,)\s*(\w+)\s*:", r' "\1":', repaired)
-                            repaired = re.sub(r"(?<!\\)'", '"', repaired)
-                            repaired = re.sub(r",\s*}", "}", repaired)
-                            try:
-                                parsed = _json.loads(repaired)
-                                if "name" in parsed and "arguments" in parsed:
-                                    extracted.append(
-                                        ToolCall(
-                                            name=parsed["name"],
-                                            arguments=parsed["arguments"],
-                                        )
-                                    )
-                                elif "function" in parsed and "name" in parsed["function"]:
-                                    func = parsed["function"]
-                                    extracted.append(
-                                        ToolCall(
-                                            name=func["name"],
-                                            arguments=func.get("arguments", {}),
-                                        )
-                                    )
-                            except _json.JSONDecodeError:
-                                pass
-                        start = None
-
-        if not extracted:
-            pattern = r'\{"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*({[^}]*})\}'
-            for m in re.finditer(pattern, text):
-                try:
-                    name = m.group(1)
-                    args = _json.loads(m.group(2))
-                    extracted.append(ToolCall(name=name, arguments=args))
-                except Exception:
-                    pass
-
-        if extracted:
-            logger.debug(f"Извлечено tool_calls из текста: {len(extracted)}")
-        else:
-            logger.debug("Не удалось извлечь tool_calls из текста")
-
-        return extracted
+        Поддерживает JSON (``{"name": ..., "arguments": {...}}``) и синтаксис
+        вызова функции (``name("arg")`` / ``name(key=value)``). Детали — в
+        :mod:`agents.tool_call_parser`.
+        """
+        return extract_tool_calls(text, tools)
 
     async def run(
         self,
@@ -426,7 +352,7 @@ class AgentLoop:
 
             # --- Fallback: текстовые tool_calls ---
             if not pending_tool_calls and current_text and tools_to_send:
-                extracted_calls = self._extract_tool_calls_from_text(current_text)
+                extracted_calls = self._extract_tool_calls_from_text(current_text, tools_to_send)
                 if extracted_calls:
                     pending_tool_calls = extracted_calls
                     current_text = ""
