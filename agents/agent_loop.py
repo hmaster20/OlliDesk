@@ -14,7 +14,12 @@ from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, ToolPolicy
-from core.context_budget import MIN_SECTION_CHARS, system_prompt_char_budget, truncate_to_chars
+from core.context_budget import (
+    MIN_SECTION_CHARS,
+    attached_char_budget,
+    system_prompt_char_budget,
+    truncate_to_chars,
+)
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
 
 
@@ -241,8 +246,16 @@ def _create_tool_result_message(
     name: str,
     content: str,
     is_error: bool = False,
+    max_chars: int = 0,
 ) -> ChatMessage:
-    """Создаёт сообщение с результатом выполнения инструмента."""
+    """Создаёт сообщение с результатом выполнения инструмента.
+
+    Если ``max_chars > 0`` и результат длиннее, содержимое усекается с пометкой —
+    иначе большой ``read_file`` может вытеснить историю и текущий вопрос.
+    """
+    if max_chars > 0 and len(content) > max_chars:
+        marker = "\n… [Результат обрезан]"
+        content = content[: max(0, max_chars - len(marker))] + marker
     prefix = "❌ Ошибка:\n" if is_error else ""
     return ChatMessage(
         role="tool",
@@ -293,6 +306,15 @@ class AgentLoop:
             sig.append((tc.name, args))
         return tuple(sorted(sig))
 
+    @staticmethod
+    def _call_key(tc: ToolCall) -> tuple[str, str]:
+        """Ключ одного вызова (имя + аргументы) для дедупликации результатов."""
+        try:
+            args = json.dumps(tc.arguments, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args = str(tc.arguments)
+        return (tc.name, args)
+
     def _extract_tool_calls_from_text(self, text: str, tools: list | None = None) -> list[ToolCall]:
         """Извлекает вызовы инструментов из текстового ответа модели.
 
@@ -325,6 +347,12 @@ class AgentLoop:
 
         prev_signature: tuple[tuple[str, str], ...] | None = None
         nudged_tool_format = False
+
+        executed_calls: dict[tuple[str, str], str] = {}
+        observation_budget = 0
+        client_num_ctx = getattr(self.client, "num_ctx", 0)
+        if isinstance(client_num_ctx, int) and client_num_ctx > 0:
+            observation_budget = attached_char_budget(client_num_ctx) // 4
 
         for iteration in range(max_iterations):
             logger.debug(
@@ -422,6 +450,19 @@ class AgentLoop:
                 )
 
                 for tc in pending_tool_calls:
+                    call_key = self._call_key(tc)
+                    if call_key in executed_calls:
+                        logger.debug(f"Повторный вызов {tc.name} — отдаю кэшированный результат")
+                        messages.append(
+                            _create_tool_result_message(
+                                tc.id,
+                                tc.name,
+                                "Ты уже вызывал этот инструмент с этими аргументами. Результат:\n"
+                                f"{executed_calls[call_key]}",
+                            )
+                        )
+                        continue
+
                     policy = self.registry.get_policy(tc.name)
 
                     if policy == ToolPolicy.ASK_FIRST:
@@ -451,6 +492,7 @@ class AgentLoop:
                         await on_tool_start(tc.name, tc.arguments)
 
                     result = await self.registry.execute(tc, **extra)
+                    executed_calls[call_key] = result.content
                     if on_tool_result:
                         await on_tool_result(result.name, result.content, result.is_error)
                     messages.append(
@@ -459,6 +501,7 @@ class AgentLoop:
                             result.name,
                             result.content,
                             is_error=result.is_error,
+                            max_chars=observation_budget,
                         )
                     )
 
