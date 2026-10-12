@@ -304,7 +304,7 @@ async def web_search(
                 logger.info(f"web_search: '{query}' via {name}, {len(results)} results")
                 if search_cache:
                     search_cache.set(query, text)
-                return text
+                return "<untrusted>\n" + text + "\n</untrusted>"
             errors.append(f"{name}: no results")
         except Exception as e:
             logger.warning(f"web_search {name} failed: {type(e).__name__}: {e}")
@@ -312,6 +312,6 @@ async def web_search(
 
     logger.error(f"web_search: all strategies failed for '{query}': {errors}")
     return (
-        f"Не удалось найти информацию по запросу «{query}». "
-        f"Все стратегии поиска вернули ошибку. Попробуйте переформулировать запрос."
+        f"<untrusted>\nНе удалось найти информацию по запросу «{query}». "
+        f"Все стратегии поиска вернули ошибку. Попробуйте переформулировать запрос.\n</untrusted>"
     )
