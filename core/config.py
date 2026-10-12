@@ -304,11 +304,109 @@ class EmbedModels(BaseModel):
     docs: str | None = None
 
 
+CURRENT_SCHEMA_VERSION = "v2"
+
+LEGACY_INDEX_EXTENSIONS: list[str] = [
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".html",
+    ".css",
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+]
+
+DEFAULT_INDEX_EXTENSIONS: list[str] = [
+    # Python / JS / TS и веб
+    ".py",
+    ".pyi",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".svelte",
+    ".astro",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    # Текст, разметка и конфиги
+    ".md",
+    ".markdown",
+    ".rst",
+    ".txt",
+    ".csv",
+    ".json",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".xml",
+    ".properties",
+    # .NET
+    ".cs",
+    ".csproj",
+    ".sln",
+    ".fs",
+    ".vb",
+    ".xaml",
+    ".cshtml",
+    ".razor",
+    ".config",
+    ".resx",
+    # JVM и другие языки
+    ".java",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".groovy",
+    ".gradle",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".pl",
+    ".lua",
+    ".r",
+    ".dart",
+    ".swift",
+    # C / C++
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hpp",
+    ".hh",
+    ".m",
+    ".mm",
+    # Скрипты, БД
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".sql",
+]
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
     version: str = "1.0.0"
-    schema_version: str = "v1"
+    schema_version: str = CURRENT_SCHEMA_VERSION
     default_model: str
     embed_model: str
     embed_models: EmbedModels = Field(default_factory=EmbedModels)
@@ -357,21 +455,7 @@ class AppConfig(BaseModel):
             "vendor",
         ]
     )
-    index_extensions: list[str] = Field(
-        default_factory=lambda: [
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-            ".jsx",
-            ".html",
-            ".css",
-            ".md",
-            ".json",
-            ".yaml",
-            ".yml",
-        ]
-    )
+    index_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_EXTENSIONS))
     max_file_size_kb: int = 100
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 50
@@ -437,10 +521,28 @@ class ConfigLoader:
         else:
             merged_config = global_config
 
+        self._migrate_config(merged_config)
+
         try:
             return AppConfig(**merged_config)
         except Exception as e:
             raise ConfigError(f"Ошибка валидации конфигурации: {e}") from e
+
+    def _migrate_config(self, config: dict[str, Any]) -> None:
+        """Приводит устаревший конфиг к текущей схеме (in-place).
+
+        Схема ``v1`` содержала урезанный список ``index_extensions`` без C#,
+        Java, Go и прочих языков. Если в конфиге остался ровно старый набор по
+        умолчанию, заменяем его на новый — но пользовательский список не трогаем.
+        """
+        if config.get("schema_version") == CURRENT_SCHEMA_VERSION:
+            return
+
+        extensions = config.get("index_extensions")
+        if extensions is None or set(extensions) == set(LEGACY_INDEX_EXTENSIONS):
+            config["index_extensions"] = list(DEFAULT_INDEX_EXTENSIONS)
+
+        config["schema_version"] = CURRENT_SCHEMA_VERSION
 
     def _load_yaml(self, path: Path) -> dict[str, Any]:
         """Загружает YAML или возвращает пустой dict."""

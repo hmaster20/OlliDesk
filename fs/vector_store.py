@@ -22,7 +22,7 @@ from fs.indexer import TextChunk
 
 _DEFAULT_COLLECTION = "codebase"
 
-_DOC_LANGUAGES = {"markdown", "rst", "text", "txt"}
+_DOC_LANGUAGES = {"markdown", "rst", "text", "txt", "csv", "properties"}
 
 CATEGORIES = ("code", "docs")
 

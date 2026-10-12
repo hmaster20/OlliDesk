@@ -265,6 +265,80 @@ class TestConfigLoader:
         assert loaded.embed_model == "local-embed"
 
 
+class TestConfigMigration:
+    def test_legacy_extensions_expanded(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {
+                **SAMPLE_GLOBAL_CONFIG,
+                "schema_version": "v1",
+                "index_extensions": [
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".tsx",
+                    ".jsx",
+                    ".html",
+                    ".css",
+                    ".md",
+                    ".json",
+                    ".yaml",
+                    ".yml",
+                ],
+            },
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.schema_version == "v2"
+        assert ".cs" in config.index_extensions
+        assert ".go" in config.index_extensions
+        assert ".py" in config.index_extensions
+
+    def test_custom_extensions_preserved(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {**SAMPLE_GLOBAL_CONFIG, "index_extensions": [".py", ".js", ".ts"]},
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.index_extensions == [".py", ".js", ".ts"]
+        assert config.schema_version == "v2"
+
+    def test_v2_config_not_changed(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {**SAMPLE_GLOBAL_CONFIG, "schema_version": "v2", "index_extensions": [".py"]},
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.index_extensions == [".py"]
+
+    def test_missing_extensions_get_default(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        data = dict(SAMPLE_GLOBAL_CONFIG)
+        data.pop("index_extensions")
+        _write_yaml(global_config, data)
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert ".cs" in config.index_extensions
+        assert ".py" in config.index_extensions
+
+
 class TestGetModelByRole:
     def test_find_chat_model(self):
         config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
