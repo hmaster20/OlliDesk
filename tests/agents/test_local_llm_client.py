@@ -117,3 +117,54 @@ class TestPrepareMessages:
         # Языковая и форматная директивы идут раньше инструкции по инструментам.
         assert content.index(_LANGUAGE_INSTRUCTION) < content.index("read_file")
         assert content.index(_FORMAT_INSTRUCTION) < content.index("read_file")
+
+
+class TestToolInstruction:
+    """Инструкция по инструментам: JSON-формат, примеры, рецепт изучения проекта."""
+
+    def _tools(self) -> list[Any]:
+        return [
+            ToolSchema(
+                function={
+                    "name": "list_directory",
+                    "description": "Список файлов",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ),
+            ToolSchema(
+                function={
+                    "name": "read_file",
+                    "description": "Читает файл",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ),
+        ]
+
+    def test_json_format_and_examples_present(self):
+        text = _make_client(n_ctx=4096)._build_tool_instruction(self._tools())
+        assert '"name": "list_directory"' in text
+        assert '"name": "read_file"' in text
+        assert '{"name": "имя_инструмента", "arguments":' in text
+
+    def test_project_study_recipe_present(self):
+        text = _make_client(n_ctx=4096)._build_tool_instruction(self._tools())
+        assert "КАК ИЗУЧИТЬ ПРОЕКТ" in text
+        assert "search_codebase" in text
+
+    def test_available_tools_listed_with_args(self):
+        text = _make_client(n_ctx=4096)._build_tool_instruction(self._tools())
+        assert "ДОСТУПНЫЕ ИНСТРУМЕНТЫ:" in text
+        assert "- list_directory(path: string): Список файлов" in text
+
+    def test_not_web_search_centric(self):
+        text = _make_client(n_ctx=4096)._build_tool_instruction(self._tools())
+        assert "ГЛАВНОЕ ПРАВИЛО" not in text
+        assert "web_search" in text  # как один из примеров, но не единственный
