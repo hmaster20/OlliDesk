@@ -1,6 +1,7 @@
 """Цикл рассуждений и действий (ReAct) агента."""
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -130,6 +131,25 @@ _MODE_HINTS = {
 
 
 _SECTION_SEP = "\n\n"
+
+
+_REACT_SCAFFOLD_RE = re.compile(r"(?im)^\s*(?:#+\s*)?(?:action|observation)\b")
+
+_TOOL_FORMAT_HINT = (
+    "Предыдущий ответ похож на вызов инструмента, но он не был распознан и НЕ выполнен. "
+    "Чтобы реально вызвать инструмент, верни ТОЛЬКО JSON без слов Action/Observation, например:\n"
+    '{"name": "list_directory", "arguments": {"path": "."}}\n'
+    "Если данные из инструментов не нужны — дай обычный ответ по существу."
+)
+
+
+def _looks_like_tool_attempt(text: str) -> bool:
+    """Похож ли текст на нераспознанную попытку вызова инструмента.
+
+    Ловит модели, которые вместо JSON пишут ReAct-разметку (``Action:`` /
+    ``Observation:``) — такой текст нельзя принимать за финальный ответ.
+    """
+    return bool(_REACT_SCAFFOLD_RE.search(text))
 
 
 def _project_block(context: AgentContext) -> str:
@@ -304,6 +324,7 @@ class AgentLoop:
             tools_to_send = None
 
         prev_signature: tuple[tuple[str, str], ...] | None = None
+        nudged_tool_format = False
 
         for iteration in range(max_iterations):
             logger.debug(
@@ -357,6 +378,22 @@ class AgentLoop:
                     pending_tool_calls = extracted_calls
                     current_text = ""
                     logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
+
+            # --- Анти-галлюцинация: похоже на вызов, но ничего не распознано ---
+            if (
+                not pending_tool_calls
+                and tools_to_send
+                and current_text
+                and not nudged_tool_format
+                and _looks_like_tool_attempt(current_text)
+            ):
+                nudged_tool_format = True
+                logger.warning("Ответ похож на вызов инструмента, но не распознан — прошу формат JSON")
+                messages.append(ChatMessage(role="assistant", content=current_text))
+                messages.append(ChatMessage(role="user", content=_TOOL_FORMAT_HINT))
+                if on_status:
+                    await on_status("🔁 Формат вызова не распознан — уточняю…")
+                continue
 
             # --- Защита от повторов ---
             if pending_tool_calls and tools_to_send:

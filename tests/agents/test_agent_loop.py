@@ -156,6 +156,136 @@ class TestAgentLoopGuard:
         assert "⏹ Обнаружено повторение вызовов — завершаю" in statuses
 
 
+class _FakeHallucinationClient:
+    """Первый ответ — фейковая ReAct-разметка без распознаваемого вызова."""
+
+    def __init__(self):
+        self.calls = 0
+        self.seen: list[list] = []
+
+    @property
+    def is_cancelled(self):
+        return False
+
+    async def chat(self, model, messages, tools=None, stream=True):
+        self.calls += 1
+        self.seen.append(list(messages))
+        if self.calls == 1:
+            yield ChatChunk(
+                content="## Observation\nВ проекте есть файл Program.cs с классом Main.",
+                done=True,
+            )
+        else:
+            yield ChatChunk(content="Итоговый ответ по проекту.", done=True)
+
+
+class _FakePlainClient:
+    """Обычный ответ без следов вызова инструмента."""
+
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def is_cancelled(self):
+        return False
+
+    async def chat(self, model, messages, tools=None, stream=True):
+        self.calls += 1
+        yield ChatChunk(content="Привет! Чем помочь?", done=True)
+
+
+class _FakeAlwaysTraceClient:
+    """Каждый ответ — фейковая ReAct-разметка без распознаваемого вызова."""
+
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def is_cancelled(self):
+        return False
+
+    async def chat(self, model, messages, tools=None, stream=True):
+        self.calls += 1
+        yield ChatChunk(content="## Action\nосмотреть проект", done=True)
+
+
+class TestAntiHallucinationGuard:
+    async def test_fake_trace_triggers_retry(self):
+        client = _FakeHallucinationClient()
+        statuses: list[str] = []
+
+        async def on_token(t: str):
+            pass
+
+        async def on_status(s: str):
+            statuses.append(s)
+
+        loop = AgentLoop(
+            client=cast(LLMBackend, client),
+            registry=cast(ToolRegistry, _FakeRegistry()),
+            model="m",
+        )
+        result = await loop.run(
+            context=AgentContext(mode=AgentMode.AGENT),
+            messages_history=[],
+            on_token=on_token,
+            on_tool_request=_approve,
+            max_iterations=5,
+            on_status=on_status,
+        )
+
+        assert result == "Итоговый ответ по проекту."
+        assert client.calls == 2
+        assert "🔁 Формат вызова не распознан — уточняю…" in statuses
+        # Во втором запросе модели показали корректирующую подсказку.
+        hint_seen = any("не был распознан" in str(getattr(m, "content", "")) for m in client.seen[1])
+        assert hint_seen
+
+    async def test_plain_answer_not_nudged(self):
+        client = _FakePlainClient()
+
+        async def on_token(t: str):
+            pass
+
+        loop = AgentLoop(
+            client=cast(LLMBackend, client),
+            registry=cast(ToolRegistry, _FakeRegistry()),
+            model="m",
+        )
+        result = await loop.run(
+            context=AgentContext(mode=AgentMode.AGENT),
+            messages_history=[],
+            on_token=on_token,
+            on_tool_request=_approve,
+            max_iterations=5,
+        )
+
+        assert result == "Привет! Чем помочь?"
+        assert client.calls == 1
+
+    async def test_guard_fires_only_once(self):
+        client = _FakeAlwaysTraceClient()
+
+        async def on_token(t: str):
+            pass
+
+        loop = AgentLoop(
+            client=cast(LLMBackend, client),
+            registry=cast(ToolRegistry, _FakeRegistry()),
+            model="m",
+        )
+        result = await loop.run(
+            context=AgentContext(mode=AgentMode.AGENT),
+            messages_history=[],
+            on_token=on_token,
+            on_tool_request=_approve,
+            max_iterations=5,
+        )
+
+        assert "## Action" in result
+        assert client.calls == 2
+
+
 class TestSystemPromptProjectMap:
     """Карта проекта попадает в системный промпт."""
 
