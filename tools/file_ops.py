@@ -201,6 +201,17 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
         snapshot_status = None
         if project_root:
             repo_path = Path(project_root)
+            try:
+                # Не создаём снапшот, если содержимое не изменится
+                if file_path.exists():
+                    try:
+                        existing = file_path.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        existing = None
+                    if existing == content:
+                        return f"Файл не изменился: {file_path.name}"
+            except Exception:
+                pass
             snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
@@ -235,8 +246,12 @@ def _resolve_path(path: str, project_root: str) -> Path | None:
     if project_root:
         root = Path(project_root).resolve()
         try:
-            resolved.relative_to(root)
+            rel = resolved.relative_to(root)
         except ValueError:
             return None
-
+        # Запрещаем запись/доступ к служебным каталогам репозитория/проекта
+        parts = rel.parts
+        if any(part in (".git", ".ollidesk") for part in parts):
+            return None
+        return resolved
     return resolved
