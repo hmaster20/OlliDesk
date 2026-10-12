@@ -1,6 +1,6 @@
 """Тесты чтения правил проекта панелью чата."""
 
-from ui.chat.panel import read_project_rules
+from ui.chat.panel import _MODE_DESCRIPTIONS, read_project_rules
 
 
 class TestReadProjectRules:
@@ -17,3 +17,11 @@ class TestReadProjectRules:
     def test_no_project_returns_empty(self):
         assert read_project_rules(None) == ""
         assert read_project_rules("") == ""
+
+
+class TestModeDescriptions:
+    def test_all_modes_described(self):
+        assert set(_MODE_DESCRIPTIONS) == {0, 1, 2}
+
+    def test_descriptions_non_empty(self):
+        assert all(text.strip() for text in _MODE_DESCRIPTIONS.values())

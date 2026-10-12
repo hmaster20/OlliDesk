@@ -74,6 +74,27 @@ _MIN_ATTACHED_BUDGET = 600
 # чанки одного и того же.
 _RAG_N_RESULTS = 8
 
+# Явное описание режимов для тултипов селектора: что включено и почему.
+_MODE_DESCRIPTIONS: dict[int, str] = {
+    0: (
+        "💬 Chat — обычный диалог с моделью.\n"
+        "Инструменты только для чтения: чтение файлов, поиск по коду, "
+        "погода, время, курсы.\n"
+        "Ничего не меняет на диске. Подходит для вопросов и объяснений."
+    ),
+    1: (
+        "📋 Plan — исследование и планирование.\n"
+        "Инструменты только для чтения: обзор каталогов, чтение файлов, "
+        "поиск по коду.\n"
+        "Запись и Git недоступны — режим для составления плана без изменений."
+    ),
+    2: (
+        "🤖 Agent — полный доступ.\n"
+        "Все инструменты: чтение, запись файлов, Git-снапшоты, поиск, web.\n"
+        "Может менять проект (операции записи подтверждаются)."
+    ),
+}
+
 
 def read_project_rules(project_root: str | None) -> str:
     """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`).
@@ -722,21 +743,9 @@ class ChatPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
-        self.mode_combo.setItemData(
-            0,
-            "Chat — Обычный диалог с LLM + read-only инструменты.",
-            Qt.ItemDataRole.ToolTipRole,
-        )
-        self.mode_combo.setItemData(
-            1,
-            "Plan — Чтение файлов и поиск по коду (read-only).",
-            Qt.ItemDataRole.ToolTipRole,
-        )
-        self.mode_combo.setItemData(
-            2,
-            "Agent — Полный доступ: чтение, запись, Git, поиск.",
-            Qt.ItemDataRole.ToolTipRole,
-        )
+        for index, description in _MODE_DESCRIPTIONS.items():
+            self.mode_combo.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
+        self.mode_combo.setToolTip(_MODE_DESCRIPTIONS[0])
         self.mode_combo.setCurrentIndex(2)  # Agent по умолчанию
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -888,6 +897,7 @@ class ChatPanel(QWidget):
     def _on_mode_changed(self, index: int):
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
+        self.mode_combo.setToolTip(_MODE_DESCRIPTIONS.get(index, ""))
 
         if index > 0 and self.registry:
             model_name = self.get_current_model()
