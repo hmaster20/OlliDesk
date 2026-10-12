@@ -22,42 +22,32 @@ class RoleDefinition(BaseModel):
 class RoleManager:
     """Управляет загрузкой ролей из ~/.ollidesk/roles/."""
 
-    def __init__(self) -> None:
-        self.roles_dir = get_app_data_dir() / "roles"
+    def __init__(self, roles_dir: Path | None = None) -> None:
+        self.roles_dir = roles_dir or (get_app_data_dir() / "roles")
         self.roles: dict[str, RoleDefinition] = {}
+        self._ensure_defaults()
+        self._load_roles()
+
+    def reload(self) -> None:
+        """Перечитывает роли с диска (после правки файлов или горячей перезагрузки)."""
         self._ensure_defaults()
         self._load_roles()
 
     def _ensure_defaults(self) -> None:
         self.roles_dir.mkdir(parents=True, exist_ok=True)
-        defaults = {
-            "default.md": self._get_default_prompt(),
-            "python_dev.md": self._get_python_prompt(),
-            "devops.md": self._get_devops_prompt(),
-            "tech_writer.md": self._get_writer_prompt(),
-            "csharp_dev.md": self._get_csharp_prompt(),
-            "go_dev.md": self._get_go_prompt(),
-            "java_dev.md": self._get_java_prompt(),
-            "frontend_dev.md": self._get_frontend_prompt(),
-            "data_scientist.md": self._get_data_scientist_prompt(),
-            "security_expert.md": self._get_security_prompt(),
-            "project_manager.md": self._get_project_manager_prompt(),
-            "geopolitics.md": self._get_geopolitics_prompt(),
-            "strategy_planner.md": self._get_strategy_prompt(),
-        }
         created = False
-        for filename, content in defaults.items():
-            file_path = self.roles_dir / filename
+        for stem, content in self.default_templates().items():
+            file_path = self.roles_dir / f"{stem}.md"
             if not file_path.exists():
                 file_path.write_text(content, encoding="utf-8")
                 created = True
-                logger.info(f"Создана дефолтная роль: {filename}")
+                logger.info(f"Создана дефолтная роль: {file_path.name}")
         if created:
             self._load_roles()
 
     def _load_roles(self) -> None:
         """Загружает роли из Markdown файлов с YAML frontmatter."""
-        self.roles.clear()
+        roles: dict[str, RoleDefinition] = {}
         for file_path in self.roles_dir.glob("*.md"):
             try:
                 content = file_path.read_text(encoding="utf-8")
@@ -69,7 +59,7 @@ class RoleManager:
                         prompt = parts[2].strip()
 
                         role_id = file_path.stem
-                        self.roles[role_id] = RoleDefinition(
+                        roles[role_id] = RoleDefinition(
                             id=role_id,
                             name=meta.get("name", role_id),
                             icon=meta.get("icon", "🤖"),
@@ -80,14 +70,33 @@ class RoleManager:
                 logger.error(f"Ошибка загрузки роли {file_path.name}: {e}")
 
         # Если по какой-то причине default не загрузился, добавляем хардкодный
-        if "default" not in self.roles:
-            self.roles["default"] = RoleDefinition(
+        if "default" not in roles:
+            roles["default"] = RoleDefinition(
                 id="default",
                 name="Ассистент OlliDesk",
                 icon="🤖",
                 system_prompt=self._get_default_prompt().split("---", 2)[-1].strip(),
             )
+        self.roles = roles
         logger.info(f"Загружено ролей: {len(self.roles)}")
+
+    def default_templates(self) -> dict[str, str]:
+        """Возвращает заводские тексты ролей (stem файла → содержимое)."""
+        return {
+            "default": self._get_default_prompt(),
+            "python_dev": self._get_python_prompt(),
+            "devops": self._get_devops_prompt(),
+            "tech_writer": self._get_writer_prompt(),
+            "csharp_dev": self._get_csharp_prompt(),
+            "go_dev": self._get_go_prompt(),
+            "java_dev": self._get_java_prompt(),
+            "frontend_dev": self._get_frontend_prompt(),
+            "data_scientist": self._get_data_scientist_prompt(),
+            "security_expert": self._get_security_prompt(),
+            "project_manager": self._get_project_manager_prompt(),
+            "geopolitics": self._get_geopolitics_prompt(),
+            "strategy_planner": self._get_strategy_prompt(),
+        }
 
     def get_all_roles(self) -> list[RoleDefinition]:
         return list(self.roles.values())

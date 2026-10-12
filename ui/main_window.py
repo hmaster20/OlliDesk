@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from agents.ollama_client import OllamaClient
 from core.config import AppConfig
 from core.model_registry import ModelRegistry
+from core.prompt_watcher import PromptWatcher
 from core.search_cache import SearchCache
 from core.system_prompts import SystemPromptManager
 from core.utils import get_app_data_dir
@@ -261,6 +262,10 @@ class MainWindow(QMainWindow):
 
         # Инициализация менеджера промптов
         self.prompt_manager = SystemPromptManager()
+
+        # Горячая перезагрузка промптов и ролей при правке файлов на диске
+        self.prompt_watcher = PromptWatcher(self.prompt_manager, self.role_manager)
+        self.prompt_watcher.start()
 
         # Индексация
         self.indexer = FileIndexer(config, self.project_path)
@@ -1230,6 +1235,7 @@ class MainWindow(QMainWindow):
             logger.info("✅ Конфиг сохранён в closeEvent")
         self._stop_all_threads()
         self._stop_model_check()
+        self.prompt_watcher.stop()
         event.accept()
 
     def _save_project_settings(self) -> None:

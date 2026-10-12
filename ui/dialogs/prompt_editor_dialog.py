@@ -129,13 +129,10 @@ class PromptEditorDialog(QDialog):
         try:
             self._current_file_path.write_text(content, encoding="utf-8")
             QMessageBox.information(self, "Успех", f"Файл сохранён:\n{self._current_file_path}")
-            # Обновляем кэш менеджеров (если нужно)
+            # Обновляем состояние менеджеров (без перезапуска приложения)
             if self.type_combo.currentText() == "Системные промты":
-                # Сбросить кэш для соответствующего режима
-                mode = self._current_file_path.stem
-                self.prompt_manager._cache.pop(mode, None)
+                self.prompt_manager.clear_cache()
             else:
-                # Перезагрузить роли
-                self.role_manager._load_roles()
+                self.role_manager.reload()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")

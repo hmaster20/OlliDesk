@@ -136,8 +136,9 @@ OlliDesk/
 | `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
 | `core/exceptions.py` | Иерархия исключений | `OlliDeskError` + `ConfigError`, `OllamaConnectionError`, `ToolsNotSupportedError`, `ModelNotFoundError`, `IndexingError`, `EmbedderError`, `ToolExecutionError` |
-| `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`; шаблоны `{{переменная}}` (`project_name`, `language`, `project_root`, `project_map` — см. `ChatPanel._template_context`), проектный → глобальный поиск |
-| `core/roles.py` | 13 ролей-персон (Markdown + YAML-frontmatter) | `RoleManager`, `RoleDefinition` |
+| `core/system_prompts.py` | Системные промпты режимов chat/plan/agent | `SystemPromptManager`, модульный `DEFAULT_PROMPTS`, `default_prompt(mode)`, `clear_cache()`; шаблоны `{{переменная}}` (`project_name`, `language`, `project_root`, `project_map` — см. `ChatPanel._template_context`), проектный → глобальный поиск |
+| `core/roles.py` | 13 ролей-персон (Markdown + YAML-frontmatter) | `RoleManager(roles_dir=None)`, `RoleDefinition`, `reload()`, `default_templates()` |
+| `core/prompt_watcher.py` | Горячая перезагрузка промптов и ролей | `PromptWatcher` (watchdog `Observer` + debounce 0.4 с): на изменение `*.md` в `system_prompts/` и `roles/` зовёт `prompt_manager.clear_cache()` + `role_manager.reload()`; `start()/stop()/is_running`. Поднимается в `MainWindow`, гасится в `closeEvent` |
 | `core/model_registry.py` | Каталог моделей + поддержка tool-calling | `ModelRegistry`, `ModelInfo` |
 | `core/search_cache.py` | Кэш результатов web-поиска и порядка реранка (SQLite, TTL 24 ч) | `SearchCache.get()/set()`, `get_list()/set_list()` (JSON-список, ключ реранка с префиксом `rerank\|`) |
 | `core/context_budget.py` | Оценка токенов и бюджет контекста под окно модели | `estimate_tokens`, `resolve_num_ctx`, `attached_char_budget`, `system_prompt_char_budget` (`SYSTEM_PROMPT_SHARE`), `rag_char_budget`, `KNOWN_NUM_CTX` |
