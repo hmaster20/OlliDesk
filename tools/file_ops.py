@@ -8,6 +8,57 @@ from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 from tools.git_ops import create_snapshot
 
+_SKIP_NAMES = {
+    ".git",
+    ".svn",
+    ".hg",
+    ".vs",
+    ".vscode",
+    ".idea",
+    ".gradle",
+    ".next",
+    ".nuxt",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".tox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "bin",
+    "obj",
+    "dist",
+    "build",
+    "target",
+    "TestResults",
+    "htmlcov",
+    "coverage",
+}
+
+_MAX_ENTRIES = 200
+
+
+def _format_size(num_bytes: int) -> str:
+    """Человекочитаемый размер файла (B/KB/MB/GB)."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _count_entries(directory: Path) -> int:
+    """Число элементов в каталоге; при ошибке доступа — 0."""
+    try:
+        return sum(1 for _ in directory.iterdir())
+    except OSError:
+        return 0
+
 
 @tool(
     name="read_file",
@@ -47,17 +98,27 @@ def read_file(path: str, project_root: str = "") -> str:
 
 @tool(
     name="list_directory",
-    description="Возвращает список файлов и папок в директории",
+    description=(
+        "Показывает содержимое директории: подкаталоги и файлы с размерами. "
+        "Служебные каталоги (bin, obj, node_modules, .git и т.п.) пропускаются. "
+        "Путь '.' — корень проекта."
+    ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 def list_directory(path: str, project_root: str = "") -> str:
-    """Возвращает содержимое директории.
+    """Возвращает содержимое директории в виде дерева одного уровня.
+
+    Служебные каталоги и файлы отфильтровываются, чтобы модель видела только
+    значимую структуру проекта. Если ``path`` указывает прямо на служебный
+    каталог, его содержимое всё равно показывается.
+
     Args:
-        path: Путь к директории (абсолютный или относительный)
-        project_root: Корень проекта для проверки безопасности
+        path: Путь к директории (абсолютный или относительный).
+        project_root: Корень проекта для проверки безопасности.
+
     Returns:
-        Список файлов и папок
+        Список подкаталогов/файлов с размерами или сообщение об ошибке.
     """
     dir_path = _resolve_path(path, project_root)
     if not dir_path:
@@ -70,14 +131,44 @@ def list_directory(path: str, project_root: str = "") -> str:
         return f"Это не директория: {dir_path}"
 
     try:
-        entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        lines = []
-        for entry in entries:
-            suffix = "/" if entry.is_dir() else ""
-            lines.append(f"{entry.name}{suffix}")
-        result = "\n".join(lines)
-        logger.debug(f"Прочитана директория: {dir_path} ({len(lines)} записей)")
-        return result
+        dirs: list[str] = []
+        files: list[str] = []
+        skipped = 0
+        for entry in sorted(dir_path.iterdir(), key=lambda p: p.name.lower()):
+            if entry.name in _SKIP_NAMES:
+                skipped += 1
+                continue
+            try:
+                if entry.is_dir():
+                    dirs.append(f"  {entry.name}/ — {_count_entries(entry)} элементов")
+                else:
+                    files.append(f"  {entry.name} — {_format_size(entry.stat().st_size)}")
+            except OSError:
+                (dirs if entry.is_dir() else files).append(f"  {entry.name}")
+
+        total = len(dirs) + len(files)
+        if total == 0:
+            return f"Директория пуста: {dir_path}"
+
+        lines = [f"Содержимое: {dir_path}"]
+        shown = 0
+        take_dirs = dirs[: max(_MAX_ENTRIES - shown, 0)]
+        if take_dirs:
+            lines.append("Каталоги:")
+            lines.extend(take_dirs)
+            shown += len(take_dirs)
+        take_files = files[: max(_MAX_ENTRIES - shown, 0)]
+        if take_files:
+            lines.append("Файлы:")
+            lines.extend(take_files)
+            shown += len(take_files)
+        if total > shown:
+            lines.append(f"… показано {shown} из {total}")
+        if skipped:
+            lines.append(f"(служебных элементов пропущено: {skipped})")
+
+        logger.debug(f"Прочитана директория: {dir_path} ({total} записей)")
+        return "\n".join(lines)
     except PermissionError:
         return f"Ошибка доступа: {dir_path}"
     except Exception as e:

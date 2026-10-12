@@ -88,16 +88,47 @@ class TestReadFile:
 
 
 class TestListDirectory:
-    def test_lists_files_with_dir_suffix(self, temp_project: Path):
+    def test_lists_dirs_and_files(self, temp_project: Path):
         result = list_directory(".", project_root=str(temp_project))
-        lines = result.splitlines()
-        assert "src/" in lines
-        assert "tests/" in lines
+        assert "Каталоги:" in result
+        assert "  src/" in result
+        assert "  tests/" in result
 
-    def test_dirs_sorted_before_files(self, temp_project: Path):
+    def test_dirs_listed_before_files(self, temp_project: Path):
         (temp_project / "aaa.txt").write_text("x")
-        lines = list_directory(".", project_root=str(temp_project)).splitlines()
-        assert lines.index("src/") < lines.index("aaa.txt")
+        result = list_directory(".", project_root=str(temp_project))
+        assert result.index("Каталоги:") < result.index("Файлы:")
+        assert result.index("  src/") < result.index("  aaa.txt")
+
+    def test_service_dirs_are_hidden(self, temp_project: Path):
+        (temp_project / "bin").mkdir()
+        (temp_project / "node_modules").mkdir()
+        result = list_directory(".", project_root=str(temp_project))
+        assert "  bin/" not in result
+        assert "  node_modules/" not in result
+        assert "служебных элементов пропущено: 2" in result
+
+    def test_explicit_service_dir_is_listed(self, temp_project: Path):
+        bin_dir = temp_project / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "app.dll").write_bytes(b"x")
+        result = list_directory("bin", project_root=str(temp_project))
+        assert "  app.dll" in result
+
+    def test_file_size_is_shown(self, temp_project: Path):
+        (temp_project / "data.txt").write_bytes(b"0" * 2048)
+        result = list_directory(".", project_root=str(temp_project))
+        assert "  data.txt — 2.0 KB" in result
+
+    def test_dir_shows_entry_count(self, temp_project: Path):
+        result = list_directory(".", project_root=str(temp_project))
+        assert "  src/ — " in result
+
+    def test_empty_directory(self, temp_project: Path):
+        empty = temp_project / "empty"
+        empty.mkdir()
+        result = list_directory("empty", project_root=str(temp_project))
+        assert result.startswith("Директория пуста")
 
     def test_missing_directory(self, temp_project: Path):
         result = list_directory("нет_такой", project_root=str(temp_project))
