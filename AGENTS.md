@@ -340,7 +340,7 @@ MainWindow (QMainWindow, ui/main_window.py)
 | `ui/dialogs/slm_models_dialog.py` | ~295 | Менеджер GGUF-моделей: скачать / удалить / активировать |
 | `ui/dialogs/tool_confirmation_dialog.py` | ~152 | Одобрить / отклонить / **отредактировать аргументы** вызова инструмента |
 | `ui/dialogs/session_manager_dialog.py` | ~80 | Таблица сессий: открыть, удалить, экспорт |
-| `ui/dialogs/prompt_editor_dialog.py` | ~115 | Редактор системных промптов и ролей |
+| `ui/dialogs/prompt_editor_dialog.py` | ~200 | Редактор системных промптов и ролей: вкладки «Редактор»/«Превью» (рендер `{{переменные}}` с примером контекста), кнопка «↩ По умолчанию» (заводской текст из `SystemPromptManager.default_prompt` / `RoleManager.default_templates`), сохранение с `clear_cache()`/`reload()` |
 | `ui/web_editor/editor_widget.py` | ~265 | `QWebEngineView` + `PythonBridge` (QWebChannel). `open_file(path, line=0)` открывает файл и (при `line>0`) ставит курсор на строку |
 | `ui/web_editor/editor.js` | ~300 | Monaco: загрузка файлов, diff-режим, статус-бар, `openFile(path, line)` с `revealLineInCenter` |
 

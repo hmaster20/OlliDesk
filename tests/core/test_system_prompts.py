@@ -46,3 +46,25 @@ class TestProjectOverride:
         result = manager.get_prompt("chat", project_root=project, context={"project_name": "P"})
 
         assert result == "project P"
+
+
+class TestDefaults:
+    def test_default_prompt_known_mode(self):
+        assert SystemPromptManager.default_prompt("chat")
+        assert SystemPromptManager.default_prompt("agent")
+
+    def test_default_prompt_unknown_mode(self):
+        assert SystemPromptManager.default_prompt("nope") == ""
+
+    def test_ensure_defaults_writes_all_modes(self, tmp_path):
+        prompts_dir = tmp_path / "sp"
+        prompts_dir.mkdir()
+
+        SystemPromptManager(prompts_dir=prompts_dir)
+
+        for mode in ("chat", "plan", "agent"):
+            assert (prompts_dir / f"{mode}.md").exists()
+
+    def test_render_template_substitutes_and_keeps_unknown(self):
+        result = SystemPromptManager.render_template("{{a}} / {{b}}", {"a": "1"})
+        assert result == "1 / {{b}}"

@@ -65,6 +65,11 @@ class SystemPromptManager:
         """Возвращает заводской текст промпта для режима или пустую строку."""
         return DEFAULT_PROMPTS.get(f"{mode}.md", "")
 
+    @staticmethod
+    def render_template(template: str, context: dict) -> str:
+        """Публичная шаблонизация {{key}} (для превью в редакторе промптов)."""
+        return SystemPromptManager._render(template, context)
+
     def get_prompt(self, mode: str, project_root: Path | None = None, context: dict | None = None) -> str:
         """
         Возвращает системный промт для режима (chat, plan, agent).
@@ -104,7 +109,8 @@ class SystemPromptManager:
             return content
         return None
 
-    def _render(self, template: str, context: dict) -> str:
+    @staticmethod
+    def _render(template: str, context: dict) -> str:
         """Заменяет {{key}} на значения из контекста."""
 
         def repl(match: re.Match[str]) -> str:
