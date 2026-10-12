@@ -1,11 +1,12 @@
 """Реестр инструментов с автоматической генерацией JSON-схем."""
 
 import inspect
+import json
 from collections.abc import Callable
 from typing import Any, TypeVar, get_type_hints
 
 from loguru import logger
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError, create_model
 
 from agents.ollama_client import ToolCall, ToolSchema
 from core.config import AgentMode, ToolPolicy
@@ -37,6 +38,32 @@ def _type_to_json_schema(tp: type) -> dict[str, Any]:
 
 
 _INJECTED_PARAMS = {"vector_store", "project_root", "search_cache", "attached_files"}
+
+
+def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
+    """Строит pydantic-модель для аргументов инструмента (без инъектируемых).
+
+    Валидация ловит пропущенные обязательные аргументы и неверные типы до
+    выполнения, чтобы модель получила понятную ошибку и исправила вызов.
+    """
+    sig = inspect.signature(func)
+    hints = get_type_hints(func)
+    fields: dict[str, Any] = {}
+    for name, param in sig.parameters.items():
+        if name == "return" or name.startswith("_") or name in _INJECTED_PARAMS:
+            continue
+        param_type = hints.get(name, str)
+        if param.default is inspect.Parameter.empty:
+            fields[name] = (param_type, ...)
+        else:
+            fields[name] = (param_type, param.default)
+    if not fields:
+        return None
+    try:
+        return create_model(f"{func.__name__}_args", **fields)
+    except Exception:
+        logger.exception(f"Не удалось построить валидатор аргументов для {func.__name__}")
+        return None
 
 
 def _generate_schema(func: Callable[..., Any]) -> dict[str, Any]:
@@ -131,7 +158,11 @@ class ToolRegistry:
         schema = _generate_schema(func)
         schema["name"] = meta["name"]
 
-        self._tools[meta["name"]] = {**meta, "schema": schema}
+        self._tools[meta["name"]] = {
+            **meta,
+            "schema": schema,
+            "validator": _build_arg_validator(func),
+        }
         logger.debug(f"Зарегистрирован инструмент: {meta['name']} (policy={meta['policy'].value})")
 
     def get_schemas(self, mode: AgentMode) -> list[ToolSchema]:
@@ -188,17 +219,40 @@ class ToolRegistry:
         """
         meta = self._tools.get(tool_call.name)
         if not meta:
+            payload = {
+                "error": "unknown_tool",
+                "requested": tool_call.name,
+                "available": sorted(self._tools.keys()),
+            }
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Инструмент '{tool_call.name}' не найден",
+                content=json.dumps(payload, ensure_ascii=False),
                 is_error=True,
             )
 
         func = meta["func"]
         sig = inspect.signature(func)
         filtered_kwargs = {k: v for k, v in extra_kwargs.items() if k in sig.parameters}
-        merged_args = {**tool_call.arguments, **filtered_kwargs}
+
+        validator = meta.get("validator")
+        if validator is not None:
+            provided = {k: v for k, v in tool_call.arguments.items() if k not in _INJECTED_PARAMS}
+            try:
+                validated = validator.model_validate(provided)
+            except ValidationError as e:
+                logger.warning(f"Неверные аргументы вызова {tool_call.name}: {e}")
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                    content=f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
+                    is_error=True,
+                )
+            args_from_model = validated.model_dump()
+        else:
+            args_from_model = dict(tool_call.arguments)
+
+        merged_args = {**args_from_model, **filtered_kwargs}
         try:
             if inspect.iscoroutinefunction(func):
                 result_content = await func(**merged_args)

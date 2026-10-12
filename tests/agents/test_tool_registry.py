@@ -1,5 +1,6 @@
 """Тесты реестра инструментов."""
 
+import json
 from typing import Any, cast
 
 import pytest
@@ -131,7 +132,10 @@ class TestExecute:
     async def test_unknown_tool_returns_error(self):
         result = await ToolRegistry().execute(ToolCall(name="nope", arguments={}))
         assert result.is_error
-        assert "не найден" in result.content
+        payload = json.loads(result.content)
+        assert payload["error"] == "unknown_tool"
+        assert payload["requested"] == "nope"
+        assert "available" in payload
 
     @pytest.mark.asyncio
     async def test_exception_becomes_error_result(self):
@@ -142,6 +146,64 @@ class TestExecute:
         result = await _registry_with(boom).execute(ToolCall(name="boom", arguments={}))
         assert result.is_error
         assert "kaput" in result.content
+
+
+class TestArgumentValidation:
+    """Валидация аргументов до выполнения."""
+
+    @pytest.mark.asyncio
+    async def test_missing_required_argument(self):
+        result = await _registry_with(probe_tool).execute(ToolCall(name="probe_tool", arguments={}))
+        assert result.is_error
+        assert "Ошибка аргументов" in result.content
+
+    @pytest.mark.asyncio
+    async def test_wrong_type_argument(self):
+        result = await _registry_with(probe_tool).execute(
+            ToolCall(name="probe_tool", arguments={"query": "x", "limit": "not-a-number"})
+        )
+        assert result.is_error
+        assert "Ошибка аргументов" in result.content
+
+    @pytest.mark.asyncio
+    async def test_valid_args_are_coerced_and_passed(self):
+        received: dict[str, Any] = {}
+
+        @tool(name="typed", description="typed", policy=ToolPolicy.AUTO)
+        def typed(query: str, limit: int = 5) -> str:
+            nonlocal received
+            received = {"query": query, "limit": limit}
+            return "ok"
+
+        result = await _registry_with(typed).execute(
+            ToolCall(name="typed", arguments={"query": "x", "limit": "3"})
+        )
+        assert result.is_error is False
+        assert received == {"query": "x", "limit": 3}
+
+    @pytest.mark.asyncio
+    async def test_injected_params_not_required_from_model(self):
+        @tool(name="injectable", description="injectable", policy=ToolPolicy.AUTO)
+        def injectable(query: str, project_root: Any = None) -> str:
+            return f"{query}:{project_root}"
+
+        result = await _registry_with(injectable).execute(
+            ToolCall(name="injectable", arguments={"query": "x"}),
+            project_root="/root",
+        )
+        assert result.is_error is False
+        assert result.content == "x:/root"
+
+    @pytest.mark.asyncio
+    async def test_injected_param_cannot_be_overridden_by_model(self):
+        @tool(name="guarded", description="guarded", policy=ToolPolicy.AUTO)
+        def guarded(query: str, project_root: Any = None) -> str:
+            return str(project_root)
+
+        result = await _registry_with(guarded).execute(
+            ToolCall(name="guarded", arguments={"query": "x", "project_root": "/evil"})
+        )
+        assert result.content == "None"
 
 
 def _registry_with(*funcs: Any) -> ToolRegistry:
