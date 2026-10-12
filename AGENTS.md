@@ -131,7 +131,7 @@ OlliDesk/
 | Модуль | Назначение | Ключевое |
 |---|---|---|
 | `core/app.py` | Bootstrap приложения | `OlliDeskApp`, `main()`; применяет тему, открывает `SetupWizard` при отсутствии конфига |
-| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `RerankSettings`, `EmbedModels`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode` |
+| `core/config.py` | Конфигурация (PyYAML + pydantic) | `AppConfig`, `ModelConfig`, `SLMConfig`, `SLMModelInfo`, `ConfirmSettings`, `BackendSettings`, `RerankSettings`, `EmbedModels`, `ConfigLoader`, глобальный `config_loader`; енамы `ModelRole`, `ToolPolicy`, `AgentMode`. `DEFAULT_INDEX_EXTENSIONS` (широкий список: C#/Java/Go/…, `~/.ollidesk/config.yaml`), `ConfigLoader._migrate_config` поднимает `schema_version` v1 → v2 и расширяет устаревший дефолтный `index_extensions` (пользовательский список не трогает) |
 | `core/logger.py` | Логирование | `setup_logger(dir, level)` — sink в stderr + rotating-файл |
 | `core/_version.py` | Версия приложения | `__version__` — единственный источник для кода; синхронизируется с `pyproject.toml` через `bump-my-version` |
 | `core/utils.py` | Пути | `get_app_data_dir()` → `~/.ollidesk`; `get_resource_path()` с учётом `_MEIPASS` |
@@ -147,7 +147,7 @@ OlliDesk/
 | Модуль | Назначение |
 |---|---|
 | `agents/ollama_client.py` | Wire-типы (`ChatMessage`, `ToolCall`, `ChatChunk`, `ChatOptions`, `ToolSchema`) + асинхронный HTTP/stream-клиент Ollama (`OllamaClient`) |
-| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext`. Системный промпт собирается посекционно и укладывается в `system_prompt_char_budget(num_ctx)` (переменные секции RAG → карта → правила урезаются при переполнении). Перед циклом прореживает промпт (`_compact_history` → `history_compactor`) |
+| `agents/agent_loop.py` | ReAct-цикл: сборка системного промпта → стрим → вызов инструментов → повтор. `AgentLoop`, `AgentContext`. Системный промпт собирается посекционно и укладывается в `system_prompt_char_budget(num_ctx)` (переменные секции RAG → карта → правила урезаются при переполнении). Перед циклом прореживает промпт (`_compact_history` → `history_compactor`). Если ответ модели похож на вызов инструмента (`Action:` / `Observation:`), но ничего не распознано, — один раз просит переслать в JSON (`_REACT_SCAFFOLD_RE`, `_looks_like_tool_attempt`) |
 | `agents/history_compactor.py` | Сжатие истории при >80 % окна контекста. Детерминированное прореживание по приоритету 4.8.E: сначала опустошение старых tool-результатов, затем отбрасывание старейших реплик целиком; system и последняя реплика сохраняются. `compact_history`, `messages_tokens` |
 | `agents/tool_registry.py` | `@tool`-декоратор, генерация JSON Schema из type hints, `ToolRegistry.execute()` |
 | `agents/model_router.py` | Выбор бэкенда по приоритету из конфига с fallback: rule-based в конце. Также перебор бэкендов для эмбеддингов |
@@ -181,6 +181,11 @@ OlliDesk/
 умолчанию — `_DEFAULT_TEMPERATURE = 0.3` (AgentLoop не передаёт `options`, поэтому
 `slm.temperature` из конфига сейчас не влияет).
 
+Инструкция по инструментам для SLM (`LocalLLMClient._build_tool_instruction`) нейтральна к
+набору инструментов: единый JSON-формат, примеры (`list_directory`/`read_file`/
+`search_codebase`/`web_search`/…), пошаговый рецепт «Как изучить проект» и правила
+(вызывать инструменты самому, не выдумывать содержимое файлов).
+
 ### `tools/` — инструменты для модели
 
 Каждая функция помечена `@tool(name, description, policy, modes)`; декоратор **только ставит
@@ -206,6 +211,9 @@ OlliDesk/
   `attached_files`. `ToolRegistry` отфильтровывает их из JSON-схемы (см. `_INJECTED_PARAMS`).
 - `tools/file_ops.py::_resolve_path` — песочница: `Path.resolve()` + `relative_to(project_root)`;
   выход за пределы проекта запрещён.
+- `tools/file_ops.py::list_directory` показывает дерево одного уровня: подкаталоги с числом
+  элементов и файлы с размером; служебные каталоги (`bin`, `obj`, `node_modules`, `.git` и др.
+  из `_SKIP_NAMES`) пропускаются (если указать их явно — показываются).
 - `tools/codebase_search.py::search_codebase` принимает необязательные `language=`, `path=`
   (префикс пути) и `modified_after=`/`modified_before=` (даты `YYYY-MM-DD`, преобразуются в
   unix-границы дня) — фильтры уходят в `VectorStore.search` (`language`/`path_prefix`/
@@ -227,7 +235,8 @@ OlliDesk/
 
 - `fs/indexer.py` — `FileIndexer`: обход с учётом `.gitignore` (`pathspec`), фильтры по
   расширению/размеру, SHA-256 хэши, чанкинг по строкам с перекрытием, определение языка
-  (`_detect_language`), `incremental_scan()` для догрузки только изменений.
+  (`_detect_language` — python/js/ts + C#, Java, Go, Rust, C/C++, PHP, Ruby и др.),
+  `incremental_scan()` для догрузки только изменений.
   `chunk_file(content, file_path, mtime=None)` кладёт `language` и (если передан) `mtime`
   в метаданные чанка. Игнор-паттерны собираются в один `PathSpec` в порядке возрастания
   приоритета: `config.ignored_patterns` → `.gitignore` проекта → `.ollideskignore` →
