@@ -57,6 +57,7 @@ class AgentChatThread(QThread):
     tool_started = Signal(str, str)
     finish_received = Signal(str)
     error_occurred = Signal(str)
+    iteration_limit_exceeded = Signal()  # Достигнут лимит итераций — запросить продолжение
     iteration_changed = Signal(int, int)
     tools_status_changed = Signal(bool)
     status_changed = Signal(str)
@@ -137,6 +138,8 @@ class AgentChatThread(QThread):
 
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
+            # Лимит итераций достигнут — сигналим панели для показа кнопки "Продолжить"
+            self.iteration_limit_exceeded.emit()
             self.error_occurred.emit(str(e))
         except Exception as e:
             self.error_occurred.emit(f"Ошибка агента: {e}")

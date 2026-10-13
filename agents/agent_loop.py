@@ -214,7 +214,7 @@ def _fit_sections(
     return remaining
 
 
-def _build_system_prompt(context: AgentContext) -> str:
+def _build_system_prompt(context: AgentContext, iteration: int = 0, max_iterations: int = 0) -> str:
     """Собирает system-промпт из контекста, роли и инструкций по tools.
 
     Фиксированные блоки (роль, instructions, подсказка режима, проект, языковая
@@ -225,6 +225,15 @@ def _build_system_prompt(context: AgentContext) -> str:
     base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
 
     pre = [base_prompt, _TOOL_USE_INSTRUCTION]
+
+    # Step-awareness: итерация N из M
+    if max_iterations > 0 and iteration >= 0:
+        iter_line = f"ТЕКУЩАЯ ИТЕРАЦИЯ: {iteration + 1} из {max_iterations}."
+        remaining = max_iterations - (iteration + 1)
+        if remaining <= 1:
+            iter_line += " На последних итерациях СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer."
+        pre.append(iter_line)
+
     pre.append(_MODE_HINTS.get(context.mode, _MODE_HINTS[AgentMode.CHAT]))
     project_block = _project_block(context)
     if project_block:
@@ -339,7 +348,7 @@ class AgentLoop:
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
     ) -> str:
-        messages = [ChatMessage(role="system", content=_build_system_prompt(context))]
+        messages = [ChatMessage(role="system", content=_build_system_prompt(context, iteration=0, max_iterations=max_iterations))]
         messages.extend(messages_history)
         messages = self._compact_history(messages)
 
@@ -370,6 +379,10 @@ class AgentLoop:
                     await on_status("🤔 Анализирую запрос…")
                 else:
                     await on_status(f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…")
+
+            # Обновляем system-промпт с текущим номером итерации
+            messages[0] = ChatMessage(role="system", content=_build_system_prompt(context, iteration=iteration, max_iterations=max_iterations))
+            messages = self._compact_history(messages)
 
             try:
                 stream = self.client.chat(
@@ -515,4 +528,29 @@ class AgentLoop:
 
             return current_text
 
-        raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})")
+        # Вместо выбрасывания ошибки делаем финальный вызов без инструментов
+        logger.info(f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools")
+        if on_status:
+            await on_status("⏳ Лимит итераций — формирую финальный ответ…")
+
+        messages_final = messages
+        try:
+            final_text = ""
+            stream = self.client.chat(
+                model=self.model,
+                messages=messages_final,
+                tools=None,
+                stream=True,
+            )
+            async for chunk in stream:
+                if chunk.reasoning_content and on_thinking:
+                    await on_thinking(chunk.reasoning_content)
+                if chunk.content:
+                    final_text += chunk.content
+                    await on_token(chunk.content)
+            if self.client.is_cancelled:
+                return final_text or "Отменено"
+            return final_text
+        except Exception as e:
+            logger.error(f"Ошибка финального вызова после лимита итераций: {e}")
+            raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})") from e
