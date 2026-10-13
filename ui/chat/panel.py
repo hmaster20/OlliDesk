@@ -1180,7 +1180,24 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        merged_context = "\n\n".join(filter(None, [self._attached_context(), self._rag_context or ""]))
+        # Добавляем AGENTS.md в контекст проекта (по аналогии с OpenCode Desktop)
+        try:
+            from pathlib import Path as _P
+
+            agents_md = ""
+            if self.project_root:
+                p = _P(self.project_root) / "AGENTS.md"
+                if p.is_file():
+                    agents_md = p.read_text(encoding="utf-8").strip()
+            if not agents_md and self.project_root:
+                p2 = _P(self.project_root) / ".ollidesk" / "AGENTS.md"
+                if p2.is_file():
+                    agents_md = p2.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать AGENTS.md: {e}")
+            agents_md = ""
+
+        merged_context = "\n\n".join(filter(None, [agents_md, self._attached_context(), self._rag_context or ""]))
 
         context = AgentContext(
             system_prompt=combined,
@@ -1248,7 +1265,24 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        merged_context = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
+        # Добавляем AGENTS.md в контекст проекта (по аналогии с OpenCode Desktop)
+        try:
+            from pathlib import Path as _P
+
+            agents_md = ""
+            if self.project_root:
+                p = _P(self.project_root) / "AGENTS.md"
+                if p.is_file():
+                    agents_md = p.read_text(encoding="utf-8").strip()
+            if not agents_md and self.project_root:
+                p2 = _P(self.project_root) / ".ollidesk" / "AGENTS.md"
+                if p2.is_file():
+                    agents_md = p2.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать AGENTS.md: {e}")
+            agents_md = ""
+
+        merged_context = "\n\n".join(filter(None, [agents_md, self._attached_context(), rag_context]))
 
         context = AgentContext(
             system_prompt=combined,
