@@ -149,6 +149,20 @@ _TOOL_FORMAT_HINT = (
     "Если данные из инструментов не нужны — дай обычный ответ по существу."
 )
 
+# Подсказка после «мелкого» исследования: модель посмотрела только список
+# файлов и пытается отвечать. Без неё SLM (Qwen 7B/14B) часто останавливается
+# на list_directory и отдаёт список файлов как финальный ответ.
+_SHALLOW_INVESTIGATION_HINT = (
+    "Ты видишь только ИМЕНА файлов — этого недостаточно для ответа о структуре, "
+    "архитектуре или логике проекта. Прочитай ключевые файлы через read_file "
+    "(README.md, точка входа, главный модуль, ключевые каталоги) и, если нужно, "
+    "поищи по коду через search_codebase. Только после этого давай финальный ответ."
+)
+
+# Инструменты «глубокого» изучения: если хотя бы один из них вызван — модель
+# действительно копает, и подсказка про list_directory уже не нужна.
+_DEEP_INVESTIGATION_TOOLS = frozenset({"read_file", "search_codebase", "read_attached_file"})
+
 
 def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента.
@@ -358,8 +372,10 @@ class AgentLoop:
 
         prev_signature: tuple[tuple[str, str], ...] | None = None
         nudged_tool_format = False
+        nudged_shallow = False
 
         executed_calls: dict[tuple[str, str], str] = {}
+        executed_tool_names: set[str] = set()
         observation_budget = 0
         client_num_ctx = getattr(self.client, "num_ctx", 0)
         if isinstance(client_num_ctx, int) and client_num_ctx > 0:
@@ -508,6 +524,7 @@ class AgentLoop:
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
+                    executed_tool_names.add(tc.name)
                     if on_tool_result:
                         await on_tool_result(result.name, result.content, result.is_error)
                     messages.append(
@@ -522,7 +539,27 @@ class AgentLoop:
 
                 continue
 
-            # Нет tools — финальный ответ
+            # Нет tools — модель пытается дать финальный ответ.
+            # Если она вызвала только list_directory и НЕ читала файлов —
+            # один раз просим прочитать ключевые файлы, а не отдавать список.
+            if (
+                current_text
+                and tools_to_send
+                and not nudged_shallow
+                and executed_tool_names
+                and not (executed_tool_names & _DEEP_INVESTIGATION_TOOLS)
+            ):
+                nudged_shallow = True
+                logger.info(
+                    "Агент ответил после мелкого исследования "
+                    f"(инструменты: {sorted(executed_tool_names)}) — прошу прочитать ключевые файлы"
+                )
+                messages.append(ChatMessage(role="assistant", content=current_text))
+                messages.append(ChatMessage(role="user", content=_SHALLOW_INVESTIGATION_HINT))
+                if on_status:
+                    await on_status("🔁 Читаю ключевые файлы проекта…")
+                continue
+
             if current_text:
                 messages.append(ChatMessage(role="assistant", content=current_text))
 

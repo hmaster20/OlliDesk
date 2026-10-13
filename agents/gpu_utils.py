@@ -5,6 +5,7 @@ NVIDIA/драйвера возвращает None, и вызывающий ко�
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,9 @@ VRAM_RESERVE_MB = 700
 
 # Типичная LLM имеет 24–40 слоёв; 32 — безопасная оценка для расчёта offload.
 APPROX_LAYERS = 32
+
+# Имя split-части GGUF: <stem>-00001-of-00003.gguf
+_SPLIT_RE = re.compile(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
 def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
@@ -41,10 +45,7 @@ def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
 
 
 def get_free_vram_mb() -> int | None:
-    """Свободная VRAM первой NVIDIA-карты в МБ, или None.
-
-    Использует nvidia-smi. Не падает, если GPU/драйвера нет — просто None.
-    """
+    """Свободная VRAM первой NVIDIA-карты в МБ, или None."""
     if shutil.which("nvidia-smi") is None:
         return None
 
@@ -85,6 +86,51 @@ def get_total_vram_mb() -> int | None:
         return None
 
 
+def model_total_size_mb(model_path: Path) -> int:
+    """Полный размер модели в МБ: для split — сумма всех частей.
+
+    Для разбитой модели llama.cpp передаётся путь к первой части
+    (<stem>-00001-of-00003.gguf), и ``stat().st_size`` вернул бы размер
+    только этой части — в 2-3 раза меньше реального. Из-за этого
+    ``detect_optimal_gpu_layers`` завышал число слоёв под GPU, и модель
+    уходила в OOM/своп. Здесь считаем сумму всех частей по имени первой.
+
+    Args:
+        model_path: Путь к GGUF-файлу (для split — к первой части).
+
+    Returns:
+        Полный размер в МБ или 0, если файл недоступен.
+    """
+    match = _SPLIT_RE.match(model_path.name)
+    if match:
+        stem, _, total_str = match.groups()
+        total_parts = int(total_str)
+        total_bytes = 0
+        found = 0
+        for i in range(1, total_parts + 1):
+            part_name = f"{stem}-{i:05d}-of-{total_parts:05d}.gguf"
+            part = model_path.parent / part_name
+            if part.exists():
+                try:
+                    total_bytes += part.stat().st_size
+                    found += 1
+                except OSError:
+                    continue
+        if total_bytes > 0:
+            if found != total_parts:
+                logger.warning(
+                    f"Split-модель {model_path.name}: найдено {found} из {total_parts} частей, "
+                    f"использую оценку по найденным ({total_bytes // (1024 * 1024)} МБ)"
+                )
+            return total_bytes // (1024 * 1024)
+
+    try:
+        return model_path.stat().st_size // (1024 * 1024)
+    except OSError as e:
+        logger.warning(f"Не удалось определить размер модели {model_path}: {e}")
+        return 0
+
+
 def detect_optimal_threads() -> int:
     """Определяет число потоков для CPU-инференса llama.cpp.
 
@@ -120,7 +166,7 @@ def detect_optimal_gpu_layers(
     """Решает, сколько слоёв модели положить на GPU.
 
     Args:
-        model_path: путь к GGUF-файлу (для оценки размера)
+        model_path: путь к GGUF-файлу (для split — к первой части)
         preferred: значение из конфига (используется при auto=False)
         auto: True — считаем сами; False — отдаём preferred как есть
 
@@ -136,17 +182,19 @@ def detect_optimal_gpu_layers(
         logger.info("GPU не обнаружен (nvidia-smi недоступен) → n_gpu_layers=0")
         return 0
 
-    try:
-        model_mb = model_path.stat().st_size // (1024 * 1024)
-    except OSError as e:
-        logger.warning(f"Не удалось определить размер модели: {e}")
+    model_mb = model_total_size_mb(model_path)
+    if model_mb <= 0:
+        logger.warning("Не удалось определить размер модели → n_gpu_layers=0")
         return 0
 
     # Резерв под KV-кэш, compute-буферы, фрагментацию драйвера.
     # Без него 4-гиговая карта уйдёт в OOM при offload.
     available_mb = max(0, free_mb - VRAM_RESERVE_MB)
 
-    logger.info(f"GPU: free={free_mb} МБ, модель={model_mb} МБ, доступно после резерва={available_mb} МБ")
+    logger.info(
+        f"GPU: free={free_mb} МБ, модель={model_mb} МБ (полный размер), "
+        f"доступно после резерва={available_mb} МБ"
+    )
 
     if available_mb <= 0:
         logger.info("Недостаточно свободной VRAM → n_gpu_layers=0")

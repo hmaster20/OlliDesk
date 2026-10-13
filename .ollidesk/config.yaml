@@ -28,22 +28,6 @@ models:
     context_length: 8192
 
 # --- Встроенная SLM (fallback) ---
-slm:
-  enabled: true
-  auto_download: true
-  chat_model_repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-  chat_model_file: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-  embed_model_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
-  embed_model_file: "nomic-embed-text-v1.5.Q4_K_M.gguf"
-  n_ctx: 4096
-  n_threads: 4
-  n_batch: 512
-  n_gpu_layers: 0
-  max_tokens: 1024
-  temperature: 0.7
-  selected_model: qwen2.5-7b-instruct
-  auto_gpu_layers: true # ← автоопределение VRAM
-  # n_gpu_layers: 0         # ← используется только если auto_gpu_layers: false
 
 tool_policies:
   write_file: "ask_first"

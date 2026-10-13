@@ -1,10 +1,14 @@
 """Диалог управления локальными SLM-моделями (GGUF, llama.cpp)."""
 
+import re
+
+from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QProgressBar,
@@ -23,11 +27,43 @@ from agents.download_slm import (
 )
 from core.config import AppConfig, SLMModelInfo, save_config
 
+# Модульный реестр активных скачиваний: держит сильные ссылки на QThread
+# до завершения, чтобы GC не уничтожил объект во время работы.
+# Иначе — "QThread: Destroyed while thread is still running" и краш приложения,
+# если пользователь закрыл диалог, не дождавшись окончания скачивания,
+# или запустил второе скачивание поверх первого.
+_ACTIVE_DOWNLOADS: list[QThread] = []
+
+
+def _register_download(thread: QThread) -> None:
+    """Регистрирует поток скачивания в модульном реестре.
+
+    Реестр держит сильную ссылку на поток до тех пор, пока он не завершится,
+    поэтому закрытие диалога или потеря Python-ссылки не приведёт к
+    преждевременному удалению QThread.
+    """
+    _ACTIVE_DOWNLOADS.append(thread)
+
+    def _cleanup() -> None:
+        try:
+            _ACTIVE_DOWNLOADS.remove(thread)
+        except ValueError:
+            pass
+
+    # QThread.finished — встроенный сигнал без аргументов, испускается
+    # ровно один раз при выходе из run().
+    thread.finished.connect(_cleanup)
+
 
 class _DownloadThread(QThread):
-    """Скачивает одну модель в фоне."""
+    """Скачивает одну модель в фоне.
 
-    finished = Signal(str, bool)  # model_id, success
+    ВАЖНО: сигнал называется sig_finished, а не finished, чтобы не
+    переопределять встроенный QThread.finished — иначе Qt не сможет корректно
+    вызвать внутренние обработчики жизненного цикла потока.
+    """
+
+    sig_finished = Signal(str, bool)  # model_id, success
     progress = Signal(str, str)  # model_id, message
     error = Signal(str, str)  # model_id, error
 
@@ -39,10 +75,11 @@ class _DownloadThread(QThread):
         try:
             self.progress.emit(self.info.id, f"Скачивание {self.info.file}...")
             download_model(self.info.repo, self.info.file)
-            self.finished.emit(self.info.id, True)
+            self.sig_finished.emit(self.info.id, True)
         except Exception as e:
+            logger.exception(f"Ошибка скачивания {self.info.id}")
             self.error.emit(self.info.id, str(e))
-            self.finished.emit(self.info.id, False)
+            self.sig_finished.emit(self.info.id, False)
 
 
 class SLMModelsDialog(QDialog):
@@ -52,6 +89,15 @@ class SLMModelsDialog(QDialog):
     выводится отдельной строкой ниже — её нельзя сделать активной
     chat-моделью, чтобы LocalLLMClient не пытался загрузить её как
     chatml-модель.
+
+    Список может существенно вырастать: встроенные модели заданы в
+    core.config._DEFAULT_SLM_MODELS, а пользователь добавляет свои
+    через кнопку «➕ Своя модель» — они сохраняются в config.yaml
+    и не теряются при обновлении приложения (_sync_builtin_models
+    сохраняет всё, чего нет в дефолтном списке).
+
+    Скачивание продолжается в фоне даже после закрытия диалога: потоки
+    хранятся в модульном реестре `_ACTIVE_DOWNLOADS` до завершения.
     """
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None):
@@ -74,7 +120,9 @@ class SLMModelsDialog(QDialog):
         info = QLabel(
             "Локальные SLM-модели (GGUF, llama.cpp) — <b>основной</b> бэкенд: "
             "работают без Ollama. <b>Qwen 2.5 7B</b> — хороший баланс качества "
-            "и скорости, <b>14B</b> — максимум качества для мощных машин."
+            "и скорости, <b>14B</b> — максимум качества для мощных машин.<br>"
+            "Список сортируется: активная → установленные → остальные.<br>"
+            "Скачивание продолжается в фоне даже после закрытия окна."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: #888; padding: 4px 0 8px 0;")
@@ -129,6 +177,14 @@ class SLMModelsDialog(QDialog):
         self.activate_btn.clicked.connect(self._activate_selected)
         btn_layout.addWidget(self.activate_btn)
 
+        self.add_btn = QPushButton("➕ Своя модель")
+        self.add_btn.setToolTip(
+            "Добавить модель из Hugging Face вручную. Она попадёт в список "
+            "и сохранится в ~/.ollidesk/config.yaml."
+        )
+        self.add_btn.clicked.connect(self._add_custom_model)
+        btn_layout.addWidget(self.add_btn)
+
         btn_layout.addStretch()
 
         self.close_btn = QPushButton("Закрыть")
@@ -140,11 +196,17 @@ class SLMModelsDialog(QDialog):
     def _populate(self):
         self.table.setRowCount(0)
 
-        # Только chat-модели в таблице
-        chat_models = self.config.slm.get_chat_models()
+        # Сортируем: активная → установленные → остальные (внутри — по имени).
+        def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
+            active = 0 if m.id == self.config.slm.selected_model else 1
+            installed = 0 if is_model_installed(m.file, repo_id=m.repo) else 1
+            return (active, installed, m.display_name.lower())
+
+        chat_models = sorted(self.config.slm.get_chat_models(), key=_sort_key)
         if not chat_models:
-            # Аварийный случай: не осталось ни одной chat-модели
-            self.status_label.setText("⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml.")
+            self.status_label.setText(
+                "⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml."
+            )
 
         for row, m in enumerate(chat_models):
             self.table.insertRow(row)
@@ -187,7 +249,6 @@ class SLMModelsDialog(QDialog):
 
     def _real_size_str(self, filename: str, repo_id: str) -> str:
         """Реальный размер на диске: для split — сумма всех частей."""
-
         from agents.download_slm import (
             _split_part_name,
             get_model_parts,
@@ -225,12 +286,24 @@ class SLMModelsDialog(QDialog):
             return None
         model_id = item.data(Qt.ItemDataRole.UserRole)
         info = self.config.slm.get_model_by_id(model_id)
-        # Дополнительная страховка: не даём выбрать embed-модель как chat
         if info is not None and info.kind != "chat":
             return None
         return info
 
+    def _is_downloading(self) -> bool:
+        """True, если сейчас идёт скачивание (кнопки должны быть выключены)."""
+        return self._download_thread is not None and self._download_thread.isRunning()
+
     def _update_buttons(self):
+        # Пока идёт скачивание, ВСЕ действия блокируются — иначе пользователь
+        # может запустить второе скачивание, перезаписав self._download_thread
+        # (первый поток потеряет Python-ссылку и крашнется).
+        if self._is_downloading():
+            self.download_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
+            self.activate_btn.setEnabled(False)
+            return
+
         info = self._current_model_info()
         if not info:
             self.download_btn.setEnabled(False)
@@ -248,6 +321,15 @@ class SLMModelsDialog(QDialog):
     # ---------- actions ----------
 
     def _download_selected(self):
+        if self._is_downloading():
+            QMessageBox.information(
+                self,
+                "Скачивание уже идёт",
+                "Дождитесь завершения текущего скачивания. Оно продолжится "
+                "в фоне даже после закрытия окна.",
+            )
+            return
+
         info = self._current_model_info()
         if not info or is_model_installed(info.file, repo_id=info.repo):
             return
@@ -255,7 +337,9 @@ class SLMModelsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "Скачивание модели",
-            f"Скачать {info.display_name} (~{info.size_mb} МБ)?\nИсточник: huggingface.co/{info.repo}",
+            f"Скачать {info.display_name} (~{info.size_mb} МБ)?\n"
+            f"Источник: huggingface.co/{info.repo}\n\n"
+            "Скачивание продолжится в фоне, окно можно закрыть.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -263,11 +347,21 @@ class SLMModelsDialog(QDialog):
 
         self._set_busy(True, f"Скачивание {info.display_name}...")
 
-        self._download_thread = _DownloadThread(info)
-        self._download_thread.progress.connect(lambda _id, msg: self.status_label.setText(msg))
-        self._download_thread.finished.connect(self._on_download_finished)
-        self._download_thread.error.connect(self._on_download_error)
-        self._download_thread.start()
+        thread = _DownloadThread(info)
+        thread.progress.connect(self._on_download_progress)
+        thread.sig_finished.connect(self._on_download_finished)
+        thread.error.connect(self._on_download_error)
+
+        # Модульный реестр держит сильную ссылку до завершения потока —
+        # защита от "QThread: Destroyed while thread is still running",
+        # если диалог будет закрыт раньше окончания скачивания.
+        _register_download(thread)
+
+        self._download_thread = thread
+        thread.start()
+
+    def _on_download_progress(self, _model_id: str, message: str) -> None:
+        self.status_label.setText(message)
 
     def _on_download_finished(self, model_id: str, success: bool):
         self._set_busy(False, "")
@@ -333,16 +427,93 @@ class SLMModelsDialog(QDialog):
         self.status_label.setText(f"✅ Активная модель: {info.display_name}")
         self._populate()
 
+    def _add_custom_model(self):
+        """Добавляет пользовательскую SLM-модель в available_models.
+
+        Пользователь вводит HF-репозиторий, имя файла и отображаемое имя;
+        запись сохраняется в config.yaml. id генерируется из имени файла —
+        это гарантирует стабильность при перезапусках и совместимость
+        с get_model_paths.
+        """
+        repo, ok = QInputDialog.getText(
+            self,
+            "Своя SLM-модель",
+            "HF-репозиторий (например, Qwen/Qwen2.5-7B-Instruct-GGUF):",
+        )
+        if not ok or not repo.strip():
+            return
+        repo = repo.strip()
+
+        file, ok = QInputDialog.getText(
+            self,
+            "Своя SLM-модель",
+            "Имя файла в репозитории (например, qwen2.5-7b-instruct-q4_k_m.gguf):",
+        )
+        if not ok or not file.strip():
+            return
+        file = file.strip()
+        if not file.lower().endswith(".gguf"):
+            QMessageBox.warning(
+                self,
+                "Неверное имя файла",
+                "Имя файла должно заканчиваться на .gguf",
+            )
+            return
+
+        display_name, ok = QInputDialog.getText(
+            self,
+            "Своя SLM-модель",
+            "Отображаемое имя (как показывать в списке):",
+            text=file.removesuffix(".gguf"),
+        )
+        if not ok or not display_name.strip():
+            return
+        display_name = display_name.strip()
+
+        # Стабильный id из имени файла: qwen2.5-7b-instruct-q4_k_m
+        base_id = re.sub(r"[^a-z0-9._-]+", "-", file.removesuffix(".gguf").lower())
+        base_id = base_id.strip("-") or "custom-model"
+
+        # Если id занят — добавляем суффикс -2, -3, …
+        model_id = base_id
+        suffix = 2
+        while self.config.slm.get_model_by_id(model_id) is not None:
+            model_id = f"{base_id}-{suffix}"
+            suffix += 1
+
+        new_info = SLMModelInfo(
+            id=model_id,
+            repo=repo,
+            file=file,
+            display_name=display_name,
+            size_mb=0,  # точный размер узнаем из HF при первом скачивании
+            kind="chat",
+            n_ctx=0,  # 0 → взять slm.n_ctx из конфига
+        )
+        self.config.slm.available_models.append(new_info)
+        save_config(self.config)
+        self._changed = True
+
+        logger.info(
+            f"SLM: добавлена пользовательская модель id={model_id!r}, "
+            f"repo={repo!r}, file={file!r}"
+        )
+        self.status_label.setText(
+            f"➕ Добавлена: {display_name}. Скачайте её кнопкой «⬇️ Скачать»."
+        )
+        self._populate()
+
     def _set_busy(self, busy: bool, message: str):
         self.progress_bar.setVisible(busy)
         self.download_btn.setEnabled(not busy)
         self.delete_btn.setEnabled(not busy)
         self.activate_btn.setEnabled(not busy)
+        self.add_btn.setEnabled(not busy)
         if message:
             self.status_label.setText(message)
 
     # ---------- public ----------
 
     def changed(self) -> bool:
-        """True, если пользователь переключил активную модель."""
+        """True, если пользователь переключил активную модель или добавил свою."""
         return self._changed

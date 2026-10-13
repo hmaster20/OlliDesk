@@ -90,10 +90,21 @@ class SLMModelInfo(BaseModel):
 
 _DEFAULT_SLM_MODELS: list[dict] = [
     {
-        "id": "qwen2.5-14b-instruct",
+        "id": "qwen2.5-14b-instruct-q5",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        # q5_k_m теряет ~2% качества против ~5% у q4_k_m — заметно на reasoning.
+        # ~10.5 ГБ вместо 9 ГБ, но на CPU-инференсе это почти не заметно.
+        "file": "qwen2.5-14b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 14B Q5",
+        "size_mb": 10500,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-14b-instruct-q4",
         "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
         "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 14B (максимум качества, нужна мощная машина)",
+        "display_name": "Qwen 2.5 14B Q4",
         "size_mb": 9000,
         "kind": "chat",
         "n_ctx": 8192,
@@ -402,6 +413,28 @@ DEFAULT_INDEX_EXTENSIONS: list[str] = [
 ]
 
 
+# Ключи AppConfig, которые описывают МАШИНУ (глобальные настройки), а не проект.
+# Их нельзя переопределять локальным `.ollidesk/config.yaml`: иначе достаточно
+# оставить в проекте старый шаблон, и выбор активной SLM/бэкендов в глобальном
+# конфиге будет молча игнорироваться (что и ломало переключение 7B → 14B).
+_GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
+    {
+        "slm",
+        "backends",
+        "confirm",
+        "rerank",
+        "embed_models",
+        "recent_projects",
+        "wizard_dismissed",
+        "theme",
+        "last_model",
+        "last_mode",
+        "agent_max_iterations",
+        "chat_max_iterations",
+    }
+)
+
+
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
 
@@ -558,10 +591,20 @@ class ConfigLoader:
             raise ConfigError(f"Ошибка парсинга YAML {path}: {e}") from e
 
     def _merge_configs(self, global_config: dict[str, Any], local_config: dict[str, Any]) -> dict[str, Any]:
-        """Мержит два конфига, приоритет — за локальным."""
+        """Мержит два конфига, приоритет — за локальным.
+
+        Ключи из ``_GLOBAL_ONLY_KEYS`` (SLM, бэкенды, тема, последние
+        модель/режим и т. п.) описывают машину, а не проект, поэтому
+        из локального конфига они молча игнорируются. Без этого старый
+        шаблон `.ollidesk/config.yaml` в проекте перекрывал бы глобальный
+        выбор активной SLM, и переключение 7B → 14B не срабатывало.
+        """
         merged = global_config.copy()
 
         for key, value in local_config.items():
+            if key in _GLOBAL_ONLY_KEYS:
+                logger.debug(f"Локальный конфиг: игнорирую глобальный ключ {key!r}")
+                continue
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
                 merged[key] = {**merged[key], **value}
             elif key in merged and isinstance(merged[key], list) and isinstance(value, list):

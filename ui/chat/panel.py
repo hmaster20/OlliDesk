@@ -71,8 +71,6 @@ _PATH_COMMANDS = ("@dir", "@file", "@path")
 _MIN_ATTACHED_BUDGET = 600
 
 # Сколько чанков запрашивать у векторного поиска перед дедупликацией по файлам.
-# Больше, чем в старом значении (5): нужно разнообразие файлов, а не соседние
-# чанки одного и того же.
 _RAG_N_RESULTS = 8
 
 # Явное описание режимов для тултипов селектора: что включено и почему.
@@ -98,14 +96,7 @@ _MODE_DESCRIPTIONS: dict[int, str] = {
 
 
 def read_project_rules(project_root: str | None) -> str:
-    """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`).
-
-    Args:
-        project_root: Абсолютный путь к корню проекта (или пусто).
-
-    Returns:
-        Текст правил без крайних пробелов либо пустая строка.
-    """
+    """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`)."""
     if not project_root:
         return ""
     try:
@@ -182,6 +173,13 @@ class ChatPanel(QWidget):
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
         self._slm_model_name = ""
+        # Инвалидация устаревших загрузок SLM: reload_slm() инкрементирует этот
+        # счётчик, и результат любого потока с «не своей» генерацией
+        # отбрасывается в _on_slm_loaded/_on_slm_error/_on_slm_downloaded.
+        # Это нужно потому, что QThread.quit() не прерывает блокирующий
+        # LocalLLMClient(...) — старый поток продолжает грузить модель в фоне,
+        # и без токена его finished перетёр бы свежий клиент.
+        self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
         self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
@@ -207,19 +205,25 @@ class ChatPanel(QWidget):
             self._download_and_load_slm()
 
     def reload_slm(self):
-        """Перезагружает локальную SLM (после смены активной модели в UI)."""
+        """Перезагружает локальную SLM (после смены активной модели в UI).
+
+        Не пытаемся прервать уже запущенный поток: LocalLLMClient загружается
+        синхронно через Llama(), а QThread.quit() останавливает только event
+        loop, не сам run(). Вместо этого увеличиваем generation-токен, и
+        результат устаревшего потока будет отброшен в _on_slm_loaded/_on_slm_error.
+        """
+        self._slm_load_generation += 1
+        self._slm_model_name = ""
+
         self._router.set_local_slm(None)
         self._router.set_slm_available(False)
         self._slm_client = None
         self._slm_loading = False
 
-        if self._slm_load_thread and self._slm_load_thread.isRunning():
-            self._slm_load_thread.quit()
-            self._slm_load_thread.wait(1000)
-        if self._slm_download_thread and self._slm_download_thread.isRunning():
-            self._slm_download_thread.quit()
-            self._slm_download_thread.wait(1000)
-
+        logger.info(
+            f"reload_slm: generation → {self._slm_load_generation}, "
+            f"модель будет перечитана из конфига"
+        )
         self.status_label.setText("⏳ Перезагрузка локальной модели...")
         QTimer.singleShot(50, self._detect_and_load_slm)
 
@@ -288,15 +292,30 @@ class ChatPanel(QWidget):
                 self.status_label.setText("⚠️ Ollama не найден. Используется резервный режим.")
         self._emit_backend_status()
 
-    @Slot(object)
-    def _on_slm_loaded(self, client):
+    def _on_slm_loaded(self, client, generation: int | None = None):
+        """Слот завершения загрузки SLM с проверкой актуальности generation.
+
+        Если поток, который догрузил модель, был запущен до последнего
+        reload_slm() — его результат отбрасывается, чтобы не перетирать
+        свежий клиент.
+        """
+        if generation is not None and generation != self._slm_load_generation:
+            logger.info(
+                f"Отбрасываю устаревшую загрузку SLM "
+                f"(gen={generation}, актуальная={self._slm_load_generation}): "
+                f"{Path(client.model_path).name}"
+            )
+            return
+
         self._slm_client = client
         if not self._slm_model_name:
             self._slm_model_name = Path(client.model_path).stem
         self._router.set_local_slm(client)
         self._router.set_slm_available(True)
         self._slm_loading = False
-        logger.info("Локальная SLM загружена и доступна как fallback")
+        logger.info(
+            f"Локальная SLM загружена и доступна как fallback: {self._slm_model_name}"
+        )
         if self._router.active_backend == BackendType.LOCAL_SLM:
             self.status_label.setText(f"✅ Локальная модель загружена: {self._slm_model_name}")
         self._emit_backend_status()
@@ -304,6 +323,8 @@ class ChatPanel(QWidget):
     def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
         if self._slm_loading or self._slm_client is not None:
             return
+
+        generation = self._slm_load_generation
 
         # Параметры инференса — из конфига (n_threads=0 → авто по числу ядер)
         n_ctx, n_threads, n_batch = 4096, 0, 512
@@ -333,7 +354,7 @@ class ChatPanel(QWidget):
             logger.debug(f"Не удалось прочитать параметры SLM из конфига: {e}")
 
         self._slm_loading = True
-        self.status_label.setText("⏳ Загрузка локальной модели...")
+        self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
 
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
@@ -344,8 +365,14 @@ class ChatPanel(QWidget):
             n_gpu_layers=n_gpu_layers,
             max_tokens=max_tokens,
         )
-        self._slm_load_thread.finished.connect(self._on_slm_loaded)
-        self._slm_load_thread.error.connect(self._on_slm_error)
+        # Захватываем generation в lambda, чтобы отсеять «поздние» сигналы
+        # от предыдущих потоков, которые всё ещё догружают старую модель.
+        self._slm_load_thread.finished.connect(
+            lambda client, gen=generation: self._on_slm_loaded(client, gen)
+        )
+        self._slm_load_thread.error.connect(
+            lambda err, gen=generation: self._on_slm_error(err, gen)
+        )
         self._slm_load_thread.start()
 
     def _download_and_load_slm(self):
@@ -377,6 +404,7 @@ class ChatPanel(QWidget):
             self.status_label.setText(f"⚠️ Модель '{info.display_name}' не подходит для чата.")
             return
 
+        generation = self._slm_load_generation
         self._slm_loading = True
         self.status_label.setText(f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)...")
 
@@ -386,23 +414,38 @@ class ChatPanel(QWidget):
             embed_repo=slm.embed_model_repo,
             embed_file=slm.embed_model_file,
         )
-        self._slm_download_thread.progress.connect(self._on_slm_progress)
-        self._slm_download_thread.finished.connect(self._on_slm_downloaded)
-        self._slm_download_thread.error.connect(self._on_slm_error)
+        self._slm_download_thread.progress.connect(
+            lambda msg, gen=generation: self._on_slm_progress(msg, gen)
+        )
+        self._slm_download_thread.finished.connect(
+            lambda chat, embed, gen=generation: self._on_slm_downloaded(chat, embed, gen)
+        )
+        self._slm_download_thread.error.connect(
+            lambda err, gen=generation: self._on_slm_error(err, gen)
+        )
         self._slm_download_thread.start()
 
-    @Slot(str)
-    def _on_slm_progress(self, message: str):
+    def _on_slm_progress(self, message: str, generation: int | None = None):
+        if generation is not None and generation != self._slm_load_generation:
+            return
         self.status_label.setText(f"⏳ {message}")
 
-    @Slot(str)
-    def _on_slm_error(self, error_msg: str):
+    def _on_slm_error(self, error_msg: str, generation: int | None = None):
+        if generation is not None and generation != self._slm_load_generation:
+            logger.info(
+                f"Отбрасываю ошибку устаревшей загрузки SLM (gen={generation}): {error_msg}"
+            )
+            return
         self._slm_loading = False
         logger.error(f"Ошибка загрузки SLM: {error_msg}")
         self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
 
-    @Slot(str, str)
-    def _on_slm_downloaded(self, chat_path: str, embed_path: str):
+    def _on_slm_downloaded(
+        self, chat_path: str, embed_path: str, generation: int | None = None
+    ):
+        if generation is not None and generation != self._slm_load_generation:
+            logger.info(f"Отбрасываю устаревшее скачивание SLM (gen={generation})")
+            return
         self._slm_loading = False
         self._load_slm_async(
             Path(chat_path),
@@ -449,16 +492,7 @@ class ChatPanel(QWidget):
 
     @staticmethod
     def _extract_path_command(text: str) -> tuple[str, str, str] | None:
-        """Парсит @dir/@file/@path в начале сообщения.
-
-        Args:
-            text: Текст из поля ввода.
-
-        Returns:
-            Кортеж (kind, path, rest), где kind — "dir" | "file" | "path",
-            либо None если сообщение не начинается с path-команды.
-            Путь с пробелами должен быть в кавычках.
-        """
+        """Парсит @dir/@file/@path в начале сообщения."""
         for cmd in _PATH_COMMANDS:
             if not text.startswith(cmd):
                 continue
@@ -480,11 +514,7 @@ class ChatPanel(QWidget):
         return None
 
     def _attach_file(self, path: Path) -> None:
-        """Читает файл и добавляет его в хранилище прикреплённых файлов.
-
-        Args:
-            path: Путь к файлу.
-        """
+        """Читает файл и добавляет его в хранилище прикреплённых файлов."""
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
@@ -503,13 +533,7 @@ class ChatPanel(QWidget):
         )
 
     def _handle_path_command(self, kind: str, path_str: str, rest: str) -> None:
-        """Обрабатывает команду @dir/@file/@path.
-
-        Args:
-            kind: Тип команды — "dir", "file" или "path".
-            path_str: Указанный путь.
-            rest: Текст после пути — уходит обычным сообщением.
-        """
+        """Обрабатывает команду @dir/@file/@path."""
         if not path_str:
             self._add_message("system", f"⚠️ Укажите путь после @{kind}")
             return
@@ -617,11 +641,7 @@ class ChatPanel(QWidget):
         return "\n\n".join(filter(None, [listing, context]))
 
     def _attached_context(self) -> str:
-        """Собирает блок контекста из прикреплённых файлов с учётом окна модели.
-
-        Returns:
-            Текст для системного промпта или пустая строка.
-        """
+        """Собирает блок контекста из прикреплённых файлов с учётом окна модели."""
         if not self._attached_files:
             return ""
 
@@ -1181,7 +1201,6 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        # Добавляем AGENTS.md в контекст проекта (по аналогии с OpenCode Desktop)
         try:
             from pathlib import Path as _P
 
@@ -1268,7 +1287,6 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        # Добавляем AGENTS.md в контекст проекта (по аналогии с OpenCode Desktop)
         try:
             from pathlib import Path as _P
 
@@ -1329,11 +1347,7 @@ class ChatPanel(QWidget):
         self._agent_thread.start()
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
-        """Строит реестр инструментов для агента и чата.
-
-        Args:
-            mode: Режим агента. В CHAT read-only инструменты получают AUTO.
-        """
+        """Строит реестр инструментов для агента и чата."""
         from tools.codebase_search import search_codebase
         from tools.current_datetime import get_current_datetime
         from tools.exchange_rate import (
@@ -1363,13 +1377,11 @@ class ChatPanel(QWidget):
         registry.register(tool_create_snapshot)
         registry.register(tool_undo_snapshot)
 
-        # Инструмент дочитывания нужен только когда есть прикреплённые файлы
         if self._attached_files:
             from tools.attached_files import read_attached_file
 
             registry.register(read_attached_file)
 
-        # Порядок политик: декоратор → режим агента → config.yaml → панель UI
         if mode == AgentMode.CHAT:
             for name in _CHAT_AUTO_TOOLS:
                 registry.set_policy(name, ToolPolicy.AUTO)
@@ -1382,11 +1394,7 @@ class ChatPanel(QWidget):
         return registry
 
     def _apply_config_policies(self, registry: ToolRegistry) -> None:
-        """Применяет политики из конфигурации: `tool_policies` и `confirm`.
-
-        Args:
-            registry: Реестр, собранный из функций-инструментов.
-        """
+        """Применяет политики из конфигурации: `tool_policies` и `confirm`."""
         try:
             from core.config import load_config
 
@@ -1398,7 +1406,6 @@ class ChatPanel(QWidget):
         for tool_name, policy in cfg.tool_policies.items():
             registry.set_policy(tool_name, policy)
 
-        # Диалог подтверждения для web_search выключен по умолчанию
         confirm = cfg.confirm
         if not (confirm.enabled or confirm.web_search):
             registry.set_policy("web_search", ToolPolicy.AUTO)
@@ -1465,8 +1472,6 @@ class ChatPanel(QWidget):
         self._show_activity(activity)
         self.status_label.setText(activity)
 
-        # Завершаем текущий пузырь ответа, чтобы дальнейшие события и
-        # следующий фрагмент ответа шли в ленте по порядку.
         self._last_assistant_widget = None
         self._current_assistant_content = ""
 
@@ -1535,8 +1540,9 @@ class ChatPanel(QWidget):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
-        # Покажем пользователю кнопку "Продолжить" после исчерпания итераций
-        self._show_activity("⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент сформировал Final Answer")
+        self._show_activity(
+            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент сформировал Final Answer"
+        )
         self.status_label.setText("Достигнут лимит итераций — готово к продолжению")
 
     @Slot(bool)

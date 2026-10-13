@@ -1,0 +1,82 @@
+version: "1.0.0"
+schema_version: "v1"
+
+default_model: "qwen2.5-coder:7b"
+embed_model: "nomic-embed-text"
+
+models:
+  - name: "Qwen 2.5 Coder 7B"
+    provider: "ollama"
+    model: "qwen2.5-coder:7b"
+    api_base: "http://localhost:11434"
+    roles:
+      - "chat"
+      - "apply"
+    capabilities:
+      - "tool_use"
+    temperature: 0.7
+    max_tokens: 2048
+    context_length: 8192
+    keep_alive: 1800
+
+  - name: "Nomic Embed Text"
+    provider: "ollama"
+    model: "nomic-embed-text"
+    api_base: "http://localhost:11434"
+    roles:
+      - "embed"
+    context_length: 8192
+
+# --- Встроенная SLM (fallback) ---
+slm:
+  enabled: true
+  auto_download: true
+  chat_model_repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+  chat_model_file: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+  embed_model_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
+  embed_model_file: "nomic-embed-text-v1.5.Q4_K_M.gguf"
+  n_ctx: 4096
+  n_threads: 4
+  n_batch: 512
+  n_gpu_layers: 0
+  max_tokens: 1024
+  temperature: 0.7
+  selected_model: qwen2.5-7b-instruct
+  auto_gpu_layers: true # ← автоопределение VRAM
+  # n_gpu_layers: 0         # ← используется только если auto_gpu_layers: false
+
+tool_policies:
+  write_file: "ask_first"
+  web_search: "ask_first"
+  get_weather: "auto"
+  read_file: "auto"
+  search_codebase: "auto"
+
+ignored_patterns:
+  - ".git"
+  - "node_modules"
+  - "__pycache__"
+  - "venv"
+  - ".venv"
+  - "dist"
+  - "build"
+  - ".env"
+  - "*.pyc"
+
+index_extensions:
+  - ".py"
+  - ".js"
+  - ".ts"
+  - ".tsx"
+  - ".jsx"
+  - ".html"
+  - ".css"
+  - ".md"
+  - ".json"
+  - ".yaml"
+  - ".yml"
+
+max_file_size_kb: 100
+chunk_size_tokens: 512
+chunk_overlap_tokens: 50
+rules_file: ".ollidesk/rules.md"
