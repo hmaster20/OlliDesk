@@ -89,41 +89,15 @@ class SLMModelInfo(BaseModel):
 
 
 _DEFAULT_SLM_MODELS: list[dict] = [
+    # =========================================================================
+    # Компактные — для слабых машин и быстрых проб
+    # =========================================================================
     {
-        "id": "qwen2.5-14b-instruct-q5",
-        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        # q5_k_m теряет ~2% качества против ~5% у q4_k_m — заметно на reasoning.
-        # ~10.5 ГБ вместо 9 ГБ, но на CPU-инференсе это почти не заметно.
-        "file": "qwen2.5-14b-instruct-q5_k_m.gguf",
-        "display_name": "Qwen 2.5 14B Q5",
-        "size_mb": 10500,
-        "kind": "chat",
-        "n_ctx": 8192,
-    },
-    {
-        "id": "qwen2.5-14b-instruct-q4",
-        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 14B Q4",
-        "size_mb": 9000,
-        "kind": "chat",
-        "n_ctx": 8192,
-    },
-    {
-        "id": "qwen2.5-7b-instruct",
-        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 7B (умная, рекомендуется)",
-        "size_mb": 4680,
-        "kind": "chat",
-        "n_ctx": 8192,
-    },
-    {
-        "id": "qwen2.5-3b-instruct",
+        "id": "qwen2.5-3b-instruct-q6_k",
         "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-        "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 3B (баланс)",
-        "size_mb": 2030,
+        "file": "qwen2.5-3b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 3B q6_k (быстрая, слабые машины)",
+        "size_mb": 2900,
         "kind": "chat",
         "n_ctx": 16384,
     },
@@ -131,13 +105,127 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "id": "qwen2.5-1.5b-instruct",
         "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
         "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 1.5B (быстрая, для слабых машин)",
+        "display_name": "Qwen 2.5 1.5B (совсем слабые машины)",
         "size_mb": 1120,
         "kind": "chat",
         "n_ctx": 16384,
     },
-]
 
+    # =========================================================================
+    # 7B general — базовый рабочий класс, разные квантования
+    # =========================================================================
+    {
+        "id": "qwen2.5-7b-instruct",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 7B q4_k_m (минимум места)",
+        "size_mb": 4680,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-7b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "file": "qwen2.5-7b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 7B q5_k_m (баланс)",
+        "size_mb": 5450,
+        "kind": "chat",
+        "n_ctx": 16384,
+    },
+    {
+        "id": "qwen2.5-7b-instruct-q6_k",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "file": "qwen2.5-7b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 7B q6_k ★ (лучший баланс качества/размера)",
+        "size_mb": 6300,
+        "kind": "chat",
+        "n_ctx": 16384,
+    },
+    {
+        "id": "qwen2.5-7b-instruct-q8_0",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "file": "qwen2.5-7b-instruct-q8_0.gguf",
+        "display_name": "Qwen 2.5 7B q8_0 (почти без потерь, много RAM)",
+        "size_mb": 8100,
+        "kind": "chat",
+        "n_ctx": 16384,
+    },
+
+    # =========================================================================
+    # 7B Coder — специализированные на коде
+    # =========================================================================
+    {
+        "id": "qwen2.5-coder-7b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "file": "qwen2.5-coder-7b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 7B q5_k_m (лучше для кода)",
+        "size_mb": 5450,
+        "kind": "chat",
+        "n_ctx": 16384,
+    },
+    {
+        "id": "qwen2.5-coder-7b-instruct-q6_k",
+        "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "file": "qwen2.5-coder-7b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 Coder 7B q6_k ★ (оптимум для кода)",
+        "size_mb": 6300,
+        "kind": "chat",
+        "n_ctx": 16384,
+    },
+
+    # =========================================================================
+    # 14B — умнее, но требует много RAM и терпения на CPU
+    # =========================================================================
+    {
+        "id": "qwen2.5-14b-instruct",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 14B q4_k_m",
+        "size_mb": 9000,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-14b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 14B q5_k_m (заметно умнее q4)",
+        "size_mb": 10500,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-coder-14b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "file": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 14B q4_k_m (код + большой контекст)",
+        "size_mb": 9000,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+
+    # =========================================================================
+    # Альтернативы — другая архитектура, иногда лучше на своих задачах
+    # =========================================================================
+    {
+        "id": "llama-3.1-8b-instruct-q5_k_m",
+        "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "file": "Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf",
+        "display_name": "Llama 3.1 8B q5_k_m (хороший английский)",
+        "size_mb": 5700,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "mistral-7b-instruct-v0.3-q5_k_m",
+        "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+        "file": "Mistral-7B-Instruct-v0.3-Q5_K_M.gguf",
+        "display_name": "Mistral 7B v0.3 q5_k_m (быстрая, англ.)",
+        "size_mb": 5400,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+]
 
 class SLMConfig(BaseModel):
     """Конфигурация встроенной SLM (llama.cpp)."""
