@@ -1,6 +1,11 @@
 """Пакет чата: виджет панели, сообщения и фоновые потоки."""
 
-from ui.chat.message_item import ChatMessageItem
+from ui.chat.message_item import (
+    ChatActivityItem,
+    ChatHypothesisItem,
+    ChatMessageItem,
+    ChatSourcesItem,
+)
 from ui.chat.panel import ChatPanel
 from ui.chat.threads import (
     AgentChatThread,
@@ -10,8 +15,11 @@ from ui.chat.threads import (
 
 __all__ = [
     "AgentChatThread",
+    "ChatActivityItem",
+    "ChatHypothesisItem",
     "ChatMessageItem",
     "ChatPanel",
+    "ChatSourcesItem",
     "RagSearchThread",
     "WebSearchThread",
 ]

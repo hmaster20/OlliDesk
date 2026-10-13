@@ -617,3 +617,107 @@ class ChatMessageItem(QWidget):
 
     def _render_markdown_to_html(self, text: str) -> str:
         return render_markdown(text)
+
+class ChatHypothesisItem(QWidget):
+    """Виджет отображения гипотезы исследования в ленте чата.
+
+    Создаётся при `record_hypothesis` и **обновляется на месте** при
+    `update_hypothesis`. Панель держит словарь `{hypothesis_id: widget}`
+    для in-place обновления — иначе лента засорилась бы парными
+    «создана/обновлена».
+
+    Стиль: компактная строка с эмодзи 💡, id гипотезы, статусным бейджем
+    и подписью (метод проверки для открытых, доказательство для закрытых).
+    """
+
+    _STATUS_STYLES: dict[str, tuple[str, str]] = {
+        "open": ("#4a90e2", "🟦 открыта"),
+        "verified": ("#4caf50", "✅ подтверждена"),
+        "refuted": ("#e57373", "❌ опровергнута"),
+        "partial": ("#ffb74d", "🟨 частично"),
+        "inconclusive": ("#888888", "⚪ не проверена"),
+    }
+
+    def __init__(
+        self,
+        hypothesis_id: str,
+        statement: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.hypothesis_id = hypothesis_id
+        self._status = "open"
+        self._verification_method = ""
+        self._evidence = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 4, 8, 4)
+        layout.setSpacing(2)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(0)
+        self.header_label = QLabel()
+        self.header_label.setTextFormat(Qt.TextFormat.RichText)
+        header_row.addWidget(self.header_label)
+        header_row.addStretch()
+        layout.addLayout(header_row)
+
+        self.body_label = QLabel(statement)
+        self.body_label.setWordWrap(True)
+        self.body_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.body_label.setStyleSheet(
+            "color: #d4d4d4; font-size: 13px; font-weight: 600; padding: 0;"
+        )
+        layout.addWidget(self.body_label)
+
+        self.detail_label = QLabel("")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.detail_label.setStyleSheet(
+            "color: #9a9a9a; font-size: 12px; font-style: italic; padding: 0;"
+        )
+        layout.addWidget(self.detail_label)
+
+        self._refresh()
+
+    def update_state(
+        self,
+        status: str,
+        evidence: str = "",
+        verification_method: str = "",
+    ) -> None:
+        """Обновляет статус/доказательство и перерисовывает виджет."""
+        self._status = status or self._status
+        if evidence:
+            self._evidence = evidence
+        if verification_method:
+            self._verification_method = verification_method
+        self._refresh()
+
+    def _refresh(self) -> None:
+        color, label = self._STATUS_STYLES.get(
+            self._status, ("#888888", self._status)
+        )
+        self.header_label.setText(
+            f'<span style="color: #c0c0c0; font-size: 12px; font-weight: 600;">'
+            f"💡 Гипотеза [{self.hypothesis_id}]</span> "
+            f'<span style="color: {color}; font-size: 12px;">· {label}</span>'
+        )
+
+        if self._status == "open":
+            text = (
+                f"Проверить: {self._verification_method}"
+                if self._verification_method
+                else ""
+            )
+        else:
+            text = (
+                f"Доказательство: {self._evidence}" if self._evidence else ""
+            )
+        self.detail_label.setText(text)
+        self.detail_label.setVisible(bool(text))

@@ -15,11 +15,13 @@ ReAct-разметку (`Action:` / `Observation:`) и защита от пов�
   открыта ли точка входа и конфиг, есть ли поиски по коду;
 * фаза (`Phase`: RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS), которая
   подмешивается в системный промпт и меняет инструкцию модели на каждом
-  шаге;
+  шаге. Пока в хранилище есть открытые гипотезы, фаза SYNTHESIS недостижима;
 * градуированные нуджи (`pick_nudge`) — не дают модели «сдаться» после
   первого `list_directory`;
-* жёсткий протокол чтения (`_RESEARCH_PROTOCOL`) поверх общей инструкции
-  по инструментам.
+* жёсткий протокол чтения (`_RESEARCH_PROTOCOL`) поверх общей инструкции;
+* гипотезы (`HypothesisStore`, поле `context.hypotheses`): модель записывает
+  проверяемое утверждение (`record_hypothesis`), затем закрывает его
+  (`update_hypothesis`).
 
 Обычный режим не затронут: `research_mode=False` отключает всё это.
 """
@@ -82,6 +84,8 @@ class AgentContext:
     mode: AgentMode = AgentMode.AGENT
     search_cache: object = None
     attached_files: object = None
+    # Хранилище гипотез исследования (agents.hypotheses.HypothesisStore).
+    hypotheses: object = None
 
 
 # --- System prompt ---------------------------------------------------------
@@ -116,6 +120,7 @@ _TOOL_USE_INSTRUCTION = """
   • погода в городе              — get_weather
   • курсы валют                  — get_exchange_rate
   • внешние/публичные сведения   — web_search (только при сомнении)
+  • гипотезы исследования        — record_hypothesis / update_hypothesis / list_hypotheses
 
 НЕ отвечай «я не могу получить актуальную информацию» — у тебя есть инструменты.
 НЕ советуй пользователю «попробуйте web_search» — вызови инструмент САМ.
@@ -137,16 +142,12 @@ _TOOL_USE_INSTRUCTION = """
 
 ВАЖНО про повторы:
   • Получил результат инструмента — ИСПОЛЬЗУЙ его и продвигайся к ответу.
-  • НЕ вызывай один и тот же инструмент дважды подряд с одинаковыми аргументами:
-    результат не изменится, а ответ задержится.
+  • НЕ вызывай один и тот же инструмент дважды подряд с одинаковыми аргументами.
   • Если данных не хватает — читай ДРУГОЙ файл или вызывай ДРУГОЙ инструмент.
   • Если результат не помог — скажи об этом прямо, а не повторяй тот же вызов.
 """.strip()
 
 
-# Жёсткий протокол чтения для исследовательских вопросов. Ставится ПЕРЕД
-# общей инструкцией по инструментам, потому что для 7B-моделей конкретный
-# пошаговый план работает на порядок лучше абстрактной «изучай проект».
 _RESEARCH_PROTOCOL = """
 ПРОТОКОЛ ИЗУЧЕНИЯ ПРОЕКТА (обязателен для вопросов об архитектуре,
 структуре, зависимостях, схеме компонентов, «как устроен проект»):
@@ -162,11 +163,17 @@ _RESEARCH_PROTOCOL = """
     main.py, app.py, __main__.py, Program.cs, index.js, index.ts, server.py.
   • В нём — список импортов. Это твоя карта зависимостей.
 
-ШАГ 3. КЛЮЧЕВЫЕ МОДУЛИ
-  • Возьми 3–5 модулей из импортов и прочитай их.
-  • Для каждого модуля — что он делает, какие у него зависимости.
-  • search_codebase — для смыслового поиска по паттернам (например,
-    «точка входа приложения», «регистрация сервисов», «роутинг»).
+ШАГ 3. ГИПОТЕЗЫ И ИХ ПРОВЕРКА
+  • После прочтения 2–3 файлов сформулируй ГИПОТЕЗУ о проекте через
+    record_hypothesis. Хорошо: «Точка входа — main.py, вызывает core.app.main()»;
+    «UI построен на PySide6»; «БД — SQLite через core/database.py».
+    Плохо: «код структурирован», «есть модули».
+  • Прочитай файлы, которые эту гипотезу подтвердят или опровергнут.
+  • Закрой гипотезу через update_hypothesis со статусом verified / refuted /
+    partial / inconclusive и КОНКРЕТНЫМ доказательством (путь + имя функции/
+    класса/строки).
+  • Формулируй следующую гипотезу — так исследование идёт целенаправленно,
+    а не «файл за файлом». В идеале 3–6 гипотез за прогон.
 
 ШАГ 4. ЛОГИЧЕСКАЯ СХЕМА
   • Прежде чем писать ответ, собери мысленно граф: узлы = компоненты,
@@ -182,10 +189,10 @@ _RESEARCH_PROTOCOL = """
   • Отвечать, прочитав только список файлов.
   • Называть язык/фреймворк без ссылки на файл.
   • Рисовать ASCII-схему, в которой модули не из файлов проекта.
+  • Давать финальный ответ, когда в списке гипотез есть открытые (status='open').
 """.strip()
 
 
-# Подсказки фазы — короткая инструкция «что делать прямо сейчас».
 _PHASE_HINTS: dict[Phase, str] = {
     Phase.RECON: (
         "ФАЗА: ОБЗОР.\n"
@@ -197,31 +204,36 @@ _PHASE_HINTS: dict[Phase, str] = {
     ),
     Phase.DEEP_DIVE: (
         "ФАЗА: ПОГРУЖЕНИЕ.\n"
-        "Ты уже начал читать файлы, но этого мало для ответа об архитектуре. "
         "Проследи зависимости: открой точку входа → найди импорты/using/require "
         "→ прочитай модули, от которых она зависит → найди их зависимости. "
-        "Ищи конфиги, схемы БД, регистрации сервисов. Используй search_codebase "
-        "для смыслового поиска по коду. НЕ отвечай, пока не прочитаешь не менее "
-        "5–7 ключевых файлов."
+        "Формулируй гипотезы через record_hypothesis и закрывай их через "
+        "update_hypothesis (verified/refuted/partial/inconclusive). Ищи конфиги, "
+        "схемы БД, регистрации сервисов. Используй search_codebase для "
+        "смыслового поиска по коду. НЕ отвечай, пока не прочитаешь не менее "
+        "5–7 ключевых файлов и не закроешь все открытые гипотезы."
     ),
     Phase.SELF_CHECK: (
         "ФАЗА: САМОПРОВЕРКА.\n"
         "У тебя достаточно прочитанного, чтобы ответить — но сначала проверь "
-        "себя, прежде чем писать финальный ответ. Ответь СЕБЕ (не пользователю) "
+        "себя. Если в списке гипотез есть открытые (status='open') — их нужно "
+        "закрыть: прочитай соответствующий файл и вызови update_hypothesis с "
+        "конкретным доказательством. Затем ответь СЕБЕ (не пользователю) "
         "на 4 вопроса:\n"
         "  1) Я знаю, с какого файла проект запускается?\n"
         "  2) Я знаю ключевые внешние зависимости (фреймворк, БД, API)?\n"
         "  3) Я могу описать поток данных: вход → обработка → выход?\n"
         "  4) Я могу назвать 5+ компонентов и их связи?\n"
-        "Если хотя бы один ответ — «нет», вернись к чтению файлов (read_file). "
-        "Если «да» — давай финальный ответ с ASCII-схемой."
+        "Если на любой ответ «нет» — у тебя ещё есть итерации, продолжай. "
+        "Если «да» и открытых гипотез нет — давай финальный ответ с ASCII-схемой."
     ),
     Phase.SYNTHESIS: (
         "ФАЗА: СИНТЕЗ.\n"
         "У тебя достаточно данных. Собери структурированный ответ: "
         "обзор → стек → компоненты (ASCII-схема) → поток данных → "
         "ключевые зависимости → что осталось непонятным. "
-        "Каждый тезис подкрепляй путями к файлам, которые ты читал."
+        "Каждый тезис подкрепляй путями к файлам, которые ты читал. "
+        "Отдельно перечисли подтверждённые гипотезы (verified) — это "
+        "обоснование твоих выводов."
     ),
 }
 
@@ -271,11 +283,7 @@ _TOOL_FORMAT_HINT = (
 
 
 def _looks_like_tool_attempt(text: str) -> bool:
-    """Похож ли текст на нераспознанную попытку вызова инструмента.
-
-    Ловит модели, которые вместо JSON пишут ReAct-разметку (``Action:`` /
-    ``Observation:``) — такой текст нельзя принимать за финальный ответ.
-    """
+    """Похож ли текст на нераспознанную попытку вызова инструмента."""
     return bool(_REACT_SCAFFOLD_RE.search(text))
 
 
@@ -291,10 +299,7 @@ def _project_block(context: AgentContext) -> str:
 
 
 def _assemble_prompt(pre: list[str], variable: list[tuple[str, str]]) -> str:
-    """Склеивает промпт: фиксированные блоки, переменные секции, языковая директива.
-
-    Языковая директива всегда последняя: модели сильнее следуют поздним инструкциям.
-    """
+    """Склеивает промпт: фиксированные блоки, переменные секции, языковая директива."""
     return _SECTION_SEP.join(pre + [text for _, text in variable] + [_LANGUAGE_DIRECTIVE])
 
 
@@ -305,13 +310,10 @@ def _fit_sections(
 ) -> list[tuple[str, str]]:
     """Урезает переменные секции, если промпт не влезает в бюджет окна модели.
 
-    Фиксированные блоки (роль, инструкции по tools, протокол исследования,
-    подсказка фазы, блок проекта) не трогаются. Переменные секции урезаются
-    в порядке приоритета — от наименее важной: RAG → карта проекта → правила →
-    контекст AGENTS.md. Контекст проекта — самый ценный, поэтому режется
-    последним. Секцию, которую нельзя урезать до осмысленного размера,
-    выбрасывают целиком. При неизвестном окне (`num_ctx <= 0`) промпт
-    отдаётся без изменений.
+    Порядок урезания — от наименее важной: RAG → карта проекта → правила →
+    AGENTS.md → гипотезы. Контекст AGENTS.md и гипотезы — самые ценные,
+    режутся последними. Секцию, которую нельзя урезать до осмысленного
+    размера, выбрасывают целиком.
     """
     if num_ctx <= 0 or not variable:
         return variable
@@ -320,11 +322,10 @@ def _fit_sections(
         return variable
 
     remaining = list(variable)
-    for key in ("rag", "map", "rules", "agents"):
+    for key in ("rag", "map", "rules", "agents", "hypotheses"):
         if len(_assemble_prompt(pre, remaining)) <= budget:
             break
         others = [item for item in remaining if item[0] != key]
-        # Каждая секция добавляет к склейке один разделитель (_SECTION_SEP).
         allowance = budget - len(_assemble_prompt(pre, others)) - len(_SECTION_SEP)
         if allowance <= MIN_SECTION_CHARS:
             remaining = others
@@ -344,39 +345,39 @@ def _build_system_prompt(
     *,
     state: InvestigationState | None = None,
     research_mode: bool = False,
+    open_hypotheses: int = 0,
 ) -> str:
-    """Собирает system-промпт из контекста, роли, протокола и фазы.
-
-    Фиксированные блоки (роль, инструкции по tools, протокол исследования,
-    подсказка режима и фазы, блок проекта, языковая директива) и переменные
-    секции (правила, AGENTS.md, карта проекта, RAG) укладываются в бюджет
-    ``system_prompt_char_budget(num_ctx)``; при переполнении переменные секции
-    урезаются в порядке приоритета (см. ``_fit_sections``).
-    """
+    """Собирает system-промпт из контекста, роли, протокола, фазы и гипотез."""
     base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
 
     pre: list[str] = [base_prompt, _TOOL_USE_INSTRUCTION]
 
-    # Жёсткий протокол чтения — только в исследовательском режиме.
     if research_mode:
         pre.append(_RESEARCH_PROTOCOL)
 
-    # Step-awareness: итерация N из M
     if max_iterations > 0 and iteration >= 0:
         iter_line = f"ТЕКУЩАЯ ИТЕРАЦИЯ: {iteration + 1} из {max_iterations}."
         remaining = max_iterations - (iteration + 1)
         if remaining <= 1:
-            iter_line += " На последних итерациях СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer."
+            iter_line += (
+                " На последних итерациях СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer."
+            )
         pre.append(iter_line)
 
-    # Фаза и прогресс исследования — модель видит, что уже накопано.
+    # Фаза + прогресс + предупреждение об открытых гипотезах
     if research_mode and state is not None:
-        phase = phase_for(state)
+        phase = phase_for(state, open_hypotheses=open_hypotheses)
         pre.append(_PHASE_HINTS[phase])
-        pre.append(
-            "ТВОЙ ПРОГРЕСС: " + state.summary() + ".\n"
-            "Файлы, которые ты уже прочитал: " + state.read_files_preview()
-        )
+        progress_lines = [
+            "ТВОЙ ПРОГРЕСС: " + state.summary() + ".",
+            "Файлы, которые ты уже прочитал: " + state.read_files_preview(),
+        ]
+        if open_hypotheses > 0:
+            progress_lines.append(
+                f"⚠️ У тебя {open_hypotheses} открытых гипотез(ы) — "
+                "проверь их через update_hypothesis до финального ответа."
+            )
+        pre.append("\n".join(progress_lines))
 
     pre.append(_MODE_HINTS.get(context.mode, _MODE_HINTS[AgentMode.CHAT]))
     project_block = _project_block(context)
@@ -387,7 +388,15 @@ def _build_system_prompt(
     if context.extra_rules:
         variable.append(("rules", f"Дополнительные правила:\n{context.extra_rules}"))
     if context.agents_context:
-        variable.append(("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}"))
+        variable.append(
+            ("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}")
+        )
+    if context.hypotheses:
+        rendered = context.hypotheses.render_for_prompt()  # type: ignore[attr-defined]
+        if rendered:
+            variable.append(
+                ("hypotheses", f"Гипотезы исследования:\n{rendered}")
+            )
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:
@@ -405,11 +414,7 @@ def _create_tool_result_message(
     is_error: bool = False,
     max_chars: int = 0,
 ) -> ChatMessage:
-    """Создаёт сообщение с результатом выполнения инструмента.
-
-    Если ``max_chars > 0`` и результат длиннее, содержимое усекается с пометкой —
-    иначе большой ``read_file`` может вытеснить историю и текущий вопрос.
-    """
+    """Создаёт сообщение с результатом выполнения инструмента."""
     if max_chars > 0 and len(content) > max_chars:
         marker = "\n… [Результат обрезан]"
         content = content[: max(0, max_chars - len(marker))] + marker
@@ -423,11 +428,7 @@ def _create_tool_result_message(
 
 
 class AgentLoop:
-    """Цикл ReAct агента.
-
-    Работает для всех режимов (CHAT, PLAN, AGENT). Ограничения на доступные
-    инструменты накладываются через ToolRegistry.get_schemas(mode).
-    """
+    """Цикл ReAct агента (CHAT / PLAN / AGENT)."""
 
     def __init__(self, client: LLMBackend, registry: ToolRegistry, model: str):
         """
@@ -441,11 +442,7 @@ class AgentLoop:
         self.model = model
 
     def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """Прореживает промпт, если он не помещается в окно модели.
-
-        Размер окна берётся у активного бэкенда (`num_ctx`); если он неизвестен,
-        сжатие пропускается — финальную подгонку сделает бэкенд.
-        """
+        """Прореживает промпт, если он не помещается в окно модели."""
         num_ctx = getattr(self.client, "num_ctx", None)
         if not isinstance(num_ctx, int) or num_ctx <= 0:
             return messages
@@ -472,14 +469,22 @@ class AgentLoop:
             args = str(tc.arguments)
         return (tc.name, args)
 
-    def _extract_tool_calls_from_text(self, text: str, tools: list | None = None) -> list[ToolCall]:
-        """Извлекает вызовы инструментов из текстового ответа модели.
-
-        Поддерживает JSON (``{"name": ..., "arguments": {...}}``) и синтаксис
-        вызова функции (``name("arg")`` / ``name(key=value)``). Детали — в
-        :mod:`agents.tool_call_parser`.
-        """
+    def _extract_tool_calls_from_text(
+        self, text: str, tools: list | None = None
+    ) -> list[ToolCall]:
+        """Извлекает вызовы инструментов из текстового ответа модели."""
         return extract_tool_calls(text, tools)
+
+    @staticmethod
+    def _count_open_hypotheses(context: AgentContext) -> int:
+        """Сколько гипотез со статусом open сейчас в хранилище."""
+        store = context.hypotheses
+        if store is None or not hasattr(store, "count_open"):
+            return 0
+        try:
+            return int(store.count_open())
+        except Exception:
+            return 0
 
     async def run(
         self,
@@ -494,19 +499,22 @@ class AgentLoop:
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
     ) -> str:
-        # --- Определяем research-режим по последнему вопросу пользователя ---
+        # --- research-режим по последнему вопросу пользователя ---
         last_user = next(
             (m for m in reversed(messages_history) if m.role == "user"),
             None,
         )
         research_mode = is_research_question(last_user.content if last_user else "")
         state = InvestigationState()
+        hypotheses_available = context.hypotheses is not None
         if research_mode:
             logger.info(
                 "Research-режим: вопрос требует глубокого изучения проекта "
-                f"(research_mode=True, агент={context.mode.value})"
+                f"(research_mode=True, режим={context.mode.value}, "
+                f"hypotheses={'on' if hypotheses_available else 'off'})"
             )
 
+        open_h = self._count_open_hypotheses(context)
         messages = [
             ChatMessage(
                 role="system",
@@ -516,6 +524,7 @@ class AgentLoop:
                     max_iterations=max_iterations,
                     state=state,
                     research_mode=research_mode,
+                    open_hypotheses=open_h,
                 ),
             )
         ]
@@ -536,10 +545,12 @@ class AgentLoop:
             observation_budget = attached_char_budget(client_num_ctx) // 4
 
         for iteration in range(max_iterations):
+            open_h = self._count_open_hypotheses(context)
             logger.debug(
                 f"ReAct итерация {iteration + 1}/{max_iterations}, "
                 f"режим={context.mode.value}, tools={len(tools_to_send or [])}, "
-                f"research={research_mode}, phase={phase_for(state).value}"
+                f"research={research_mode}, phase={phase_for(state, open_h).value}, "
+                f"open_hypotheses={open_h}"
             )
 
             current_text = ""
@@ -553,8 +564,6 @@ class AgentLoop:
                         f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…"
                     )
 
-            # Обновляем system-промпт с текущим номером итерации, фазой
-            # и накопленным состоянием исследования.
             messages[0] = ChatMessage(
                 role="system",
                 content=_build_system_prompt(
@@ -563,6 +572,7 @@ class AgentLoop:
                     max_iterations=max_iterations,
                     state=state,
                     research_mode=research_mode,
+                    open_hypotheses=open_h,
                 ),
             )
             messages = self._compact_history(messages)
@@ -601,11 +611,15 @@ class AgentLoop:
 
             # --- Fallback: текстовые tool_calls ---
             if not pending_tool_calls and current_text and tools_to_send:
-                extracted_calls = self._extract_tool_calls_from_text(current_text, tools_to_send)
+                extracted_calls = self._extract_tool_calls_from_text(
+                    current_text, tools_to_send
+                )
                 if extracted_calls:
                     pending_tool_calls = extracted_calls
                     current_text = ""
-                    logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
+                    logger.debug(
+                        f"Извлечено {len(pending_tool_calls)} текстовых tool_calls"
+                    )
 
             # --- Анти-галлюцинация: похоже на вызов, но ничего не распознано ---
             if (
@@ -632,13 +646,22 @@ class AgentLoop:
                     await on_status(f"🔧 Подготовка вызовов: {names}")
                 signature = self._tool_signature(pending_tool_calls)
                 if signature == prev_signature:
-                    logger.warning("Повтор идентичного набора tool_calls — прерываю цикл")
+                    logger.warning(
+                        "Повтор идентичного набора tool_calls — прерываю цикл"
+                    )
                     if on_status:
-                        await on_status("⏹ Обнаружено повторение вызовов — завершаю")
+                        await on_status(
+                            "⏹ Обнаружено повторение вызовов — завершаю"
+                        )
                     if current_text:
-                        messages.append(ChatMessage(role="assistant", content=current_text))
+                        messages.append(
+                            ChatMessage(role="assistant", content=current_text)
+                        )
                         return current_text
-                    return "Агент остановлен: повторяющиеся вызовы инструментов без прогресса."
+                    return (
+                        "Агент остановлен: повторяющиеся вызовы инструментов "
+                        "без прогресса."
+                    )
                 prev_signature = signature
 
             # --- Исполняем ---
@@ -671,7 +694,9 @@ class AgentLoop:
 
                     if policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
-                        approved = await on_tool_request(tc.name, description, tc.arguments)
+                        approved = await on_tool_request(
+                            tc.name, description, tc.arguments
+                        )
                         if not approved:
                             messages.append(
                                 _create_tool_result_message(
@@ -692,22 +717,22 @@ class AgentLoop:
                         extra["search_cache"] = context.search_cache
                     if context.attached_files:
                         extra["attached_files"] = context.attached_files
+                    if context.hypotheses:
+                        extra["hypotheses"] = context.hypotheses
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
 
-                    # --- Обновляем состояние исследования ---
                     state.note_call(
-                        tc.name,
-                        tc.arguments,
-                        result.content,
-                        result.is_error,
+                        tc.name, tc.arguments, result.content, result.is_error
                     )
 
                     if on_tool_result:
-                        await on_tool_result(result.name, result.content, result.is_error)
+                        await on_tool_result(
+                            result.name, result.content, result.is_error
+                        )
                     messages.append(
                         _create_tool_result_message(
                             tc.id,
@@ -721,19 +746,31 @@ class AgentLoop:
                 continue
 
             # --- Нет tool_calls — модель пытается дать финальный ответ ---
-            # В research-режиме сначала проверяем, не пора ли подсунуть нудж.
             if current_text and tools_to_send and research_mode:
-                nudge = pick_nudge(state, research_mode)
+                open_h_now = self._count_open_hypotheses(context)
+                nudge = pick_nudge(
+                    state,
+                    research_mode,
+                    open_hypotheses=open_h_now,
+                    hypotheses_available=hypotheses_available,
+                )
                 if nudge is not None:
                     key, hint = nudge
-                    state.nudges_fired.add(key)
+                    # verify_hypotheses — не в set, он отслеживается счётчиком
+                    if key != "verify_hypotheses":
+                        state.nudges_fired.add(key)
                     logger.info(
-                        f"Нудж [{key}] на итерации {iteration + 1}: {state.summary()}"
+                        f"Нудж [{key}] на итерации {iteration + 1}: "
+                        f"{state.summary()}, open_hyp={open_h_now}"
                     )
-                    messages.append(ChatMessage(role="assistant", content=current_text))
+                    messages.append(
+                        ChatMessage(role="assistant", content=current_text)
+                    )
                     messages.append(ChatMessage(role="user", content=hint))
                     if on_status:
-                        await on_status(NUDGE_STATUS_LABELS.get(key, f"🔁 {key}"))
+                        await on_status(
+                            NUDGE_STATUS_LABELS.get(key, f"🔁 {key}")
+                        )
                     current_text = ""
                     continue
 
@@ -742,9 +779,10 @@ class AgentLoop:
 
             return current_text
 
-        # Вместо выбрасывания ошибки делаем финальный вызов без инструментов
+        # --- Лимит итераций: финальный вызов без tools ---
         logger.info(
-            f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools"
+            f"Достигнут лимит итераций ({max_iterations}), "
+            "делаем финальный вызов без tools"
         )
         if on_status:
             await on_status("⏳ Лимит итераций — формирую финальный ответ…")
@@ -768,7 +806,9 @@ class AgentLoop:
                 return final_text or "Отменено"
             return final_text
         except Exception as e:
-            logger.error(f"Ошибка финального вызова после лимита итераций: {e}")
+            logger.error(
+                f"Ошибка финального вызова после лимита итераций: {e}"
+            )
             raise AgentIterationLimitError(
                 f"Агент превысил лимит итераций ({max_iterations})"
             ) from e

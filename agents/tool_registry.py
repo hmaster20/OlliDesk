@@ -37,7 +37,13 @@ def _type_to_json_schema(tp: type) -> dict[str, Any]:
         return {}
 
 
-_INJECTED_PARAMS = {"vector_store", "project_root", "search_cache", "attached_files"}
+_INJECTED_PARAMS = {
+    "vector_store",
+    "project_root",
+    "search_cache",
+    "attached_files",
+    "hypotheses",
+}
 
 
 def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
