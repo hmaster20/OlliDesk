@@ -1,4 +1,28 @@
-"""Цикл рассуждений и действий (ReAct) агента."""
+"""Цикл рассуждений и действий (ReAct) агента.
+
+Поддерживает два режима поведения.
+
+**Обычный** — все вопросы, кроме исследовательских. Цикл работает как раньше:
+модель вызывает инструменты, отвечает. Антигаллюцинационный нудж на
+ReAct-разметку (`Action:` / `Observation:`) и защита от повторов tool_calls
+включены.
+
+**Research** — включается автоматически, если последний вопрос пользователя
+требует изучения проекта («изучи архитектуру», «опиши структуру», «как
+связаны компоненты» и т. п.). В этом режиме работают:
+
+* счётчик прогресса (`InvestigationState`) — сколько файлов прочитано,
+  открыта ли точка входа и конфиг, есть ли поиски по коду;
+* фаза (`Phase`: RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS), которая
+  подмешивается в системный промпт и меняет инструкцию модели на каждом
+  шаге;
+* градуированные нуджи (`pick_nudge`) — не дают модели «сдаться» после
+  первого `list_directory`;
+* жёсткий протокол чтения (`_RESEARCH_PROTOCOL`) поверх общей инструкции
+  по инструментам.
+
+Обычный режим не затронут: `research_mode=False` отключает всё это.
+"""
 
 import json
 import re
@@ -10,6 +34,14 @@ from loguru import logger
 
 from agents.base import LLMBackend
 from agents.history_compactor import compact_history
+from agents.investigation import (
+    NUDGE_STATUS_LABELS,
+    InvestigationState,
+    Phase,
+    is_research_question,
+    phase_for,
+    pick_nudge,
+)
 from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ToolRegistry
@@ -37,6 +69,9 @@ class AgentContext:
 
     system_prompt: str = ""
     rag_context: str = ""
+    # Постоянный контекст проекта (AGENTS.md и т. п.) — отдельно от RAG,
+    # потому что обрезается последним и имеет высший приоритет.
+    agents_context: str = ""
     project_root: str = ""
     project_name: str = ""
     project_map: str = ""
@@ -63,9 +98,12 @@ _TOOL_USE_INSTRUCTION = """
      каталоги и файлы существуют, и читай нужные по относительному пути.
      Если вопрос про каталог — изучи ИМЕННО его файлы, не ограничивайся
      фрагментами, которые уже попали в контекст.
-  2. СВОИ ЗНАНИЯ — применяй их, чтобы анализировать код, находить закономерности,
+  2. AGENTS.md / конфиг проекта — если предоставлены в контексте, это
+     курируемая автором проекта сводка: доверяй ей больше, чем догадкам,
+     но при расхождении с кодом — верь коду (и упомяни расхождение).
+  3. СВОИ ЗНАНИЯ — применяй их, чтобы анализировать код, находить закономерности,
      ошибки и расхождения с документацией.
-  3. web_search — ТОЛЬКО для внешних/публичных сведений (версии ПО, новости,
+  4. web_search — ТОЛЬКО для внешних/публичных сведений (версии ПО, новости,
       публичная документация), и только если ты НЕ уверен. НЕ ищи в интернете
       внутренние детали проекта (имена ролей, внутренние файлы, конфиги) — их там нет.
       Перед web_search сначала прочитай соответствующий код.
@@ -104,6 +142,88 @@ _TOOL_USE_INSTRUCTION = """
   • Если данных не хватает — читай ДРУГОЙ файл или вызывай ДРУГОЙ инструмент.
   • Если результат не помог — скажи об этом прямо, а не повторяй тот же вызов.
 """.strip()
+
+
+# Жёсткий протокол чтения для исследовательских вопросов. Ставится ПЕРЕД
+# общей инструкцией по инструментам, потому что для 7B-моделей конкретный
+# пошаговый план работает на порядок лучше абстрактной «изучай проект».
+_RESEARCH_PROTOCOL = """
+ПРОТОКОЛ ИЗУЧЕНИЯ ПРОЕКТА (обязателен для вопросов об архитектуре,
+структуре, зависимостях, схеме компонентов, «как устроен проект»):
+
+ШАГ 1. ОБЗОР
+  • list_directory(".") — верхний уровень
+  • read_file("README.md") — что за проект
+  • read_file(<конфиг сборки>) — pyproject.toml / package.json / *.csproj / go.mod
+  Эти три шага — минимальный вход. Без них ты не знаешь, что читать дальше.
+
+ШАГ 2. ТОЧКА ВХОДА
+  • Найди и прочитай файл, с которого проект запускается:
+    main.py, app.py, __main__.py, Program.cs, index.js, index.ts, server.py.
+  • В нём — список импортов. Это твоя карта зависимостей.
+
+ШАГ 3. КЛЮЧЕВЫЕ МОДУЛИ
+  • Возьми 3–5 модулей из импортов и прочитай их.
+  • Для каждого модуля — что он делает, какие у него зависимости.
+  • search_codebase — для смыслового поиска по паттернам (например,
+    «точка входа приложения», «регистрация сервисов», «роутинг»).
+
+ШАГ 4. ЛОГИЧЕСКАЯ СХЕМА
+  • Прежде чем писать ответ, собери мысленно граф: узлы = компоненты,
+    рёбра = вызовы/импорты. Ответ без графа = не ответ.
+
+ШАГ 5. ПРОВЕРКА
+  • Убедись, что все имена модулей в твоём ответе ты видел в реальных
+    файлах (не придумал).
+  • Если называешь язык/фреймворк — сошлись на конкретную строку
+    конкретного файла (например, pyproject.toml → dependencies: PySide6).
+
+ЗАПРЕЩЕНО:
+  • Отвечать, прочитав только список файлов.
+  • Называть язык/фреймворк без ссылки на файл.
+  • Рисовать ASCII-схему, в которой модули не из файлов проекта.
+""".strip()
+
+
+# Подсказки фазы — короткая инструкция «что делать прямо сейчас».
+_PHASE_HINTS: dict[Phase, str] = {
+    Phase.RECON: (
+        "ФАЗА: ОБЗОР.\n"
+        "Цель — составить карту проекта. Прочитай README.md и конфиг сборки "
+        "(pyproject.toml / package.json / *.csproj), найди точку входа "
+        "(main.py, Program.cs, index.js, app.py). НЕ отвечай на этом шаге — "
+        "ты ещё не знаешь, как проект устроен. Вызывай read_file на ключевые "
+        "файлы."
+    ),
+    Phase.DEEP_DIVE: (
+        "ФАЗА: ПОГРУЖЕНИЕ.\n"
+        "Ты уже начал читать файлы, но этого мало для ответа об архитектуре. "
+        "Проследи зависимости: открой точку входа → найди импорты/using/require "
+        "→ прочитай модули, от которых она зависит → найди их зависимости. "
+        "Ищи конфиги, схемы БД, регистрации сервисов. Используй search_codebase "
+        "для смыслового поиска по коду. НЕ отвечай, пока не прочитаешь не менее "
+        "5–7 ключевых файлов."
+    ),
+    Phase.SELF_CHECK: (
+        "ФАЗА: САМОПРОВЕРКА.\n"
+        "У тебя достаточно прочитанного, чтобы ответить — но сначала проверь "
+        "себя, прежде чем писать финальный ответ. Ответь СЕБЕ (не пользователю) "
+        "на 4 вопроса:\n"
+        "  1) Я знаю, с какого файла проект запускается?\n"
+        "  2) Я знаю ключевые внешние зависимости (фреймворк, БД, API)?\n"
+        "  3) Я могу описать поток данных: вход → обработка → выход?\n"
+        "  4) Я могу назвать 5+ компонентов и их связи?\n"
+        "Если хотя бы один ответ — «нет», вернись к чтению файлов (read_file). "
+        "Если «да» — давай финальный ответ с ASCII-схемой."
+    ),
+    Phase.SYNTHESIS: (
+        "ФАЗА: СИНТЕЗ.\n"
+        "У тебя достаточно данных. Собери структурированный ответ: "
+        "обзор → стек → компоненты (ASCII-схема) → поток данных → "
+        "ключевые зависимости → что осталось непонятным. "
+        "Каждый тезис подкрепляй путями к файлам, которые ты читал."
+    ),
+}
 
 
 _LANGUAGE_DIRECTIVE = (
@@ -149,20 +269,6 @@ _TOOL_FORMAT_HINT = (
     "Если данные из инструментов не нужны — дай обычный ответ по существу."
 )
 
-# Подсказка после «мелкого» исследования: модель посмотрела только список
-# файлов и пытается отвечать. Без неё SLM (Qwen 7B/14B) часто останавливается
-# на list_directory и отдаёт список файлов как финальный ответ.
-_SHALLOW_INVESTIGATION_HINT = (
-    "Ты видишь только ИМЕНА файлов — этого недостаточно для ответа о структуре, "
-    "архитектуре или логике проекта. Прочитай ключевые файлы через read_file "
-    "(README.md, точка входа, главный модуль, ключевые каталоги) и, если нужно, "
-    "поищи по коду через search_codebase. Только после этого давай финальный ответ."
-)
-
-# Инструменты «глубокого» изучения: если хотя бы один из них вызван — модель
-# действительно копает, и подсказка про list_directory уже не нужна.
-_DEEP_INVESTIGATION_TOOLS = frozenset({"read_file", "search_codebase", "read_attached_file"})
-
 
 def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента.
@@ -199,11 +305,13 @@ def _fit_sections(
 ) -> list[tuple[str, str]]:
     """Урезает переменные секции, если промпт не влезает в бюджет окна модели.
 
-    Фиксированные блоки (роль, инструкции по tools, подсказка режима, блок
-    проекта) не трогаются. Переменные секции урезаются в порядке приоритета —
-    от наименее важной: RAG → карта проекта → правила. Секцию, которую нельзя
-    урезать до осмысленного размера, выбрасывают целиком. При неизвестном окне
-    (`num_ctx <= 0`) промпт отдаётся без изменений.
+    Фиксированные блоки (роль, инструкции по tools, протокол исследования,
+    подсказка фазы, блок проекта) не трогаются. Переменные секции урезаются
+    в порядке приоритета — от наименее важной: RAG → карта проекта → правила →
+    контекст AGENTS.md. Контекст проекта — самый ценный, поэтому режется
+    последним. Секцию, которую нельзя урезать до осмысленного размера,
+    выбрасывают целиком. При неизвестном окне (`num_ctx <= 0`) промпт
+    отдаётся без изменений.
     """
     if num_ctx <= 0 or not variable:
         return variable
@@ -212,7 +320,7 @@ def _fit_sections(
         return variable
 
     remaining = list(variable)
-    for key in ("rag", "map", "rules"):
+    for key in ("rag", "map", "rules", "agents"):
         if len(_assemble_prompt(pre, remaining)) <= budget:
             break
         others = [item for item in remaining if item[0] != key]
@@ -222,23 +330,36 @@ def _fit_sections(
             remaining = others
             continue
         remaining = [
-            (name, truncate_to_chars(value, allowance) if name == key else value) for name, value in remaining
+            (name, truncate_to_chars(value, allowance) if name == key else value)
+            for name, value in remaining
         ]
         remaining = [(name, value) for name, value in remaining if value]
     return remaining
 
 
-def _build_system_prompt(context: AgentContext, iteration: int = 0, max_iterations: int = 0) -> str:
-    """Собирает system-промпт из контекста, роли и инструкций по tools.
+def _build_system_prompt(
+    context: AgentContext,
+    iteration: int = 0,
+    max_iterations: int = 0,
+    *,
+    state: InvestigationState | None = None,
+    research_mode: bool = False,
+) -> str:
+    """Собирает system-промпт из контекста, роли, протокола и фазы.
 
-    Фиксированные блоки (роль, instructions, подсказка режима, проект, языковая
-    директива) и переменные секции (правила, карта проекта, RAG) укладываются в
-    бюджет ``system_prompt_char_budget(num_ctx)``; при переполнении переменные
-    секции урезаются в порядке приоритета (см. ``_fit_sections``).
+    Фиксированные блоки (роль, инструкции по tools, протокол исследования,
+    подсказка режима и фазы, блок проекта, языковая директива) и переменные
+    секции (правила, AGENTS.md, карта проекта, RAG) укладываются в бюджет
+    ``system_prompt_char_budget(num_ctx)``; при переполнении переменные секции
+    урезаются в порядке приоритета (см. ``_fit_sections``).
     """
     base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
 
-    pre = [base_prompt, _TOOL_USE_INSTRUCTION]
+    pre: list[str] = [base_prompt, _TOOL_USE_INSTRUCTION]
+
+    # Жёсткий протокол чтения — только в исследовательском режиме.
+    if research_mode:
+        pre.append(_RESEARCH_PROTOCOL)
 
     # Step-awareness: итерация N из M
     if max_iterations > 0 and iteration >= 0:
@@ -248,6 +369,15 @@ def _build_system_prompt(context: AgentContext, iteration: int = 0, max_iteratio
             iter_line += " На последних итерациях СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer."
         pre.append(iter_line)
 
+    # Фаза и прогресс исследования — модель видит, что уже накопано.
+    if research_mode and state is not None:
+        phase = phase_for(state)
+        pre.append(_PHASE_HINTS[phase])
+        pre.append(
+            "ТВОЙ ПРОГРЕСС: " + state.summary() + ".\n"
+            "Файлы, которые ты уже прочитал: " + state.read_files_preview()
+        )
+
     pre.append(_MODE_HINTS.get(context.mode, _MODE_HINTS[AgentMode.CHAT]))
     project_block = _project_block(context)
     if project_block:
@@ -256,6 +386,8 @@ def _build_system_prompt(context: AgentContext, iteration: int = 0, max_iteratio
     variable: list[tuple[str, str]] = []
     if context.extra_rules:
         variable.append(("rules", f"Дополнительные правила:\n{context.extra_rules}"))
+    if context.agents_context:
+        variable.append(("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}"))
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:
@@ -362,7 +494,31 @@ class AgentLoop:
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
     ) -> str:
-        messages = [ChatMessage(role="system", content=_build_system_prompt(context, iteration=0, max_iterations=max_iterations))]
+        # --- Определяем research-режим по последнему вопросу пользователя ---
+        last_user = next(
+            (m for m in reversed(messages_history) if m.role == "user"),
+            None,
+        )
+        research_mode = is_research_question(last_user.content if last_user else "")
+        state = InvestigationState()
+        if research_mode:
+            logger.info(
+                "Research-режим: вопрос требует глубокого изучения проекта "
+                f"(research_mode=True, агент={context.mode.value})"
+            )
+
+        messages = [
+            ChatMessage(
+                role="system",
+                content=_build_system_prompt(
+                    context,
+                    iteration=0,
+                    max_iterations=max_iterations,
+                    state=state,
+                    research_mode=research_mode,
+                ),
+            )
+        ]
         messages.extend(messages_history)
         messages = self._compact_history(messages)
 
@@ -372,10 +528,8 @@ class AgentLoop:
 
         prev_signature: tuple[tuple[str, str], ...] | None = None
         nudged_tool_format = False
-        nudged_shallow = False
 
         executed_calls: dict[tuple[str, str], str] = {}
-        executed_tool_names: set[str] = set()
         observation_budget = 0
         client_num_ctx = getattr(self.client, "num_ctx", 0)
         if isinstance(client_num_ctx, int) and client_num_ctx > 0:
@@ -384,7 +538,8 @@ class AgentLoop:
         for iteration in range(max_iterations):
             logger.debug(
                 f"ReAct итерация {iteration + 1}/{max_iterations}, "
-                f"режим={context.mode.value}, tools={len(tools_to_send or [])}"
+                f"режим={context.mode.value}, tools={len(tools_to_send or [])}, "
+                f"research={research_mode}, phase={phase_for(state).value}"
             )
 
             current_text = ""
@@ -394,10 +549,22 @@ class AgentLoop:
                 if iteration == 0:
                     await on_status("🤔 Анализирую запрос…")
                 else:
-                    await on_status(f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…")
+                    await on_status(
+                        f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…"
+                    )
 
-            # Обновляем system-промпт с текущим номером итерации
-            messages[0] = ChatMessage(role="system", content=_build_system_prompt(context, iteration=iteration, max_iterations=max_iterations))
+            # Обновляем system-промпт с текущим номером итерации, фазой
+            # и накопленным состоянием исследования.
+            messages[0] = ChatMessage(
+                role="system",
+                content=_build_system_prompt(
+                    context,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    state=state,
+                    research_mode=research_mode,
+                ),
+            )
             messages = self._compact_history(messages)
 
             try:
@@ -422,7 +589,9 @@ class AgentLoop:
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
-                logger.warning(f"Модель {self.model} не поддерживает нативные tools, повтор без tools")
+                logger.warning(
+                    f"Модель {self.model} не поддерживает нативные tools, повтор без tools"
+                )
                 tools_to_send = None
                 if on_tools_disabled:
                     await on_tools_disabled()
@@ -447,7 +616,9 @@ class AgentLoop:
                 and _looks_like_tool_attempt(current_text)
             ):
                 nudged_tool_format = True
-                logger.warning("Ответ похож на вызов инструмента, но не распознан — прошу формат JSON")
+                logger.warning(
+                    "Ответ похож на вызов инструмента, но не распознан — прошу формат JSON"
+                )
                 messages.append(ChatMessage(role="assistant", content=current_text))
                 messages.append(ChatMessage(role="user", content=_TOOL_FORMAT_HINT))
                 if on_status:
@@ -483,13 +654,15 @@ class AgentLoop:
                 for tc in pending_tool_calls:
                     call_key = self._call_key(tc)
                     if call_key in executed_calls:
-                        logger.debug(f"Повторный вызов {tc.name} — отдаю кэшированный результат")
+                        logger.debug(
+                            f"Повторный вызов {tc.name} — отдаю кэшированный результат"
+                        )
                         messages.append(
                             _create_tool_result_message(
                                 tc.id,
                                 tc.name,
-                                "Ты уже вызывал этот инструмент с этими аргументами. Результат:\n"
-                                f"{executed_calls[call_key]}",
+                                "Ты уже вызывал этот инструмент с этими аргументами. "
+                                f"Результат:\n{executed_calls[call_key]}",
                             )
                         )
                         continue
@@ -524,7 +697,15 @@ class AgentLoop:
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
-                    executed_tool_names.add(tc.name)
+
+                    # --- Обновляем состояние исследования ---
+                    state.note_call(
+                        tc.name,
+                        tc.arguments,
+                        result.content,
+                        result.is_error,
+                    )
+
                     if on_tool_result:
                         await on_tool_result(result.name, result.content, result.is_error)
                     messages.append(
@@ -539,26 +720,22 @@ class AgentLoop:
 
                 continue
 
-            # Нет tools — модель пытается дать финальный ответ.
-            # Если она вызвала только list_directory и НЕ читала файлов —
-            # один раз просим прочитать ключевые файлы, а не отдавать список.
-            if (
-                current_text
-                and tools_to_send
-                and not nudged_shallow
-                and executed_tool_names
-                and not (executed_tool_names & _DEEP_INVESTIGATION_TOOLS)
-            ):
-                nudged_shallow = True
-                logger.info(
-                    "Агент ответил после мелкого исследования "
-                    f"(инструменты: {sorted(executed_tool_names)}) — прошу прочитать ключевые файлы"
-                )
-                messages.append(ChatMessage(role="assistant", content=current_text))
-                messages.append(ChatMessage(role="user", content=_SHALLOW_INVESTIGATION_HINT))
-                if on_status:
-                    await on_status("🔁 Читаю ключевые файлы проекта…")
-                continue
+            # --- Нет tool_calls — модель пытается дать финальный ответ ---
+            # В research-режиме сначала проверяем, не пора ли подсунуть нудж.
+            if current_text and tools_to_send and research_mode:
+                nudge = pick_nudge(state, research_mode)
+                if nudge is not None:
+                    key, hint = nudge
+                    state.nudges_fired.add(key)
+                    logger.info(
+                        f"Нудж [{key}] на итерации {iteration + 1}: {state.summary()}"
+                    )
+                    messages.append(ChatMessage(role="assistant", content=current_text))
+                    messages.append(ChatMessage(role="user", content=hint))
+                    if on_status:
+                        await on_status(NUDGE_STATUS_LABELS.get(key, f"🔁 {key}"))
+                    current_text = ""
+                    continue
 
             if current_text:
                 messages.append(ChatMessage(role="assistant", content=current_text))
@@ -566,7 +743,9 @@ class AgentLoop:
             return current_text
 
         # Вместо выбрасывания ошибки делаем финальный вызов без инструментов
-        logger.info(f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools")
+        logger.info(
+            f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools"
+        )
         if on_status:
             await on_status("⏳ Лимит итераций — формирую финальный ответ…")
 
@@ -590,4 +769,6 @@ class AgentLoop:
             return final_text
         except Exception as e:
             logger.error(f"Ошибка финального вызова после лимита итераций: {e}")
-            raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})") from e
+            raise AgentIterationLimitError(
+                f"Агент превысил лимит итераций ({max_iterations})"
+            ) from e
