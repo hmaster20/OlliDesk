@@ -306,6 +306,7 @@ class MainWindow(QMainWindow):
 
         left_panel = self._create_left_panel()
         self.left_panel = left_panel
+        left_panel.setVisible(False)  # по умолчанию свернута
         self.main_splitter.addWidget(left_panel)
 
         center_panel = self._create_center_panel()
@@ -649,7 +650,7 @@ class MainWindow(QMainWindow):
         self.project_structure_action = QAction("Показать/Скрыть &структуру проекта", self)
         self.project_structure_action.setShortcut("F4")
         self.project_structure_action.setCheckable(True)
-        self.project_structure_action.setChecked(True)
+        self.project_structure_action.setChecked(False)
         self.project_structure_action.toggled.connect(self._toggle_project_structure)
         view_menu.addAction(self.project_structure_action)
 
