@@ -41,6 +41,9 @@ def _register_download(thread: QThread) -> None:
     Реестр держит сильную ссылку на поток до тех пор, пока он не завершится,
     поэтому закрытие диалога или потеря Python-ссылки не приведёт к
     преждевременному удалению QThread.
+
+    Args:
+        thread: Запускаемый поток скачивания.
     """
     _ACTIVE_DOWNLOADS.append(thread)
 
@@ -58,9 +61,10 @@ def _register_download(thread: QThread) -> None:
 class _DownloadThread(QThread):
     """Скачивает одну модель в фоне.
 
-    ВАЖНО: сигнал называется sig_finished, а не finished, чтобы не
-    переопределять встроенный QThread.finished — иначе Qt не сможет корректно
-    вызвать внутренние обработчики жизненного цикла потока.
+    ВАЖНО: пользовательский сигнал называется ``sig_finished``, а не
+    ``finished`` — иначе он переопределил бы встроенный ``QThread.finished``,
+    и Qt не смог бы корректно вызвать внутренние обработчики жизненного цикла
+    потока (в частности, очистку из ``_register_download``).
     """
 
     sig_finished = Signal(str, bool)  # model_id, success
@@ -97,7 +101,12 @@ class SLMModelsDialog(QDialog):
     сохраняет всё, чего нет в дефолтном списке).
 
     Скачивание продолжается в фоне даже после закрытия диалога: потоки
-    хранятся в модульном реестре `_ACTIVE_DOWNLOADS` до завершения.
+    хранятся в модульном реестре ``_ACTIVE_DOWNLOADS`` до завершения.
+
+    Параллельные скачивания запрещены (кнопка «Скачать» выключается, пока
+    идёт любая загрузка). Действия над уже скачанными моделями (активация,
+    удаление) во время скачивания другой модели разрешены — они не трогают
+    файлы в процессе записи.
     """
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None):
@@ -197,6 +206,8 @@ class SLMModelsDialog(QDialog):
         self.table.setRowCount(0)
 
         # Сортируем: активная → установленные → остальные (внутри — по имени).
+        # Это критично, когда список вырастает: пользователь сразу видит
+        # текущую модель и то, что уже скачано.
         def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
             active = 0 if m.id == self.config.slm.selected_model else 1
             installed = 0 if is_model_installed(m.file, repo_id=m.repo) else 1
@@ -278,6 +289,7 @@ class SLMModelsDialog(QDialog):
     # ---------- helpers ----------
 
     def _current_model_info(self) -> SLMModelInfo | None:
+        """SLMModelInfo выделенной строки (только chat-модели)."""
         row = self.table.currentRow()
         if row < 0:
             return None
@@ -291,20 +303,38 @@ class SLMModelsDialog(QDialog):
         return info
 
     def _is_downloading(self) -> bool:
-        """True, если сейчас идёт скачивание (кнопки должны быть выключены)."""
+        """True, если сейчас идёт любое скачивание.
+
+        Используется как барьер для запуска второго параллельного скачивания:
+        два одновременных ``_DownloadThread`` перетирали бы
+        ``self._download_thread`` и могли уронить приложение.
+        """
         return self._download_thread is not None and self._download_thread.isRunning()
 
-    def _update_buttons(self):
-        # Пока идёт скачивание, ВСЕ действия блокируются — иначе пользователь
-        # может запустить второе скачивание, перезаписав self._download_thread
-        # (первый поток потеряет Python-ссылку и крашнется).
-        if self._is_downloading():
-            self.download_btn.setEnabled(False)
-            self.delete_btn.setEnabled(False)
-            self.activate_btn.setEnabled(False)
-            return
+    def _downloading_model_id(self) -> str | None:
+        """ID модели, которая сейчас скачивается, или ``None``."""
+        thread = self._download_thread
+        if thread is None or not thread.isRunning():
+            return None
+        return thread.info.id
 
+    def _update_buttons(self):
+        """Обновляет состояние кнопок по выделенной модели и статусу скачиваний.
+
+        Скачивание блокирует только те действия, которые реально конфликтуют
+        с записью файла:
+
+        * «Скачать» — запрещено всегда, пока идёт любое скачивание
+          (одновременные загрузки перетирают ``self._download_thread``);
+        * «Удалить» — запрещено для модели, которая сейчас качается
+          (нельзя удалять файл в процессе записи);
+        * «Активировать» — не зависит от скачивания других моделей, потому
+          что переключение активной модели не трогает файлы на диске.
+        """
         info = self._current_model_info()
+        any_downloading = self._is_downloading()
+        downloading_id = self._downloading_model_id()
+
         if not info:
             self.download_btn.setEnabled(False)
             self.delete_btn.setEnabled(False)
@@ -313,9 +343,20 @@ class SLMModelsDialog(QDialog):
 
         installed = is_model_installed(info.file, repo_id=info.repo)
         active = info.id == self.config.slm.selected_model
+        is_currently_downloading = downloading_id == info.id
 
-        self.download_btn.setEnabled(not installed)
-        self.delete_btn.setEnabled(installed and not active)
+        # Скачать: только если не качается ничего другого и модель ещё не скачана.
+        self.download_btn.setEnabled(
+            not any_downloading and not installed and not is_currently_downloading
+        )
+
+        # Удалить: не активную, не скачиваемую сейчас, и установленную.
+        self.delete_btn.setEnabled(
+            installed and not active and not is_currently_downloading
+        )
+
+        # Активировать: только установленную и не активную.
+        # Скачивание других моделей — не помеха.
         self.activate_btn.setEnabled(installed and not active)
 
     # ---------- actions ----------
@@ -386,6 +427,14 @@ class SLMModelsDialog(QDialog):
                 self,
                 "Активная модель",
                 "Нельзя удалить активную модель. Сначала переключитесь на другую.",
+            )
+            return
+        if self._downloading_model_id() == info.id:
+            QMessageBox.information(
+                self,
+                "Модель скачивается",
+                "Эта модель сейчас скачивается. Дождитесь завершения, "
+                "чтобы удалить её.",
             )
             return
 
@@ -504,13 +553,20 @@ class SLMModelsDialog(QDialog):
         self._populate()
 
     def _set_busy(self, busy: bool, message: str):
+        """Показывает/скрывает прогресс-бар и управляет кнопкой «Скачать».
+
+        Остальные кнопки пересчитывает ``_update_buttons()`` — он учитывает
+        и статус скачивания, и выделение в таблице. Здесь мы не форсим
+        выключение delete/activate: пользователь должен иметь возможность
+        активировать или удалить *другие* модели, пока идёт скачивание.
+        """
         self.progress_bar.setVisible(busy)
-        self.download_btn.setEnabled(not busy)
-        self.delete_btn.setEnabled(not busy)
-        self.activate_btn.setEnabled(not busy)
+        # Дополнительно блокируем «Своя модель», чтобы нельзя было изменить
+        # список во время активного скачивания — это сбило бы пересчёт строк.
         self.add_btn.setEnabled(not busy)
         if message:
             self.status_label.setText(message)
+        self._update_buttons()
 
     # ---------- public ----------
 
