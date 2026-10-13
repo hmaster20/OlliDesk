@@ -1,5 +1,6 @@
 """Панель чата с поддержкой режимов Chat / Plan / Agent."""
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -1242,10 +1243,8 @@ class ChatPanel(QWidget):
         self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
-        try:
+        with contextlib.suppress(Exception):
             self._agent_thread.iteration_limit_exceeded.connect(self._on_iteration_limit_exceeded)
-        except Exception:
-            pass
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
@@ -1323,10 +1322,8 @@ class ChatPanel(QWidget):
         self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
-        try:
+        with contextlib.suppress(Exception):
             self._agent_thread.iteration_limit_exceeded.connect(self._on_iteration_limit_exceeded)
-        except Exception:
-            pass
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
