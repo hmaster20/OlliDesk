@@ -4,6 +4,7 @@ from ui.chat.message_item import (
     ChatActivityItem,
     ChatHypothesisItem,
     ChatMessageItem,
+    ChatResearchPassport,
     ChatSourcesItem,
 )
 from ui.chat.panel import ChatPanel
@@ -19,6 +20,7 @@ __all__ = [
     "ChatHypothesisItem",
     "ChatMessageItem",
     "ChatPanel",
+    "ChatResearchPassport",
     "ChatSourcesItem",
     "RagSearchThread",
     "WebSearchThread",

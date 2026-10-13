@@ -23,7 +23,9 @@ ReAct-разметку (`Action:` / `Observation:`) и защита от пов�
   проверяемое утверждение (`record_hypothesis`), затем закрывает его
   (`update_hypothesis`).
 
-Обычный режим не затронут: `research_mode=False` отключает всё это.
+По окончании research-прогона в `self.last_research_summary` кладётся
+словарь со всей доказательной базой — его использует UI, чтобы построить
+«Паспорт исследования» под финальным ответом.
 """
 
 import json
@@ -308,13 +310,7 @@ def _fit_sections(
     variable: list[tuple[str, str]],
     num_ctx: int,
 ) -> list[tuple[str, str]]:
-    """Урезает переменные секции, если промпт не влезает в бюджет окна модели.
-
-    Порядок урезания — от наименее важной: RAG → карта проекта → правила →
-    AGENTS.md → гипотезы. Контекст AGENTS.md и гипотезы — самые ценные,
-    режутся последними. Секцию, которую нельзя урезать до осмысленного
-    размера, выбрасывают целиком.
-    """
+    """Урезает переменные секции, если промпт не влезает в бюджет окна модели."""
     if num_ctx <= 0 or not variable:
         return variable
     budget = system_prompt_char_budget(num_ctx)
@@ -364,7 +360,6 @@ def _build_system_prompt(
             )
         pre.append(iter_line)
 
-    # Фаза + прогресс + предупреждение об открытых гипотезах
     if research_mode and state is not None:
         phase = phase_for(state, open_hypotheses=open_hypotheses)
         pre.append(_PHASE_HINTS[phase])
@@ -440,6 +435,9 @@ class AgentLoop:
         self.client = client
         self.registry = registry
         self.model = model
+        # Заполняется в _finalize() при завершении research-прогона.
+        # UI читает это поле после run(), чтобы построить паспорт исследования.
+        self.last_research_summary: dict[str, Any] | None = None
 
     def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """Прореживает промпт, если он не помещается в окно модели."""
@@ -485,6 +483,66 @@ class AgentLoop:
             return int(store.count_open())
         except Exception:
             return 0
+
+    @staticmethod
+    def _make_research_summary(
+        state: InvestigationState,
+        context: AgentContext,
+    ) -> dict[str, Any]:
+        """Собирает словарь с доказательной базой research-прогона.
+
+        Потребитель — UI: `ChatResearchPassport` строит по этому словарю
+        финальную сводку под ответом ассистента.
+
+        Поля:
+            files_read: отсортированный список прочитанных файлов;
+            read_entry_point: открыт ли файл-кандидат в точку входа;
+            read_config: открыт ли конфиг или README;
+            total_chars_read: суммарный объём прочитанного;
+            searches: запросы search_codebase;
+            nudges_fired: какие нуджи сработали;
+            hypotheses: список гипотез с их финальными статусами и evidence.
+        """
+        hypotheses_data: list[dict[str, Any]] = []
+        store = context.hypotheses
+        if store is not None and hasattr(store, "items"):
+            for h in store.items:  # type: ignore[attr-defined]
+                hypotheses_data.append(
+                    {
+                        "id": h.id,
+                        "statement": h.statement,
+                        "verification_method": h.verification_method,
+                        "status": h.status,
+                        "evidence": h.evidence,
+                    }
+                )
+
+        return {
+            "files_read": sorted(state.read_with_content),
+            "read_entry_point": state.read_entry_point,
+            "read_config": state.read_config,
+            "total_chars_read": state.total_chars_read,
+            "searches": list(state.searched_queries),
+            "nudges_fired": sorted(state.nudges_fired),
+            "hypotheses": hypotheses_data,
+        }
+
+    def _finalize(
+        self,
+        research_mode: bool,
+        state: InvestigationState,
+        context: AgentContext,
+    ) -> None:
+        """Кладёт сводку research-прогона в `last_research_summary`.
+
+        Вызывается перед каждым `return` из `run()`, включая отмену и
+        финальный вызов после лимита итераций. Если прогон не research —
+        поле остаётся ``None``, UI не показывает паспорт.
+        """
+        if research_mode:
+            self.last_research_summary = self._make_research_summary(state, context)
+        else:
+            self.last_research_summary = None
 
     async def run(
         self,
@@ -596,6 +654,7 @@ class AgentLoop:
 
                 if self.client.is_cancelled:
                     logger.info("Запрос отменён пользователем")
+                    self._finalize(research_mode, state, context)
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
@@ -642,7 +701,9 @@ class AgentLoop:
             # --- Защита от повторов ---
             if pending_tool_calls and tools_to_send:
                 if on_status:
-                    names = ", ".join(dict.fromkeys(tc.name for tc in pending_tool_calls))
+                    names = ", ".join(
+                        dict.fromkeys(tc.name for tc in pending_tool_calls)
+                    )
                     await on_status(f"🔧 Подготовка вызовов: {names}")
                 signature = self._tool_signature(pending_tool_calls)
                 if signature == prev_signature:
@@ -653,6 +714,7 @@ class AgentLoop:
                         await on_status(
                             "⏹ Обнаружено повторение вызовов — завершаю"
                         )
+                    self._finalize(research_mode, state, context)
                     if current_text:
                         messages.append(
                             ChatMessage(role="assistant", content=current_text)
@@ -756,7 +818,6 @@ class AgentLoop:
                 )
                 if nudge is not None:
                     key, hint = nudge
-                    # verify_hypotheses — не в set, он отслеживается счётчиком
                     if key != "verify_hypotheses":
                         state.nudges_fired.add(key)
                     logger.info(
@@ -777,6 +838,7 @@ class AgentLoop:
             if current_text:
                 messages.append(ChatMessage(role="assistant", content=current_text))
 
+            self._finalize(research_mode, state, context)
             return current_text
 
         # --- Лимит итераций: финальный вызов без tools ---
@@ -803,12 +865,15 @@ class AgentLoop:
                     final_text += chunk.content
                     await on_token(chunk.content)
             if self.client.is_cancelled:
+                self._finalize(research_mode, state, context)
                 return final_text or "Отменено"
+            self._finalize(research_mode, state, context)
             return final_text
         except Exception as e:
             logger.error(
                 f"Ошибка финального вызова после лимита итераций: {e}"
             )
+            self._finalize(research_mode, state, context)
             raise AgentIterationLimitError(
                 f"Агент превысил лимит итераций ({max_iterations})"
             ) from e

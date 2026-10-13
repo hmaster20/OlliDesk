@@ -57,10 +57,13 @@ class AgentChatThread(QThread):
     tool_started = Signal(str, str)
     finish_received = Signal(str)
     error_occurred = Signal(str)
-    iteration_limit_exceeded = Signal()  # Достигнут лимит итераций — запросить продолжение
+    iteration_limit_exceeded = Signal()
     iteration_changed = Signal(int, int)
     tools_status_changed = Signal(bool)
     status_changed = Signal(str)
+    # Сводка research-прогона (dict) — эмитится ПЕРЕД finish_received,
+    # чтобы панель успела сохранить её до отрисовки финального ответа.
+    research_summary_ready = Signal(object)
 
     def __init__(
         self,
@@ -88,7 +91,9 @@ class AgentChatThread(QThread):
         self._tool_response = (approved, arguments)
         self._tool_event.set()
 
-    async def _on_tool_request(self, name: str, description: str, arguments: dict) -> bool:
+    async def _on_tool_request(
+        self, name: str, description: str, arguments: dict
+    ) -> bool:
         args_json = json.dumps(arguments, ensure_ascii=False)
         self.tool_call_detected.emit(name, description, args_json)
 
@@ -114,9 +119,11 @@ class AgentChatThread(QThread):
             args_json = json.dumps(args, ensure_ascii=False)
             self.tool_started.emit(name, args_json)
 
-        async def _run_with(client):
-            loop = AgentLoop(client=client, registry=self.registry, model=self.model)
-            return await loop.run(
+        async def _run_with(client) -> tuple[str, AgentLoop]:
+            loop = AgentLoop(
+                client=client, registry=self.registry, model=self.model
+            )
+            result = await loop.run(
                 context=self.context,
                 messages_history=self.messages_history,
                 on_token=self._on_token,
@@ -128,17 +135,23 @@ class AgentChatThread(QThread):
                 on_status=self._on_status,
                 on_tool_result=self._on_tool_result,
             )
+            return result, loop
 
         try:
             if hasattr(self.client, "__aenter__"):
                 async with self.client as client:
-                    result = await _run_with(client)
+                    result, loop = await _run_with(client)
             else:
-                result = await _run_with(self.client)
+                result, loop = await _run_with(self.client)
+
+            # Сводка research-прогона — ДО finish_received, чтобы панель
+            # успела сохранить её и построить паспорт под ответом.
+            summary = getattr(loop, "last_research_summary", None)
+            if summary:
+                self.research_summary_ready.emit(summary)
 
             self.finish_received.emit(result)
         except AgentIterationLimitError as e:
-            # Лимит итераций достигнут — сигналим панели для показа кнопки "Продолжить"
             self.iteration_limit_exceeded.emit()
             self.error_occurred.emit(str(e))
         except Exception as e:
@@ -160,7 +173,6 @@ class AgentChatThread(QThread):
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
 
-    # (context, список источников [(file_path, start_line, end_line), ...])
     results_ready = Signal(str, list)
     search_error = Signal(str)
 
@@ -203,7 +215,9 @@ class RagSearchThread(QThread):
                         f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"
                         f"```\n{r.chunk.content}\n```"
                     )
-                    sources.append((r.file_path, r.chunk.start_line, r.chunk.end_line))
+                    sources.append(
+                        (r.file_path, r.chunk.start_line, r.chunk.end_line)
+                    )
 
                 context = "\n\n".join(context_parts)
                 self.results_ready.emit(context, sources)
@@ -278,7 +292,7 @@ class _SLMLoadThread(QThread):
 class _SLMDownloadThread(QThread):
     """Скачивает выбранную chat-модель и общую embedding-модель."""
 
-    finished = Signal(str, str)  # chat_path, embed_path
+    finished = Signal(str, str)
     progress = Signal(str)
     error = Signal(str)
 
@@ -297,18 +311,23 @@ class _SLMDownloadThread(QThread):
 
     def run(self):
         try:
-            # --- Автоопределение числа частей через HF ---
             parts = get_model_parts(self.model_repo, self.model_file)
             if parts > 1:
-                self.progress.emit(f"Скачивание {self.model_file} ({parts} частей)...")
+                self.progress.emit(
+                    f"Скачивание {self.model_file} ({parts} частей)..."
+                )
             else:
-                self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
+                self.progress.emit(
+                    f"Скачивание chat-модели {self.model_file}..."
+                )
 
             chat = download_model(self.model_repo, self.model_file)
 
             embed_path = ""
             try:
-                self.progress.emit(f"Скачивание embedding-модели {self.embed_file}...")
+                self.progress.emit(
+                    f"Скачивание embedding-модели {self.embed_file}..."
+                )
                 embed = download_model(self.embed_repo, self.embed_file)
                 embed_path = str(embed)
             except Exception as e:
@@ -357,14 +376,18 @@ class WebSearchThread(QThread):
             )
 
             if not search_results or "Ничего не найдено" in search_results:
-                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
+                self.error_occurred.emit(
+                    "Поиск не дал результатов. Попробуйте уточнить запрос."
+                )
                 return
 
             system_prompt = (
                 "Ты — поисковый ассистент. Используй результаты поиска для ответа. "
                 "Отвечай на русском языке, будь лаконичен и полезен."
             )
-            user_content = f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+            user_content = (
+                f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
+            )
 
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -372,7 +395,9 @@ class WebSearchThread(QThread):
                 ChatMessage(role="user", content=user_content),
             ]
 
-            async for chunk in self.router.chat(model=self.model, messages=messages, stream=True):
+            async for chunk in self.router.chat(
+                model=self.model, messages=messages, stream=True
+            ):
                 if chunk.reasoning_content:
                     self.thinking_received.emit(chunk.reasoning_content)
                 if chunk.content:

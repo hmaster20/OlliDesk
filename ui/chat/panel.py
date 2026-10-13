@@ -1,4 +1,20 @@
-"""Панель чата с поддержкой режимов Chat / Plan / Agent."""
+"""Панель чата с поддержкой режимов Chat / Plan / Agent.
+
+Правки относительно базовой версии:
+
+* **Этап 1** — контекст проекта (AGENTS.md) загружается через
+  `agents.context_loader.load_agents_context` и передаётся отдельным
+  приоритетным полем `AgentContext.agents_context`, а не подмешивается
+  в `rag_context`.
+* **Этап 2** — хранилище гипотез `HypothesisStore` передаётся в
+  `AgentContext.hypotheses`; тулы `record_hypothesis` / `update_hypothesis`
+  / `list_hypotheses` регистрируются в реестре; результаты вызовов
+  отображаются в UI как компактные виджеты `ChatHypothesisItem`.
+* **Этап 3** — по завершении research-прогона под финальным ответом
+  показывается «Паспорт исследования» (`ChatResearchPassport`) со всей
+  доказательной базой; сводка приходит сигналом `research_summary_ready`
+  из `AgentChatThread`.
+"""
 
 import contextlib
 import json
@@ -24,8 +40,10 @@ from PySide6.QtWidgets import (
 )
 
 from agents.agent_loop import AgentContext
+from agents.context_loader import load_agents_context
 from agents.download_slm import get_model_paths
 from agents.gpu_utils import detect_optimal_gpu_layers
+from agents.hypotheses import HypothesisStore
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
@@ -39,7 +57,13 @@ from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
-from ui.chat.message_item import ChatActivityItem, ChatMessageItem, ChatSourcesItem
+from ui.chat.message_item import (
+    ChatActivityItem,
+    ChatHypothesisItem,
+    ChatMessageItem,
+    ChatResearchPassport,
+    ChatSourcesItem,
+)
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -61,6 +85,9 @@ _CHAT_AUTO_TOOLS = (
     "get_exchange_rates_multi",
     "get_git_status",
     "read_attached_file",
+    "record_hypothesis",
+    "update_hypothesis",
+    "list_hypotheses",
 )
 
 # Команды-префиксы для прикрепления путей (в стиле @web)
@@ -152,6 +179,14 @@ class ChatPanel(QWidget):
         self._project_scan_root: str | None = None
         self._project_scanned: bool = False
         self._attached_files = AttachedFileStore()
+
+        # --- Этап 2: хранилище гипотез и виджеты их отображения ---
+        self._hypotheses = HypothesisStore()
+        self._hypothesis_widgets: dict[str, ChatHypothesisItem] = {}
+
+        # --- Этап 3: сводка последнего research-прогона (для паспорта) ---
+        self._last_research_summary: dict | None = None
+
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
@@ -969,6 +1004,10 @@ class ChatPanel(QWidget):
         self._current_thinking_content = ""
         self._rag_context = None
         self._attached_files.clear()
+        # --- Этап 2/3: сброс гипотез и сводки исследования ---
+        self._hypotheses.clear()
+        self._hypothesis_widgets.clear()
+        self._last_research_summary = None
         if not keep_session:
             self._session_id = None
         self._last_assistant_widget = None
@@ -1017,6 +1056,7 @@ class ChatPanel(QWidget):
         self._add_message("system", "⏹ Генерация остановлена пользователем")
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._last_research_summary = None
 
     def _send_message(self):
         if self._generating:
@@ -1193,7 +1233,9 @@ class ChatPanel(QWidget):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt("chat", project_root=p_root, context=self._template_context())
+            self.prompt_manager.get_prompt(
+                "chat", project_root=p_root, context=self._template_context()
+            )
             if self.prompt_manager
             else ""
         )
@@ -1201,27 +1243,18 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        try:
-            from pathlib import Path as _P
+        # AGENTS.md идёт в отдельное приоритетное поле, не в rag_context.
+        agents_context = load_agents_context(self.project_root)
 
-            agents_md = ""
-            if self.project_root:
-                p = _P(self.project_root) / "AGENTS.md"
-                if p.is_file():
-                    agents_md = p.read_text(encoding="utf-8").strip()
-            if not agents_md and self.project_root:
-                p2 = _P(self.project_root) / ".ollidesk" / "AGENTS.md"
-                if p2.is_file():
-                    agents_md = p2.read_text(encoding="utf-8").strip()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать AGENTS.md: {e}")
-            agents_md = ""
-
-        merged_context = "\n\n".join(filter(None, [agents_md, self._attached_context(), self._rag_context or ""]))
+        # rag_context = attached files + RAG-выдача (без AGENTS.md).
+        merged_rag = "\n\n".join(
+            filter(None, [self._attached_context(), self._rag_context or ""])
+        )
 
         context = AgentContext(
             system_prompt=combined,
-            rag_context=merged_context,
+            rag_context=merged_rag,
+            agents_context=agents_context,
             project_root=self.project_root,
             project_name=self._project_name(),
             project_map=self._project_map_text(),
@@ -1230,6 +1263,7 @@ class ChatPanel(QWidget):
             mode=AgentMode.CHAT,
             search_cache=cast(Any, raw_cache),
             attached_files=self._attached_files if self._attached_files else None,
+            hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
         )
 
@@ -1263,9 +1297,14 @@ class ChatPanel(QWidget):
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
         with contextlib.suppress(Exception):
-            self._agent_thread.iteration_limit_exceeded.connect(self._on_iteration_limit_exceeded)
+            self._agent_thread.iteration_limit_exceeded.connect(
+                self._on_iteration_limit_exceeded
+            )
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
+        self._agent_thread.research_summary_ready.connect(
+            self._on_research_summary_ready
+        )
         self._agent_thread.start()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
@@ -1278,7 +1317,9 @@ class ChatPanel(QWidget):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
+            self.prompt_manager.get_prompt(
+                mode.value, project_root=p_root, context=self._template_context()
+            )
             if self.prompt_manager
             else ""
         )
@@ -1287,27 +1328,18 @@ class ChatPanel(QWidget):
 
         raw_cache = getattr(self, "search_cache", None)
 
-        try:
-            from pathlib import Path as _P
+        # AGENTS.md — отдельным приоритетным полем, не в rag_context.
+        agents_context = load_agents_context(self.project_root)
 
-            agents_md = ""
-            if self.project_root:
-                p = _P(self.project_root) / "AGENTS.md"
-                if p.is_file():
-                    agents_md = p.read_text(encoding="utf-8").strip()
-            if not agents_md and self.project_root:
-                p2 = _P(self.project_root) / ".ollidesk" / "AGENTS.md"
-                if p2.is_file():
-                    agents_md = p2.read_text(encoding="utf-8").strip()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать AGENTS.md: {e}")
-            agents_md = ""
-
-        merged_context = "\n\n".join(filter(None, [agents_md, self._attached_context(), rag_context]))
+        # rag_context = attached files + RAG-выдача из vector_store.
+        merged_rag = "\n\n".join(
+            filter(None, [self._attached_context(), rag_context])
+        )
 
         context = AgentContext(
             system_prompt=combined,
-            rag_context=merged_context,
+            rag_context=merged_rag,
+            agents_context=agents_context,
             project_root=self.project_root,
             project_name=self._project_name(),
             project_map=self._project_map_text(),
@@ -1316,6 +1348,7 @@ class ChatPanel(QWidget):
             mode=mode,
             search_cache=cast(Any, raw_cache),
             attached_files=self._attached_files if self._attached_files else None,
+            hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
         )
 
@@ -1341,9 +1374,14 @@ class ChatPanel(QWidget):
         self._agent_thread.finish_received.connect(self._on_agent_finish)
         self._agent_thread.error_occurred.connect(self._on_agent_error)
         with contextlib.suppress(Exception):
-            self._agent_thread.iteration_limit_exceeded.connect(self._on_iteration_limit_exceeded)
+            self._agent_thread.iteration_limit_exceeded.connect(
+                self._on_iteration_limit_exceeded
+            )
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
+        self._agent_thread.research_summary_ready.connect(
+            self._on_research_summary_ready
+        )
         self._agent_thread.start()
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
@@ -1359,6 +1397,11 @@ class ChatPanel(QWidget):
             tool_create_snapshot,
             tool_git_status,
             tool_undo_snapshot,
+        )
+        from tools.hypothesis import (
+            list_hypotheses,
+            record_hypothesis,
+            update_hypothesis,
         )
         from tools.weather import get_weather
         from tools.web_search import web_search
@@ -1381,6 +1424,11 @@ class ChatPanel(QWidget):
             from tools.attached_files import read_attached_file
 
             registry.register(read_attached_file)
+
+        # --- Этап 2: инструменты работы с гипотезами ---
+        registry.register(record_hypothesis)
+        registry.register(update_hypothesis)
+        registry.register(list_hypotheses)
 
         if mode == AgentMode.CHAT:
             for name in _CHAT_AUTO_TOOLS:
@@ -1429,6 +1477,9 @@ class ChatPanel(QWidget):
             "create_snapshot": "Создание снапшота Git",
             "undo_last_snapshot": "Откат снапшота Git",
             "read_attached_file": "Чтение прикреплённого файла",
+            "record_hypothesis": "Запись гипотезы",
+            "update_hypothesis": "Обновление гипотезы",
+            "list_hypotheses": "Список гипотез",
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
@@ -1443,7 +1494,51 @@ class ChatPanel(QWidget):
 
     @Slot(str, str, bool)
     def _on_tool_executed(self, name: str, content: str, is_error: bool):
+        # --- Этап 2: гипотезы отображаем виджетом, а не стандартным сообщением ---
+        if (
+            name in ("record_hypothesis", "update_hypothesis")
+            and not is_error
+            and self._update_hypothesis_widget(content)
+        ):
+            return
         self._add_tool_message(name, content, is_error)
+
+    def _update_hypothesis_widget(self, content: str) -> bool:
+        """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет.
+
+        Возвращает True, если виджет обновлён (тогда стандартное сообщение
+        инструмента не показываем — виджет информативнее).
+        """
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if not isinstance(data, dict) or not data.get("ok"):
+            return False
+        h = data.get("hypothesis")
+        if not isinstance(h, dict):
+            return False
+        hid = str(h.get("id") or "")
+        if not hid:
+            return False
+
+        widget = self._hypothesis_widgets.get(hid)
+        if widget is None:
+            widget = ChatHypothesisItem(
+                hypothesis_id=hid,
+                statement=str(h.get("statement") or ""),
+            )
+            self._hypothesis_widgets[hid] = widget
+            self.scroll_layout.insertWidget(
+                self.scroll_layout.count() - 1, widget
+            )
+        widget.update_state(
+            status=str(h.get("status") or "open"),
+            evidence=str(h.get("evidence") or ""),
+            verification_method=str(h.get("verification_method") or ""),
+        )
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        return True
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
@@ -1466,6 +1561,9 @@ class ChatPanel(QWidget):
             "create_snapshot": "📸 Создание снапшота Git",
             "undo_last_snapshot": "⏪ Откат снапшота Git",
             "read_attached_file": "📄 Дочитывание файла",
+            "record_hypothesis": "💡 Запись гипотезы",
+            "update_hypothesis": "🔬 Обновление гипотезы",
+            "list_hypotheses": "📋 Список гипотез",
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         activity = f"{label}: {arg_summary}" if arg_summary else label
@@ -1498,10 +1596,29 @@ class ChatPanel(QWidget):
                 self.session_store.save_message(self._session_id, assistant_message)
             self._show_activity("✅ Готово")
 
+        # --- Этап 3: паспорт исследования под финальным ответом ---
+        summary = self._last_research_summary
+        self._last_research_summary = None
+        if self._should_show_passport(summary):
+            self._show_research_passport(summary)
+
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._last_assistant_widget = None
+
+    @staticmethod
+    def _should_show_passport(summary: dict | None) -> bool:
+        """Показывать ли паспорт по этой сводке.
+
+        Правило: показываем, если прочитано ≥2 файла или есть хотя бы одна
+        гипотеза. Пустой паспорт (0 файлов, 0 гипотез) — только шум.
+        """
+        if not summary:
+            return False
+        files = summary.get("files_read") or []
+        hypotheses = summary.get("hypotheses") or []
+        return bool(len(files) >= 2 or hypotheses)
 
     def _reset_send_button(self):
         self._generating = False
@@ -1544,6 +1661,30 @@ class ChatPanel(QWidget):
             "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент сформировал Final Answer"
         )
         self.status_label.setText("Достигнут лимит итераций — готово к продолжению")
+
+    @Slot(object)
+    def _on_research_summary_ready(self, summary: dict):
+        """Запоминает сводку research-прогона.
+
+        Приходит ДО `finish_received` (см. `ui/chat/threads.py`), чтобы
+        `_on_agent_finish` уже имел её в руках и мог построить паспорт.
+        """
+        self._last_research_summary = summary
+        logger.debug(
+            "Research-сводка: файлов прочитано "
+            f"{len(summary.get('files_read') or [])}, "
+            f"гипотез {len(summary.get('hypotheses') or [])}"
+        )
+
+    def _show_research_passport(self, summary: dict) -> None:
+        """Вставляет виджет «Паспорт исследования» под финальным ответом."""
+        try:
+            widget = ChatResearchPassport(summary)
+        except Exception as e:
+            logger.warning(f"Не удалось построить паспорт исследования: {e}")
+            return
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):
