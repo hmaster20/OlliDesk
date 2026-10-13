@@ -25,18 +25,7 @@ from fs.vector_store import SearchResult
 
 
 def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
-    """Оставляет по одному лучшему чанку на файл.
-
-    Векторный поиск часто возвращает несколько соседних чанков одного файла.
-    Для контекста важнее разнообразие файлов, поэтому оставляем первый
-    (самый близкий) чанк каждого пути.
-
-    Args:
-        results: Результаты поиска, упорядоченные по убыванию схожести.
-
-    Returns:
-        Результаты без повторов по ``file_path``.
-    """
+    """Оставляет по одному лучшему чанку на файл."""
     seen: set[str] = set()
     unique: list[SearchResult] = []
     for r in results:
@@ -48,8 +37,28 @@ def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
 
 
 class AgentChatThread(QThread):
-    """Поток для выполнения цикла агента (режимы Plan / Agent)."""
+    """Поток для выполнения цикла агента (режимы Plan / Agent).
 
+    Сигналы (новые помечены явно):
+
+    * ``research_mode_detected(bool)`` — эмитится один раз в начале работы.
+    * ``thought_chunk(str)`` — токены промежуточных мыслей (research).
+    * ``final_answer_started()`` — следующий стриминг — финал.
+    * ``final_chunk(str)`` — токены финального ответа (research).
+    * ``chunk_received(str)`` — старая дорожка, для не-research.
+    * ``research_summary_ready(object)`` — эмитится ПЕРЕД ``finish_received``.
+    * ``finish_received(str)`` — итоговый текст.
+    * ... остальные как раньше.
+    """
+
+    # --- новые сигналы ---
+    research_mode_detected = Signal(bool)
+    thought_chunk = Signal(str)
+    final_answer_started = Signal()
+    final_chunk = Signal(str)
+    research_summary_ready = Signal(object)
+
+    # --- существующие сигналы ---
     chunk_received = Signal(str)
     thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
@@ -61,9 +70,6 @@ class AgentChatThread(QThread):
     iteration_changed = Signal(int, int)
     tools_status_changed = Signal(bool)
     status_changed = Signal(str)
-    # Сводка research-прогона (dict) — эмитится ПЕРЕД finish_received,
-    # чтобы панель успела сохранить её до отрисовки финального ответа.
-    research_summary_ready = Signal(object)
 
     def __init__(
         self,
@@ -86,6 +92,9 @@ class AgentChatThread(QThread):
 
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
+        # Устанавливается в самом начале _run_agent, чтобы маршрутизировать
+        # сигналы мыслей/финала.
+        self._research_mode: bool = False
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
         self._tool_response = (approved, arguments)
@@ -119,14 +128,41 @@ class AgentChatThread(QThread):
             args_json = json.dumps(args, ensure_ascii=False)
             self.tool_started.emit(name, args_json)
 
+        async def _on_thought(token: str):
+            self.thought_chunk.emit(token)
+
+        async def _on_final_chunk(token: str):
+            self.final_chunk.emit(token)
+
+        async def _on_final_started():
+            self.final_answer_started.emit()
+
         async def _run_with(client) -> tuple[str, AgentLoop]:
             loop = AgentLoop(
                 client=client, registry=self.registry, model=self.model
             )
+            # Определяем research_mode через AgentLoop — он сам решает
+            # по последнему user-сообщению. Чтобы эмитить сигнал ДО старта
+            # стриминга, запускаем run() с on_thought, но флаг выставим
+            # в начале самого run() через небольшой хак: он нам доступен
+            # через loop.was_research_mode ПОСЛЕ первого вызова, но нам
+            # нужно ДО. Поэтому определяем research_mode здесь по последнему
+            # user-сообщению — та же логика, что внутри loop.
+            from agents.investigation import is_research_question
+
+            last_user = next(
+                (m for m in reversed(self.messages_history) if m.role == "user"),
+                None,
+            )
+            self._research_mode = is_research_question(
+                last_user.content if last_user else ""
+            )
+            self.research_mode_detected.emit(self._research_mode)
+
             result = await loop.run(
                 context=self.context,
                 messages_history=self.messages_history,
-                on_token=self._on_token,
+                on_token=_on_final_chunk if self._research_mode else self._on_token,
                 on_tool_request=self._on_tool_request,
                 max_iterations=self.max_iterations,
                 on_thinking=self._on_thinking,
@@ -134,6 +170,10 @@ class AgentChatThread(QThread):
                 on_tool_start=_on_tool_start,
                 on_status=self._on_status,
                 on_tool_result=self._on_tool_result,
+                on_thought=_on_thought if self._research_mode else None,
+                on_final_answer_started=(
+                    _on_final_started if self._research_mode else None
+                ),
             )
             return result, loop
 
@@ -144,8 +184,6 @@ class AgentChatThread(QThread):
             else:
                 result, loop = await _run_with(self.client)
 
-            # Сводка research-прогона — ДО finish_received, чтобы панель
-            # успела сохранить её и построить паспорт под ответом.
             summary = getattr(loop, "last_research_summary", None)
             if summary:
                 self.research_summary_ready.emit(summary)
@@ -158,6 +196,7 @@ class AgentChatThread(QThread):
             self.error_occurred.emit(f"Ошибка агента: {e}")
 
     async def _on_token(self, token: str):
+        """Старая дорожка для не-research — идёт в обычный chunk_received."""
         self.chunk_received.emit(token)
 
     async def _on_thinking(self, token: str):

@@ -1,20 +1,4 @@
-"""Панель чата с поддержкой режимов Chat / Plan / Agent.
-
-Правки относительно базовой версии:
-
-* **Этап 1** — контекст проекта (AGENTS.md) загружается через
-  `agents.context_loader.load_agents_context` и передаётся отдельным
-  приоритетным полем `AgentContext.agents_context`, а не подмешивается
-  в `rag_context`.
-* **Этап 2** — хранилище гипотез `HypothesisStore` передаётся в
-  `AgentContext.hypotheses`; тулы `record_hypothesis` / `update_hypothesis`
-  / `list_hypotheses` регистрируются в реестре; результаты вызовов
-  отображаются в UI как компактные виджеты `ChatHypothesisItem`.
-* **Этап 3** — по завершении research-прогона под финальным ответом
-  показывается «Паспорт исследования» (`ChatResearchPassport`) со всей
-  доказательной базой; сводка приходит сигналом `research_summary_ready`
-  из `AgentChatThread`.
-"""
+"""Панель чата с поддержкой режимов Chat / Plan / Agent."""
 
 import contextlib
 import json
@@ -61,9 +45,10 @@ from ui.chat.message_item import (
     ChatActivityItem,
     ChatHypothesisItem,
     ChatMessageItem,
-    ChatResearchPassport,
     ChatSourcesItem,
 )
+from ui.chat.research_passport import ChatResearchPassport
+from ui.chat.thought_stream import ChatThoughtStream
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -145,10 +130,7 @@ class ChatPanel(QWidget):
     settings_changed = Signal(dict)
     backend_status_changed = Signal(str)
 
-    # Запрос на подключение каталога как проекта (обрабатывает MainWindow)
     directory_attach_requested = Signal(str)
-
-    # Клик по источнику RAG: (относительный путь, строка) → открыть в редакторе
     source_activated = Signal(str, int)
 
     def __init__(
@@ -180,12 +162,15 @@ class ChatPanel(QWidget):
         self._project_scanned: bool = False
         self._attached_files = AttachedFileStore()
 
-        # --- Этап 2: хранилище гипотез и виджеты их отображения ---
         self._hypotheses = HypothesisStore()
         self._hypothesis_widgets: dict[str, ChatHypothesisItem] = {}
 
-        # --- Этап 3: сводка последнего research-прогона (для паспорта) ---
+        # --- Новые поля для серого потока и паспорта ---
+        self._research_mode_active: bool = False
+        self._research_cancelled: bool = False
+        self._pending_final_answer: str = ""
         self._last_research_summary: dict | None = None
+        self._current_thought_stream: ChatThoughtStream | None = None
 
         self._generating = False
         self._last_assistant_widget: ChatMessageItem | None = None
@@ -208,12 +193,6 @@ class ChatPanel(QWidget):
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
         self._slm_model_name = ""
-        # Инвалидация устаревших загрузок SLM: reload_slm() инкрементирует этот
-        # счётчик, и результат любого потока с «не своей» генерацией
-        # отбрасывается в _on_slm_loaded/_on_slm_error/_on_slm_downloaded.
-        # Это нужно потому, что QThread.quit() не прерывает блокирующий
-        # LocalLLMClient(...) — старый поток продолжает грузить модель в фоне,
-        # и без токена его finished перетёр бы свежий клиент.
         self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
         self._slm_download_thread: _SLMDownloadThread | None = None
@@ -227,12 +206,10 @@ class ChatPanel(QWidget):
     # ---------------------------------------------------------
 
     def _detect_backends(self):
-        """Полная детекция бэкендов при старте панели."""
         self._check_ollama_async()
         self._detect_and_load_slm()
 
     def _detect_and_load_slm(self):
-        """Проверяет наличие файла активной SLM и загружает/скачивает её."""
         chat_path, embed_path = get_model_paths()
         if chat_path:
             self._load_slm_async(chat_path, embed_path)
@@ -240,13 +217,6 @@ class ChatPanel(QWidget):
             self._download_and_load_slm()
 
     def reload_slm(self):
-        """Перезагружает локальную SLM (после смены активной модели в UI).
-
-        Не пытаемся прервать уже запущенный поток: LocalLLMClient загружается
-        синхронно через Llama(), а QThread.quit() останавливает только event
-        loop, не сам run(). Вместо этого увеличиваем generation-токен, и
-        результат устаревшего потока будет отброшен в _on_slm_loaded/_on_slm_error.
-        """
         self._slm_load_generation += 1
         self._slm_model_name = ""
 
@@ -272,18 +242,20 @@ class ChatPanel(QWidget):
             return True
 
     def _iteration_limit(self, mode: AgentMode) -> int:
-        """Лимит итераций ReAct-цикла из конфига (agent/chat)."""
         default = 30 if mode == AgentMode.AGENT else 7
         try:
             from core.config import load_config
 
             cfg = load_config()
-            return cfg.agent_max_iterations if mode == AgentMode.AGENT else cfg.chat_max_iterations
+            return (
+                cfg.agent_max_iterations
+                if mode == AgentMode.AGENT
+                else cfg.chat_max_iterations
+            )
         except Exception:
             return default
 
     def _apply_backend_config(self) -> None:
-        """Передаёт роутеру порядок бэкендов и выбор эмбеддингов из конфига."""
         try:
             from core.config import load_config
 
@@ -295,7 +267,6 @@ class ChatPanel(QWidget):
         self._emit_backend_status()
 
     def _active_backend_label(self) -> str:
-        """Человекочитаемое описание активного бэкенда и модели."""
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
             return f"Ollama: {self.get_current_model()}"
@@ -307,7 +278,6 @@ class ChatPanel(QWidget):
         return "Нет доступного бэкенда"
 
     def _emit_backend_status(self) -> None:
-        """Сообщает наружу активный бэкенд для статус-бара."""
         self.backend_status_changed.emit(self._active_backend_label())
 
     def _check_ollama_async(self):
@@ -322,18 +292,16 @@ class ChatPanel(QWidget):
             self.status_label.setText("✅ Ollama подключён")
         else:
             if self._slm_client is not None:
-                self.status_label.setText("✅ Локальная модель загружена (Ollama недоступен)")
+                self.status_label.setText(
+                    "✅ Локальная модель загружена (Ollama недоступен)"
+                )
             else:
-                self.status_label.setText("⚠️ Ollama не найден. Используется резервный режим.")
+                self.status_label.setText(
+                    "⚠️ Ollama не найден. Используется резервный режим."
+                )
         self._emit_backend_status()
 
     def _on_slm_loaded(self, client, generation: int | None = None):
-        """Слот завершения загрузки SLM с проверкой актуальности generation.
-
-        Если поток, который догрузил модель, был запущен до последнего
-        reload_slm() — его результат отбрасывается, чтобы не перетирать
-        свежий клиент.
-        """
         if generation is not None and generation != self._slm_load_generation:
             logger.info(
                 f"Отбрасываю устаревшую загрузку SLM "
@@ -352,7 +320,9 @@ class ChatPanel(QWidget):
             f"Локальная SLM загружена и доступна как fallback: {self._slm_model_name}"
         )
         if self._router.active_backend == BackendType.LOCAL_SLM:
-            self.status_label.setText(f"✅ Локальная модель загружена: {self._slm_model_name}")
+            self.status_label.setText(
+                f"✅ Локальная модель загружена: {self._slm_model_name}"
+            )
         self._emit_backend_status()
 
     def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
@@ -361,7 +331,6 @@ class ChatPanel(QWidget):
 
         generation = self._slm_load_generation
 
-        # Параметры инференса — из конфига (n_threads=0 → авто по числу ядер)
         n_ctx, n_threads, n_batch = 4096, 0, 512
         n_gpu_layers = 0
         max_tokens = 1024
@@ -375,11 +344,9 @@ class ChatPanel(QWidget):
             info = slm.get_selected_info()
             if info is not None:
                 self._slm_model_name = info.display_name
-                # У модели может быть собственное окно контекста (per-model n_ctx)
                 if info.n_ctx > 0:
                     n_ctx = info.n_ctx
             max_tokens = slm.max_tokens
-            # Автоопределение VRAM (или явное значение из конфига)
             n_gpu_layers = detect_optimal_gpu_layers(
                 model_path=chat_path,
                 preferred=slm.n_gpu_layers,
@@ -389,7 +356,9 @@ class ChatPanel(QWidget):
             logger.debug(f"Не удалось прочитать параметры SLM из конфига: {e}")
 
         self._slm_loading = True
-        self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
+        self.status_label.setText(
+            f"⏳ Загрузка {self._slm_model_name or chat_path.name}..."
+        )
 
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
@@ -400,8 +369,6 @@ class ChatPanel(QWidget):
             n_gpu_layers=n_gpu_layers,
             max_tokens=max_tokens,
         )
-        # Захватываем generation в lambda, чтобы отсеять «поздние» сигналы
-        # от предыдущих потоков, которые всё ещё догружают старую модель.
         self._slm_load_thread.finished.connect(
             lambda client, gen=generation: self._on_slm_loaded(client, gen)
         )
@@ -430,18 +397,21 @@ class ChatPanel(QWidget):
             logger.warning("Не найдена активная SLM-модель в конфиге")
             return
 
-        # Защита от случайного выбора embed-модели в качестве chat
         if info.kind != "chat":
             logger.error(
                 f"Активная SLM-модель '{info.id}' имеет kind='{info.kind}', "
                 f"а для чата нужна kind='chat'. Загрузка отменена."
             )
-            self.status_label.setText(f"⚠️ Модель '{info.display_name}' не подходит для чата.")
+            self.status_label.setText(
+                f"⚠️ Модель '{info.display_name}' не подходит для чата."
+            )
             return
 
         generation = self._slm_load_generation
         self._slm_loading = True
-        self.status_label.setText(f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)...")
+        self.status_label.setText(
+            f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)..."
+        )
 
         self._slm_download_thread = _SLMDownloadThread(
             model_repo=info.repo,
@@ -453,7 +423,9 @@ class ChatPanel(QWidget):
             lambda msg, gen=generation: self._on_slm_progress(msg, gen)
         )
         self._slm_download_thread.finished.connect(
-            lambda chat, embed, gen=generation: self._on_slm_downloaded(chat, embed, gen)
+            lambda chat, embed, gen=generation: self._on_slm_downloaded(
+                chat, embed, gen
+            )
         )
         self._slm_download_thread.error.connect(
             lambda err, gen=generation: self._on_slm_error(err, gen)
@@ -499,7 +471,6 @@ class ChatPanel(QWidget):
         return widget
 
     def _show_activity(self, text: str) -> None:
-        """Добавляет серую строку-событие о ходе работы модели."""
         if not text:
             return
         item = ChatActivityItem(text)
@@ -507,7 +478,6 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
-        """Добавляет кликабельный блок источников RAG (файл + строки)."""
         if not sources:
             return
         item = ChatSourcesItem(sources)
@@ -516,7 +486,6 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _on_source_activated(self, file_path: str, line: int) -> None:
-        """Преобразует относительный путь источника в абсолютный и открывает файл."""
         if self.project_root and not Path(file_path).is_absolute():
             file_path = str(Path(self.project_root) / file_path)
         self.source_activated.emit(file_path, line)
@@ -527,7 +496,6 @@ class ChatPanel(QWidget):
 
     @staticmethod
     def _extract_path_command(text: str) -> tuple[str, str, str] | None:
-        """Парсит @dir/@file/@path в начале сообщения."""
         for cmd in _PATH_COMMANDS:
             if not text.startswith(cmd):
                 continue
@@ -549,7 +517,6 @@ class ChatPanel(QWidget):
         return None
 
     def _attach_file(self, path: Path) -> None:
-        """Читает файл и добавляет его в хранилище прикреплённых файлов."""
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
@@ -568,7 +535,6 @@ class ChatPanel(QWidget):
         )
 
     def _handle_path_command(self, kind: str, path_str: str, rest: str) -> None:
-        """Обрабатывает команду @dir/@file/@path."""
         if not path_str:
             self._add_message("system", f"⚠️ Укажите путь после @{kind}")
             return
@@ -583,7 +549,9 @@ class ChatPanel(QWidget):
 
         if kind == "dir":
             if not path.is_dir():
-                self._add_message("system", f"❌ Не директория: {path} (используйте @file)")
+                self._add_message(
+                    "system", f"❌ Не директория: {path} (используйте @file)"
+                )
                 return
             self._add_message(
                 "system",
@@ -592,7 +560,9 @@ class ChatPanel(QWidget):
             )
             self.directory_attach_requested.emit(str(path))
         elif not path.is_file():
-            self._add_message("system", f"❌ Не файл: {path} (используйте @dir)")
+            self._add_message(
+                "system", f"❌ Не файл: {path} (используйте @dir)"
+            )
             return
         else:
             self._attach_file(path)
@@ -602,7 +572,6 @@ class ChatPanel(QWidget):
             self._send_message()
 
     def _ensure_project_scan(self) -> None:
-        """Один раз строит список файлов и карту структуры проекта."""
         root = self.project_root or ""
         if self._project_scanned and self._project_scan_root == root:
             return
@@ -629,16 +598,13 @@ class ChatPanel(QWidget):
         self._project_map = render_project_map(self._project_files)
 
     def _project_map_text(self) -> str:
-        """Возвращает карту структуры проекта (строит при необходимости)."""
         self._ensure_project_scan()
         return self._project_map
 
     def _project_name(self) -> str:
-        """Имя открытого проекта (имя каталога)."""
         return Path(self.project_root).name if self.project_root else ""
 
     def _template_context(self) -> dict:
-        """Переменные для шаблонов системных промптов (`{{project_name}}` и др.)."""
         return {
             "project_name": self._project_name(),
             "language": "русский",
@@ -647,18 +613,15 @@ class ChatPanel(QWidget):
         }
 
     def _project_rules(self) -> str:
-        """Читает правила проекта из `rules_file` (по умолчанию `.ollidesk/rules.md`)."""
         return read_project_rules(self.project_root)
 
     def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
-        """Определяет каталог проекта, упомянутый в запросе, для фокуса поиска."""
         self._ensure_project_scan()
         if not self._project_files:
             return None
         return detect_query_scope(text, self._project_files)
 
     def _scope_listing(self) -> str:
-        """Собирает список файлов выбранного каталога для контекста."""
         if not self._rag_scope:
             return ""
         rel, files = self._rag_scope
@@ -671,21 +634,16 @@ class ChatPanel(QWidget):
         return "\n".join(lines)
 
     def _merge_scope_into_context(self, context: str) -> str:
-        """Добавляет к RAG-контексту листинг выбранного каталога."""
         listing = self._scope_listing()
         return "\n\n".join(filter(None, [listing, context]))
 
     def _attached_context(self) -> str:
-        """Собирает блок контекста из прикреплённых файлов с учётом окна модели."""
         if not self._attached_files:
             return ""
 
         budget = attached_char_budget(self._router.num_ctx)
-
-        # RAG-контекст тоже занимает место — делим бюджет пополам.
         if self._rag_context:
             budget = max(_MIN_ATTACHED_BUDGET, budget // 2)
-
         return self._attached_files.render(budget)
 
     def _update_bubble_width(self, widget: QWidget | None = None) -> None:
@@ -702,7 +660,9 @@ class ChatPanel(QWidget):
             max_width = int(scroll_width * ratios.get(role, 0.90))
             bubble.setMaximumWidth(max_width)
             bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            bubble.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+            )
 
         if widget is not None and isinstance(widget, ChatMessageItem):
             apply_policy(widget.bubble, widget.role)
@@ -734,11 +694,14 @@ class ChatPanel(QWidget):
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
         else:
-            self._last_assistant_widget.update_thinking(self._current_thinking_content)
+            self._last_assistant_widget.update_thinking(
+                self._current_thinking_content
+            )
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     @Slot(str)
     def _on_chunk(self, content: str):
+        """Старая дорожка (не-research): стриминг в обычное сообщение."""
         self._current_assistant_content += content
         if self._last_assistant_widget is None:
             widget = ChatMessageItem(
@@ -751,7 +714,9 @@ class ChatPanel(QWidget):
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
         else:
-            self._last_assistant_widget.update_content(self._current_assistant_content)
+            self._last_assistant_widget.update_content(
+                self._current_assistant_content
+            )
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _setup_ui(self):
@@ -787,22 +752,28 @@ class ChatPanel(QWidget):
         top_bar.addWidget(self.refresh_models_btn)
 
         self.model_status_label = QLabel("")
-        self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
+        self.model_status_label.setStyleSheet(
+            "font-size: 12px; padding: 4px 8px; color: gray;"
+        )
         top_bar.addWidget(self.model_status_label)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         top_bar.addWidget(self.model_combo)
 
         mode_label = QLabel("Режим:")
-        mode_label.setStyleSheet("font-size: 13px; padding: 4px; margin-left: 8px;")
+        mode_label.setStyleSheet(
+            "font-size: 13px; padding: 4px; margin-left: 8px;"
+        )
         top_bar.addWidget(mode_label)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
         for index, description in _MODE_DESCRIPTIONS.items():
-            self.mode_combo.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
+            self.mode_combo.setItemData(
+                index, description, Qt.ItemDataRole.ToolTipRole
+            )
         self.mode_combo.setToolTip(_MODE_DESCRIPTIONS[0])
-        self.mode_combo.setCurrentIndex(2)  # Agent по умолчанию
+        self.mode_combo.setCurrentIndex(2)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
@@ -810,7 +781,8 @@ class ChatPanel(QWidget):
         self.gear_btn = QPushButton("⚙")
         self.gear_btn.setToolTip("Настройки агента")
         self.gear_btn.setStyleSheet(
-            "QPushButton { font-size: 16px; padding: 2px 8px; border: none; background: transparent; }"
+            "QPushButton { font-size: 16px; padding: 2px 8px; border: none;"
+            " background: transparent; }"
             " QPushButton:hover { background: #555; border-radius: 4px; }"
         )
         self.gear_btn.clicked.connect(self._toggle_agent_panel)
@@ -827,18 +799,24 @@ class ChatPanel(QWidget):
 
         self.tool_status_label = QLabel("🔧 Инструменты активны")
         self.tool_status_label.setStyleSheet(
-            "font-size: 12px; padding: 4px 8px; background: #e8f5e9; color: #2e7d32;"
-            " border: 1px solid #a5d6a7; border-radius: 4px; margin: 2px 0;"
+            "font-size: 12px; padding: 4px 8px; background: #e8f5e9;"
+            " color: #2e7d32; border: 1px solid #a5d6a7;"
+            " border-radius: 4px; margin: 2px 0;"
         )
         self.tool_status_label.setVisible(False)
         layout.addWidget(self.tool_status_label)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.scroll_area.setStyleSheet(
-            "QScrollArea { border: 1px solid #ccc; border-radius: 4px; background: transparent; }"
+            "QScrollArea { border: 1px solid #ccc; border-radius: 4px;"
+            " background: transparent; }"
         )
 
         self.scroll_content = QWidget()
@@ -853,7 +831,8 @@ class ChatPanel(QWidget):
 
         self.status_label = QLabel("Готов к работе")
         self.status_label.setStyleSheet(
-            "font-size: 12px; color: gray; padding: 4px 8px; background: #f5f5f5; border-radius: 4px;"
+            "font-size: 12px; color: gray; padding: 4px 8px;"
+            " background: #f5f5f5; border-radius: 4px;"
         )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -867,7 +846,8 @@ class ChatPanel(QWidget):
         )
         self.input_edit.setFixedHeight(100)
         self.input_edit.setStyleSheet(
-            "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
+            "font-size: 14px; padding: 8px; border: 1px solid #ccc;"
+            " border-radius: 4px;"
         )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
@@ -878,8 +858,8 @@ class ChatPanel(QWidget):
 
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
-            "font-size: 14px; padding: 8px 20px; background: #1976d2; color: white;"
-            " border: none; border-radius: 4px;"
+            "font-size: 14px; padding: 8px 20px; background: #1976d2;"
+            " color: white; border: none; border-radius: 4px;"
         )
         self.send_btn.clicked.connect(self._toggle_send_stop)
         input_layout.addWidget(self.send_btn)
@@ -911,7 +891,9 @@ class ChatPanel(QWidget):
                     fmt.setForeground(QColor("#42a5f5"))
                     fmt.setFontWeight(QFont.Weight.Bold)
                     fmt.setBackground(QColor("#e3f2fd"))
-                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+                    fmt.setUnderlineStyle(
+                        QTextCharFormat.UnderlineStyle.SingleUnderline
+                    )
                     fmt.setUnderlineColor(QColor("#42a5f5"))
                     cursor.mergeCharFormat(fmt)
             finally:
@@ -1004,10 +986,13 @@ class ChatPanel(QWidget):
         self._current_thinking_content = ""
         self._rag_context = None
         self._attached_files.clear()
-        # --- Этап 2/3: сброс гипотез и сводки исследования ---
         self._hypotheses.clear()
         self._hypothesis_widgets.clear()
         self._last_research_summary = None
+        self._pending_final_answer = ""
+        self._current_thought_stream = None
+        self._research_mode_active = False
+        self._research_cancelled = False
         if not keep_session:
             self._session_id = None
         self._last_assistant_widget = None
@@ -1025,12 +1010,31 @@ class ChatPanel(QWidget):
             self._send_message()
 
     def _stop_generation(self):
+        """Останавливает генерацию с сохранением визуального лога.
+
+        Семантика (этап 4): Стоп = отмена, но информация НЕ теряется:
+        * серый поток рассуждений остаётся видимым (с пометкой «прервано»);
+        * виджеты гипотез остаются в ленте как визуальный архив;
+        * активный `HypothesisStore` очищается — в следующий запрос
+          гипотезы НЕ утекают;
+        * паспорт не строится;
+        * внизу добавляется курсивный комментарий.
+        """
+        self._research_cancelled = True
         self._generating = False
 
-        if self._agent_thread and self._agent_thread.isRunning() and self._agent_thread.client:
+        if (
+            self._agent_thread
+            and self._agent_thread.isRunning()
+            and self._agent_thread.client
+        ):
             self._agent_thread.client.cancel_request()
 
-        if hasattr(self, "_web_thread") and self._web_thread and self._web_thread.isRunning():
+        if (
+            hasattr(self, "_web_thread")
+            and self._web_thread
+            and self._web_thread.isRunning()
+        ):
             self._web_thread.quit()
             self._web_thread.wait(1000)
             if self._web_thread.isRunning():
@@ -1051,12 +1055,33 @@ class ChatPanel(QWidget):
                 self._agent_thread.terminate()
                 self._agent_thread.wait(500)
 
+        # Помечаем серый поток как прерванный.
+        if self._current_thought_stream is not None:
+            self._current_thought_stream.mark_interrupted(
+                "Рассуждение прервано пользователем."
+            )
+
+        # Очищаем активный store — в следующий запрос гипотезы не утекут.
+        # Визуальные виджеты (`_hypothesis_widgets`) НЕ трогаем — это архив.
+        self._hypotheses.clear()
+
+        # Паспорт не строим.
+        self._last_research_summary = None
+        self._pending_final_answer = ""
+
         self._reset_send_button()
         self.status_label.setText("⏹ Остановлено пользователем")
-        self._add_message("system", "⏹ Генерация остановлена пользователем")
+        self._add_message(
+            "system",
+            "⏹ Генерация остановлена пользователем.\n"
+            "Визуальный лог рассуждений сохранён выше для ознакомления, "
+            "но НЕ будет учтён в следующем запросе.",
+        )
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-        self._last_research_summary = None
+        self._research_mode_active = False
+        self._research_cancelled = False
+        self._current_thought_stream = None
 
     def _send_message(self):
         if self._generating:
@@ -1129,7 +1154,6 @@ class ChatPanel(QWidget):
         self._web_thread.start()
 
     def _start_chat(self, text: str):
-        """Запускает Chat через RAG-поиск и ReAct-цикл агента."""
         self._generating = True
         self._set_button_stop()
         self.status_label.setText("Поиск в кодовой базе...")
@@ -1146,7 +1170,9 @@ class ChatPanel(QWidget):
                 n_results=_RAG_N_RESULTS,
                 file_filter=self._rag_scope[1] if self._rag_scope else None,
             )
-            self._rag_thread.results_ready.connect(lambda ctx, src: self._on_rag_results(ctx, src))
+            self._rag_thread.results_ready.connect(
+                lambda ctx, src: self._on_rag_results(ctx, src)
+            )
             self._rag_thread.search_error.connect(self._on_rag_error)
             self._rag_thread.finished.connect(lambda: self._do_chat(text))
             self._rag_thread.start()
@@ -1206,12 +1232,16 @@ class ChatPanel(QWidget):
             self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
             )
-            self._rag_thread.search_error.connect(lambda err: self._do_agent(text, mode, ""))
+            self._rag_thread.search_error.connect(
+                lambda err: self._do_agent(text, mode, "")
+            )
             self._rag_thread.start()
         else:
             self._do_agent(text, mode, "")
 
-    def _on_agent_rag_ready(self, context: str, sources: list, text: str, mode: AgentMode):
+    def _on_agent_rag_ready(
+        self, context: str, sources: list, text: str, mode: AgentMode
+    ):
         merged = self._merge_scope_into_context(context)
         if merged:
             budget = rag_char_budget(self._router.num_ctx)
@@ -1226,9 +1256,17 @@ class ChatPanel(QWidget):
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
 
+    def _reset_research_state(self) -> None:
+        """Сбрасывает state текущего research-прогона перед новым запросом."""
+        self._research_mode_active = False
+        self._research_cancelled = False
+        self._pending_final_answer = ""
+        self._last_research_summary = None
+        self._current_thought_stream = None
+
     def _do_chat(self, text: str):
-        """Chat-режим: тот же ReAct-цикл, что и Agent, но read-only tools в AUTO."""
         logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
+        self._reset_research_state()
 
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
@@ -1242,11 +1280,7 @@ class ChatPanel(QWidget):
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
         raw_cache = getattr(self, "search_cache", None)
-
-        # AGENTS.md идёт в отдельное приоритетное поле, не в rag_context.
         agents_context = load_agents_context(self.project_root)
-
-        # rag_context = attached files + RAG-выдача (без AGENTS.md).
         merged_rag = "\n\n".join(
             filter(None, [self._attached_context(), self._rag_context or ""])
         )
@@ -1289,25 +1323,11 @@ class ChatPanel(QWidget):
             max_iterations=self._iteration_limit(AgentMode.CHAT),
         )
 
-        self._agent_thread.chunk_received.connect(self._on_chunk)
-        self._agent_thread.thinking_received.connect(self._on_thinking)
-        self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
-        self._agent_thread.tool_executed.connect(self._on_tool_executed)
-        self._agent_thread.tool_started.connect(self._on_tool_started)
-        self._agent_thread.finish_received.connect(self._on_agent_finish)
-        self._agent_thread.error_occurred.connect(self._on_agent_error)
-        with contextlib.suppress(Exception):
-            self._agent_thread.iteration_limit_exceeded.connect(
-                self._on_iteration_limit_exceeded
-            )
-        self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
-        self._agent_thread.status_changed.connect(self._on_status_event)
-        self._agent_thread.research_summary_ready.connect(
-            self._on_research_summary_ready
-        )
-        self._agent_thread.start()
+        self._connect_agent_thread_signals()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
+        self._reset_research_state()
+
         client = self._router.active_client
         if client is None:
             self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
@@ -1323,15 +1343,10 @@ class ChatPanel(QWidget):
             if self.prompt_manager
             else ""
         )
-
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
 
         raw_cache = getattr(self, "search_cache", None)
-
-        # AGENTS.md — отдельным приоритетным полем, не в rag_context.
         agents_context = load_agents_context(self.project_root)
-
-        # rag_context = attached files + RAG-выдача из vector_store.
         merged_rag = "\n\n".join(
             filter(None, [self._attached_context(), rag_context])
         )
@@ -1366,6 +1381,27 @@ class ChatPanel(QWidget):
             max_iterations=self._iteration_limit(mode),
         )
 
+        self._connect_agent_thread_signals()
+
+    def _connect_agent_thread_signals(self) -> None:
+        """Подключает все сигналы AgentChatThread к слотам панели."""
+        if self._agent_thread is None:
+            return
+
+        # --- новые ---
+        self._agent_thread.research_mode_detected.connect(
+            self._on_research_mode_detected
+        )
+        self._agent_thread.thought_chunk.connect(self._on_thought_chunk)
+        self._agent_thread.final_answer_started.connect(
+            self._on_final_answer_started
+        )
+        self._agent_thread.final_chunk.connect(self._on_final_chunk)
+        self._agent_thread.research_summary_ready.connect(
+            self._on_research_summary_ready
+        )
+
+        # --- существующие ---
         self._agent_thread.chunk_received.connect(self._on_chunk)
         self._agent_thread.thinking_received.connect(self._on_thinking)
         self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
@@ -1377,15 +1413,64 @@ class ChatPanel(QWidget):
             self._agent_thread.iteration_limit_exceeded.connect(
                 self._on_iteration_limit_exceeded
             )
-        self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
-        self._agent_thread.status_changed.connect(self._on_status_event)
-        self._agent_thread.research_summary_ready.connect(
-            self._on_research_summary_ready
+        self._agent_thread.tools_status_changed.connect(
+            self._on_tools_status_changed
         )
+        self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
 
+    # ---------------------------------------------------------
+    # Слоты research-режима
+    # ---------------------------------------------------------
+
+    @Slot(bool)
+    def _on_research_mode_detected(self, is_research: bool) -> None:
+        """Запоминает, research-ли этот прогон.
+
+        Если да — `chunk_received` для отображения не используется;
+        серый поток идёт через `thought_chunk`, а финал — через
+        `final_chunk` (в буфер паспорта).
+        """
+        self._research_mode_active = is_research
+        if is_research:
+            logger.info("Research-режим активен: серый поток мыслей включён")
+
+    @Slot(str)
+    def _on_thought_chunk(self, token: str) -> None:
+        """Токен мысли модели — в серый поток в реальном времени."""
+        if self._current_thought_stream is None:
+            self._current_thought_stream = ChatThoughtStream()
+            self.scroll_layout.insertWidget(
+                self.scroll_layout.count() - 1, self._current_thought_stream
+            )
+        self._current_thought_stream.append_thought_token(token)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    @Slot()
+    def _on_final_answer_started(self) -> None:
+        """Начался финальный ответ — сбрасываем буфер паспорта."""
+        self._pending_final_answer = ""
+
+    @Slot(str)
+    def _on_final_chunk(self, token: str) -> None:
+        """Токен финального ответа — в буфер паспорта, НЕ в ленту."""
+        self._pending_final_answer += token
+
+    @Slot(object)
+    def _on_research_summary_ready(self, summary: dict) -> None:
+        """Запоминает сводку research-прогона (до finish_received)."""
+        self._last_research_summary = summary
+        logger.debug(
+            "Research-сводка: файлов прочитано "
+            f"{len(summary.get('files_read') or [])}, "
+            f"гипотез {len(summary.get('hypotheses') or [])}"
+        )
+
+    # ---------------------------------------------------------
+    # Существующие слоты
+    # ---------------------------------------------------------
+
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
-        """Строит реестр инструментов для агента и чата."""
         from tools.codebase_search import search_codebase
         from tools.current_datetime import get_current_datetime
         from tools.exchange_rate import (
@@ -1425,7 +1510,6 @@ class ChatPanel(QWidget):
 
             registry.register(read_attached_file)
 
-        # --- Этап 2: инструменты работы с гипотезами ---
         registry.register(record_hypothesis)
         registry.register(update_hypothesis)
         registry.register(list_hypotheses)
@@ -1442,7 +1526,6 @@ class ChatPanel(QWidget):
         return registry
 
     def _apply_config_policies(self, registry: ToolRegistry) -> None:
-        """Применяет политики из конфигурации: `tool_policies` и `confirm`."""
         try:
             from core.config import load_config
 
@@ -1459,7 +1542,9 @@ class ChatPanel(QWidget):
             registry.set_policy("web_search", ToolPolicy.AUTO)
 
     @Slot(str, str, str)
-    def _on_tool_call_detected(self, name: str, description: str, arguments_json: str):
+    def _on_tool_call_detected(
+        self, name: str, description: str, arguments_json: str
+    ):
         from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
 
         arguments = json.loads(arguments_json)
@@ -1482,7 +1567,9 @@ class ChatPanel(QWidget):
             "list_hypotheses": "Список гипотез",
         }
         display_name = tool_labels.get(name, name)
-        dialog = ToolConfirmationDialog(display_name, description, arguments, self)
+        dialog = ToolConfirmationDialog(
+            display_name, description, arguments, self
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
@@ -1494,21 +1581,42 @@ class ChatPanel(QWidget):
 
     @Slot(str, str, bool)
     def _on_tool_executed(self, name: str, content: str, is_error: bool):
-        # --- Этап 2: гипотезы отображаем виджетом, а не стандартным сообщением ---
+        """Обрабатывает завершение инструмента.
+
+        * В research-режиме — пишет в серый поток.
+        * Для тулов гипотез — обновляет/создаёт виджет `ChatHypothesisItem`
+          (вместо стандартного сообщения).
+        * В не-research режиме — как раньше.
+        """
+        # Записываем в серый поток (кроме случая, когда он не создан —
+        # тогда это не research и поток не нужен).
+        if self._current_thought_stream is not None:
+            if name in ("record_hypothesis", "update_hypothesis"):
+                pass  # гипотезы обработаем отдельно ниже
+            else:
+                preview = (content or "").strip().replace("\n", " ")[:200]
+                self._current_thought_stream.append_result(
+                    name, ok=not is_error, preview=preview
+                )
+
         if (
             name in ("record_hypothesis", "update_hypothesis")
             and not is_error
             and self._update_hypothesis_widget(content)
         ):
             return
+
+        if self._current_thought_stream is not None:
+            # В research-режиме обычные tool-сообщения в ленту НЕ пишем —
+            # всё уже видно в сером потоке, не засоряем.
+            if not self._research_mode_active:
+                self._add_tool_message(name, content, is_error)
+            return
+
         self._add_tool_message(name, content, is_error)
 
     def _update_hypothesis_widget(self, content: str) -> bool:
-        """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет.
-
-        Возвращает True, если виджет обновлён (тогда стандартное сообщение
-        инструмента не показываем — виджет информативнее).
-        """
+        """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет."""
         try:
             data = json.loads(content)
         except (json.JSONDecodeError, TypeError):
@@ -1537,6 +1645,16 @@ class ChatPanel(QWidget):
             evidence=str(h.get("evidence") or ""),
             verification_method=str(h.get("verification_method") or ""),
         )
+
+        # Дублируем в серый поток как компактную строку.
+        if self._current_thought_stream is not None:
+            self._current_thought_stream.append_hypothesis(
+                hypothesis_id=hid,
+                status=str(h.get("status") or "open"),
+                statement=str(h.get("statement") or ""),
+                evidence=str(h.get("evidence") or ""),
+            )
+
         QTimer.singleShot(0, self._scroll_to_bottom)
         return True
 
@@ -1567,15 +1685,34 @@ class ChatPanel(QWidget):
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         activity = f"{label}: {arg_summary}" if arg_summary else label
-        self._show_activity(activity)
         self.status_label.setText(activity)
+
+        # В серый поток пишем компактно; в research-режиме — это единственный
+        # способ увидеть действие в UI.
+        if self._current_thought_stream is not None:
+            self._current_thought_stream.append_action(name, args)
+
+        # Activity-строки в ленте показываем только в не-research.
+        if not self._research_mode_active:
+            self._show_activity(activity)
 
         self._last_assistant_widget = None
         self._current_assistant_content = ""
 
     @Slot(str)
     def _on_status_event(self, text: str):
-        self._show_activity(text)
+        """Статус — в серый поток (как нудж/фаза) и в статус-бар.
+
+        В research-режиме в ленту не пишем (всё видно в сером потоке).
+        """
+        if self._current_thought_stream is not None and text:
+            # Нуджи приходят как «🔁 …», фазы — как «📌 …».
+            if text.startswith("🔁") or text.startswith("🪞"):
+                self._current_thought_stream.append_nudge(text)
+            elif text.startswith("📌"):
+                self._current_thought_stream.append_phase(text)
+        if not self._research_mode_active:
+            self._show_activity(text)
         self.status_label.setText(text)
 
     @Slot()
@@ -1589,6 +1726,25 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_agent_finish(self, result: str):
+        # --- Research-режим: паспорт с выводами, без обычного пузыря ---
+        if self._research_mode_active and not self._research_cancelled:
+            summary = self._last_research_summary
+            if summary:
+                summary["final_answer"] = self._pending_final_answer
+                if self._should_show_passport(summary):
+                    self._show_research_passport(summary)
+
+            self._reset_send_button()
+            self._current_assistant_content = ""
+            self._current_thinking_content = ""
+            self._last_assistant_widget = None
+            self._current_thought_stream = None
+            self._pending_final_answer = ""
+            self._last_research_summary = None
+            self._research_mode_active = False
+            return
+
+        # --- Обычный режим: как раньше ---
         if result and result != "Отменено":
             assistant_message = ChatMessage(role="assistant", content=result)
             self._messages.append(assistant_message)
@@ -1596,85 +1752,28 @@ class ChatPanel(QWidget):
                 self.session_store.save_message(self._session_id, assistant_message)
             self._show_activity("✅ Готово")
 
-        # --- Этап 3: паспорт исследования под финальным ответом ---
-        summary = self._last_research_summary
-        self._last_research_summary = None
-        if self._should_show_passport(summary):
-            self._show_research_passport(summary)
-
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._last_assistant_widget = None
+        self._current_thought_stream = None
+        self._pending_final_answer = ""
+        self._last_research_summary = None
+        self._research_mode_active = False
 
     @staticmethod
     def _should_show_passport(summary: dict | None) -> bool:
         """Показывать ли паспорт по этой сводке.
 
         Правило: показываем, если прочитано ≥2 файла или есть хотя бы одна
-        гипотеза. Пустой паспорт (0 файлов, 0 гипотез) — только шум.
+        гипотеза. Пустой паспорт (0 файлов, 0 гипотез, без выводов) — шум.
         """
         if not summary:
             return False
         files = summary.get("files_read") or []
         hypotheses = summary.get("hypotheses") or []
-        return bool(len(files) >= 2 or hypotheses)
-
-    def _reset_send_button(self):
-        self._generating = False
-        self.input_edit.setEnabled(True)
-        self.send_btn.setText("▶ Отправить")
-        self.send_btn.setStyleSheet(
-            "font-size: 14px; padding: 8px 20px; background: #1976d2; color: white;"
-            " border: none; border-radius: 4px;"
-        )
-        self.status_label.setText("Готов к работе")
-
-    def _set_button_stop(self) -> None:
-        self.send_btn.setText("■")
-        self.send_btn.setStyleSheet(
-            "font-size: 18px; padding: 8px 20px; background: #d32f2f; color: white;"
-            " border: none; border-radius: 4px;"
-        )
-
-    def _send_finished(self):
-        if self._current_assistant_content:
-            assistant_message = ChatMessage(role="assistant", content=self._current_assistant_content)
-            self._messages.append(assistant_message)
-            if self._session_id:
-                self.session_store.save_message(self._session_id, assistant_message)
-
-        self._reset_send_button()
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-        self._last_assistant_widget = None
-
-    @Slot(str)
-    def _on_agent_error(self, error_msg: str):
-        self._add_message("system", f"❌ Ошибка агента: {error_msg}")
-        self._reset_send_button()
-        self.status_label.setText("❌ Ошибка")
-
-    @Slot()
-    def _on_iteration_limit_exceeded(self):
-        self._show_activity(
-            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент сформировал Final Answer"
-        )
-        self.status_label.setText("Достигнут лимит итераций — готово к продолжению")
-
-    @Slot(object)
-    def _on_research_summary_ready(self, summary: dict):
-        """Запоминает сводку research-прогона.
-
-        Приходит ДО `finish_received` (см. `ui/chat/threads.py`), чтобы
-        `_on_agent_finish` уже имел её в руках и мог построить паспорт.
-        """
-        self._last_research_summary = summary
-        logger.debug(
-            "Research-сводка: файлов прочитано "
-            f"{len(summary.get('files_read') or [])}, "
-            f"гипотез {len(summary.get('hypotheses') or [])}"
-        )
+        final_answer = (summary.get("final_answer") or "").strip()
+        return bool(len(files) >= 2 or hypotheses or final_answer)
 
     def _show_research_passport(self, summary: dict) -> None:
         """Вставляет виджет «Паспорт исследования» под финальным ответом."""
@@ -1686,21 +1785,79 @@ class ChatPanel(QWidget):
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
+    def _reset_send_button(self):
+        self._generating = False
+        self.input_edit.setEnabled(True)
+        self.send_btn.setText("▶ Отправить")
+        self.send_btn.setStyleSheet(
+            "font-size: 14px; padding: 8px 20px; background: #1976d2;"
+            " color: white; border: none; border-radius: 4px;"
+        )
+        self.status_label.setText("Готов к работе")
+
+    def _set_button_stop(self) -> None:
+        self.send_btn.setText("■")
+        self.send_btn.setStyleSheet(
+            "font-size: 18px; padding: 8px 20px; background: #d32f2f;"
+            " color: white; border: none; border-radius: 4px;"
+        )
+
+    def _send_finished(self):
+        if self._current_assistant_content:
+            assistant_message = ChatMessage(
+                role="assistant", content=self._current_assistant_content
+            )
+            self._messages.append(assistant_message)
+            if self._session_id:
+                self.session_store.save_message(self._session_id, assistant_message)
+
+        self._reset_send_button()
+        self._current_assistant_content = ""
+        self._current_thinking_content = ""
+        self._last_assistant_widget = None
+
+    @Slot(str)
+    def _on_agent_error(self, error_msg: str):
+        # Помечаем серый поток как прерванный, если он был.
+        if self._current_thought_stream is not None:
+            self._current_thought_stream.mark_interrupted(
+                f"Ошибка: {error_msg[:120]}"
+            )
+        self._add_message("system", f"❌ Ошибка агента: {error_msg}")
+        self._reset_send_button()
+        self.status_label.setText("❌ Ошибка")
+        self._research_mode_active = False
+        self._research_cancelled = False
+        self._pending_final_answer = ""
+        self._last_research_summary = None
+
+    @Slot()
+    def _on_iteration_limit_exceeded(self):
+        self._show_activity(
+            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент "
+            "сформировал Final Answer"
+        )
+        self.status_label.setText(
+            "Достигнут лимит итераций — готово к продолжению"
+        )
+
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):
         if active:
             self.tool_status_label.setText("🔧 Инструменты активны")
             self.tool_status_label.setStyleSheet(
-                "font-size: 12px; padding: 4px 8px; background: #e8f5e9; color: #2e7d32;"
-                " border: 1px solid #a5d6a7; border-radius: 4px; margin: 2px 0;"
+                "font-size: 12px; padding: 4px 8px; background: #e8f5e9;"
+                " color: #2e7d32; border: 1px solid #a5d6a7;"
+                " border-radius: 4px; margin: 2px 0;"
             )
         else:
             self.tool_status_label.setText(
                 "⚠️ Инструменты отключены — модель не поддерживает вызов инструментов."
             )
             self.tool_status_label.setStyleSheet(
-                "font-size: 12px; padding: 4px 8px; background: #fff3e0; color: #e65100;"
-                " border: 1px solid #ffcc80; border-radius: 4px; margin: 2px 0;"
+                "font-size: 12px; padding: 4px 8px; background: #fff3e0;"
+                " color: #e65100; border: 1px solid #ffcc80;"
+                " border-radius: 4px; margin: 2px 0;"
             )
         self.tool_status_label.setVisible(True)
 
@@ -1720,11 +1877,6 @@ class ChatPanel(QWidget):
 
     @property
     def router(self) -> ModelRouter:
-        """Роутер бэкендов панели.
-
-        Отдаё наружу как источник эмбеддингов для `VectorStore`: он умеет
-        считать их через любой доступный бэкенд, а не только через Ollama.
-        """
         return self._router
 
     def set_project_root(self, project_root: str):

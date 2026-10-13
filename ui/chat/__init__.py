@@ -1,13 +1,14 @@
-"""Пакет чата: виджет панели, сообщения и фоновые потоки."""
+"""Пакет чата: виджет панели, сообщения, потоки и виджеты исследования."""
 
 from ui.chat.message_item import (
     ChatActivityItem,
     ChatHypothesisItem,
     ChatMessageItem,
-    ChatResearchPassport,
     ChatSourcesItem,
 )
 from ui.chat.panel import ChatPanel
+from ui.chat.research_passport import ChatResearchPassport
+from ui.chat.thought_stream import ChatThoughtStream
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -22,6 +23,7 @@ __all__ = [
     "ChatPanel",
     "ChatResearchPassport",
     "ChatSourcesItem",
+    "ChatThoughtStream",
     "RagSearchThread",
     "WebSearchThread",
 ]

@@ -3,29 +3,30 @@
 Поддерживает два режима поведения.
 
 **Обычный** — все вопросы, кроме исследовательских. Цикл работает как раньше:
-модель вызывает инструменты, отвечает. Антигаллюцинационный нудж на
-ReAct-разметку (`Action:` / `Observation:`) и защита от повторов tool_calls
-включены.
+модель вызывает инструменты, отвечает, стримится через `on_token`.
 
-**Research** — включается автоматически, если последний вопрос пользователя
-требует изучения проекта («изучи архитектуру», «опиши структуру», «как
-связаны компоненты» и т. п.). В этом режиме работают:
+**Research** — включается, если последний вопрос пользователя требует
+изучения проекта («изучи архитектуру», «опиши структуру», «как связаны
+компоненты»). В этом режиме:
 
-* счётчик прогресса (`InvestigationState`) — сколько файлов прочитано,
-  открыта ли точка входа и конфиг, есть ли поиски по коду;
-* фаза (`Phase`: RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS), которая
-  подмешивается в системный промпт и меняет инструкцию модели на каждом
-  шаге. Пока в хранилище есть открытые гипотезы, фаза SYNTHESIS недостижима;
-* градуированные нуджи (`pick_nudge`) — не дают модели «сдаться» после
-  первого `list_directory`;
-* жёсткий протокол чтения (`_RESEARCH_PROTOCOL`) поверх общей инструкции;
-* гипотезы (`HypothesisStore`, поле `context.hypotheses`): модель записывает
-  проверяемое утверждение (`record_hypothesis`), затем закрывает его
-  (`update_hypothesis`).
+* Работают фазы (`Phase`: RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS),
+  которые подмешиваются в системный промпт.
+* Счётчик прогресса (`InvestigationState`) — сколько файлов прочитано,
+  открыта ли точка входа/конфиг.
+* Градуированные нуджи (`pick_nudge`) — не дают модели «сдаться» после
+  первого `list_directory`.
+* Гипотезы (`HypothesisStore`): модель записывает проверяемое утверждение
+  (`record_hypothesis`) и закрывает его (`update_hypothesis`). Пока есть
+  открытые гипотезы, фаза SYNTHESIS недостижима.
 
-По окончании research-прогона в `self.last_research_summary` кладётся
-словарь со всей доказательной базой — его использует UI, чтобы построить
-«Паспорт исследования» под финальным ответом.
+**Разделение мыслей и финала.** Пока фаза ≠ SYNTHESIS, каждый токен модели
+идёт в `on_thought` — это «мысли» в серый поток. Как только сработал
+нудж `selfcheck` и все гипотезы закрыты, фаза становится SYNTHESIS; в этой
+фазе инструменты отключаются, а токены идут в `on_token` — это финальный
+ответ (попадает в паспорт исследования, а не в ленту чата).
+
+Если `on_thought` не передан — поведение полностью совместимо со старым:
+всё идёт в `on_token`.
 """
 
 import json
@@ -73,8 +74,7 @@ class AgentContext:
 
     system_prompt: str = ""
     rag_context: str = ""
-    # Постоянный контекст проекта (AGENTS.md и т. п.) — отдельно от RAG,
-    # потому что обрезается последним и имеет высший приоритет.
+    # Постоянный контекст проекта (AGENTS.md и т. п.) — отдельно от RAG.
     agents_context: str = ""
     project_root: str = ""
     project_name: str = ""
@@ -229,13 +229,14 @@ _PHASE_HINTS: dict[Phase, str] = {
         "Если «да» и открытых гипотез нет — давай финальный ответ с ASCII-схемой."
     ),
     Phase.SYNTHESIS: (
-        "ФАЗА: СИНТЕЗ.\n"
-        "У тебя достаточно данных. Собери структурированный ответ: "
+        "ФАЗА: СИНТЕЗ (ФИНАЛЬНЫЙ ОТВЕТ).\n"
+        "У тебя достаточно данных, инструменты отключены. Собери "
+        "структурированный ответ прямо сейчас: "
         "обзор → стек → компоненты (ASCII-схема) → поток данных → "
         "ключевые зависимости → что осталось непонятным. "
         "Каждый тезис подкрепляй путями к файлам, которые ты читал. "
         "Отдельно перечисли подтверждённые гипотезы (verified) — это "
-        "обоснование твоих выводов."
+        "обоснование твоих выводов. Не вызывай инструменты — их нет."
     ),
 }
 
@@ -436,8 +437,10 @@ class AgentLoop:
         self.registry = registry
         self.model = model
         # Заполняется в _finalize() при завершении research-прогона.
-        # UI читает это поле после run(), чтобы построить паспорт исследования.
         self.last_research_summary: dict[str, Any] | None = None
+        # Флаг: был ли прогон research-режимом. Используется thread'ом для
+        # эмита research_mode_detected в самом начале.
+        self.was_research_mode: bool = False
 
     def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """Прореживает промпт, если он не помещается в окно модели."""
@@ -491,17 +494,9 @@ class AgentLoop:
     ) -> dict[str, Any]:
         """Собирает словарь с доказательной базой research-прогона.
 
-        Потребитель — UI: `ChatResearchPassport` строит по этому словарю
-        финальную сводку под ответом ассистента.
-
-        Поля:
-            files_read: отсортированный список прочитанных файлов;
-            read_entry_point: открыт ли файл-кандидат в точку входа;
-            read_config: открыт ли конфиг или README;
-            total_chars_read: суммарный объём прочитанного;
-            searches: запросы search_codebase;
-            nudges_fired: какие нуджи сработали;
-            hypotheses: список гипотез с их финальными статусами и evidence.
+        Финальный текст модели в этот словарь НЕ входит — он передаётся
+        отдельной дорожкой (см. `on_token`) и складывается в паспорт на
+        стороне UI.
         """
         hypotheses_data: list[dict[str, Any]] = []
         store = context.hypotheses
@@ -533,12 +528,7 @@ class AgentLoop:
         state: InvestigationState,
         context: AgentContext,
     ) -> None:
-        """Кладёт сводку research-прогона в `last_research_summary`.
-
-        Вызывается перед каждым `return` из `run()`, включая отмену и
-        финальный вызов после лимита итераций. Если прогон не research —
-        поле остаётся ``None``, UI не показывает паспорт.
-        """
+        """Кладёт сводку research-прогона в `last_research_summary`."""
         if research_mode:
             self.last_research_summary = self._make_research_summary(state, context)
         else:
@@ -556,19 +546,39 @@ class AgentLoop:
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
+        on_thought: Callable[[str], Awaitable[None]] | None = None,
+        on_final_answer_started: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
-        # --- research-режим по последнему вопросу пользователя ---
+        """Запускает ReAct-цикл.
+
+        Args:
+            on_token: Токены ФИНАЛЬНОГО ответа. В research-режиме сюда
+                попадает только текст фазы SYNTHESIS (или финального вызова
+                после лимита итераций).
+            on_thought: Токены ПРОМЕЖУТОЧНЫХ мыслей (research-режим, фазы
+                RECON/DEEP_DIVE/SELF_CHECK). Если ``None`` — все токены идут
+                в ``on_token`` (старое поведение).
+            on_final_answer_started: Сигнал о том, что следующий стриминг —
+                это финальный ответ. Панель может сбросить буфер.
+
+        Остальные callback'и — как раньше.
+        """
         last_user = next(
             (m for m in reversed(messages_history) if m.role == "user"),
             None,
         )
         research_mode = is_research_question(last_user.content if last_user else "")
+        self.was_research_mode = research_mode
+        # Разделение мыслей и финала включается только в research-режиме
+        # И только если панель передала on_thought.
+        split_thoughts = research_mode and on_thought is not None
         state = InvestigationState()
         hypotheses_available = context.hypotheses is not None
         if research_mode:
             logger.info(
                 "Research-режим: вопрос требует глубокого изучения проекта "
                 f"(research_mode=True, режим={context.mode.value}, "
+                f"split_thoughts={split_thoughts}, "
                 f"hypotheses={'on' if hypotheses_available else 'off'})"
             )
 
@@ -589,9 +599,9 @@ class AgentLoop:
         messages.extend(messages_history)
         messages = self._compact_history(messages)
 
-        tools_to_send: list | None = self.registry.get_schemas(context.mode)
-        if tools_to_send is not None and len(tools_to_send) == 0:
-            tools_to_send = None
+        base_tools: list | None = self.registry.get_schemas(context.mode)
+        if base_tools is not None and len(base_tools) == 0:
+            base_tools = None
 
         prev_signature: tuple[tuple[str, str], ...] | None = None
         nudged_tool_format = False
@@ -602,13 +612,27 @@ class AgentLoop:
         if isinstance(client_num_ctx, int) and client_num_ctx > 0:
             observation_budget = attached_char_budget(client_num_ctx) // 4
 
+        # Флаг: эмитили ли мы final_answer_started для текущей итерации.
+        # Нужно, чтобы не спамить панель.
+        final_started_emitted = False
+
         for iteration in range(max_iterations):
             open_h = self._count_open_hypotheses(context)
+            phase_before = phase_for(state, open_h)
+            is_synthesis_phase = phase_before == Phase.SYNTHESIS
+
+            # В фазе SYNTHESIS отключаем инструменты: модель обязана дать
+            # финальный текст, это гарантирует чистоту разделения мыслей/финала.
+            if is_synthesis_phase:
+                tools_to_send: list | None = None
+            else:
+                tools_to_send = base_tools
+
             logger.debug(
                 f"ReAct итерация {iteration + 1}/{max_iterations}, "
                 f"режим={context.mode.value}, tools={len(tools_to_send or [])}, "
-                f"research={research_mode}, phase={phase_for(state, open_h).value}, "
-                f"open_hypotheses={open_h}"
+                f"research={research_mode}, phase={phase_before.value}, "
+                f"open_hypotheses={open_h}, split={split_thoughts}"
             )
 
             current_text = ""
@@ -621,6 +645,16 @@ class AgentLoop:
                     await on_status(
                         f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…"
                     )
+
+            # Сигнал «следующий стриминг — финал». Панель сбрасывает буфер.
+            if (
+                is_synthesis_phase
+                and split_thoughts
+                and on_final_answer_started is not None
+                and not final_started_emitted
+            ):
+                final_started_emitted = True
+                await on_final_answer_started()
 
             messages[0] = ChatMessage(
                 role="system",
@@ -648,7 +682,13 @@ class AgentLoop:
                         await on_thinking(chunk.reasoning_content)
                     if chunk.content:
                         current_text += chunk.content
-                        await on_token(chunk.content)
+                        # --- РАЗДЕЛЕНИЕ МЫСЛЕЙ И ФИНАЛА ---
+                        if split_thoughts and not is_synthesis_phase:
+                            # Мысли в реальном времени
+                            await on_thought(chunk.content)  # type: ignore[misc]
+                        else:
+                            # Финальный ответ (или обычный режим)
+                            await on_token(chunk.content)
                     if chunk.tool_calls:
                         pending_tool_calls.extend(chunk.tool_calls)
 
@@ -661,11 +701,9 @@ class AgentLoop:
                 logger.warning(
                     f"Модель {self.model} не поддерживает нативные tools, повтор без tools"
                 )
-                tools_to_send = None
+                base_tools = None
                 if on_tools_disabled:
                     await on_tools_disabled()
-                if current_text:
-                    await on_token("\n\n")
                 continue
 
             # --- Fallback: текстовые tool_calls ---
@@ -675,7 +713,10 @@ class AgentLoop:
                 )
                 if extracted_calls:
                     pending_tool_calls = extracted_calls
-                    current_text = ""
+                    # Текст уже улетел в on_thought как «мысль» — это ок,
+                    # в сером потоке это выглядит как «модель начала писать,
+                    # потом решила вызвать инструмент». Иначе никак, потому
+                    # что стриминг real-time.
                     logger.debug(
                         f"Извлечено {len(pending_tool_calls)} текстовых tool_calls"
                     )
@@ -808,7 +849,9 @@ class AgentLoop:
                 continue
 
             # --- Нет tool_calls — модель пытается дать финальный ответ ---
-            if current_text and tools_to_send and research_mode:
+            # В research-режиме фаза != SYNTHESIS всегда ловится нуджем:
+            # любой текст без инструментов переводится в следующий шаг.
+            if current_text and research_mode and not is_synthesis_phase:
                 open_h_now = self._count_open_hypotheses(context)
                 nudge = pick_nudge(
                     state,
@@ -848,6 +891,9 @@ class AgentLoop:
         )
         if on_status:
             await on_status("⏳ Лимит итераций — формирую финальный ответ…")
+
+        if split_thoughts and on_final_answer_started is not None:
+            await on_final_answer_started()
 
         messages_final = messages
         try:
