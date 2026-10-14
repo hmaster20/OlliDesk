@@ -183,6 +183,10 @@ class SLMModelsDialog(QDialog):
         btn_layout.addWidget(self.delete_btn)
 
         self.activate_btn = QPushButton("✅ Сделать активной")
+        self.activate_btn.setToolTip(
+            "Назначить выделенную модель активной chat-моделью. "
+            "После этого она загружается при перезапуске — автовыбор её не подменяет."
+        )
         self.activate_btn.clicked.connect(self._activate_selected)
         btn_layout.addWidget(self.activate_btn)
 
@@ -473,6 +477,9 @@ class SLMModelsDialog(QDialog):
         self.config.slm.selected_model = info.id
         save_config(self.config)
         self._changed = True
+        logger.info(
+            f"SLM: пользователь явно выбрал '{info.id}' — автовыбор при reload пропущен"
+        )
         self.status_label.setText(f"✅ Активная модель: {info.display_name}")
         self._populate()
 

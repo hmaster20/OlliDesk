@@ -255,6 +255,12 @@ class ChatPanel(QWidget):
         self._load_slm_async(chat_path, embed_path, params=params)
 
     def reload_slm(self):
+        """Перезагружает SLM с сохранённой конфигурацией — без автовыбора.
+
+        Вызывается после явного выбора модели пользователем в диалоге SLM.
+        Автовыбор должен быть пропущен, иначе он затрёт выбор (см. баг:
+        3B q4_k_m принудительно возвращался вместо выбранной 7B/1.5B/q6_k).
+        """
         self._slm_load_generation += 1
         self._slm_model_name = ""
 
@@ -265,10 +271,64 @@ class ChatPanel(QWidget):
 
         logger.info(
             f"reload_slm: generation → {self._slm_load_generation}, "
-            f"модель будет перечитана из конфига"
+            f"модель будет перечитана из конфига (автовыбор пропущен)"
         )
         self.status_label.setText("⏳ Перезагрузка локальной модели...")
-        QTimer.singleShot(50, self._detect_and_load_slm)
+        QTimer.singleShot(
+            50, lambda: self._detect_and_load_slm(skip_auto_select=True)
+        )
+
+    def _detect_and_load_slm(self, skip_auto_select: bool = False):
+        """Автовыбор модели + автооптимизация параметров, затем загрузка.
+
+        Args:
+            skip_auto_select: True — не запускать автовыбор модели, использовать
+                уже записанный в конфиге ``slm.selected_model``. Нужно после
+                явного выбора модели пользователем в ``SLMModelsDialog``.
+        """
+        from agents.slm_optimizer import optimize
+        from agents.slm_selector import select_best_model
+
+        try:
+            cfg = load_config()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
+            cfg = None
+
+        if skip_auto_select:
+            logger.info("SLM: автовыбор пропущен (пользователь выбрал модель вручную)")
+        elif cfg is not None and cfg.slm.auto_select_model:
+            chosen = select_best_model(prefer_vram=cfg.slm.prefer_vram_fit)
+            if chosen is not None and chosen.id != cfg.slm.selected_model:
+                logger.info(
+                    f"Автовыбор SLM: '{cfg.slm.selected_model}' → '{chosen.id}'"
+                )
+                cfg.slm.selected_model = chosen.id
+                try:
+                    from core.config import save_config
+                    save_config(cfg)
+                except Exception as e:
+                    logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
+
+        # 2. Загрузка (при auto_tune — с оптимизацией).
+        chat_path, embed_path = get_model_paths()
+        if not chat_path:
+            if self._config_slm_enabled():
+                self._download_and_load_slm()
+            return
+
+        params = None
+        try:
+            if cfg is not None and cfg.slm.auto_tune:
+                params = optimize(chat_path, target_n_ctx=cfg.slm.target_n_ctx)
+                logger.info(f"Автопараметры SLM:\n{params.to_json()}")
+        except Exception as e:
+            logger.warning(
+                f"SLM-оптимизатор упал, загружаю с параметрами из конфига: {e}"
+            )
+            params = None
+
+        self._load_slm_async(chat_path, embed_path, params=params)
 
     def _config_slm_enabled(self) -> bool:
         try:
