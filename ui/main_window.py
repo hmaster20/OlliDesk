@@ -1455,6 +1455,8 @@ class MainWindow(QMainWindow):
             self._indexing_thread.wait(2000)
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel._stop_generation()
+            # BackendManager сам закрывает Ollama-клиент и свои потоки.
+            self.chat_panel.backend_manager.close()
         # Останавливаем клиент Ollama
         if hasattr(self, "ollama_client") and self.ollama_client:
             import asyncio
