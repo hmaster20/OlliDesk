@@ -211,49 +211,6 @@ class ChatPanel(QWidget):
         self._check_ollama_async()
         self._detect_and_load_slm()
 
-    def _detect_and_load_slm(self):
-        """Автовыбор модели + автооптимизация параметров, затем загрузка."""
-        from agents.slm_optimizer import optimize
-        from agents.slm_selector import select_best_model
-
-        # 1. Автовыбор модели (если включён).
-        try:
-            cfg = load_config()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
-            cfg = None
-
-        if cfg is not None and cfg.slm.auto_select_model:
-            chosen = select_best_model(prefer_vram=cfg.slm.prefer_vram_fit)
-            if chosen is not None and chosen.id != cfg.slm.selected_model:
-                logger.info(
-                    f"Автовыбор SLM: '{cfg.slm.selected_model}' → '{chosen.id}'"
-                )
-                cfg.slm.selected_model = chosen.id
-                try:
-                    from core.config import save_config
-                    save_config(cfg)
-                except Exception as e:
-                    logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
-
-        # 2. Загрузка (при auto_tune — с оптимизацией).
-        chat_path, embed_path = get_model_paths()
-        if not chat_path:
-            if self._config_slm_enabled():
-                self._download_and_load_slm()
-            return
-
-        params = None
-        try:
-            if cfg is not None and cfg.slm.auto_tune:
-                params = optimize(chat_path, target_n_ctx=cfg.slm.target_n_ctx)
-                logger.info(f"Автопараметры SLM:\n{params.to_json()}")
-        except Exception as e:
-            logger.warning(f"SLM-оптимизатор упал, загружаю с параметрами из конфига: {e}")
-            params = None
-
-        self._load_slm_async(chat_path, embed_path, params=params)
-
     def reload_slm(self):
         """Перезагружает SLM с сохранённой конфигурацией — без автовыбора.
 
@@ -296,7 +253,10 @@ class ChatPanel(QWidget):
             cfg = None
 
         if skip_auto_select:
-            logger.info("SLM: автовыбор пропущен (пользователь выбрал модель вручную)")
+            logger.info(
+                "SLM: автовыбор пропущен (после ручного переключения модели). "
+                "Загружается selected_model из конфига."
+            )
         elif cfg is not None and cfg.slm.auto_select_model:
             chosen = select_best_model(prefer_vram=cfg.slm.prefer_vram_fit)
             if chosen is not None and chosen.id != cfg.slm.selected_model:
@@ -309,6 +269,22 @@ class ChatPanel(QWidget):
                     save_config(cfg)
                 except Exception as e:
                     logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
+            else:
+                logger.info(
+                    f"SLM: автовыбор подтвердил сохранённый выбор "
+                    f"(selected_model='{cfg.slm.selected_model}')"
+                )
+        elif cfg is not None:
+            logger.info(
+                f"SLM: используется сохранённый выбор "
+                f"(selected_model='{cfg.slm.selected_model}', "
+                f"auto_select_model=false)"
+            )
+        else:
+            logger.info(
+                "SLM: конфиг недоступен, автовыбор не выполнялся "
+                "(будет использована модель из get_model_paths)"
+            )
 
         # 2. Загрузка (при auto_tune — с оптимизацией).
         chat_path, embed_path = get_model_paths()

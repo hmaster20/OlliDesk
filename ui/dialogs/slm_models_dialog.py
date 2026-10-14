@@ -5,6 +5,7 @@ import re
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -171,6 +172,19 @@ class SLMModelsDialog(QDialog):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #888; font-size: 12px;")
         layout.addWidget(self.status_label)
+
+        self.auto_select_check = QCheckBox(
+            "🔁 Автовыбор модели при запуске (по железу и свободной VRAM)"
+        )
+        self.auto_select_check.setChecked(self.config.slm.auto_select_model)
+        self.auto_select_check.setToolTip(
+            "Если выключено — при старте приложения загружается модель, "
+            "явно выбранная в этом окне (поле slm.selected_model в конфиге). "
+            "Если включено — модель может быть подменена автоматически "
+            "по свободной VRAM и RAM."
+        )
+        self.auto_select_check.toggled.connect(self._on_auto_select_toggled)
+        layout.addWidget(self.auto_select_check)
 
         btn_layout = QHBoxLayout()
 
@@ -457,6 +471,29 @@ class SLMModelsDialog(QDialog):
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось удалить файл модели.")
 
+    def _on_auto_select_toggled(self, checked: bool) -> None:
+        """Сохраняет решение пользователя по автовыбору модели.
+
+        При снятии галочки автовыбор выключается навсегда, пока пользователь
+        снова его не включит здесь или не поправит config.yaml вручную.
+        """
+        self.config.slm.auto_select_model = checked
+        save_config(self.config)
+        self._changed = True
+        logger.info(
+            f"SLM: auto_select_model = {checked} "
+            f"(selected_model='{self.config.slm.selected_model}')"
+        )
+        if checked:
+            self.status_label.setText(
+                "🔁 Автовыбор включён — модель может подменяться при запуске."
+            )
+        else:
+            self.status_label.setText(
+                "📌 Автовыбор выключен — при запуске загрузится текущая "
+                "выбранная модель."
+            )
+
     def _activate_selected(self):
         info = self._current_model_info()
         if not info:
@@ -475,12 +512,29 @@ class SLMModelsDialog(QDialog):
             return
 
         self.config.slm.selected_model = info.id
+
+        # Явный выбор пользователя — выключаем автовыбор, чтобы он не подменил
+        # модель при следующем запуске (баг: q6_k → q4_k_m после рестарта).
+        auto_disabled = False
+        if self.config.slm.auto_select_model:
+            self.config.slm.auto_select_model = False
+            auto_disabled = True
+            # Синхронизируем UI чекбокса без повторного save_config.
+            self.auto_select_check.blockSignals(True)
+            self.auto_select_check.setChecked(False)
+            self.auto_select_check.blockSignals(False)
+            logger.info(
+                f"SLM: пользователь явно выбрал '{info.id}' — "
+                f"auto_select_model переключён в False"
+            )
+
         save_config(self.config)
         self._changed = True
-        logger.info(
-            f"SLM: пользователь явно выбрал '{info.id}' — автовыбор при reload пропущен"
-        )
-        self.status_label.setText(f"✅ Активная модель: {info.display_name}")
+
+        msg = f"✅ Активная модель: {info.display_name}"
+        if auto_disabled:
+            msg += " (автовыбор отключён — выбор сохранится при перезапуске)"
+        self.status_label.setText(msg)
         self._populate()
 
     def _add_custom_model(self):
