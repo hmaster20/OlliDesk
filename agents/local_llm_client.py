@@ -15,6 +15,10 @@ from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
 from agents.tool_call_parser import extract_tool_calls
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from agents.slm_optimizer import OptimizedParams
+
 # Языковая директива идёт в самое НАЧАЛО системного сообщения: при обрезке
 # контекста `_fit_messages` сохраняет голову промпта, поэтому инструкция не
 # потеряется. Qwen2.5 (7B, q4) склонен «соскакивать» на китайский — низкая
@@ -59,6 +63,7 @@ class LocalLLMClient:
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
         verbose: bool = False,
+        params: "OptimizedParams | None" = None,
     ):
         """Инициализация клиента.
 
@@ -77,6 +82,24 @@ class LocalLLMClient:
 
         self.model_path = Path(model_path)
         self.embed_model_path = Path(embed_model_path) if embed_model_path else None
+
+        # Параметры: если передан OptimizedParams — он главный.
+        if params is not None:
+            n_ctx = params.n_ctx
+            n_threads = params.n_threads
+            n_batch = params.n_batch
+            n_gpu_layers = params.n_gpu_layers
+            flash_attn = params.flash_attn
+            use_mmap = params.use_mmap
+            use_mlock = params.use_mlock
+            # GGML_TYPE_F16 = 1, GGML_TYPE_Q8_0 = 8
+            kv_type_int = 1 if params.kv_cache_type == "f16" else 8
+        else:
+            flash_attn = False
+            use_mmap = True
+            use_mlock = False
+            kv_type_int = 1
+
         self.n_ctx = n_ctx
         self.n_threads = n_threads if n_threads > 0 else detect_optimal_threads()
         self.n_gpu_layers = n_gpu_layers
@@ -92,7 +115,9 @@ class LocalLLMClient:
 
         logger.info(
             f"Загрузка локальной SLM: {self.model_path.name} "
-            f"(n_ctx={self.n_ctx}, n_threads={self.n_threads}, n_gpu_layers={n_gpu_layers})"
+            f"(n_ctx={n_ctx}, n_threads={self.n_threads}, "
+            f"n_gpu_layers={n_gpu_layers}, flash_attn={flash_attn}, "
+            f"kv={params.kv_cache_type if params else 'f16'})"
         )
         load_started = time.perf_counter()
         self.llm = Llama(
@@ -101,6 +126,11 @@ class LocalLLMClient:
             n_threads=self.n_threads,
             n_batch=n_batch,
             n_gpu_layers=n_gpu_layers,
+            flash_attn=flash_attn,
+            use_mmap=use_mmap,
+            use_mlock=use_mlock,
+            type_k=kv_type_int,
+            type_v=kv_type_int,
             verbose=verbose,
             chat_format="chatml",  # Qwen2.5 использует ChatML
         )

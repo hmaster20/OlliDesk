@@ -3,6 +3,8 @@
 import contextlib
 import json
 import re
+import os
+os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
 from typing import Any, cast
 
@@ -210,11 +212,47 @@ class ChatPanel(QWidget):
         self._detect_and_load_slm()
 
     def _detect_and_load_slm(self):
+        """Автовыбор модели + автооптимизация параметров, затем загрузка."""
+        from agents.slm_optimizer import optimize
+        from agents.slm_selector import select_best_model
+
+        # 1. Автовыбор модели (если включён).
+        try:
+            cfg = load_config()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
+            cfg = None
+
+        if cfg is not None and cfg.slm.auto_select_model:
+            chosen = select_best_model(prefer_vram=cfg.slm.prefer_vram_fit)
+            if chosen is not None and chosen.id != cfg.slm.selected_model:
+                logger.info(
+                    f"Автовыбор SLM: '{cfg.slm.selected_model}' → '{chosen.id}'"
+                )
+                cfg.slm.selected_model = chosen.id
+                try:
+                    from core.config import save_config
+                    save_config(cfg)
+                except Exception as e:
+                    logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
+
+        # 2. Загрузка (при auto_tune — с оптимизацией).
         chat_path, embed_path = get_model_paths()
-        if chat_path:
-            self._load_slm_async(chat_path, embed_path)
-        elif self._config_slm_enabled():
-            self._download_and_load_slm()
+        if not chat_path:
+            if self._config_slm_enabled():
+                self._download_and_load_slm()
+            return
+
+        params = None
+        try:
+            if cfg is not None and cfg.slm.auto_tune:
+                params = optimize(chat_path, target_n_ctx=cfg.slm.target_n_ctx)
+                logger.info(f"Автопараметры SLM:\n{params.to_json()}")
+        except Exception as e:
+            logger.warning(f"SLM-оптимизатор упал, загружаю с параметрами из конфига: {e}")
+            params = None
+
+        self._load_slm_async(chat_path, embed_path, params=params)
 
     def reload_slm(self):
         self._slm_load_generation += 1
@@ -325,35 +363,36 @@ class ChatPanel(QWidget):
             )
         self._emit_backend_status()
 
-    def _load_slm_async(self, chat_path: Path, embed_path: Path | None):
+    def _load_slm_async(self, chat_path: Path, embed_path: Path | None, params=None):
         if self._slm_loading or self._slm_client is not None:
             return
 
         generation = self._slm_load_generation
 
-        n_ctx, n_threads, n_batch = 4096, 0, 512
-        n_gpu_layers = 0
-        max_tokens = 1024
+        # Параметры: params (авто) → конфиг (ручной режим) → дефолты.
+        n_ctx, n_threads, n_batch, n_gpu_layers, max_tokens = 4096, 0, 512, 0, 1024
         try:
             from core.config import load_config
-
             slm = load_config().slm
-            n_ctx = slm.n_ctx
-            n_threads = slm.n_threads
-            n_batch = slm.n_batch
+            max_tokens = slm.max_tokens
+            if params is None:
+                n_ctx = slm.n_ctx
+                n_threads = slm.n_threads
+                n_batch = slm.n_batch
+                if slm.auto_gpu_layers:
+                    from agents.gpu_utils import detect_optimal_gpu_layers
+                    n_gpu_layers = detect_optimal_gpu_layers(
+                        model_path=chat_path,
+                        preferred=slm.n_gpu_layers,
+                        auto=True,
+                    )
+                else:
+                    n_gpu_layers = slm.n_gpu_layers
             info = slm.get_selected_info()
             if info is not None:
                 self._slm_model_name = info.display_name
-                if info.n_ctx > 0:
-                    n_ctx = info.n_ctx
-            max_tokens = slm.max_tokens
-            n_gpu_layers = detect_optimal_gpu_layers(
-                model_path=chat_path,
-                preferred=slm.n_gpu_layers,
-                auto=slm.auto_gpu_layers,
-            )
         except Exception as e:
-            logger.debug(f"Не удалось прочитать параметры SLM из конфига: {e}")
+            logger.debug(f"Не удалось прочитать SLM-параметры из конфига: {e}")
 
         self._slm_loading = True
         self.status_label.setText(
@@ -361,13 +400,10 @@ class ChatPanel(QWidget):
         )
 
         self._slm_load_thread = _SLMLoadThread(
-            chat_path,
-            embed_path,
-            n_ctx=n_ctx,
-            n_threads=n_threads,
-            n_batch=n_batch,
-            n_gpu_layers=n_gpu_layers,
-            max_tokens=max_tokens,
+            chat_path, embed_path,
+            n_ctx=n_ctx, n_threads=n_threads, n_batch=n_batch,
+            n_gpu_layers=n_gpu_layers, max_tokens=max_tokens,
+            params=params,
         )
         self._slm_load_thread.finished.connect(
             lambda client, gen=generation: self._on_slm_loaded(client, gen)

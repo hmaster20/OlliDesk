@@ -301,6 +301,7 @@ class _SLMLoadThread(QThread):
         n_batch: int = 512,
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
+        params: object | None = None,  # OptimizedParams | None
     ):
         super().__init__()
         self.chat_path = chat_path
@@ -310,6 +311,7 @@ class _SLMLoadThread(QThread):
         self.n_batch = n_batch
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
+        self.params = params
 
     def run(self):
         try:
@@ -321,6 +323,7 @@ class _SLMLoadThread(QThread):
                 n_batch=self.n_batch,
                 n_gpu_layers=self.n_gpu_layers,
                 max_tokens=self.max_tokens,
+                params=self.params,
             )
             self.finished.emit(client)
         except Exception as e:
