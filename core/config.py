@@ -92,24 +92,64 @@ _DEFAULT_SLM_MODELS: list[dict] = [
     # =========================================================================
     # Компактные — для слабых машин и быстрых проб
     # =========================================================================
-    {
-        "id": "qwen2.5-3b-instruct-q6_k",
-        "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-        "file": "qwen2.5-3b-instruct-q6_k.gguf",
-        "display_name": "Qwen 2.5 3B q6_k (быстрая, слабые машины)",
-        "size_mb": 2900,
-        "kind": "chat",
-        "n_ctx": 16384,
-    },
+
+    # --- 1.5B — совсем слабые машины ---
     {
         "id": "qwen2.5-1.5b-instruct",
         "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
         "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 1.5B (совсем слабые машины)",
+        "display_name": "Qwen 2.5 1.5B q4_k_m (совсем слабые машины)",
         "size_mb": 1120,
         "kind": "chat",
-        "n_ctx": 16384,
+        "n_ctx": 8192,
     },
+    # --- 3B — базовый рабочий класс под 4 ГБ VRAM ---
+    {
+        "id": "qwen2.5-3b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 3B q4_k_m (быстрая, ~60 tok/s на 4 ГБ GPU)",
+        "size_mb": 1930,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-3b-instruct-q6_k",
+        "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "file": "qwen2.5-3b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 3B q6_k ★ (лучший баланс для 4 ГБ VRAM)",
+        "size_mb": 2740,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-coder-3b-instruct-q6_k",
+        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "file": "qwen2.5-coder-3b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 Coder 3B q6_k (код, 4 ГБ VRAM)",
+        "size_mb": 2740,
+        "kind": "chat",
+        "n_ctx": 8192,
+    },
+
+    # {
+    #     "id": "qwen2.5-3b-instruct-q6_k",
+    #     "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+    #     "file": "qwen2.5-3b-instruct-q6_k.gguf",
+    #     "display_name": "Qwen 2.5 3B q6_k (быстрая, слабые машины)",
+    #     "size_mb": 2900,
+    #     "kind": "chat",
+    #     "n_ctx": 16384,
+    # },
+    # {
+    #     "id": "qwen2.5-1.5b-instruct",
+    #     "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    #     "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    #     "display_name": "Qwen 2.5 1.5B (совсем слабые машины)",
+    #     "size_mb": 1120,
+    #     "kind": "chat",
+    #     "n_ctx": 16384,
+    # },
 
     # =========================================================================
     # 7B general — базовый рабочий класс, разные квантования
@@ -232,8 +272,9 @@ class SLMConfig(BaseModel):
 
     enabled: bool = True
 
-    # Активная chat-модель (id из available_models, kind="chat")
-    selected_model: str = "qwen2.5-7b-instruct"
+    # Активная chat-модель (id из available_models, kind="chat").
+    # При auto_select_model=True значение перезаписывается автоматически.
+    selected_model: str = "qwen2.5-3b-instruct-q4_k_m"
 
     # Каталог доступных моделей.
     # Embedding-модель сюда НЕ добавляем — она задаётся отдельно ниже.
@@ -255,12 +296,21 @@ class SLMConfig(BaseModel):
         self.available_models = [SLMModelInfo(**d) for d in _DEFAULT_SLM_MODELS] + custom
         return self
 
-    # --- Параметры инференса ---
-    n_ctx: int = 4096
-    # n_threads: 0 = авто-определение по числу физических ядер (рекомендуется),
-    # любое другое значение (>0) используется как есть. На гиперпоточном CPU
-    # llama.cpp обычно выигрывает на числе физических ядер, а не логических.
-    n_threads: int = 0
+    # --- Режим автоматической оптимизации ---
+    # auto_select_model: при запуске выбрать лучшую chat-модель под железо
+    #   (по профилю CPU/GPU/RAM и размеру модели). Заменяет selected_model.
+    # auto_tune: автоопределение n_ctx, n_gpu_layers, n_threads, n_batch,
+    #   flash_attn, use_mlock, типа KV-кэша под свободную VRAM/RAM и метаданные
+    #   модели. Значения ниже используются только при auto_tune=False.
+    # prefer_vram_fit: при auto_select_model учитывать только модели, целиком
+    #   влезающие в VRAM (иначе модель будет частично на CPU — это медленнее).
+    auto_select_model: bool = True
+    auto_tune: bool = True
+    prefer_vram_fit: bool = True
+
+    # --- Ручные параметры (используются при auto_tune=False) ---
+    n_ctx: int = 8192
+    n_threads: int = 0          # 0 = авто по числу физических ядер
     n_batch: int = 512
 
     # GPU:
@@ -269,10 +319,15 @@ class SLMConfig(BaseModel):
     #   auto_gpu_layers=False → используется значение n_gpu_layers как есть
     #                            (0 = CPU-only, -1 = все слои на GPU, N>0 = N слоёв)
     auto_gpu_layers: bool = True
-    n_gpu_layers: int = 0
+    n_gpu_layers: int = 0        # 0=CPU, -1=все слои, N>0=первые N слоёв
 
+    # --- Общие ---
     max_tokens: int = 1024
     temperature: float = 0.7
+
+    # Желаемый n_ctx (верхняя граница при auto_tune). Оптимизатор уменьшит,
+    # если VRAM/RAM не хватает; увеличить сверх этого не будет.
+    target_n_ctx: int = 8192
 
     # --- Embedding-модель (одна, отдельно, не участвует в выборе chat) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
