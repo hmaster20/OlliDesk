@@ -376,37 +376,76 @@ class ChatActivityItem(QWidget):
 
 
 class ChatSourcesItem(QWidget):
-    """Блок источников RAG с кликабельными ссылками.
+    """Сворачиваемый блок источников RAG.
 
-    Каждый источник — кнопка-ссылка вида ``file:строка``; клик испускает
-    ``source_activated`` (относительный путь, строка), а панель открывает
-    файл в редакторе.
+    По умолчанию свёрнут — видна только строка «📚 Источники (N)».
+    Кнопка «▼» разворачивает список; клик по ссылке открывает файл.
+    Так меньше визуального шума, когда источников много, но пользователь
+    может развернуть, если ему нужно перейти в файл.
     """
 
     source_activated = Signal(str, int)
 
-    def __init__(self, sources: list[tuple[str, int, int]], parent: QWidget | None = None):
+    def __init__(
+        self,
+        sources: list[tuple[str, int, int]],
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 2, 8, 2)
-        layout.setSpacing(0)
+        self._sources = list(sources)
+        self._expanded = False
 
-        header = QLabel("📚 Источники из проекта (нажмите, чтобы открыть):")
-        header.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
-        layout.addWidget(header)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 2, 8, 2)
+        outer.setSpacing(2)
 
-        for path, start, end in sources:
+        self._header_btn = QPushButton(
+            f"📚 Источники проекта ({len(self._sources)}) · ▼ развернуть"
+        )
+        self._header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header_btn.setFlat(True)
+        self._header_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._header_btn.setStyleSheet(
+            "QPushButton { color: #8f8f8f; font-size: 12px; font-style: italic;"
+            " text-align: left; border: none; background: transparent;"
+            " padding: 0; }"
+            " QPushButton:hover { color: #ccc; }"
+        )
+        self._header_btn.clicked.connect(self._toggle_body)
+        outer.addWidget(self._header_btn)
+
+        self._body = QWidget()
+        body_layout = QVBoxLayout(self._body)
+        body_layout.setContentsMargins(12, 0, 0, 0)
+        body_layout.setSpacing(1)
+
+        for path, start, end in self._sources:
             btn = QPushButton(format_source_label(path, start, end))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFlat(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setStyleSheet(
-                "QPushButton { color: #6ba3d6; font-size: 12px; text-align: left; "
-                "border: none; background: transparent; padding: 0; }"
-                "QPushButton:hover { text-decoration: underline; color: #8bc0f0; }"
+                "QPushButton { color: #6ba3d6; font-size: 12px;"
+                " text-align: left; border: none; background: transparent;"
+                " padding: 0; }"
+                "QPushButton:hover { text-decoration: underline;"
+                " color: #8bc0f0; }"
             )
-            btn.clicked.connect(lambda _=False, p=path, s=start: self.source_activated.emit(p, s))
-            layout.addWidget(btn)
+            btn.clicked.connect(
+                lambda _=False, p=path, s=start: self.source_activated.emit(p, s)
+            )
+            body_layout.addWidget(btn)
 
+        self._body.setVisible(False)
+        outer.addWidget(self._body)
+
+    def _toggle_body(self) -> None:
+        self._expanded = not self._expanded
+        self._body.setVisible(self._expanded)
+        arrow = "▲ свернуть" if self._expanded else "▼ развернуть"
+        self._header_btn.setText(
+            f"📚 Источники проекта ({len(self._sources)}) · {arrow}"
+        )
 
 def format_source_label(file_path: str, start: int, end: int) -> str:
     """Формирует подпись источника RAG вида ``file:строка`` или ``file:start-end``."""

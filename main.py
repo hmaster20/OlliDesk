@@ -25,6 +25,15 @@ os.environ.update(
 logging.getLogger("posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
+# ChromaDB пишет свой лог через дочерние логгеры, например
+# "chromadb.segment.impl.metadata.sqlite" — глобальный setLevel на "chromadb"
+# их не покрывает. Поэтому рекурсивно глушим всё, что начинается с "chromadb".
+# Иначе консоль спамит строками вида "Add of existing embedding ID: …",
+# которые выглядят как предупреждения, но не являются ошибками.
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+for _logger_name in list(logging.root.manager.loggerDict.keys()):
+    if _logger_name.startswith("chromadb"):
+        logging.getLogger(_logger_name).setLevel(logging.ERROR)
 
 # Создаем класс-заглушку с нужными атрибутами
 class PosthogMock:

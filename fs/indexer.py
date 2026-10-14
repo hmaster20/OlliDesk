@@ -120,6 +120,7 @@ ARCHIVE_EXTENSIONS: set[str] = {
     '.lzma',
 }
 
+_APP_DIR = ".ollidesk"
 
 class FileIndexer:
     """Индексатор файлов проекта."""
@@ -206,6 +207,11 @@ class FileIndexer:
                 continue
 
             rel_path_str = str(file_path.relative_to(project_path)).replace("\\", "/")
+
+            # Служебный каталог OlliDesk никогда не индексируется:
+            # там state проекта, его локальный конфиг и ChromaDB.
+            if rel_path_str.split("/", 1)[0] == _APP_DIR:
+                continue
 
             if self.ignored_spec.match_file(rel_path_str):
                 logger.debug(f"Игнорируется: {rel_path_str}")
@@ -453,7 +459,7 @@ class FileIndexer:
         for path, metadata in current_state.items():
             if path not in previous_state:
                 new_or_modified.append(metadata)
-                logger.debug(f"Новый файл: {path}")
+                logger.info(f"Новый файл: {path}")
             elif previous_state[path].sha256 != metadata.sha256:
                 new_or_modified.append(metadata)
                 logger.debug(f"Изменен файл: {path}")

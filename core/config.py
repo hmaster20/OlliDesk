@@ -565,6 +565,7 @@ class AppConfig(BaseModel):
             "*.min.css",
             ".DS_Store",
             "Thumbs.db",
+            ".ollidesk",
             ".ollidesk/vector_db",
             ".ollidesk/chroma",
             ".ollidesk/*.sqlite3",

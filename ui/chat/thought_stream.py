@@ -10,16 +10,19 @@
 * 🔬 обновления гипотез;
 * 🔁 нуджи и статусы фаз.
 
-По умолчанию **свёрнут** — виден только заголовок с счётчиками. Кнопка
-«▲ Развернуть» открывает тело с ограниченной высотой (280px) и внутренним
-скроллом. При отмене прогона виджет получает `mark_interrupted()` и
-показывает курсивный комментарий.
+По умолчанию **свёрнут** — видна только строка «💭 Рассуждение · N действий
+· …превью последней мысли». Кнопка «▲ Развернуть» открывает тело с
+ограниченной высотой (280px) и внутренним скроллом. При отмене прогона
+виджет получает `mark_interrupted()` и показывает курсивный комментарий.
+
+Заголовок обновляется **при каждом токене мысли** — иначе свёрнутый
+виджет выглядит «застывшим», и пользователь не видит, что модель работает.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -32,31 +35,23 @@ from PySide6.QtWidgets import (
 
 
 # Цвета сегментов (в стиле «серого лога»)
-_C_THOUGHT = "#9a9a9a"       # обычная мысль
-_C_ACTION = "#7a9ac8"        # вызов инструмента
-_C_RESULT_OK = "#8aa87a"     # успешный результат
-_C_RESULT_ERR = "#c88a7a"    # ошибка инструмента
-_C_HYPOTHESIS = "#c8a878"    # гипотеза
-_C_NUDGE = "#a8a8b8"         # нудж / фаза (курсив)
-_C_INTERRUPT = "#d8a878"     # отмена (курсив, чуть ярче)
+_C_THOUGHT = "#9a9a9a"
+_C_ACTION = "#7a9ac8"
+_C_RESULT_OK = "#8aa87a"
+_C_RESULT_ERR = "#c88a7a"
+_C_HYPOTHESIS = "#c8a878"
+_C_NUDGE = "#a8a8b8"
+_C_INTERRUPT = "#d8a878"
 
 # Максимальная высота тела виджета в развёрнутом состоянии (пикселей).
 _BODY_MAX_HEIGHT = 280
 
+# Длина превью последней мысли в заголовке (символов).
+_HEADER_PREVIEW_CHARS = 80
+
 
 class ChatThoughtStream(QWidget):
-    """Свёрнутый по умолчанию серый лог рассуждений агента.
-
-    Публичный API:
-        append_thought_token(token)     — добавить токен мысли
-        append_thought_block(text)      — добавить целый блок мыслей
-        append_action(name, args)       — записать вызов инструмента
-        append_result(name, ok, preview)— записать результат инструмента
-        append_hypothesis(hid, status, statement, evidence)
-        append_nudge(label)             — записать срабатывание нуджа
-        append_phase(label)             — записать фазу
-        mark_interrupted(reason="")     — пометить как прерванное
-    """
+    """Свёрнутый по умолчанию серый лог рассуждений агента."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -64,7 +59,10 @@ class ChatThoughtStream(QWidget):
         self._hypotheses_count = 0
         self._expanded = False
 
-        # Контейнер с рамкой
+        # Буфер текущей незакрытой мысли (для превью в заголовке).
+        self._current_thought_buffer = ""
+        self._current_thought_open = False
+
         container = QFrame(self)
         container.setObjectName("_thought_stream")
         container.setStyleSheet(
@@ -81,36 +79,40 @@ class ChatThoughtStream(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
 
-        # --- Заголовок с кнопкой ---
+        # --- Заголовок ---
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
 
         self._header_label = QLabel()
         self._header_label.setTextFormat(Qt.TextFormat.RichText)
-        header.addWidget(self._header_label)
-        header.addStretch()
+        self._header_label.setWordWrap(False)
+        header.addWidget(self._header_label, stretch=1)
 
         self._toggle_btn = QPushButton("▼ Развернуть")
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._toggle_btn.setStyleSheet(
             "QPushButton { background: transparent; border: 1px solid #444;"
-            " border-radius: 10px; color: #aaa; font-size: 11px; padding: 2px 10px; }"
-            " QPushButton:hover { background: rgba(128,128,128,0.15); color: #fff; }"
+            " border-radius: 10px; color: #aaa; font-size: 11px;"
+            " padding: 2px 10px; }"
+            " QPushButton:hover { background: rgba(128,128,128,0.15);"
+            " color: #fff; }"
         )
         self._toggle_btn.clicked.connect(self._toggle_body)
         header.addWidget(self._toggle_btn)
 
         root.addLayout(header)
 
-        # --- Тело (скрыто по умолчанию) ---
+        # --- Тело ---
         self._body = QTextBrowser()
         self._body.setOpenExternalLinks(False)
         self._body.setReadOnly(True)
         self._body.setFrameShape(QFrame.Shape.NoFrame)
         self._body.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._body.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self._body.setMaximumHeight(_BODY_MAX_HEIGHT)
         self._body.setStyleSheet(
             "QTextBrowser {"
@@ -120,10 +122,6 @@ class ChatThoughtStream(QWidget):
         )
         self._body.setVisible(False)
         root.addWidget(self._body)
-
-        # Идентификатор текущего блока «мысли» — чтобы продолжать его
-        # при стриминге (не начинать новый абзац на каждый токен).
-        self._current_thought_open = False
 
         self._refresh_header()
 
@@ -146,6 +144,19 @@ class ChatThoughtStream(QWidget):
                 f'<span style="color: #7a7a8a; font-size: 11px;">'
                 f"· {self._hypotheses_count} гипотез</span>"
             )
+
+        # Превью последней мысли — только когда виджет свёрнут
+        # (в развёрнутом состоянии текст и так виден в теле).
+        if not self._expanded and self._current_thought_buffer:
+            preview = self._current_thought_buffer.strip().replace("\n", " ")
+            if len(preview) > _HEADER_PREVIEW_CHARS:
+                preview = "…" + preview[-_HEADER_PREVIEW_CHARS:]
+            safe = _escape(preview)
+            parts.append(
+                f'<span style="color: #6a6a7a; font-size: 11px;'
+                f' font-style: italic;">· {safe}</span>'
+            )
+
         self._header_label.setText(" ".join(parts))
 
     # ---------------------------------------------------------------
@@ -155,7 +166,10 @@ class ChatThoughtStream(QWidget):
     def _toggle_body(self) -> None:
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
-        self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
+        self._toggle_btn.setText(
+            "▲ Свернуть" if self._expanded else "▼ Развернуть"
+        )
+        self._refresh_header()
         if self._expanded:
             QTimer.singleShot(0, self._scroll_body_to_end)
 
@@ -173,7 +187,6 @@ class ChatThoughtStream(QWidget):
         return cursor
 
     def _insert_html(self, html: str) -> None:
-        """Вставляет html-фрагмент в конец и скроллит."""
         cursor = self._cursor_to_end()
         self._body.setTextCursor(cursor)
         self._body.insertHtml(html)
@@ -186,16 +199,13 @@ class ChatThoughtStream(QWidget):
         self._body.insertPlainText("\n")
 
     def append_thought_token(self, token: str) -> None:
-        """Добавляет токен мысли — продолжает текущий блок, а не открывает новый."""
+        """Добавляет токен мысли — продолжает текущий блок."""
         if not token:
             return
         if not self._current_thought_open:
-            self._insert_html(
-                '<span style="color: #7a7a8a;">💭 </span>'
-            )
+            self._insert_html('<span style="color: #7a7a8a;">💭 </span>')
             self._current_thought_open = True
 
-        # Escape HTML
         safe = (
             token.replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -205,6 +215,16 @@ class ChatThoughtStream(QWidget):
         self._insert_html(
             f'<span style="color: {_C_THOUGHT}; font-style: italic;">{safe}</span>'
         )
+
+        # Копим буфер для превью в заголовке (ограничиваем 500 символами —
+        # хватит для последних 80 в заголовке с запасом).
+        self._current_thought_buffer += token
+        if len(self._current_thought_buffer) > 500:
+            self._current_thought_buffer = self._current_thought_buffer[-500:]
+
+        # Заголовок обновляем при каждом токене — пользователь видит,
+        # что модель работает, даже если плашка свёрнута.
+        self._refresh_header()
 
     def append_thought_block(self, text: str) -> None:
         """Добавляет целый блок мыслей (если стриминга не было)."""
@@ -229,6 +249,7 @@ class ChatThoughtStream(QWidget):
         if self._current_thought_open:
             self._insert_newline()
             self._current_thought_open = False
+        self._current_thought_buffer = ""
 
     def append_action(self, name: str, arguments: dict | None = None) -> None:
         """Записывает вызов инструмента."""
@@ -328,13 +349,9 @@ class ChatThoughtStream(QWidget):
             f"⏹ {_escape(text)}</span>"
         )
         self._insert_newline()
-        # На всякий случай разворачиваем — пользователю важно увидеть, где встал.
+        # Разворачиваем, чтобы пользователь увидел, где встал агент.
         if not self._expanded:
             self._toggle_body()
-
-    # ---------------------------------------------------------------
-    # Свойства
-    # ---------------------------------------------------------------
 
     @property
     def actions_count(self) -> int:
