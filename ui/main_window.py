@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Заголовок
+        # Заголовок: иконка + имя проекта + текущая ветка Git
         header_layout = QHBoxLayout()
         self.project_icon_label = QLabel("📁")
         self.project_icon_label.setStyleSheet(
@@ -401,6 +401,14 @@ class MainWindow(QMainWindow):
             "font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;"
         )
         header_layout.addWidget(self.project_title_label)
+
+        self.branch_label = QLabel("")
+        self.branch_label.setToolTip("Текущая ветка Git")
+        self.branch_label.setStyleSheet(
+            "font-size: 12px; color: #98c379; padding: 8px 10px 4px 0;"
+        )
+        header_layout.addWidget(self.branch_label)
+
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
@@ -427,6 +435,7 @@ class MainWindow(QMainWindow):
         self.file_tree.clicked.connect(self._on_file_tree_clicked)
         self._git_delegate = GitStatusDelegate(self.file_tree)
         self.file_tree.setItemDelegate(self._git_delegate)
+        self._git_delegate.branch_changed.connect(self._on_branch_changed)
         layout.addWidget(self.file_tree, stretch=1)
 
         # Пустая модель — никакие диски не показываем
@@ -527,6 +536,8 @@ class MainWindow(QMainWindow):
             file_path = Path(path)
             file_path.write_text(content, encoding="utf-8")
             logger.info(f"Файл сохранен: {path}")
+            # После сохранения git-статус мог измениться — обновляем делегат.
+            self._git_delegate.refresh()
             return True
         except Exception as e:
             logger.error(f"Ошибка записи файла: {e}")
@@ -539,19 +550,21 @@ class MainWindow(QMainWindow):
         self.tab_widget.removeTab(index)
 
     def open_file_in_editor(self, file_path: str, line: int = 0):
-        """Открывает файл в редакторе."""
+        """Открывает файл в редакторе.
+
+        Многофайловость обеспечивает сам `EditorWidget` (собственный QTabBar
+        и отдельные модели Monaco). Во внешнем `QTabWidget` окна вкладка
+        «📝 Редактор» одна — она переиспользуется.
+        """
         self.editor_widget.open_file(file_path, line)
-        # Добавляем вкладку обратно, если была закрыта
+
         index = self.tab_widget.indexOf(self.editor_widget)
         if index < 0:
-            self.tab_widget.addTab(
-                self.editor_widget, f"📝 {Path(file_path).name}"
-            )
+            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+        else:
+            self.tab_widget.setTabText(index, "📝 Редактор")
+
         self.tab_widget.setCurrentWidget(self.editor_widget)
-        self.tab_widget.setTabText(
-            self.tab_widget.indexOf(self.editor_widget),
-            f"📝 {Path(file_path).name}",
-        )
 
     def _create_right_panel(self) -> QWidget:
         """Создает правую панель (настройки агента)."""
@@ -998,6 +1011,14 @@ class MainWindow(QMainWindow):
         if Path(file_path).is_file():
             self.open_file_in_editor(file_path)
 
+    @Slot(str)
+    def _on_branch_changed(self, branch: str) -> None:
+        """Обновляет лейбл с текущей веткой Git в шапке левой панели."""
+        if branch:
+            self.branch_label.setText(f"🌿 {branch}")
+        else:
+            self.branch_label.setText("")
+
     def _open_project(self) -> None:
         """Открывает диалог выбора проекта."""
         folder = QFileDialog.getExistingDirectory(
@@ -1435,8 +1456,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         logger.info("Закрытие главного окна")
-        # Сохраняем глобальные (last_model, last_mode) всегда
-        self._save_project_settings()  # сохраняет проектные (model, mode) в .ollidesk/project_settings.yaml
+        self._save_project_settings()
         if self.chat_panel:
             self.config.last_model = self.chat_panel.get_current_model()
             mode_map = {0: "chat", 1: "plan", 2: "agent"}
@@ -1454,6 +1474,8 @@ class MainWindow(QMainWindow):
         self._stop_all_threads()
         self._stop_model_check()
         self.prompt_watcher.stop()
+        # Сбрасываем git-состояние делегата, чтобы фоновый poll_timer остановился.
+        self._git_delegate.set_repo_path(None)
         event.accept()
 
     def _save_project_settings(self) -> None:
