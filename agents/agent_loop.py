@@ -344,7 +344,17 @@ def _build_system_prompt(
     research_mode: bool = False,
     open_hypotheses: int = 0,
 ) -> str:
-    """Собирает system-промпт из контекста, роли, протокола, фазы и гипотез."""
+    """Собирает system-промпт из контекста, роли, протокола, фазы и гипотез.
+
+    Дополнительно подмешивает счётчик итераций. Логика сигналов:
+
+    * `remaining <= 3` — мягкий сигнал «пора закругляться»: если данных
+      достаточно, закрой гипотезы и переходи к финалу. Если нет — используй
+      оставшиеся шаги максимально целенаправленно. Работает вместе с фазовой
+      моделью: пока фаза ≠ SYNTHESIS, нуджи всё равно не дадут финал, но
+      модель хотя бы не тратит последние итерации на «ещё один файл».
+    * `remaining <= 1` — жёсткий сигнал «следующий ответ = Final Answer».
+    """
     base_prompt = context.system_prompt or "Ты — полезный AI-ассистент."
 
     pre: list[str] = [base_prompt, _TOOL_USE_INSTRUCTION]
@@ -357,7 +367,16 @@ def _build_system_prompt(
         remaining = max_iterations - (iteration + 1)
         if remaining <= 1:
             iter_line += (
-                " На последних итерациях СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer."
+                " СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer — "
+                "не вызывай инструменты, дай финальный текст."
+            )
+        elif remaining <= 3:
+            iter_line += (
+                " ⚠️ Осталось мало итераций. Если данных достаточно для "
+                "ответа — закрой открытые гипотезы через update_hypothesis "
+                "и переходи к финалу. Если нет — используй оставшиеся шаги "
+                "максимально целенаправленно: не перечитывай то, что уже "
+                "изучил, читай только самые важные файлы."
             )
         pre.append(iter_line)
 
@@ -401,7 +420,6 @@ def _build_system_prompt(
     variable = _fit_sections(pre, variable, context.num_ctx)
 
     return _assemble_prompt(pre, variable)
-
 
 def _create_tool_result_message(
     tool_call_id: str,

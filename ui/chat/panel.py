@@ -59,6 +59,7 @@ from ui.chat.threads import (
     _SLMDownloadThread,
     _SLMLoadThread,
 )
+from agents.investigation import is_research_question
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения
 _CHAT_AUTO_TOOLS = (
@@ -311,19 +312,46 @@ class ChatPanel(QWidget):
         except Exception:
             return True
 
-    def _iteration_limit(self, mode: AgentMode) -> int:
-        default = 30 if mode == AgentMode.AGENT else 7
+    def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
+        """Лимит итераций для текущего режима и типа задачи.
+
+        Логика:
+        * Agent-режим — всегда `agent_max_iterations` (полный доступ,
+            задача может быть длинной: рефакторинг, миграция и т. п.).
+        * Research-вопрос в Chat/Plan — повышенный потолок (не меньше 15
+            и не меньше половины от agent-лимита). Фазовая модель
+            (RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS) + работа с гипотезами
+            естественным образом требуют 12–20 шагов; 7 физически мало.
+        * Обычный вопрос в Chat/Plan — `chat_max_iterations` (по умолчанию 7).
+
+        Фазовая модель внутри `AgentLoop` — главный регулятор остановки;
+        лимит — только аварийный стоп-кран, чтобы модель не ушла в
+        бесконечность.
+        """
+        default_chat = 7
+        default_agent = 30
         try:
             from core.config import load_config
-
             cfg = load_config()
-            return (
-                cfg.agent_max_iterations
-                if mode == AgentMode.AGENT
-                else cfg.chat_max_iterations
-            )
         except Exception:
-            return default
+            cfg = None
+
+        if mode == AgentMode.AGENT:
+            return cfg.agent_max_iterations if cfg else default_agent
+
+        if cfg is None:
+            # Без конфига — эвристика: research требует больше итераций.
+            return 15 if is_research else default_chat
+
+        if is_research:
+            # Не меньше 15, и не меньше половины agent-лимита. Верхняя
+            # граница — сам agent-лимит, чтобы не превысить общий потолок.
+            return max(
+                15,
+                min(cfg.agent_max_iterations, cfg.agent_max_iterations // 2 + 8),
+            )
+
+        return cfg.chat_max_iterations
 
     def _apply_backend_config(self) -> None:
         try:
@@ -1351,8 +1379,26 @@ class ChatPanel(QWidget):
         self._current_thought_stream = None
 
     def _do_chat(self, text: str):
+        """Запускает ReAct-цикл в режиме Chat.
+
+        Research-вопрос получает повышенный лимит итераций — иначе цикл
+        упрётся в 7 шагов на середине DEEP_DIVE (что и происходило:
+        «Достигнут лимит итераций (7), делаем финальный вызов без tools»).
+        """
         logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
         self._reset_research_state()
+
+        # Определяем research заранее, чтобы задать правильный лимит итераций.
+        # Внутри AgentLoop та же проверка выставит research_mode и разведёт
+        # потоки thoughts/final.
+        from agents.investigation import is_research_question
+
+        is_research = is_research_question(text)
+        if is_research:
+            logger.info(
+                "Chat-режим, research-вопрос: лимит итераций повышен "
+                f"({self._iteration_limit(AgentMode.CHAT, is_research=True)})"
+            )
 
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
@@ -1406,12 +1452,21 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=AgentMode.CHAT,
-            max_iterations=self._iteration_limit(AgentMode.CHAT),
+            max_iterations=self._iteration_limit(
+                AgentMode.CHAT, is_research=is_research
+            ),
         )
 
         self._connect_agent_thread_signals()
 
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
+        """Запускает ReAct-цикл в режимах Plan / Agent.
+
+        В Plan-режиме research-вопрос тоже получает повышенный лимит:
+        пользователь может изучать архитектуру без записи. В Agent-режиме
+        лимит уже большой (`agent_max_iterations`), проверка research не
+        меняет поведение, но сохраняет консистентность логирования.
+        """
         self._reset_research_state()
 
         client = self._router.active_client
@@ -1419,6 +1474,15 @@ class ChatPanel(QWidget):
             self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
             self._reset_send_button()
             return
+
+        from agents.investigation import is_research_question
+
+        is_research = is_research_question(text)
+        if is_research and mode == AgentMode.PLAN:
+            logger.info(
+                "Plan-режим, research-вопрос: лимит итераций повышен "
+                f"({self._iteration_limit(AgentMode.PLAN, is_research=True)})"
+            )
 
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
@@ -1464,7 +1528,7 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=mode,
-            max_iterations=self._iteration_limit(mode),
+            max_iterations=self._iteration_limit(mode, is_research=is_research),
         )
 
         self._connect_agent_thread_signals()

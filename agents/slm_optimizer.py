@@ -32,6 +32,8 @@ RAM_RESERVE_MB = 3000
 MIN_USEFUL_CTX = 2048
 # Абсолютный минимум (технический).
 MIN_N_CTX = 512
+# Порог «хорошего» контекста: ниже него f16 не даёт осмысленного выигрыша.
+GOOD_CTX = 4096
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,6 @@ def _target_ctx_upper_bound(meta: GGUFMeta, target_ctx: int) -> int:
 # Стратегия 1: всё на GPU
 # ---------------------------------------------------------------------------
 
-
 def _try_fit_all_on_gpu(
     meta: GGUFMeta,
     model_size_mb: int,
@@ -123,8 +124,14 @@ def _try_fit_all_on_gpu(
 ) -> tuple[int, str] | None:
     """Пробует уместить модель + KV целиком в VRAM.
 
+    Логика:
+      1. Считаем n_ctx для f16 (качество) и q8_0 (компактность).
+      2. Если f16 даёт ≥ GOOD_CTX — берём f16.
+      3. Иначе — если q8_0 даёт заметно больше (≥1.5×) и ≥ MIN_USEFUL_CTX — берём q8_0.
+      4. Иначе — то, что дотягивает до MIN_USEFUL_CTX.
+
     Возвращает (n_ctx, kv_type) или None, если даже при MIN_USEFUL_CTX
-    не влезает.
+    ничего не влезает.
     """
     if usable_vram_mb <= 0:
         return None
@@ -134,15 +141,27 @@ def _try_fit_all_on_gpu(
     if weights_budget <= 0:
         return None
 
-    # Сначала f16 (качество), потом q8_0 (компактность).
-    for kv_type in ("f16", "q8_0"):
-        max_ctx = _max_ctx_in_budget(meta, weights_budget, kv_type)
-        n = min(upper, max_ctx)
-        n = _round_512(n)
-        if n >= MIN_USEFUL_CTX:
-            return n, kv_type
-    return None
+    def _ctx_for(kv_type: str) -> int:
+        return _round_512(min(upper, _max_ctx_in_budget(meta, weights_budget, kv_type)))
 
+    f16_ctx = _ctx_for("f16")
+    q8_ctx = _ctx_for("q8_0")
+
+    # Случай 1: f16 даёт хороший контекст — берём его (лучшее качество).
+    if f16_ctx >= GOOD_CTX:
+        return f16_ctx, "f16"
+
+    # Случай 2: f16 не дотягивает, но q8_0 заметно лучше — экономим VRAM на KV.
+    if q8_ctx >= MIN_USEFUL_CTX and q8_ctx > int(f16_ctx * 1.5):
+        return q8_ctx, "q8_0"
+
+    # Случай 3: оба малы, но один дотягивает до полезного минимума.
+    if f16_ctx >= MIN_USEFUL_CTX:
+        return f16_ctx, "f16"
+    if q8_ctx >= MIN_USEFUL_CTX:
+        return q8_ctx, "q8_0"
+
+    return None
 
 # ---------------------------------------------------------------------------
 # Стратегия 2: частичный offload (VRAM + RAM)
@@ -195,6 +214,7 @@ def _place_layers(
     if budget <= 0:
         return 0, 0, model_size_mb + kv_mb
 
+    # Всё влезает целиком — забираем все слои на GPU.
     if model_size_mb + kv_mb + COMPUTE_BUFFER_MB <= usable_vram_mb:
         vram_used = model_size_mb + kv_mb + COMPUTE_BUFFER_MB
         return -1, vram_used, 200
@@ -210,7 +230,22 @@ def _place_layers(
     layers = int(budget / per_layer_total)
     layers = max(0, min(layers, n_layer))
 
-    # Не оставляем 1 слой на CPU — медленно и без выигрыша.
+    # КРИТИЧНО: частичный offload хуже 50% — контрпродуктивен.
+    #
+    # Каждый токен гоняет данные CPU↔GPU на каждом слое: выход CPU-слоя
+    # отправляется на GPU, вход следующего CPU-слоя возвращается. При
+    # 9/28 слоёв на GPU накладные расходы на синхронизацию съедают весь
+    # выигрыш. Замерено на T1200 (4 ГБ): 0.4 ток/с при 9/28 vs ~2.5 ток/с
+    # при 0/28 (чистый CPU). Если на GPU влезает меньше половины слоёв —
+    # отдаём всё на CPU.
+    if 0 < layers < n_layer * 0.5:
+        logger.info(
+            f"Partial offload {layers}/{n_layer} < 50% — отдаём модель "
+            f"целиком на CPU (partial offload медленнее из-за CPU↔GPU sync)"
+        )
+        return 0, 0, model_size_mb + kv_mb
+
+    # Не оставляем 1–2 слоя на CPU — они замедляют GPU-часть.
     if 0 < layers < n_layer and (n_layer - layers) < 2:
         layers = max(0, n_layer - 2)
 
@@ -221,7 +256,6 @@ def _place_layers(
     )
     ram_used = max(200, ram_used)
     return layers, vram_used, ram_used
-
 
 def _optimal_batch(usable_vram_mb: int, n_gpu_layers: int) -> int:
     if n_gpu_layers == 0:
