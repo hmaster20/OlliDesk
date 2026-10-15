@@ -223,12 +223,12 @@ class SLMModelsDialog(QDialog):
     def _populate(self):
         self.table.setRowCount(0)
 
-        # Сортируем: активная → установленные → остальные (внутри — по имени).
-        # Это критично, когда список вырастает: пользователь сразу видит
-        # текущую модель и то, что уже скачано.
+        # Локальная проверка установки — без HF.
+        from agents.download_slm import is_model_installed
+
         def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
             active = 0 if m.id == self.config.slm.selected_model else 1
-            installed = 0 if is_model_installed(m.file, repo_id=m.repo) else 1
+            installed = 0 if is_model_installed(m.file) else 1
             return (active, installed, m.display_name.lower())
 
         chat_models = sorted(self.config.slm.get_chat_models(), key=_sort_key)
@@ -253,7 +253,7 @@ class SLMModelsDialog(QDialog):
             ctx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 2, ctx_item)
 
-            installed = is_model_installed(m.file, repo_id=m.repo)
+            installed = is_model_installed(m.file)
             status_item = QTableWidgetItem("✅ Установлена" if installed else "⬇️ Не скачана")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 3, status_item)
@@ -263,47 +263,35 @@ class SLMModelsDialog(QDialog):
             active_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 4, active_item)
 
-            real_size_item = QTableWidgetItem(self._real_size_str(m.file, m.repo))
+            real_size_item = QTableWidgetItem(self._real_size_str(m.file))
             real_size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 5, real_size_item)
 
-        # Embed-модель — отдельной строкой ниже
-        embed_repo = self.config.slm.embed_model_repo
+        # Embed-модель — отдельной строкой ниже.
         embed_file = self.config.slm.embed_model_file
-        embed_installed = is_model_installed(embed_file, repo_id=embed_repo)
+        embed_installed = is_model_installed(embed_file)
         embed_status = "✅ установлена" if embed_installed else "⬇️ не скачана"
         self.embed_label.setText(f"📎 {embed_file} — {embed_status}")
 
         self._update_buttons()
 
-    def _real_size_str(self, filename: str, repo_id: str) -> str:
-        """Реальный размер на диске: для split — сумма всех частей."""
-        from agents.download_slm import (
-            _split_part_name,
-            get_model_parts,
-        )
+    def _real_size_str(self, filename: str) -> str:
+        """Реальный размер на диске. Не ходит в HF."""
+        from agents.download_slm import get_local_size_mb, get_models_dir
 
-        parts = get_model_parts(repo_id, filename)
         target_dir = get_models_dir()
+        merged = target_dir / filename
+        if merged.exists():
+            size = get_local_size_mb(filename)
+            return f"{size} МБ" if size > 0 else "—"
 
-        if parts > 1:
-            stem = filename.removesuffix(".gguf")
-            total_bytes = 0
-            any_found = False
-            for i in range(1, parts + 1):
-                p = target_dir / _split_part_name(stem, i, parts)
-                if p.exists():
-                    total_bytes += p.stat().st_size
-                    any_found = True
-            if not any_found:
-                return "—"
-            return f"{total_bytes // (1024 * 1024)} МБ ({parts} частей)"
-
-        p = target_dir / filename
-        if not p.exists():
+        # Split: считаем все части.
+        stem = filename.removesuffix(".gguf")
+        parts = sorted(target_dir.glob(f"{stem}-*-of-*.gguf"))
+        if not parts:
             return "—"
-        return f"{p.stat().st_size // (1024 * 1024)} МБ"
-
+        total = sum(p.stat().st_size for p in parts)
+        return f"{total // (1024*1024)} МБ ({len(parts)} частей)"
     # ---------- helpers ----------
 
     def _current_model_info(self) -> SLMModelInfo | None:

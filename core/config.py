@@ -74,6 +74,17 @@ class SLMModelInfo(BaseModel):
 
     kind="chat"  — используется как chat-модель (загружается с chat_format="chatml")
     kind="embed" — используется как embedding-модель (загружается с embedding=True)
+
+    tier — уровень мощности (0..5), определяет приоритет при автовыборе:
+        0 = микро (1.5B)      — CPU-only, ≤4 ГБ RAM
+        1 = малый (3B)         — 4 ГБ VRAM
+        2 = средний (7–9B)     — 6–8 ГБ VRAM / 16 ГБ RAM
+        3 = крупный (14B)      — 10–12 ГБ VRAM / 32 ГБ RAM
+        4 = XL (22–34B)        — 16–24 ГБ VRAM / 64 ГБ RAM
+        5 = XXL (70–72B)       — 32+ ГБ VRAM / 96+ ГБ RAM
+
+    n_ctx — тренировочный контекст модели в токенах (верхняя граница для
+        оптимизатора). 0 = взять slm.target_n_ctx как ориентир.
     """
 
     id: str
@@ -86,186 +97,245 @@ class SLMModelInfo(BaseModel):
     # Задаётся per-model, потому что маленьким моделям KV-кэш дешёв,
     # а крупным — большой n_ctx упирается в VRAM/RAM.
     n_ctx: int = 0
+    tier: int = 2
+
+    @field_validator("tier")
+    @classmethod
+    def _validate_tier(cls, v: int) -> int:
+        if not 0 <= v <= 5:
+            raise ValueError(f"tier must be 0..5, got {v}")
+        return v
 
 
 _DEFAULT_SLM_MODELS: list[dict] = [
-    # =========================================================================
-    # Компактные — для слабых машин и быстрых проб
-    # =========================================================================
-
-    # --- 1.5B — совсем слабые машины ---
+    # =====================================================================
+    # TIER 0 — микро (1.5B): CPU, ≤4 ГБ RAM
+    # =====================================================================
     {
-        "id": "qwen2.5-1.5b-instruct",
+        "id": "qwen2.5-1.5b-instruct-q4_k_m",
         "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
         "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 1.5B q4_k_m (совсем слабые машины)",
-        "size_mb": 1120,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 1.5B q4_k_m · CPU / 4 ГБ RAM",
+        "size_mb": 1120, "tier": 0, "n_ctx": 16384,
     },
-    # --- 3B — базовый рабочий класс под 4 ГБ VRAM ---
+    {
+        "id": "qwen2.5-1.5b-instruct-q8_0",
+        "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "file": "qwen2.5-1.5b-instruct-q8_0.gguf",
+        "display_name": "Qwen 2.5 1.5B q8_0 · почти без потерь",
+        "size_mb": 1750, "tier": 0, "n_ctx": 16384,
+    },
+
+    # =====================================================================
+    # TIER 1 — малые (3B): 4 ГБ VRAM
+    # =====================================================================
     {
         "id": "qwen2.5-3b-instruct-q4_k_m",
         "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
         "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 3B q4_k_m (быстрая, ~60 tok/s на 4 ГБ GPU)",
-        "size_mb": 1930,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 3B q4_k_m · 4 ГБ VRAM, ~50 tok/s",
+        "size_mb": 1930, "tier": 1, "n_ctx": 16384,
     },
     {
         "id": "qwen2.5-3b-instruct-q6_k",
         "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
         "file": "qwen2.5-3b-instruct-q6_k.gguf",
-        "display_name": "Qwen 2.5 3B q6_k ★ (лучший баланс для 4 ГБ VRAM)",
-        "size_mb": 2740,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 3B q6_k · баланс для 4 ГБ VRAM",
+        "size_mb": 2740, "tier": 1, "n_ctx": 16384,
+    },
+    {
+        "id": "qwen2.5-coder-3b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "file": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 3B q4_k_m · код, 4 ГБ VRAM",
+        "size_mb": 1930, "tier": 1, "n_ctx": 16384,
     },
     {
         "id": "qwen2.5-coder-3b-instruct-q6_k",
         "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
         "file": "qwen2.5-coder-3b-instruct-q6_k.gguf",
-        "display_name": "Qwen 2.5 Coder 3B q6_k (код, 4 ГБ VRAM)",
-        "size_mb": 2740,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 Coder 3B q6_k · код, качественнее",
+        "size_mb": 2740, "tier": 1, "n_ctx": 16384,
     },
 
-    # {
-    #     "id": "qwen2.5-3b-instruct-q6_k",
-    #     "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-    #     "file": "qwen2.5-3b-instruct-q6_k.gguf",
-    #     "display_name": "Qwen 2.5 3B q6_k (быстрая, слабые машины)",
-    #     "size_mb": 2900,
-    #     "kind": "chat",
-    #     "n_ctx": 16384,
-    # },
-    # {
-    #     "id": "qwen2.5-1.5b-instruct",
-    #     "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-    #     "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    #     "display_name": "Qwen 2.5 1.5B (совсем слабые машины)",
-    #     "size_mb": 1120,
-    #     "kind": "chat",
-    #     "n_ctx": 16384,
-    # },
-
-    # =========================================================================
-    # 7B general — базовый рабочий класс, разные квантования
-    # =========================================================================
+    # =====================================================================
+    # TIER 2 — средние (7–9B): 6–8 ГБ VRAM / 16 ГБ RAM
+    # =====================================================================
     {
-        "id": "qwen2.5-7b-instruct",
+        "id": "qwen2.5-7b-instruct-q4_k_m",
         "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
         "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 7B q4_k_m (минимум места)",
-        "size_mb": 4680,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 7B q4_k_m · минимум места",
+        "size_mb": 4680, "tier": 2, "n_ctx": 32768,
     },
     {
         "id": "qwen2.5-7b-instruct-q5_k_m",
         "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
         "file": "qwen2.5-7b-instruct-q5_k_m.gguf",
-        "display_name": "Qwen 2.5 7B q5_k_m (баланс)",
-        "size_mb": 5450,
-        "kind": "chat",
-        "n_ctx": 16384,
+        "display_name": "Qwen 2.5 7B q5_k_m · баланс",
+        "size_mb": 5450, "tier": 2, "n_ctx": 32768,
     },
     {
         "id": "qwen2.5-7b-instruct-q6_k",
         "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
         "file": "qwen2.5-7b-instruct-q6_k.gguf",
-        "display_name": "Qwen 2.5 7B q6_k ★ (лучший баланс качества/размера)",
-        "size_mb": 6300,
-        "kind": "chat",
-        "n_ctx": 16384,
+        "display_name": "Qwen 2.5 7B q6_k ★ лучшее качество",
+        "size_mb": 6300, "tier": 2, "n_ctx": 32768,
     },
     {
-        "id": "qwen2.5-7b-instruct-q8_0",
-        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "file": "qwen2.5-7b-instruct-q8_0.gguf",
-        "display_name": "Qwen 2.5 7B q8_0 (почти без потерь, много RAM)",
-        "size_mb": 8100,
-        "kind": "chat",
-        "n_ctx": 16384,
+        "id": "qwen2.5-coder-7b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "file": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 7B q4_k_m · код, компактно",
+        "size_mb": 4680, "tier": 2, "n_ctx": 32768,
     },
-
-    # =========================================================================
-    # 7B Coder — специализированные на коде
-    # =========================================================================
     {
         "id": "qwen2.5-coder-7b-instruct-q5_k_m",
         "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
         "file": "qwen2.5-coder-7b-instruct-q5_k_m.gguf",
-        "display_name": "Qwen 2.5 Coder 7B q5_k_m (лучше для кода)",
-        "size_mb": 5450,
-        "kind": "chat",
-        "n_ctx": 16384,
+        "display_name": "Qwen 2.5 Coder 7B q5_k_m · код, лучше",
+        "size_mb": 5450, "tier": 2, "n_ctx": 32768,
     },
     {
         "id": "qwen2.5-coder-7b-instruct-q6_k",
         "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
         "file": "qwen2.5-coder-7b-instruct-q6_k.gguf",
-        "display_name": "Qwen 2.5 Coder 7B q6_k ★ (оптимум для кода)",
-        "size_mb": 6300,
-        "kind": "chat",
-        "n_ctx": 16384,
-    },
-
-    # =========================================================================
-    # 14B — умнее, но требует много RAM и терпения на CPU
-    # =========================================================================
-    {
-        "id": "qwen2.5-14b-instruct",
-        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 14B q4_k_m",
-        "size_mb": 9000,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Qwen 2.5 Coder 7B q6_k ★ оптимум для кода",
+        "size_mb": 6300, "tier": 2, "n_ctx": 32768,
     },
     {
-        "id": "qwen2.5-14b-instruct-q5_k_m",
-        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        "file": "qwen2.5-14b-instruct-q5_k_m.gguf",
-        "display_name": "Qwen 2.5 14B q5_k_m (заметно умнее q4)",
-        "size_mb": 10500,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "id": "llama-3.1-8b-instruct-q4_k_m",
+        "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "display_name": "Llama 3.1 8B q4_k_m · англ., общие задачи",
+        "size_mb": 4920, "tier": 2, "n_ctx": 32768,
     },
-    {
-        "id": "qwen2.5-coder-14b-instruct-q4_k_m",
-        "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
-        "file": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
-        "display_name": "Qwen 2.5 Coder 14B q4_k_m (код + большой контекст)",
-        "size_mb": 9000,
-        "kind": "chat",
-        "n_ctx": 8192,
-    },
-
-    # =========================================================================
-    # Альтернативы — другая архитектура, иногда лучше на своих задачах
-    # =========================================================================
     {
         "id": "llama-3.1-8b-instruct-q5_k_m",
         "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
         "file": "Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf",
-        "display_name": "Llama 3.1 8B q5_k_m (хороший английский)",
-        "size_mb": 5700,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Llama 3.1 8B q5_k_m",
+        "size_mb": 5700, "tier": 2, "n_ctx": 32768,
     },
     {
         "id": "mistral-7b-instruct-v0.3-q5_k_m",
         "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
         "file": "Mistral-7B-Instruct-v0.3-Q5_K_M.gguf",
-        "display_name": "Mistral 7B v0.3 q5_k_m (быстрая, англ.)",
-        "size_mb": 5400,
-        "kind": "chat",
-        "n_ctx": 8192,
+        "display_name": "Mistral 7B v0.3 q5_k_m · быстрая, англ.",
+        "size_mb": 5400, "tier": 2, "n_ctx": 32768,
+    },
+
+    # =====================================================================
+    # TIER 3 — крупные (14B): 10–12 ГБ VRAM / 32 ГБ RAM
+    # =====================================================================
+    {
+        "id": "qwen2.5-14b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 14B q4_k_m",
+        "size_mb": 9000, "tier": 3, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-14b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 14B q5_k_m · заметно умнее q4",
+        "size_mb": 10500, "tier": 3, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-14b-instruct-q6_k",
+        "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "file": "qwen2.5-14b-instruct-q6_k.gguf",
+        "display_name": "Qwen 2.5 14B q6_k",
+        "size_mb": 12200, "tier": 3, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-coder-14b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "file": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 14B q4_k_m · код + контекст",
+        "size_mb": 9000, "tier": 3, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-coder-14b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "file": "qwen2.5-coder-14b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 14B q5_k_m ★ сильный код",
+        "size_mb": 10500, "tier": 3, "n_ctx": 32768,
+    },
+
+    # =====================================================================
+    # TIER 4 — XL (22–34B): 16–24 ГБ VRAM / 64 ГБ RAM
+    # =====================================================================
+    {
+        "id": "mistral-small-22b-instruct-q4_k_m",
+        "repo": "bartowski/mistralai_Mistral-Small-22B-Instruct-2409-GGUF",
+        "file": "Mistral-Small-22B-Instruct-2409-Q4_K_M.gguf",
+        "display_name": "Mistral Small 22B q4_k_m · 16 ГБ VRAM",
+        "size_mb": 13400, "tier": 4, "n_ctx": 32768,
+    },
+    {
+        "id": "gemma-2-27b-instruct-q4_k_m",
+        "repo": "bartowski/gemma-2-27b-it-GGUF",
+        "file": "gemma-2-27b-it-Q4_K_M.gguf",
+        "display_name": "Gemma 2 27B q4_k_m · 16 ГБ VRAM",
+        "size_mb": 16500, "tier": 4, "n_ctx": 8192,
+    },
+    {
+        "id": "qwen2.5-32b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
+        "file": "qwen2.5-32b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 32B q4_k_m · 20 ГБ VRAM",
+        "size_mb": 19500, "tier": 4, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-32b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
+        "file": "qwen2.5-32b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 32B q5_k_m · 24 ГБ VRAM",
+        "size_mb": 22500, "tier": 4, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-coder-32b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
+        "file": "qwen2.5-coder-32b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 32B q4_k_m ★ топ для кода",
+        "size_mb": 19500, "tier": 4, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-coder-32b-instruct-q5_k_m",
+        "repo": "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
+        "file": "qwen2.5-coder-32b-instruct-q5_k_m.gguf",
+        "display_name": "Qwen 2.5 Coder 32B q5_k_m",
+        "size_mb": 22500, "tier": 4, "n_ctx": 32768,
+    },
+    {
+        "id": "yi-34b-chat-q4_k_m",
+        "repo": "TheBloke/Yi-34B-Chat-GGUF",
+        "file": "yi-34b-chat.Q4_K_M.gguf",
+        "display_name": "Yi 34B Chat q4_k_m · альтернатива Qwen",
+        "size_mb": 20100, "tier": 4, "n_ctx": 4096,
+    },
+
+    # =====================================================================
+    # TIER 5 — XXL (70–72B): 32+ ГБ VRAM / 96+ ГБ RAM
+    # =====================================================================
+    {
+        "id": "llama-3.1-70b-instruct-q4_k_m",
+        "repo": "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF",
+        "file": "Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf",
+        "display_name": "Llama 3.1 70B q4_k_m · топ на 32+ ГБ VRAM",
+        "size_mb": 42500, "tier": 5, "n_ctx": 32768,
+    },
+    {
+        "id": "qwen2.5-72b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen2.5-72B-Instruct-GGUF",
+        "file": "qwen2.5-72b-instruct-q4_k_m-00001-of-00002.gguf",
+        "display_name": "Qwen 2.5 72B q4_k_m · топ качества",
+        "size_mb": 47400, "tier": 5, "n_ctx": 32768,
     },
 ]
+
 
 class SLMConfig(BaseModel):
     """Конфигурация встроенной SLM (llama.cpp)."""
@@ -286,10 +356,8 @@ class SLMConfig(BaseModel):
     def _sync_builtin_models(self) -> "SLMConfig":
         """Обновляет встроенные модели до актуального каталога.
 
-        Сохранённый в config.yaml список мог устареть (например, не знать
-        про 14B или новое n_ctx). Поэтому метаданные встроенных моделей
-        берём из кода, а пользовательские (не из ``_DEFAULT_SLM_MODELS``)
-        оставляем как есть.
+        Сохранённый в config.yaml список мог устареть. Метаданные встроенных
+        моделей берём из кода, пользовательские оставляем как есть.
         """
         default_ids = {d["id"] for d in _DEFAULT_SLM_MODELS}
         custom = [m for m in self.available_models if m.id not in default_ids]
@@ -325,11 +393,9 @@ class SLMConfig(BaseModel):
     max_tokens: int = 1024
     temperature: float = 0.7
 
-    # Желаемый n_ctx (верхняя граница при auto_tune). Оптимизатор уменьшит,
-    # если VRAM/RAM не хватает; увеличить сверх этого не будет.
-    target_n_ctx: int = 8192
+    target_n_ctx: int = 32768
 
-    # --- Embedding-модель (одна, отдельно, не участвует в выборе chat) ---
+    # --- Embedding-модель (одна, отдельно) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
     embed_model_file: str = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 
@@ -375,20 +441,7 @@ class ConfirmSettings(BaseModel):
 
 
 class BackendSettings(BaseModel):
-    """Выбор LLM-бэкендов.
-
-    enabled: явный whitelist разрешённых бэкендов. ModelRouter активирует
-        ТОЛЬКО те бэкенды, что перечислены здесь. По умолчанию — только
-        `local_slm`, чтобы приложение не подключалось к внешним сервисам
-        без явного согласия пользователя. `local_slm` всегда в списке —
-        это базовый локальный режим.
-
-    priority: порядок предпочтения СРЕДИ разрешённых бэкендов. Даже если
-        Ollama тут первый, но его нет в `enabled` — он не будет использован.
-
-    embed_backend: как считать эмбеддинги для RAG. `auto` — берётся из
-        разрешённых бэкендов (SLM в приоритете).
-    """
+    """Выбор LLM-бэкендов."""
 
     enabled: list[str] = Field(default_factory=lambda: ["local_slm"])
     priority: list[str] = Field(default_factory=lambda: ["local_slm", "ollama"])
@@ -440,7 +493,6 @@ class RerankSettings(BaseModel):
     @field_validator("top_k")
     @classmethod
     def validate_top_k(cls, v: int) -> int:
-        """top_k не меньше 1."""
         if v < 1:
             raise ValueError(f"top_k must be >= 1, got {v}")
         return v
@@ -467,119 +519,28 @@ class EmbedModels(BaseModel):
 CURRENT_SCHEMA_VERSION = "v2"
 
 LEGACY_INDEX_EXTENSIONS: list[str] = [
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".html",
-    ".css",
-    ".md",
-    ".json",
-    ".yaml",
-    ".yml",
+    ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".html", ".css", ".md", ".json", ".yaml", ".yml",
 ]
 
 DEFAULT_INDEX_EXTENSIONS: list[str] = [
-    # Python / JS / TS и веб
-    ".py",
-    ".pyi",
-    ".js",
-    ".jsx",
-    ".mjs",
-    ".cjs",
-    ".ts",
-    ".tsx",
-    ".vue",
-    ".svelte",
-    ".astro",
-    ".html",
-    ".htm",
-    ".css",
-    ".scss",
-    ".sass",
-    ".less",
-    # Текст, разметка и конфиги
-    ".md",
-    ".markdown",
-    ".rst",
-    ".txt",
-    ".csv",
-    ".json",
-    ".jsonc",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".xml",
-    ".properties",
-    # .NET
-    ".cs",
-    ".csproj",
-    ".sln",
-    ".fs",
-    ".vb",
-    ".xaml",
-    ".cshtml",
-    ".razor",
-    ".config",
-    ".resx",
-    # JVM и другие языки
-    ".java",
-    ".kt",
-    ".kts",
-    ".scala",
-    ".groovy",
-    ".gradle",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".pl",
-    ".lua",
-    ".r",
-    ".dart",
-    ".swift",
-    # C / C++
-    ".c",
-    ".h",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".hpp",
-    ".hh",
-    ".m",
-    ".mm",
-    # Скрипты, БД
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".ps1",
-    ".bat",
-    ".cmd",
-    ".sql",
+    ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte", ".astro",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".md", ".markdown", ".rst", ".txt", ".csv", ".json", ".jsonc", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".xml", ".properties",
+    ".cs", ".csproj", ".sln", ".fs", ".vb", ".xaml", ".cshtml", ".razor", ".config", ".resx",
+    ".java", ".kt", ".kts", ".scala", ".groovy", ".gradle",
+    ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".dart", ".swift",
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".m", ".mm",
+    ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
 ]
 
 
-# Ключи AppConfig, которые описывают МАШИНУ (глобальные настройки), а не проект.
-# Их нельзя переопределять локальным `.ollidesk/config.yaml`: иначе достаточно
-# оставить в проекте старый шаблон, и выбор активной SLM/бэкендов в глобальном
-# конфиге будет молча игнорироваться (что и ломало переключение 7B → 14B).
 _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
     {
-        "slm",
-        "backends",
-        "confirm",
-        "rerank",
-        "embed_models",
-        "recent_projects",
-        "wizard_dismissed",
-        "theme",
-        "last_model",
-        "last_mode",
-        "agent_max_iterations",
-        "chat_max_iterations",
+        "slm", "backends", "confirm", "rerank", "embed_models",
+        "recent_projects", "wizard_dismissed", "theme",
+        "last_model", "last_mode", "agent_max_iterations", "chat_max_iterations",
     }
 )
 
@@ -600,42 +561,14 @@ class AppConfig(BaseModel):
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [
-            ".git",
-            ".gitignore",
-            ".gitattributes",
-            "node_modules",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".cache",
-            ".tox",
-            "venv",
-            ".venv",
-            "env",
-            ".env",
-            "dist",
-            "build",
-            "target",
-            "*.egg-info",
-            ".eggs",
-            "*.pyc",
-            "*.pyo",
-            "*.pyd",
-            "*.min.js",
-            "*.min.css",
-            ".DS_Store",
-            "Thumbs.db",
-            ".ollidesk",
-            ".ollidesk/vector_db",
-            ".ollidesk/chroma",
-            ".ollidesk/*.sqlite3",
-            ".ollidesk/*.db",
-            "logs",
-            "log",
-            "tmp",
-            "temp",
-            "vendor",
+            ".git", ".gitignore", ".gitattributes", "node_modules",
+            "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+            ".cache", ".tox", "venv", ".venv", "env", ".env",
+            "dist", "build", "target", "*.egg-info", ".eggs",
+            "*.pyc", "*.pyo", "*.pyd", "*.min.js", "*.min.css",
+            ".DS_Store", "Thumbs.db", ".ollidesk", ".ollidesk/vector_db",
+            ".ollidesk/chroma", ".ollidesk/*.sqlite3", ".ollidesk/*.db",
+            "logs", "log", "tmp", "temp", "vendor",
         ]
     )
     index_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_EXTENSIONS))
@@ -654,13 +587,11 @@ class AppConfig(BaseModel):
     @field_validator("recent_projects")
     @classmethod
     def validate_recent_projects(cls, v: list[str]) -> list[str]:
-        """Не больше 10 проектов."""
         return v[:10]
 
     @field_validator("agent_max_iterations", "chat_max_iterations")
     @classmethod
     def validate_iterations(cls, v: int) -> int:
-        """Лимит итераций агента/чата не меньше 1."""
         if v < 1:
             raise ValueError(f"iterations must be >= 1, got {v}")
         return v
@@ -668,7 +599,6 @@ class AppConfig(BaseModel):
     @field_validator("max_file_size_kb")
     @classmethod
     def validate_max_file_size(cls, v: int) -> int:
-        """max_file_size_kb > 0."""
         if v <= 0:
             raise ValueError(f"max_file_size_kb must be > 0, got {v}")
         return v
@@ -678,34 +608,18 @@ class ConfigLoader:
     """Загрузчик и мержер конфигурации."""
 
     def __init__(self) -> None:
-        """Инициализация загрузчика."""
         from core.utils import get_app_data_dir
-
         self.global_config_path = get_app_data_dir() / "config.yaml"
 
     def load_config(self, project_path: Path | None = None) -> AppConfig:
-        """Загружает глобальный и локальный конфиги, мержит (локальный важнее).
-
-        Args:
-            project_path: путь к проекту (опционально)
-
-        Returns:
-            AppConfig
-
-        Raises:
-            ConfigError: если конфиг невалиден
-        """
         global_config = self._load_yaml(self.global_config_path)
-
         if project_path:
             local_config_path = project_path / ".ollidesk" / "config.yaml"
             local_config = self._load_yaml(local_config_path)
             merged_config = self._merge_configs(global_config, local_config)
         else:
             merged_config = global_config
-
         self._migrate_config(merged_config)
-
         try:
             return AppConfig(**merged_config)
         except Exception as e:
@@ -720,19 +634,15 @@ class ConfigLoader:
         """
         if config.get("schema_version") == CURRENT_SCHEMA_VERSION:
             return
-
         extensions = config.get("index_extensions")
         if extensions is None or set(extensions) == set(LEGACY_INDEX_EXTENSIONS):
             config["index_extensions"] = list(DEFAULT_INDEX_EXTENSIONS)
-
         config["schema_version"] = CURRENT_SCHEMA_VERSION
 
     def _load_yaml(self, path: Path) -> dict[str, Any]:
-        """Загружает YAML или возвращает пустой dict."""
         if not path.exists():
             logger.debug(f"Конфиг не найден: {path}")
             return {}
-
         try:
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
@@ -750,7 +660,6 @@ class ConfigLoader:
         выбор активной SLM, и переключение 7B → 14B не срабатывало.
         """
         merged = global_config.copy()
-
         for key, value in local_config.items():
             if key in _GLOBAL_ONLY_KEYS:
                 logger.debug(f"Локальный конфиг: игнорирую глобальный ключ {key!r}")
@@ -761,11 +670,9 @@ class ConfigLoader:
                 merged[key] = value
             else:
                 merged[key] = value
-
         return merged
 
     def save_config(self, config: AppConfig, project_path: Path | None = None) -> None:
-        """Сохраняет конфигурацию в YAML."""
         logger.info(
             f"💾 Сохранение конфига: last_model='{config.last_model}', "
             f"last_mode='{config.last_mode}', project_path={project_path}"
@@ -778,29 +685,19 @@ class ConfigLoader:
             self._save_yaml(config_dict, self.global_config_path)
 
     def _save_yaml(self, data: dict[str, Any], path: Path) -> None:
-        """Сохраняет данные в YAML-файл."""
         path.parent.mkdir(parents=True, exist_ok=True)
-
         try:
             with open(path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    data,
-                    f,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
             logger.info(f"Конфигурация сохранена: {path}")
         except Exception as e:
             raise ConfigError(f"Ошибка сохранения конфигурации {path}: {e}") from e
 
 
-# Глобальный загрузчик
 config_loader = ConfigLoader()
 
 
 def _detect_project_path() -> Path | None:
-    """Определяет путь к проекту по CWD."""
     cwd = Path.cwd()
     if (cwd / ".ollidesk" / "config.yaml").exists():
         return cwd
@@ -808,23 +705,17 @@ def _detect_project_path() -> Path | None:
 
 
 def load_config(project_path: Path | None = None) -> AppConfig:
-    """Обёртка загрузки конфига.
-
-    Если project_path не указан, пытается определить по CWD.
-    """
     if project_path is None:
         project_path = _detect_project_path()
     return config_loader.load_config(project_path)
 
 
 def save_config(config: AppConfig, project_path: Path | None = None) -> None:
-    """Обёртка сохранения конфига."""
     config_loader.save_config(config, project_path)
     logger.info(f"Сохранение конфига: last_model={config.last_model}, last_mode={config.last_mode}")
 
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
-    """Возвращает первую модель с указанной ролью."""
     for model in config.models:
         if role in model.roles:
             return model

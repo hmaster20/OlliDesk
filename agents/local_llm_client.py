@@ -46,11 +46,8 @@ class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
 
     Используется как fallback, когда Ollama недоступен.
-    Поддерживает стриминг, простой tool-calling через JSON-парсинг
+    Поддерживает стриминг, «мягкий» tool-calling через JSON-парсинг
     и эмбеддинги (если загружена embedding-модель).
-    Поддерживает стриминг и «мягкий» tool-calling через JSON-парсинг:
-    модель получает инструкцию в system-промпте, а её ответ проверяется
-    на наличие JSON вида {"name": ..., "arguments": {...}}.
     """
 
     def __init__(
@@ -65,25 +62,11 @@ class LocalLLMClient:
         verbose: bool = False,
         params: "OptimizedParams | None" = None,
     ):
-        """Инициализация клиента.
-
-        Args:
-            model_path: Путь к GGUF-файлу chat-модели
-            embed_model_path: Путь к GGUF-файлу embedding-модели (опционально)
-            n_ctx: Размер контекста в токенах
-            n_threads: Количество потоков CPU; 0 или меньше — определить
-                автоматически по числу физических ядер
-            n_batch: Размер батча для обработки
-            n_gpu_layers: Количество слоёв на GPU (0 = CPU-only)
-            max_tokens: Лимит генерируемых токенов на ответ по умолчанию
-            verbose: Логирование llama.cpp
-        """
         from llama_cpp import Llama
 
         self.model_path = Path(model_path)
         self.embed_model_path = Path(embed_model_path) if embed_model_path else None
 
-        # Параметры: если передан OptimizedParams — он главный.
         if params is not None:
             n_ctx = params.n_ctx
             n_threads = params.n_threads
@@ -132,7 +115,7 @@ class LocalLLMClient:
             type_k=kv_type_int,
             type_v=kv_type_int,
             verbose=verbose,
-            chat_format="chatml",  # Qwen2.5 использует ChatML
+            chat_format="chatml",
         )
         load_ms = (time.perf_counter() - load_started) * 1000
 
@@ -166,16 +149,13 @@ class LocalLLMClient:
         return self.n_ctx
 
     def cancel_request(self) -> None:
-        """Запрашивает отмену текущего стриминга."""
         self._cancel_requested = True
 
     @property
     def is_cancelled(self) -> bool:
-        """True если запрос отменён."""
         return self._cancel_requested
 
     def reset_cancel(self) -> None:
-        """Сбрасывает флаг отмены."""
         self._cancel_requested = False
 
     # --- Основной чат ---
@@ -192,26 +172,20 @@ class LocalLLMClient:
         """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
         self.reset_cancel()
 
-        # Формируем сообщения для llama.cpp (конвертация + системные инструкции)
         chat_messages = self._prepare_messages(messages, tools)
 
-        # Параметры генерации
         temperature = _DEFAULT_TEMPERATURE
         max_tokens = self.max_tokens
         if options:
             temperature = getattr(options, "temperature", _DEFAULT_TEMPERATURE)
             max_tokens = getattr(options, "num_predict", self.max_tokens)
 
-        # Обрезаем историю/контекст, чтобы промпт поместился в окно модели
-        # вместе с ответом. Иначе llama.cpp не сможет декодировать промпт.
         chat_messages = self._fit_messages(chat_messages, reserve_tokens=max_tokens + 64)
 
-        # Запускаем генерацию в отдельном потоке
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue[ChatChunk | None] = asyncio.Queue()
 
         def _safe_put(chunk: ChatChunk) -> None:
-            # Loop уже закрыт — просто игнорируем
             with contextlib.suppress(RuntimeError):
                 asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
 
@@ -225,9 +199,6 @@ class LocalLLMClient:
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
-                        # llama-cpp-python ждёт типизированные ChatCompletionRequest*Message,
-                        # а мы собираем обычные dict. Контракт совпадает по полям, поэтому
-                        # различие типов скрываем явно; при 4.8.A уйдёт вместе с MessagePart.
                         messages=cast(Any, chat_messages),
                         max_tokens=max_tokens,
                         temperature=temperature,
@@ -239,8 +210,6 @@ class LocalLLMClient:
                         if self._cancel_requested:
                             cancelled = True
                             break
-                        # ChatCompletionStreamResponse у llama-cpp-python - union, в котором
-                        # часть вариантов является str, поэтому доступ к полям только через Any.
                         choices = cast(Any, chunk).get("choices") or []
                         if not choices:
                             continue
@@ -270,7 +239,6 @@ class LocalLLMClient:
                     + f", промпт ~{prompt_chars} симв."
                 )
 
-                # Попытка распознать tool-call
                 tool_call: ToolCall | None = None
                 if tools and full_text.strip():
                     tool_call = self._parse_tool_call(full_text, tools)
@@ -291,7 +259,6 @@ class LocalLLMClient:
         thread = threading.Thread(target=_generate, daemon=True)
         thread.start()
 
-        # Читаем из очереди и отдаём
         while True:
             chunk = await queue.get()
             if chunk is None:
@@ -303,7 +270,6 @@ class LocalLLMClient:
     # --- Замеры производительности ---
 
     def _count_tokens(self, text: str) -> int:
-        """Считает токены текста: токенизатором модели, иначе ~4 симв. на токен."""
         if not text:
             return 0
         try:
@@ -312,7 +278,6 @@ class LocalLLMClient:
             return max(1, len(text) // 4)
 
     def _truncate_text(self, text: str, max_tokens: int) -> str:
-        """Обрезает текст до max_tokens по токенизатору модели."""
         if max_tokens <= 0:
             return ""
         if self._count_tokens(text) <= max_tokens:
@@ -331,9 +296,10 @@ class LocalLLMClient:
     ) -> list[dict[str, Any]]:
         """Обрезает промпт под окно контекста модели.
 
-        Системный промпт (с инструкцией по инструментам) и самые свежие
-        сообщения важнее старых: сначала выбрасываем середину диалога, затем
-        при необходимости подрезаем системный промпт и последнее сообщение.
+        ВАЖНО: reserve_tokens не может превышать половину n_ctx. Иначе
+        системный промпт уходит в ноль (был баг: при n_ctx=1024,
+        max_tokens=1024, reserve = 1088 > n_ctx → budget = 256 токенов,
+        системный промпт сжимался до ~150 токенов и терял tool-инструкции).
 
         Args:
             messages: Сообщения в формате llama.cpp.
@@ -345,7 +311,10 @@ class LocalLLMClient:
         if not messages:
             return messages
 
+        # Жёсткий лимит: половина окна под ответ, половина под промпт.
+        reserve_tokens = min(reserve_tokens, self.n_ctx // 2)
         budget = max(256, self.n_ctx - reserve_tokens)
+
         if sum(self._count_tokens(str(m.get("content") or "")) for m in messages) <= budget:
             return messages
 
@@ -356,11 +325,13 @@ class LocalLLMClient:
         system_tokens = 0
         if system is not None:
             system_tokens = self._count_tokens(str(system.get("content") or ""))
-            # Системе отдаём не больше 60% бюджета: остальное — история и ответ.
-            max_system = int(budget * 0.6)
+            # Системе отдаём до 70% бюджета: инструкции важнее истории.
+            max_system = int(budget * 0.7)
             if system_tokens > max_system:
                 system = dict(system)
-                system["content"] = self._truncate_text(str(system.get("content") or ""), max_system)
+                system["content"] = self._truncate_text(
+                    str(system.get("content") or ""), max_system
+                )
                 system_tokens = self._count_tokens(str(system["content"]))
             head = [system]
 
@@ -371,9 +342,10 @@ class LocalLLMClient:
             if used + tokens > budget:
                 if kept:
                     break
-                # Даже последнее сообщение не влезло — подрезаем его.
                 msg = dict(msg)
-                msg["content"] = self._truncate_text(str(msg.get("content") or ""), max(64, budget - used))
+                msg["content"] = self._truncate_text(
+                    str(msg.get("content") or ""), max(64, budget - used)
+                )
                 tokens = self._count_tokens(str(msg["content"]))
             kept.append(msg)
             used += tokens
@@ -382,7 +354,7 @@ class LocalLLMClient:
         result = head + kept
         logger.debug(
             f"SLM: контекст обрезан {len(messages)} → {len(result)} сообщений "
-            f"(~{used}/{budget} токенов, окно {self.n_ctx})"
+            f"(~{used}/{budget} токенов, окно {self.n_ctx}, reserve={reserve_tokens})"
         )
         return result
 
@@ -394,7 +366,6 @@ class LocalLLMClient:
         ttft_ms: float | None,
         cancelled: bool = False,
     ) -> dict[str, Any]:
-        """Собирает метрики одного запроса."""
         seconds = gen_ms / 1000
         return {
             "prompt_chars": prompt_chars,
@@ -408,26 +379,13 @@ class LocalLLMClient:
     # --- Tool-call parsing ---
 
     def _parse_tool_call(self, text: str, tools: list[Any] | None = None) -> ToolCall | None:
-        """Распознаёт tool-call в тексте ответа.
-
-        Поддерживает JSON (``{"name": ..., "arguments": {...}}``) и синтаксис
-        вызова функции (``name("arg")`` / ``name(key=value)``). Второй вариант
-        требует списка инструментов, чтобы отличить вызов от упоминания.
-        """
         calls = extract_tool_calls(text, tools)
         return calls[0] if calls else None
 
     # --- Инструкция для модели ---
 
     def _build_tool_instruction(self, tools: list[Any]) -> str:
-        """Формирует инструкцию по вызову инструментов.
-
-        Для Qwen2.5 14B (а также 7B, 3B) абстрактной инструкции «сначала
-        list_directory, потом read_file» недостаточно: модель часто
-        останавливается на первом шаге и отдаёт список файлов как ответ.
-        Поэтому здесь явные ЗАПРЕТЫ и пошаговый пример правильного поведения
-        для типичной задачи «изучи проект и нарисуй архитектуру».
-        """
+        """Формирует инструкцию по вызову инструментов."""
         lines = [
             "У тебя есть ИНСТРУМЕНТЫ. Не выдумывай данные — вызови инструмент и отвечай по его результату.",
             "",
@@ -494,12 +452,6 @@ class LocalLLMClient:
     # --- Конвертация сообщений ---
 
     def _prepare_messages(self, messages: list[ChatMessage], tools: list[Any] | None) -> list[dict[str, Any]]:
-        """Собирает сообщения для llama.cpp: конвертация + системные инструкции.
-
-        Инструкция по инструментам, форматированию и языковая директива
-        вставляются в начало системного сообщения — при обрезке контекста
-        ``_fit_messages`` сохраняет голову промпта, поэтому они не потеряются.
-        """
         chat_messages = self._convert_messages(messages)
         if tools:
             chat_messages = self._prepend_system(chat_messages, self._build_tool_instruction(tools))
@@ -508,7 +460,6 @@ class LocalLLMClient:
 
     @staticmethod
     def _prepend_system(chat_messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
-        """Добавляет текст в начало системного сообщения (или создаёт его)."""
         if chat_messages and chat_messages[0].get("role") == "system":
             chat_messages[0]["content"] = text + "\n\n" + str(chat_messages[0]["content"])
         else:
@@ -516,13 +467,6 @@ class LocalLLMClient:
         return chat_messages
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
-        """Конвертирует ChatMessage в формат llama.cpp.
-
-        - tool-сообщения превращаем в user (ChatML корректно обрабатывает
-          результаты инструмента как «внешний источник»).
-        - tool_calls от ассистента разворачиваем в текст JSON — так модель
-          видит «свой» прошлый вызов.
-        """
         result: list[dict[str, Any]] = []
         for msg in messages:
             if msg.role == "tool":
@@ -550,17 +494,10 @@ class LocalLLMClient:
     # --- Эмбеддинги ---
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
-        """Получает эмбеддинги через локальную модель.
-
-        Если embedding-модель не загружена — возвращает пустой список
-        (RAG будет отключён).
-        """
         if self.embed_llm is None:
             logger.warning("Embedding-модель не загружена, RAG недоступен")
             return []
 
-        # Локальная переменная, а не self.embed_llm: внутри вложенной функции mypy
-        # не сужает тип атрибута, проверенный выше.
         embed_llm = self.embed_llm
 
         def _embed() -> list[list[float]]:
