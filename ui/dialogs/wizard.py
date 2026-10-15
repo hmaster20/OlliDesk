@@ -173,9 +173,9 @@ class OllamaConnectionPage(QWizardPage):
         self.url_edit = QLineEdit("http://localhost:11434")
         url_layout.addWidget(self.url_edit)
 
-        check_btn = QPushButton("Проверить")
-        check_btn.clicked.connect(self._check_connection)
-        url_layout.addWidget(check_btn)
+        self.check_btn = QPushButton("Проверить")
+        self.check_btn.clicked.connect(self._check_connection)
+        url_layout.addWidget(self.check_btn)
 
         layout.addLayout(url_layout)
 
@@ -188,6 +188,22 @@ class OllamaConnectionPage(QWizardPage):
         layout.addWidget(self.progress_bar)
 
         self.registerField("ollama_url*", self.url_edit)
+
+        self.enable_check = QCheckBox(
+            "Настроить внешний сервис Ollama (необязательно)"
+        )
+        self.enable_check.setChecked(False)
+        self.enable_check.toggled.connect(self._on_enable_toggled)
+        layout.addWidget(self.enable_check)
+        self._on_enable_toggled(False)
+
+    def _on_enable_toggled(self, on: bool):
+        self.url_edit.setEnabled(on)
+        self.check_btn.setEnabled(on)
+        if not on:
+            self.status_label.setText(
+                "Используется встроенная SLM — внешние сервисы не подключаются."
+            )
 
     def _check_connection(self) -> None:
         """Проверяет подключение к Ollama."""

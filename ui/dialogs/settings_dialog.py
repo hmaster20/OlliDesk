@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -129,6 +130,8 @@ class SettingsDialog(QDialog):
         # Вкладка глобальных настроек
         self._global_tab = self._create_global_tab()
         self._tabs.addTab(self._global_tab, "Глобальные")
+
+        self._tabs.addTab(self._create_backends_tab(), "Бэкенды LLM")
 
         # Вкладка локальных (проектных) настроек
         self._local_tab = self._create_local_tab()
@@ -293,4 +296,56 @@ class SettingsDialog(QDialog):
                 with open(local_path, "w", encoding="utf-8") as f:
                     yaml.dump(local_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
+        # enabled-список
+        enabled = ["local_slm"]
+        if self._ollama_enabled_check.isChecked():
+            enabled.append("ollama")
+        self._config.backends.enabled = enabled
+
         self.accept()
+
+    def _create_backends_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel(
+            "OlliDesk по умолчанию работает <b>полностью локально</b> на "
+            "встроенной SLM-модели (llama.cpp). Внешние сервисы <b>не "
+            "подключаются автоматически</b> — включите их здесь, если хотите "
+            "использовать.<br><br>"
+            "Даже при включённом Ollama встроенная SLM остаётся приоритетной: "
+            "Ollama используется как запасной вариант, когда локальная модель "
+            "ещё не загружена."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #888; font-size: 12px; padding: 4px 4px 12px 4px;")
+        layout.addWidget(info)
+
+        self._slm_enabled_check = QCheckBox("🖥 Встроенная SLM (llama.cpp)")
+        self._slm_enabled_check.setChecked(True)
+        self._slm_enabled_check.setEnabled(False)  # всегда включена
+        self._slm_enabled_check.setToolTip("Базовый локальный режим. Всегда включён.")
+        layout.addWidget(self._slm_enabled_check)
+
+        self._ollama_enabled_check = QCheckBox("🌐 Ollama (внешний сервис)")
+        self._ollama_enabled_check.setChecked(
+            "ollama" in self._config.backends.enabled
+        )
+        self._ollama_enabled_check.setToolTip(
+            "Внешний сервис на localhost:11434. Даёт доступ к более крупным "
+            "моделям, но требует запущенного сервиса и сетевого трафика. "
+            "Отключено по умолчанию."
+        )
+        layout.addWidget(self._ollama_enabled_check)
+
+        hint = QLabel(
+            "При включении Ollama приложение начнёт опрашивать "
+            "<code>http://localhost:11434</code> при запуске, чтобы проверить "
+            "доступность. Локальная SLM остаётся основным бэкендом."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px; padding-left: 24px;")
+        layout.addWidget(hint)
+
+        layout.addStretch()
+        return tab

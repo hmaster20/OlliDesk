@@ -377,31 +377,37 @@ class ConfirmSettings(BaseModel):
 class BackendSettings(BaseModel):
     """Выбор LLM-бэкендов.
 
-    Attributes:
-        priority: Порядок предпочтения для чата. Допустимые значения —
-            ``ollama`` и ``local_slm``. Бэкенды из списка, которых нет или
-            которые недоступны, молча пропускаются; ``rule_based`` всегда
-            последний.
-        embed_backend: Как считать эмбеддинги для RAG: ``auto`` (следовать
-            активному чат-бэкенду, при неудаче пробовать остальные),
-            ``ollama`` или ``local_slm``.
+    enabled: явный whitelist разрешённых бэкендов. ModelRouter активирует
+        ТОЛЬКО те бэкенды, что перечислены здесь. По умолчанию — только
+        `local_slm`, чтобы приложение не подключалось к внешним сервисам
+        без явного согласия пользователя. `local_slm` всегда в списке —
+        это базовый локальный режим.
+
+    priority: порядок предпочтения СРЕДИ разрешённых бэкендов. Даже если
+        Ollama тут первый, но его нет в `enabled` — он не будет использован.
+
+    embed_backend: как считать эмбеддинги для RAG. `auto` — берётся из
+        разрешённых бэкендов (SLM в приоритете).
     """
 
+    enabled: list[str] = Field(default_factory=lambda: ["local_slm"])
     priority: list[str] = Field(default_factory=lambda: ["local_slm", "ollama"])
     embed_backend: str = "auto"
 
-    @field_validator("priority")
+    @field_validator("enabled")
     @classmethod
-    def validate_priority(cls, v: list[str]) -> list[str]:
-        """Только известные бэкенды, без повторов."""
+    def validate_enabled(cls, v: list[str]) -> list[str]:
         allowed = {"ollama", "local_slm"}
         unknown = [b for b in v if b not in allowed]
         if unknown:
-            raise ValueError(f"Неизвестные бэкенды в priority: {unknown}")
+            raise ValueError(f"Неизвестные бэкенды в enabled: {unknown}")
         seen: list[str] = []
-        for backend in v:
-            if backend not in seen:
-                seen.append(backend)
+        for b in v:
+            if b not in seen:
+                seen.append(b)
+        # local_slm всегда доступен — это локальный режим по умолчанию.
+        if "local_slm" not in seen:
+            seen.insert(0, "local_slm")
         return seen
 
     @field_validator("embed_backend")

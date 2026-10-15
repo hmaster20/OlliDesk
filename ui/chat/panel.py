@@ -207,10 +207,6 @@ class ChatPanel(QWidget):
     # Детект и загрузка бэкендов
     # ---------------------------------------------------------
 
-    def _detect_backends(self):
-        self._check_ollama_async()
-        self._detect_and_load_slm()
-
     def reload_slm(self):
         """Перезагружает SLM с сохранённой конфигурацией — без автовыбора.
 
@@ -332,24 +328,49 @@ class ChatPanel(QWidget):
     def _apply_backend_config(self) -> None:
         try:
             from core.config import load_config
-
             cfg = load_config()
+            self._router.set_enabled_backends(list(cfg.backends.enabled))
             self._router.set_priority(list(cfg.backends.priority))
             self._router.set_embed_backend(cfg.backends.embed_backend)
         except Exception as e:
             logger.warning(f"Не удалось применить настройки бэкендов: {e}")
         self._emit_backend_status()
 
+    def _detect_backends(self):
+        """Определяет доступность бэкендов, уважая whitelist.
+
+        Ollama проверяется только если пользователь его явно включил в
+        настройках. Иначе приложение не отправляет ни одного HTTP-запроса
+        на localhost:11434.
+        """
+        ollama_enabled = False
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            ollama_enabled = "ollama" in cfg.backends.enabled
+        except Exception:
+            pass
+
+        if ollama_enabled:
+            self._check_ollama_async()
+        else:
+            logger.info(
+                "Ollama не в enabled-списке — пропускаю проверку и автоактивацию"
+            )
+            self._router.set_ollama_available(False)
+
+        self._detect_and_load_slm()
+
     def _active_backend_label(self) -> str:
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
-            return f"Ollama: {self.get_current_model()}"
+            return f"🌐 Ollama · {self.get_current_model()}"
         if backend == BackendType.LOCAL_SLM:
             name = self._slm_model_name or "локальная модель"
-            return f"SLM: {name}"
+            return f"🖥 Локально · {name}"
         if backend == BackendType.RULE_BASED:
-            return "Резервный режим (без LLM)"
-        return "Нет доступного бэкенда"
+            return "⚠️ Резерв (без LLM)"
+        return "⛔ Нет доступного бэкенда"
 
     def _emit_backend_status(self) -> None:
         self.backend_status_changed.emit(self._active_backend_label())
@@ -361,18 +382,11 @@ class ChatPanel(QWidget):
 
     @Slot(bool)
     def _on_ollama_check_result(self, available: bool):
-        self._router.set_ollama_available(available)
-        if available:
-            self.status_label.setText("✅ Ollama подключён")
-        else:
-            if self._slm_client is not None:
-                self.status_label.setText(
-                    "✅ Локальная модель загружена (Ollama недоступен)"
-                )
-            else:
-                self.status_label.setText(
-                    "⚠️ Ollama не найден. Используется резервный режим."
-                )
+        if not available:
+            self._router.set_ollama_available(False)
+            return
+        # Ollama ответил, но это не значит, что он разрешён — router сам решит.
+        self._router.set_ollama_available(True)
         self._emit_backend_status()
 
     def _on_slm_loaded(self, client, generation: int | None = None):

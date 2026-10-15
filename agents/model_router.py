@@ -53,6 +53,7 @@ class ModelRouter:
             BackendType.LOCAL_SLM,
         ]
         self._embed_preference: BackendType | None = None
+        self._enabled: set[BackendType] = {BackendType.LOCAL_SLM}
 
     def set_ollama(self, client: LLMBackend) -> None:
         """Устанавливает Ollama-клиент."""
@@ -76,9 +77,24 @@ class ModelRouter:
         self._slm_available = available
         self._update_active()
 
+    def set_enabled_backends(self, names: list[str]) -> None:
+        """Задаёт whitelist бэкендов, которые разрешено активировать.
+
+        Бэкенды не из этого списка игнорируются, даже если физически доступны
+        (Ollama запущен, но пользователь его не включал).
+        """
+        self._enabled = {
+            _CONFIG_NAMES[name] for name in names if name in _CONFIG_NAMES
+        }
+        self._enabled.add(BackendType.LOCAL_SLM)  # локальный режим — всегда
+        logger.info(f"Разрешённые бэкенды: {[b.name for b in self._enabled]}")
+        self._update_active()
+
     def _update_active(self) -> None:
-        """Обновляет активный бэкенд."""
+        """Обновляет активный бэкенд с учётом whitelist."""
         for backend in self._priority:
+            if backend not in self._enabled:
+                continue  # пропускаем то, что не разрешено
             if backend is BackendType.OLLAMA and self._ollama_available and self._ollama:
                 self._active_backend = BackendType.OLLAMA
                 break
@@ -87,9 +103,9 @@ class ModelRouter:
                 break
         else:
             self._active_backend = (
-                BackendType.RULE_BASED if self._rule_based is not None else BackendType.NONE
+                BackendType.RULE_BASED if self._rule_based is not None
+                else BackendType.NONE
             )
-
         logger.info(f"Активный бэкенд LLM: {self._active_backend.name}")
 
     def set_priority(self, names: list[str]) -> None:
@@ -136,7 +152,8 @@ class ModelRouter:
     def _embed_order(self) -> list[BackendType]:
         """Порядок попыток для эмбеддингов."""
         available = [
-            b for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM) if self._client_for(b) is not None
+            b for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
+            if b in self._enabled and self._client_for(b) is not None
         ]
         if self._embed_preference is not None:
             available.sort(key=lambda b: b is not self._embed_preference)

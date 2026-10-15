@@ -26,6 +26,8 @@ dependencies = [
     "llama-cpp-python>=0.3.0",
     "huggingface-hub>=0.25.0",
     "hf_xet>=0.1",
+    # --- Для опроса железа ---
+    "psutil>=5.9,<6.0",
 ]
 
 [project.optional-dependencies]

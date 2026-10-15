@@ -910,7 +910,16 @@ class MainWindow(QMainWindow):
         self.backend_status_label.setText(f"● Модель: {label}")
 
     def _check_ollama_connection(self) -> None:
-        """Проверяет подключение к Ollama."""
+        """Проверяет подключение к Ollama только если он разрешён в конфиге."""
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            if "ollama" not in cfg.backends.enabled:
+                self.ollama_status_label.setText("● Ollama: выключен")
+                self.ollama_status_label.setStyleSheet("color: #888; padding: 5px;")
+                return
+        except Exception:
+            return
         QTimer.singleShot(500, self._do_check_ollama)
 
     def _do_check_ollama(self) -> None:
@@ -1361,7 +1370,13 @@ class MainWindow(QMainWindow):
         """Принудительно запускает визард настройки."""
         from ui.dialogs.wizard import SetupWizard
 
-        wizard = SetupWizard()
+        try:
+            wizard = SetupWizard()
+        except Exception as e:
+            logger.exception("Не удалось открыть визард")
+            QMessageBox.critical(self, "Ошибка визарда",
+                f"Не удалось открыть мастер настройки:\n{e}")
+            return
         if wizard.exec():
             from core.config import load_config
 
