@@ -55,6 +55,24 @@ class Phase(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Пороги «достаточно изучено»
+# ---------------------------------------------------------------------------
+
+# Порог по объёму прочитанного: если модель уже прочитала 40 КБ кода и
+# открыла точку входа — этого хватит для ответа об архитектуре. Отсекает
+# бесконечное чтение одного большого файла.
+_ENOUGH_CHARS = 40_000
+
+# Порог по числу успешных вызовов read_file (в т.ч. разных offset одного
+# файла). 10 успешных чтений с точкой входа = достаточно.
+_ENOUGH_READS = 10
+
+# Сколько раз можно прочитать ОДИН файл, прежде чем это считается
+# застреванием. На нормальный файл < 50 КБ уходит 1–3 чтения.
+_MAX_READS_PER_FILE = 5
+
+
+# ---------------------------------------------------------------------------
 # Состояние
 # ---------------------------------------------------------------------------
 
@@ -71,6 +89,11 @@ class InvestigationState:
     nudges_fired: set[str] = field(default_factory=set)
     verify_nudges_fired: int = 0
 
+    # NEW: сколько успешных read_file было ВООБЩЕ (включая повторные чтения
+    # одного файла с разными offset) и сколько раз читался каждый файл.
+    successful_reads: int = 0
+    reads_per_file: dict[str, int] = field(default_factory=dict)
+
     def note_call(
         self, name: str, arguments: dict, result_content: str, is_error: bool
     ) -> None:
@@ -82,6 +105,8 @@ class InvestigationState:
             if path:
                 norm = path.replace("\\", "/")
                 self.read_files.add(norm)
+                self.successful_reads += 1
+                self.reads_per_file[norm] = self.reads_per_file.get(norm, 0) + 1
                 if result_content and len(result_content) > 50:
                     self.read_with_content.add(norm)
                     self.total_chars_read += len(result_content)
@@ -109,14 +134,31 @@ class InvestigationState:
         return any(_is_hint(p, _CONFIG_HINTS) for p in self.read_with_content)
 
     @property
+    def stuck_on_one_file(self) -> bool:
+        """True, если модель читает ОДИН файл слишком много раз.
+
+        Типичный случай: файл 150 КБ, модель читает по 1000 символов и
+        делает 150 вызовов. Это застревание, а не исследование.
+        """
+        return any(c >= _MAX_READS_PER_FILE for c in self.reads_per_file.values())
+
+    @property
+    def max_file_reads(self) -> tuple[str, int]:
+        """Файл с максимальным числом чтений и само число (для логов/нуджей)."""
+        if not self.reads_per_file:
+            return ("", 0)
+        path = max(self.reads_per_file, key=lambda k: self.reads_per_file[k])
+        return (path, self.reads_per_file[path])
+
+    @property
     def sufficient_for_synthesis(self) -> bool:
         """Есть ли минимум доказательной базы для ответа об архитектуре.
 
-        Два уровня:
+        Условия срабатывают ЛЮБОЕ из:
           1. Полный: 4+ файла, точка входа и конфиг/README.
-          2. Смягчённый: 6+ файлов и точка входа — конфиг может отсутствовать
-             (в проекте нет README, или модель не нашла — это не повод
-             застревать в DEEP_DIVE навсегда).
+          2. Смягчённый: 6+ файлов и точка входа (конфиг не критичен).
+          3. По объёму: 40+ КБ прочитано и точка входа открыта.
+          4. По числу чтений: 10+ успешных read_file и точка входа открыта.
         """
         if (
             len(self.read_with_content) >= 4
@@ -126,6 +168,10 @@ class InvestigationState:
             return True
         if len(self.read_with_content) >= 6 and self.read_entry_point:
             return True
+        if self.total_chars_read >= _ENOUGH_CHARS and self.read_entry_point:
+            return True
+        if self.successful_reads >= _ENOUGH_READS and self.read_entry_point:
+            return True
         return False
 
     def summary(self) -> str:
@@ -133,7 +179,7 @@ class InvestigationState:
         return (
             f"каталогов просмотрено: {len(self.listed_dirs)}, "
             f"файлов прочитано: {len(self.read_with_content)} "
-            f"(~{self.total_chars_read // 1000}к символов), "
+            f"(всего {self.successful_reads} чтений, ~{self.total_chars_read // 1000}к символов), "
             f"поисков по коду: {len(self.searched_queries)}"
         )
 
@@ -189,18 +235,18 @@ def phase_for(
 ) -> Phase:
     """Определяет текущую фазу по состоянию и числу открытых гипотез.
 
-    Args:
-        state: Накопленное состояние исследования.
-        open_hypotheses: Сколько гипотез в статусе ``open``.
-        iteration: Текущая итерация цикла (0-based).
-        max_iterations: Общий лимит итераций.
-
+    Порядок проверок важен — приоритет у аварийных условий:
+      1. Застревание на одном файле → SYNTHESIS.
+      2. Мало итераций осталось → SYNTHESIS.
+      3. Дальше — обычная логика фаз.
     Returns:
         Фаза исследования.
     """
-    # Аварийное условие: подходим к лимиту итераций — принудительно
-    # переводим в SYNTHESIS, чтобы модель успела дать ответ. Иначе цикл
-    # прервётся по «повтору вызовов» или лимиту БЕЗ финального текста.
+    # (1) Застревание на одном файле — цикл не имеет смысла продолжать.
+    if state.has_deep_tools and state.stuck_on_one_file:
+        return Phase.SYNTHESIS
+
+    # (2) Аварийный переход к синтезу в конце прогона.
     if max_iterations > 0 and state.has_deep_tools:
         remaining = max_iterations - iteration
         if remaining <= 2:
@@ -235,18 +281,16 @@ _NUDGE_ENTRY = (
 )
 
 _NUDGE_CONFIG = (
-    "Ты прочитал исходники, но НЕ открыл конфиг сборки или README. "
-    "Именно там виден стек (фреймворк, БД, внешние зависимости), и без них "
-    "ты не отличишь C# от Python и Qt от Electron. Прочитай "
-    "pyproject.toml / package.json / *.csproj / README.md."
+    "Ты прочитал исходники, но НЕ открыл конфиг сборки, AGENTS.md или README. "
+    "AGENTS.md (если он есть) — курируемая сводка от автора: он важнее README, "
+    "читай его ПЕРВЫМ. Затем конфиг сборки (*.csproj / *.sln / package.json / "
+    "pyproject.toml / go.mod). Без них ты не отличишь C# от Python и Qt от WinForms."
 )
 
 _NUDGE_HYPOTHESIS_FIRST = (
     "Ты уже прочитал несколько файлов, но НЕ сформулировал ни одной гипотезы. "
     "Прежде чем читать дальше — вызови record_hypothesis с конкретным "
-    "утверждением о проекте, которое можно проверить чтением кода. Например: "
-    "«Точка входа — main.py» или «UI построен на PySide6». Потом проверь "
-    "гипотезу чтением и вызови update_hypothesis."
+    "утверждением о проекте, которое можно проверить чтением кода."
 )
 
 _NUDGE_DEPS = (
@@ -258,21 +302,27 @@ _NUDGE_DEPS = (
 
 _NUDGE_VERIFY = (
     "У тебя остались НЕПРОВЕРЕННЫЕ гипотезы (status='open' в списке выше). "
-    "Проверь их: прочитай соответствующий файл или сделай search_codebase, "
-    "и вызови update_hypothesis со статусом verified/refuted/partial и "
-    "конкретным доказательством."
+    "Проверь их: прочитай соответствующий файл и вызови update_hypothesis "
+    "со статусом verified/refuted/partial и конкретным доказательством."
+)
+
+_NUDGE_DIFFERENT_FILE = (
+    "Ты читаешь ОДИН И ТОТ ЖЕ файл много раз подряд. Это неэффективно. "
+    "Большой файл целиком читать не нужно — для понимания архитектуры хватит "
+    "ключевых фрагментов: начало (класс, поля, свойства), методы по имени "
+    "(через search_codebase), конец. Используй search_codebase для поиска "
+    "конкретных сущностей или прочитай ДРУГИЕ файлы (точка входа уже изучена). "
+    "Начинай формировать финальный ответ."
 )
 
 _NUDGE_SELFCHECK = (
-    "У тебя уже достаточно прочитанного материала и все гипотезы закрыты. "
-    "Прежде чем ответить — проверь себя честно:\n"
+    "У тебя уже достаточно прочитанного материала. Прежде чем ответить — "
+    "проверь себя честно:\n"
     "  1) Я знаю, с какого файла проект запускается?\n"
     "  2) Я знаю ключевые внешние зависимости (фреймворк, БД, API)?\n"
     "  3) Я могу описать поток данных: вход → обработка → выход?\n"
     "  4) Я могу назвать 5+ компонентов и их связи?\n"
-    "Если на любой из этих вопросов ответ «нет» — у тебя ещё есть итерации, "
-    "продолжай исследование. Если «да» — дай финальный структурированный "
-    "ответ с ASCII-схемой."
+    "Дай финальный структурированный ответ с ASCII-схемой."
 )
 
 
@@ -284,6 +334,7 @@ NUDGE_STATUS_LABELS: dict[str, str] = {
     "hypothesis_first": "💡 Прошу сформулировать гипотезу…",
     "deps": "🔁 Прошу проследить зависимости…",
     "verify_hypotheses": "🔬 Прошу проверить гипотезы…",
+    "different_file": "⏹ Прошу переключиться с одного файла…",
     "selfcheck": "🪞 Прошу самопроверку перед ответом…",
 }
 
@@ -300,6 +351,10 @@ def pick_nudge(
         return None
 
     fired = state.nudges_fired
+
+    # Высший приоритет: застревание на одном файле.
+    if "different_file" not in fired and state.stuck_on_one_file:
+        return "different_file", _NUDGE_DIFFERENT_FILE
 
     if "recon" not in fired and not state.has_deep_tools:
         return "recon", _NUDGE_RECON

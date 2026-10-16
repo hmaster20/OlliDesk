@@ -6,7 +6,6 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
-from core.context_budget import MAX_READ_FILE_CHUNK_CHARS, READ_CHUNK_CHARS
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
@@ -18,10 +17,14 @@ _SKIP_NAMES = {
 }
 
 _MAX_ENTRIES = 200
+_MAX_FILE_BYTES = 10 * 1024 * 1024
 
-# Файл больше этого размера read_file не читает целиком — модель должна
-# использовать search_codebase или работать с фрагментами через offset.
-_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 МБ
+# Границы на одну порцию чтения. Нижняя граница — ЖЁСТКАЯ: если модель
+# просит меньше, мы всё равно отдаём 4000 и говорим об этом. Иначе 7B-модель
+# будет «безопасно» просить 1000 символов и читать файл 158 КБ за 158 итераций.
+MIN_READ_CHUNK_CHARS = 4000
+MAX_READ_FILE_CHUNK_CHARS = 30000
+DEFAULT_READ_CHUNK_CHARS = 12000
 
 
 def _format_size(num_bytes: int) -> str:
@@ -45,10 +48,13 @@ def _count_entries(directory: Path) -> int:
 @tool(
     name="read_file",
     description=(
-        "Читает файл ЧАСТЯМИ. Возвращает фрагмент [offset, offset+limit] и "
-        "подсказку как дочитать остаток. Для больших файлов делай несколько "
-        "вызовов с разными offset — файл может не влезть в контекст одним "
-        "вызовом. Пример продолжения: read_file(path='big.cs', offset=8000)."
+        "Читает файл ПОРЦИЯМИ. Одна порция — до 30000 символов "
+        "(по умолчанию 12000). НЕ ставь limit < 4000 — это тратит итерации "
+        "впустую: файл 150 КБ по 1000 символов читается 150 вызовов и "
+        "практически не заканчивается. Файл такого размера целиком не нужен: "
+        "читай КЛЮЧЕВЫЕ фрагменты — начало (класс, поля), методы по имени "
+        "(через search_codebase), конец. В конце ответа приходит хинт о "
+        "продолжении. Пример: read_file(path='MainForm.cs', offset=12000)."
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
@@ -56,7 +62,7 @@ def _count_entries(directory: Path) -> int:
 def read_file(
     path: str,
     offset: int = 0,
-    limit: int = READ_CHUNK_CHARS,
+    limit: int = DEFAULT_READ_CHUNK_CHARS,
     project_root: str = "",
 ) -> str:
     """Читает фрагмент файла.
@@ -64,11 +70,12 @@ def read_file(
     Args:
         path: Путь к файлу (абсолютный или относительный).
         offset: Смещение в символах от начала файла.
-        limit: Сколько символов вернуть (не больше MAX_READ_FILE_CHUNK_CHARS).
+        limit: Сколько символов вернуть. Жёсткий диапазон
+            [MIN_READ_CHUNK_CHARS, MAX_READ_FILE_CHUNK_CHARS].
         project_root: Корень проекта для проверки безопасности.
 
     Returns:
-        Заголовок с диапазоном, hint о продолжении и сам фрагмент.
+        Заголовок с диапазоном и размером, фрагмент, hint о продолжении.
     """
     file_path = _resolve_path(path, project_root)
     if not file_path:
@@ -100,7 +107,23 @@ def read_file(
 
     total = len(content)
     start = max(0, int(offset))
-    size = max(1, min(int(limit), MAX_READ_FILE_CHUNK_CHARS))
+
+    # Жёсткая нормализация limit: если модель просит меньше минимума —
+    # округляем до минимума. Иначе 7B-модель будет «безопасно» ползти по
+    # 1000 символов и тратить 60 секунд TTFT на каждую итерацию.
+    requested = int(limit)
+    size = max(MIN_READ_CHUNK_CHARS, min(requested, MAX_READ_FILE_CHUNK_CHARS))
+    limit_note = ""
+    if requested < MIN_READ_CHUNK_CHARS:
+        limit_note = (
+            f"\n⚠️ limit={requested} < минимума {MIN_READ_CHUNK_CHARS}; "
+            f"использовано limit={size}."
+        )
+    elif requested > MAX_READ_FILE_CHUNK_CHARS:
+        limit_note = (
+            f"\n⚠️ limit={requested} > максимума {MAX_READ_FILE_CHUNK_CHARS}; "
+            f"использовано limit={size}."
+        )
 
     if start >= total:
         return (
@@ -111,16 +134,32 @@ def read_file(
     chunk = content[start : start + size]
     end = start + len(chunk)
 
-    # Заголовок: путь, диапазон, всего символов.
-    header = f"{path} [символы {start}-{end} из {total}]"
+    # Процент прочитанного — чтобы модель видела «прогресс» и не зацикливалась.
+    percent = int(100 * end / total) if total > 0 else 100
 
-    # Хинт на продолжение — КЛАДЁМ В КОНЕЦ, чтобы он выжил даже при
-    # вынужденном усечении результата в AgentLoop (там сохраняется хвост).
+    # Заголовок: путь, диапазон, всего символов, прогресс.
+    header = (
+        f"{path} [символы {start}-{end} из {total}, {percent}%]{limit_note}"
+    )
+
+    # Хинт на продолжение — в КОНЕЦ, чтобы он выжил при вынужденном
+    # усечении в AgentLoop (там сохраняется хвост результата).
     if end < total:
-        tail_hint = (
-            f"\n\nПродолжение: read_file(path={path!r}, offset={end})"
-            f"\n… ещё {total - end} символов."
-        )
+        remaining = total - end
+        # Если осталось много — настойчиво рекомендуем большой шаг или
+        # search_codebase вместо перебора.
+        if remaining > 2 * MAX_READ_FILE_CHUNK_CHARS:
+            tail_hint = (
+                f"\n\nПродолжение: read_file(path={path!r}, offset={end})."
+                f"\n⚠️ Осталось {remaining} символов. НЕ читай файл целиком — "
+                "используй search_codebase для поиска конкретных сущностей "
+                "или пропусти середину."
+            )
+        else:
+            tail_hint = (
+                f"\n\nПродолжение: read_file(path={path!r}, offset={end})."
+                f"\n… ещё {remaining} символов."
+            )
     else:
         tail_hint = "\n\n(конец файла)"
 
