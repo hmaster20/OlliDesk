@@ -1,24 +1,4 @@
-"""Состояние и фазы исследования проекта агентом.
-
-Задача — заставить 7B-модель не останавливаться на `list_directory`, а
-последовательно копать проект: обзор → точка входа/конфиг → гипотезы →
-зависимости → синтез. Управление поведением идёт тремя рычагами:
-
-1. **Фаза** (RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS) вычисляется по
-   накопленному состоянию и подмешивается в системный промпт. Пока есть
-   открытые гипотезы, фаза SYNTHESIS недостижима.
-
-2. **Градуированные нуджи** (`pick_nudge`) — если модель пытается дать
-   финальный ответ раньше времени, цикл подсовывает ровно один следующий
-   шаг.
-
-3. **Гипотезы** (`record_hypothesis` / `update_hypothesis`) — модель
-   формулирует проверяемое утверждение и закрывает его после чтения
-   доказательств.
-
-Состояние живёт отдельно от `messages`: история сжимается
-(`compact_history`), а факты о том, что прочитано, — нет.
-"""
+"""Состояние и фазы исследования проекта агентом."""
 
 from __future__ import annotations
 
@@ -32,46 +12,23 @@ from enum import Enum
 # ---------------------------------------------------------------------------
 
 _ENTRY_HINTS: tuple[str, ...] = (
-    "main.py",
-    "app.py",
-    "cli.py",
-    "__main__.py",
-    "program.cs",
-    "startup.cs",
-    "index.js",
-    "index.ts",
-    "index.jsx",
-    "index.tsx",
-    "server.py",
-    "wsgi.py",
-    "asgi.py",
-    "manage.py",
+    "main.py", "app.py", "cli.py", "__main__.py",
+    "program.cs", "startup.cs",
+    "index.js", "index.ts", "index.jsx", "index.tsx",
+    "server.py", "wsgi.py", "asgi.py", "manage.py",
 )
 
 _CONFIG_HINTS: tuple[str, ...] = (
-    "pyproject.toml",
-    "requirements.txt",
-    "setup.py",
-    "setup.cfg",
-    "package.json",
-    "tsconfig.json",
-    "cargo.toml",
-    "go.mod",
-    "pom.xml",
-    "build.gradle",
-    "makefile",
-    "dockerfile",
-    "docker-compose.yml",
-    "*.csproj",
-    "*.sln",
-    "readme.md",
-    "readme.rst",
-    "agents.md",
+    "pyproject.toml", "requirements.txt", "setup.py", "setup.cfg",
+    "package.json", "tsconfig.json", "cargo.toml", "go.mod",
+    "pom.xml", "build.gradle", "makefile", "dockerfile",
+    "docker-compose.yml", "*.csproj", "*.sln",
+    "readme.md", "readme.rst", "agents.md",
 )
 
 
 def _is_hint(path: str, hints: tuple[str, ...]) -> bool:
-    """True, если basename пути совпадает с подсказкой (или её wildcard-формой)."""
+    """True, если basename пути совпадает с подсказкой."""
     low = path.lower()
     base = low.rsplit("/", 1)[-1]
     for h in hints:
@@ -104,11 +61,7 @@ class Phase(str, Enum):
 
 @dataclass
 class InvestigationState:
-    """Что агент уже изучил в текущем прогоне.
-
-    Отдельно от `messages`: история может сжиматься (`compact_history`),
-    а эти факты — нет. Именно они определяют, «дозрел» ли агент до ответа.
-    """
+    """Что агент уже изучил в текущем прогоне."""
 
     listed_dirs: set[str] = field(default_factory=set)
     read_files: set[str] = field(default_factory=set)
@@ -116,18 +69,12 @@ class InvestigationState:
     searched_queries: list[str] = field(default_factory=list)
     total_chars_read: int = 0
     nudges_fired: set[str] = field(default_factory=set)
-    # Счётчик нуджей verify_hypotheses: даём до 2 попыток, потом сдаёмся.
     verify_nudges_fired: int = 0
-
-    # --- наблюдатели ---
 
     def note_call(
         self, name: str, arguments: dict, result_content: str, is_error: bool
     ) -> None:
-        """Запоминает успешный вызов инструмента.
-
-        Ошибки игнорируются: неудачное чтение — не доказательство изучения.
-        """
+        """Запоминает успешный вызов инструмента."""
         if is_error:
             return
         if name == "read_file":
@@ -146,8 +93,6 @@ class InvestigationState:
             if query:
                 self.searched_queries.append(query)
 
-    # --- оценки «глубины» ---
-
     @property
     def has_deep_tools(self) -> bool:
         """Прочитан хотя бы один файл или сделан поиск по коду."""
@@ -165,15 +110,26 @@ class InvestigationState:
 
     @property
     def sufficient_for_synthesis(self) -> bool:
-        """Есть ли минимум доказательной базы для ответа об архитектуре."""
-        return (
+        """Есть ли минимум доказательной базы для ответа об архитектуре.
+
+        Два уровня:
+          1. Полный: 4+ файла, точка входа и конфиг/README.
+          2. Смягчённый: 6+ файлов и точка входа — конфиг может отсутствовать
+             (в проекте нет README, или модель не нашла — это не повод
+             застревать в DEEP_DIVE навсегда).
+        """
+        if (
             len(self.read_with_content) >= 4
             and self.read_entry_point
             and self.read_config
-        )
+        ):
+            return True
+        if len(self.read_with_content) >= 6 and self.read_entry_point:
+            return True
+        return False
 
     def summary(self) -> str:
-        """Короткая сводка для инъекции в промпт — модель видит свой путь."""
+        """Короткая сводка для инъекции в промпт."""
         return (
             f"каталогов просмотрено: {len(self.listed_dirs)}, "
             f"файлов прочитано: {len(self.read_with_content)} "
@@ -182,7 +138,7 @@ class InvestigationState:
         )
 
     def read_files_preview(self, limit: int = 10) -> str:
-        """Список прочитанных файлов (для промпта) с усечением."""
+        """Список прочитанных файлов (для промпта)."""
         if not self.read_with_content:
             return "(пока ни одного)"
         items = sorted(self.read_with_content)
@@ -224,8 +180,32 @@ def is_research_question(text: str) -> bool:
     return bool(_RESEARCH_TRIGGERS.search(text))
 
 
-def phase_for(state: InvestigationState, open_hypotheses: int = 0) -> Phase:
-    """Определяет текущую фазу по состоянию и числу открытых гипотез."""
+def phase_for(
+    state: InvestigationState,
+    open_hypotheses: int = 0,
+    *,
+    iteration: int = 0,
+    max_iterations: int = 0,
+) -> Phase:
+    """Определяет текущую фазу по состоянию и числу открытых гипотез.
+
+    Args:
+        state: Накопленное состояние исследования.
+        open_hypotheses: Сколько гипотез в статусе ``open``.
+        iteration: Текущая итерация цикла (0-based).
+        max_iterations: Общий лимит итераций.
+
+    Returns:
+        Фаза исследования.
+    """
+    # Аварийное условие: подходим к лимиту итераций — принудительно
+    # переводим в SYNTHESIS, чтобы модель успела дать ответ. Иначе цикл
+    # прервётся по «повтору вызовов» или лимиту БЕЗ финального текста.
+    if max_iterations > 0 and state.has_deep_tools:
+        remaining = max_iterations - iteration
+        if remaining <= 2:
+            return Phase.SYNTHESIS
+
     if not state.has_deep_tools:
         return Phase.RECON
     if not state.sufficient_for_synthesis:
@@ -266,8 +246,7 @@ _NUDGE_HYPOTHESIS_FIRST = (
     "Прежде чем читать дальше — вызови record_hypothesis с конкретным "
     "утверждением о проекте, которое можно проверить чтением кода. Например: "
     "«Точка входа — main.py» или «UI построен на PySide6». Потом проверь "
-    "гипотезу чтением и вызови update_hypothesis. Гипотеза нужна, чтобы "
-    "чтение было осмысленным, а не «файл за файлом»."
+    "гипотезу чтением и вызови update_hypothesis."
 )
 
 _NUDGE_DEPS = (
@@ -281,8 +260,7 @@ _NUDGE_VERIFY = (
     "У тебя остались НЕПРОВЕРЕННЫЕ гипотезы (status='open' в списке выше). "
     "Проверь их: прочитай соответствующий файл или сделай search_codebase, "
     "и вызови update_hypothesis со статусом verified/refuted/partial и "
-    "конкретным доказательством. Пока есть открытые гипотезы, финальный "
-    "ответ преждевременен — это структурный гейт, а не рекомендация."
+    "конкретным доказательством."
 )
 
 _NUDGE_SELFCHECK = (
@@ -293,12 +271,12 @@ _NUDGE_SELFCHECK = (
     "  3) Я могу описать поток данных: вход → обработка → выход?\n"
     "  4) Я могу назвать 5+ компонентов и их связи?\n"
     "Если на любой из этих вопросов ответ «нет» — у тебя ещё есть итерации, "
-    "продолжай исследование (read_file / search_codebase). Если «да» — дай "
-    "финальный структурированный ответ с ASCII-схемой."
+    "продолжай исследование. Если «да» — дай финальный структурированный "
+    "ответ с ASCII-схемой."
 )
 
 
-# Человекочитаемые статусы для UI (используются в on_status)
+# Человекочитаемые статусы для UI
 NUDGE_STATUS_LABELS: dict[str, str] = {
     "recon": "🔁 Прошу прочитать ключевые файлы…",
     "entry": "🔁 Прошу найти точку входа…",
@@ -317,22 +295,7 @@ def pick_nudge(
     open_hypotheses: int = 0,
     hypotheses_available: bool = False,
 ) -> tuple[str, str] | None:
-    """Выбирает следующий нудж по состоянию.
-
-    Возвращает ``(ключ, текст)`` или ``None``, если нуджей больше нет.
-
-    Порядок проверок задаёт приоритет:
-      1. recon — «совсем ничего не прочитал»;
-      2. entry — «нет точки входа»;
-      3. config — «нет конфига/README»;
-      4. hypothesis_first — «2+ файла, 0 гипотез»;
-      5. deps — «2–4 файла, зависимости не прослежены»;
-      6. verify_hypotheses — «есть открытые гипотезы» (до 2 попыток);
-      7. selfcheck — «достаточно данных, гипотезы закрыты, проверь себя».
-
-    Каждый нудж срабатывает один раз за прогон, кроме verify_hypotheses —
-    он даёт до двух попыток.
-    """
+    """Выбирает следующий нудж по состоянию."""
     if not research_mode:
         return None
 
@@ -347,8 +310,6 @@ def pick_nudge(
     if "config" not in fired and state.has_deep_tools and not state.read_config:
         return "config", _NUDGE_CONFIG
 
-    # Гипотеза записана хотя бы одна? Считаем по явному факту:
-    # если open_hypotheses > 0, значит запись была (иначе откуда open).
     has_recorded = open_hypotheses > 0 or "hypothesis_first" in fired
 
     if (

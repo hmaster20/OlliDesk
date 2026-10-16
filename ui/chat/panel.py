@@ -1881,6 +1881,18 @@ class ChatPanel(QWidget):
             summary = self._last_research_summary
             if summary:
                 summary["final_answer"] = self._pending_final_answer
+                # Если финального текста нет — добавляем явную плашку.
+                # Раньше паспорт показывался с пустым разделом «Выводы»,
+                # и пользователь не понимал, что произошло.
+                if not (summary["final_answer"] or "").strip():
+                    reason = (result or "").strip() or "финальный синтез не был сформирован"
+                    summary["final_answer"] = (
+                        "⚠️ **Финальный синтез не был сформирован.**\n\n"
+                        f"Служебное сообщение агента: {reason}\n\n"
+                        "Ниже — доказательная база (что успел прочитать агент) "
+                        "и список гипотез. Попробуйте переформулировать вопрос "
+                        "или увеличьте лимит итераций агента."
+                    )
                 if self._should_show_passport(summary):
                     self._show_research_passport(summary)
 

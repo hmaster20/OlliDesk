@@ -6,40 +6,22 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
+from core.context_budget import MAX_READ_FILE_CHUNK_CHARS, READ_CHUNK_CHARS
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
-    ".git",
-    ".svn",
-    ".hg",
-    ".vs",
-    ".vscode",
-    ".idea",
-    ".gradle",
-    ".next",
-    ".nuxt",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".cache",
-    ".tox",
-    "venv",
-    ".venv",
-    "env",
-    ".env",
-    "bin",
-    "obj",
-    "dist",
-    "build",
-    "target",
-    "TestResults",
-    "htmlcov",
+    ".git", ".svn", ".hg", ".vs", ".vscode", ".idea", ".gradle", ".next",
+    ".nuxt", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".cache", ".tox", "venv", ".venv", "env", ".env",
+    "bin", "obj", "dist", "build", "target", "TestResults", "htmlcov",
     "coverage",
 }
 
 _MAX_ENTRIES = 200
+
+# Файл больше этого размера read_file не читает целиком — модель должна
+# использовать search_codebase или работать с фрагментами через offset.
+_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 МБ
 
 
 def _format_size(num_bytes: int) -> str:
@@ -62,19 +44,31 @@ def _count_entries(directory: Path) -> int:
 
 @tool(
     name="read_file",
-    description="Читает содержимое файла по указанному пути",
+    description=(
+        "Читает файл ЧАСТЯМИ. Возвращает фрагмент [offset, offset+limit] и "
+        "подсказку как дочитать остаток. Для больших файлов делай несколько "
+        "вызовов с разными offset — файл может не влезть в контекст одним "
+        "вызовом. Пример продолжения: read_file(path='big.cs', offset=8000)."
+    ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
-def read_file(path: str, project_root: str = "") -> str:
-    """Читает файл и возвращает его содержимое.
+def read_file(
+    path: str,
+    offset: int = 0,
+    limit: int = READ_CHUNK_CHARS,
+    project_root: str = "",
+) -> str:
+    """Читает фрагмент файла.
 
     Args:
-        path: Путь к файлу (абсолютный или относительный)
-        project_root: Корень проекта для проверки безопасности
+        path: Путь к файлу (абсолютный или относительный).
+        offset: Смещение в символах от начала файла.
+        limit: Сколько символов вернуть (не больше MAX_READ_FILE_CHUNK_CHARS).
+        project_root: Корень проекта для проверки безопасности.
 
     Returns:
-        Содержимое файла
+        Заголовок с диапазоном, hint о продолжении и сам фрагмент.
     """
     file_path = _resolve_path(path, project_root)
     if not file_path:
@@ -87,13 +81,51 @@ def read_file(path: str, project_root: str = "") -> str:
         return f"Это не файл: {file_path}"
 
     try:
+        size_bytes = file_path.stat().st_size
+    except OSError as e:
+        return f"Ошибка доступа: {file_path} ({e})"
+
+    if size_bytes > _MAX_FILE_BYTES:
+        return (
+            f"Файл слишком большой для read_file ({_format_size(size_bytes)}). "
+            "Используй search_codebase или grep-подобный поиск."
+        )
+
+    try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
-        logger.debug(f"Прочитан файл: {file_path} ({len(content)} символов)")
-        return content
     except PermissionError:
         return f"Ошибка доступа: {file_path}"
     except Exception as e:
         return f"Ошибка чтения файла: {e}"
+
+    total = len(content)
+    start = max(0, int(offset))
+    size = max(1, min(int(limit), MAX_READ_FILE_CHUNK_CHARS))
+
+    if start >= total:
+        return (
+            f"Смещение {start} за пределами файла {path} "
+            f"(всего {total} символов)."
+        )
+
+    chunk = content[start : start + size]
+    end = start + len(chunk)
+
+    # Заголовок: путь, диапазон, всего символов.
+    header = f"{path} [символы {start}-{end} из {total}]"
+
+    # Хинт на продолжение — КЛАДЁМ В КОНЕЦ, чтобы он выжил даже при
+    # вынужденном усечении результата в AgentLoop (там сохраняется хвост).
+    if end < total:
+        tail_hint = (
+            f"\n\nПродолжение: read_file(path={path!r}, offset={end})"
+            f"\n… ещё {total - end} символов."
+        )
+    else:
+        tail_hint = "\n\n(конец файла)"
+
+    logger.debug(f"read_file: {file_path} [{start}:{end}] из {total}")
+    return f"{header}\n\n{chunk}{tail_hint}"
 
 
 @tool(
@@ -107,19 +139,7 @@ def read_file(path: str, project_root: str = "") -> str:
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 def list_directory(path: str, project_root: str = "") -> str:
-    """Возвращает содержимое директории в виде дерева одного уровня.
-
-    Служебные каталоги и файлы отфильтровываются, чтобы модель видела только
-    значимую структуру проекта. Если ``path`` указывает прямо на служебный
-    каталог, его содержимое всё равно показывается.
-
-    Args:
-        path: Путь к директории (абсолютный или относительный).
-        project_root: Корень проекта для проверки безопасности.
-
-    Returns:
-        Список подкаталогов/файлов с размерами или сообщение об ошибке.
-    """
+    """Возвращает содержимое директории в виде дерева одного уровня."""
     dir_path = _resolve_path(path, project_root)
     if not dir_path:
         return "Ошибка: путь вне допустимой директории"
@@ -182,15 +202,7 @@ def list_directory(path: str, project_root: str = "") -> str:
     modes=[AgentMode.AGENT],
 )
 def write_file(path: str, content: str, project_root: str = "") -> str:
-    """Записывает содержимое в файл.
-    Перед записью создаёт Git-снапшот (stash) для возможности отката.
-    Args:
-        path: Путь к файлу (абсолютный или относительный)
-        content: Содержимое для записи
-        project_root: Корень проекта
-    Returns:
-        Сообщение о результате
-    """
+    """Записывает содержимое в файл."""
     file_path = _resolve_path(path, project_root)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
@@ -202,7 +214,6 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
         if project_root:
             repo_path = Path(project_root)
             try:
-                # Не создаём снапшот, если содержимое не изменится
                 if file_path.exists():
                     try:
                         existing = file_path.read_text(encoding="utf-8", errors="replace")
@@ -212,7 +223,9 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
                         return f"Файл не изменился: {file_path.name}"
             except Exception:
                 pass
-            snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
+            snapshot_status = create_snapshot(
+                repo_path, message=f"Before agent write: {file_path.name}"
+            )
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
         if snapshot_status:
@@ -228,13 +241,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
 
 
 def _resolve_path(path: str, project_root: str) -> Path | None:
-    """Безопасно резолвит путь, не давая выйти за пределы project_root.
-    Args:
-        path: Запрашиваемый путь
-        project_root: Корень проекта
-    Returns:
-        Path или None, если путь вне допустимой зоны
-    """
+    """Безопасно резолвит путь, не давая выйти за пределы project_root."""
     p = Path(path)
     if p.is_absolute():
         resolved = p.resolve()
@@ -249,7 +256,6 @@ def _resolve_path(path: str, project_root: str) -> Path | None:
             rel = resolved.relative_to(root)
         except ValueError:
             return None
-        # Запрещаем запись/доступ к служебным каталогам репозитория/проекта
         parts = rel.parts
         if any(part in (".git", ".ollidesk") for part in parts):
             return None
