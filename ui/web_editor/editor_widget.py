@@ -16,8 +16,12 @@ from PySide6.QtWidgets import (
     QTabBar,
     QVBoxLayout,
     QWidget,
+    QMenu,
 )
+import subprocess
+import sys
 
+from PySide6.QtGui import QGuiApplication
 from core.utils import get_resource_path
 
 
@@ -101,6 +105,8 @@ class EditorWidget(QWidget):
         )
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabCloseRequested.connect(self._on_tab_close_requested)
+        self.tab_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_bar.customContextMenuRequested.connect(self._on_tab_context_menu)
 
         tab_row = QHBoxLayout()
         tab_row.setContentsMargins(0, 0, 0, 0)
@@ -215,6 +221,181 @@ class EditorWidget(QWidget):
         self._dirty[file_path] = is_dirty
         idx = self._open_files.index(file_path)
         self.tab_bar.setTabText(idx, self._tab_title(file_path))
+
+    # ------------------------------------------------------------------
+    # Контекстное меню вкладок (Notepad++-стиль)
+    # ------------------------------------------------------------------
+
+    @Slot(object)
+    def _on_tab_context_menu(self, pos) -> None:
+        """Показывает меню для вкладки, по которой кликнули правой кнопкой."""
+        clicked_index = self.tab_bar.tabAt(pos)
+        if clicked_index < 0:
+            # Правый клик по пустому месту — только «Закрыть все».
+            menu = QMenu(self)
+            act_close_all = menu.addAction("Закрыть все вкладки")
+            act_close_all.setEnabled(self.tab_bar.count() > 0)
+            if menu.exec(self.tab_bar.mapToGlobal(pos)) is act_close_all:
+                self._close_all_tabs_confirm()
+            return
+
+        # Синхронизируем текущую вкладку с той, по которой кликнули.
+        if clicked_index != self.tab_bar.currentIndex():
+            self.tab_bar.setCurrentIndex(clicked_index)
+
+        menu = QMenu(self)
+
+        act_save = menu.addAction("💾 Сохранить")
+        act_save.setShortcut("Ctrl+S")
+        act_save.setEnabled(self._dirty.get(self.current_file or "", False))
+
+        menu.addSeparator()
+
+        act_close = menu.addAction("✕ Закрыть")
+        act_close.setShortcut("Ctrl+W")
+
+        act_close_left = menu.addAction("Закрыть все слева")
+        act_close_left.setEnabled(clicked_index > 0)
+
+        act_close_right = menu.addAction("Закрыть все справа")
+        act_close_right.setEnabled(clicked_index < self.tab_bar.count() - 1)
+
+        act_close_others = menu.addAction("Закрыть остальные")
+        act_close_others.setEnabled(self.tab_bar.count() > 1)
+
+        act_close_all = menu.addAction("Закрыть все")
+        act_close_all.setShortcut("Ctrl+Shift+W")
+
+        menu.addSeparator()
+
+        act_copy_path = menu.addAction("📋 Скопировать путь")
+        act_reveal = menu.addAction("📂 Открыть расположение файла")
+
+        chosen = menu.exec(self.tab_bar.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_save:
+            self._save_current_tab()
+        elif chosen is act_close:
+            self._on_tab_close_requested(clicked_index)
+        elif chosen is act_close_left:
+            self._close_tabs_to_left(clicked_index)
+        elif chosen is act_close_right:
+            self._close_tabs_to_right(clicked_index)
+        elif chosen is act_close_others:
+            self._close_tabs_others(clicked_index)
+        elif chosen is act_close_all:
+            self._close_all_tabs_confirm()
+        elif chosen is act_copy_path:
+            self._copy_current_path()
+        elif chosen is act_reveal:
+            self._reveal_current_in_explorer()
+
+    def _save_current_tab(self) -> None:
+        if not isinstance(self.web_view, QWebEngineView):
+            return
+        self.web_view.page().runJavaScript("saveFile()")
+
+    def _copy_current_path(self) -> None:
+        if not self.current_file:
+            return
+        QGuiApplication.clipboard().setText(self.current_file)
+
+    def _reveal_current_in_explorer(self) -> None:
+        """Открывает расположение файла в системном проводнике."""
+        if not self.current_file:
+            return
+        path = Path(self.current_file)
+        if not path.exists():
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", str(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path.parent)])
+        except Exception as e:
+            logger.warning(f"Не удалось открыть проводник: {e}")
+
+    def _close_tabs_to_left(self, upto_index: int) -> None:
+        """Закрывает вкладки с 0 по `upto_index - 1` (не трогая саму вкладку)."""
+        for i in range(upto_index - 1, -1, -1):
+            self._close_tab_no_prompt(i)
+
+    def _close_tabs_to_right(self, from_index: int) -> None:
+        """Закрывает вкладки после `from_index` (не трогая саму вкладку)."""
+        for i in range(self.tab_bar.count() - 1, from_index, -1):
+            self._close_tab_no_prompt(i)
+
+    def _close_tabs_others(self, keep_index: int) -> None:
+        """Закрывает все вкладки, кроме `keep_index`."""
+        for i in range(self.tab_bar.count() - 1, -1, -1):
+            if i != keep_index:
+                self._close_tab_no_prompt(i)
+
+    def _close_all_tabs_confirm(self) -> None:
+        dirty = [p for p, d in self._dirty.items() if d]
+        if dirty:
+            reply = QMessageBox.question(
+                self,
+                "Несохранённые изменения",
+                f"{len(dirty)} файл(ов) содержат несохранённые изменения.\n"
+                "Закрыть всё без сохранения?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.close_all_tabs()
+
+    def _close_tab_no_prompt(self, index: int) -> None:
+        """Закрывает вкладку без диалога (для «закрыть слева/справа/остальные»)."""
+        if index < 0 or index >= len(self._open_files):
+            return
+        file_path = self._open_files[index]
+        if isinstance(self.web_view, QWebEngineView):
+            escaped = json.dumps(file_path)
+            self.web_view.page().runJavaScript(f"closeFile({escaped})")
+        self.tab_bar.removeTab(index)
+        self._open_files.pop(index)
+        self._dirty.pop(file_path, None)
+
+    # ------------------------------------------------------------------
+    # Хуки для файловых операций из дерева проекта
+    # ------------------------------------------------------------------
+
+    def rename_open_file(self, old_path: str, new_path: str) -> None:
+        """Вызывается из дерева при переименовании: обновляет вкладку и JS."""
+        old = str(Path(old_path).resolve())
+        new = str(Path(new_path).resolve())
+        if old not in self._open_files:
+            return
+        idx = self._open_files.index(old)
+        self._open_files[idx] = new
+        self.tab_bar.setTabData(idx, new)
+        self.tab_bar.setTabText(idx, self._tab_title(new))
+        self._dirty[new] = self._dirty.pop(old, False)
+        if self.current_file == old:
+            self.current_file = new
+        if isinstance(self.web_view, QWebEngineView):
+            self.web_view.page().runJavaScript(
+                f"renameOpenFile({json.dumps(old)}, {json.dumps(new)})"
+            )
+
+    def close_file_silently(self, path: str) -> None:
+        """Закрывает вкладку файла (например, после удаления). Без диалога."""
+        target = str(Path(path).resolve())
+        if target not in self._open_files:
+            return
+        idx = self._open_files.index(target)
+        if isinstance(self.web_view, QWebEngineView):
+            self.web_view.page().runJavaScript(f"closeFile({json.dumps(target)})")
+        self.tab_bar.removeTab(idx)
+        self._open_files.pop(idx)
+        self._dirty.pop(target, None)
+        if self.current_file == target:
+            self.current_file = None
+
 
     # ------------------------------------------------------------------
     # Bridge slots

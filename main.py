@@ -72,10 +72,21 @@ qInstallMessageHandler(qt_message_handler)
 
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
-    logger.error("Необработанное исключение:")
-    logger.error("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
-    # Можно показать диалог с ошибкой
+    """Единая точка необработанных исключений.
 
+    Использует `logger.opt(exception=...)` вместо ручного
+    `traceback.format_exception`: Loguru сам построит трейсбек и не упадёт
+    на нестандартных объектах, которые PySide6 иногда передаёт в excepthook
+    (например, когда слот Qt бросил исключение из фонового контекста).
+    """
+    if exc_type is None and exc_value is None and exc_tb is None:
+        # PySide6 иногда вызывает excepthook "пустым" при завершении —
+        # не засоряем лог шумом.
+        logger.debug("global_exception_handler: получен пустой вызов (PySide6)")
+        return
+    logger.opt(exception=(exc_type, exc_value, exc_tb)).error(
+        "Необработанное исключение"
+    )
 
 sys.excepthook = global_exception_handler
 

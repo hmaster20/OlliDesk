@@ -1,4 +1,12 @@
-"""Кастомный делегат для подсветки Git-статуса в дереве файлов."""
+"""Кастомный делегат для подсветки Git-статуса в дереве файлов.
+
+Изменения относительно предыдущей версии:
+* Починен критический баг: `parent.viewport` — это метод, а не свойство.
+  Раньше `_do_refresh` падал с AttributeError и ломал paint-цикл дерева.
+* Ветка теперь умеет показывать тег: если HEAD стоит ровно на теге —
+  показывается имя тега, а не короткий хеш.
+* Рядом с именем файла рисуется буква статуса (M/A/D/R/C/U/I), как в VS Code.
+"""
 
 from __future__ import annotations
 
@@ -27,31 +35,38 @@ _GIT_COLORS: dict[str, QColor] = {
     "!": QColor("#5c6370"),   # ignored — серый
 }
 
+# Отображаемая буква для каждого XY-статуса (для показа рядом с именем).
+_GIT_LETTERS: dict[str, str] = {
+    "M": "M",
+    "A": "A",
+    "D": "D",
+    "R": "R",
+    "C": "C",
+    "U": "U",
+    "?": "U",  # untracked
+    "!": "I",  # ignored
+}
+
 
 class GitStatusDelegate(QStyledItemDelegate):
-    """Делегат, окрашивающий имена файлов по Git-статусу.
-
-    Цвета:
-      - Зелёный  — новые (untracked) или добавленные (staged)
-      - Красный  — изменённые (modified, unstaged)
-      - Оранжевый — переименованные / скопированные
-      - Серый    — без изменений (committed)
-    """
+    """Делегат, окрашивающий имена файлов по Git-статусу."""
 
     branch_changed = Signal(str)
 
     def __init__(self, parent: QTreeView | None = None) -> None:
         super().__init__(parent)
+        # Храним прямую ссылку на виджет — не полагаемся на self.parent(),
+        # потому что в связке через QTreeView parent может быть None,
+        # а getattr по имени легко вернуть метод вместо атрибута.
+        self._view: QTreeView | None = parent
         self._repo_path: str | None = None
         self._status_map: dict[str, str] = {}
         self._branch: str = ""
 
-        # Дебаунс для ручного refresh().
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self._do_refresh)
 
-        # Периодический опрос, пока виджет жив.
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(5000)
         self._poll_timer.timeout.connect(self._do_refresh)
@@ -59,6 +74,10 @@ class GitStatusDelegate(QStyledItemDelegate):
     # ------------------------------------------------------------------
     # Публичный API
     # ------------------------------------------------------------------
+
+    def set_view(self, view: QTreeView) -> None:
+        """Позволяет переопределить виджет-владелец (после reload дерева)."""
+        self._view = view
 
     def set_repo_path(self, path: str | None) -> None:
         self._repo_path = path
@@ -105,62 +124,102 @@ class GitStatusDelegate(QStyledItemDelegate):
         return result.stdout
 
     def _read_branch(self) -> str:
-        out = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
-        if out:
-            branch = out.strip()
+        """Текущая ветка / тег / short-hash.
+
+        Приоритет:
+          1. Если HEAD стоит ровно на теге — показываем тег (например, `v0.1.2`).
+          2. Если мы на обычной ветке — её имя.
+          3. Иначе (detached HEAD без точного тега) — `describe --tags` (ближайший
+             тег + hash), либо короткий hash.
+        """
+        tag = self._run_git("describe", "--tags", "--exact-match", "HEAD")
+        if tag and tag.strip():
+            return tag.strip()
+
+        ref = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        if ref:
+            branch = ref.strip()
             if branch and branch != "HEAD":
                 return branch
-        # Detached HEAD
-        out = self._run_git("rev-parse", "--short", "HEAD")
-        return f"({out.strip()})" if out else ""
+
+        described = self._run_git("describe", "--tags", "--always", "--abbrev=7")
+        if described and described.strip():
+            return described.strip()
+
+        short = self._run_git("rev-parse", "--short", "HEAD")
+        return f"({short.strip()})" if short else ""
 
     def _do_refresh(self) -> None:
-        self._status_map.clear()
+        """Точка входа обоих таймеров. Любая ошибка — в лог, не наружу."""
+        try:
+            self._status_map.clear()
 
-        parent = cast(QTreeView, self.parent())
+            if not self._repo_path:
+                self._update_viewport()
+                return
 
-        if not self._repo_path:
-            if parent:
-                parent.viewport().update()
-            return
+            # --- Ветка ---
+            try:
+                branch = self._read_branch()
+            except Exception:
+                logger.debug("GitStatusDelegate: чтение ветки упало", exc_info=True)
+                branch = ""
 
-        # Ветка
-        branch = self._read_branch()
-        if branch != self._branch:
-            self._branch = branch
-            self.branch_changed.emit(branch)
-
-        # Статусы: обычный porcelain (без -z), --untracked-files=all даёт
-        # перечисление каждого untracked-файла, а не только каталога.
-        out = self._run_git(
-            "status", "--porcelain", "--untracked-files=all"
-        )
-        if out is None:
-            if parent:
-                parent.viewport().update()
-            return
-
-        for line in out.splitlines():
-            if len(line) < 4:
-                continue
-            xy = line[:2]
-            path = line[3:]
-
-            # Rename / copy: "R  old -> new" — берём новый путь.
-            if " -> " in path:
-                path = path.split(" -> ", 1)[1]
-
-            # Кавычки означают экранирование спецсимволов.
-            if path.startswith('"') and path.endswith('"'):
+            if branch != self._branch:
+                self._branch = branch
                 try:
-                    path = path[1:-1].encode().decode("unicode_escape")
+                    self.branch_changed.emit(branch)
                 except Exception:
-                    path = path[1:-1]
+                    logger.debug("GitStatusDelegate: branch_changed handler упал", exc_info=True)
 
-            self._status_map[path.replace("\\", "/")] = xy
+            # --- Статусы ---
+            out = self._run_git("status", "--porcelain", "--untracked-files=all")
+            if out is not None:
+                for raw_line in out.splitlines():
+                    try:
+                        self._parse_porcelain_line(raw_line)
+                    except Exception:
+                        logger.debug(f"GitStatusDelegate: не разобрал строку: {raw_line!r}")
 
-        if parent:
-            parent.viewport().update()
+            self._update_viewport()
+        except Exception:
+            logger.exception("GitStatusDelegate._do_refresh failed")
+
+    def _update_viewport(self) -> None:
+        """Безопасно перерисовывает viewport дерева.
+
+        ВАЖНО: `viewport` у QAbstractItemView — это **метод**, а не атрибут.
+        Раньше вызов `getattr(parent, "viewport", None)` возвращал bound method,
+        и `viewport.update()` падал с AttributeError.
+        """
+        view = self._view
+        if view is None:
+            return
+        try:
+            view.viewport().update()
+        except Exception:
+            logger.debug("GitStatusDelegate: не удалось обновить viewport", exc_info=True)
+
+    def _parse_porcelain_line(self, line: str) -> None:
+        """Разбирает одну строку `git status --porcelain`."""
+        if len(line) < 4:
+            return
+        xy = line[:2]
+        path = line[3:]
+
+        # Rename / copy: "R  old -> new" — берём новый путь.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+
+        # Экранированные пути вида `"caf\303\251.txt"`.
+        if path.startswith('"') and path.endswith('"'):
+            inner = path[1:-1]
+            try:
+                path = inner.encode("latin-1", "backslashreplace").decode("unicode_escape")
+            except Exception:
+                path = inner
+
+        self._status_map[path.replace("\\", "/")] = xy
 
     # ------------------------------------------------------------------
     # QStyledItemDelegate
@@ -182,43 +241,54 @@ class GitStatusDelegate(QStyledItemDelegate):
     def initStyleOption(  # noqa: N802 (Qt override)
         self, option: QStyleOptionViewItem, index
     ) -> None:
-        super().initStyleOption(option, index)
-
-        if not self._repo_path or not self._status_map:
+        try:
+            super().initStyleOption(option, index)
+        except Exception:
             return
 
-        parts: list[str] = []
-        idx = index
-        while idx.isValid():
-            data = idx.data(Qt.ItemDataRole.DisplayRole)
-            if data:
-                parts.insert(0, data)
-            idx = idx.parent()
-        if len(parts) < 2:
-            return
-        rel_path = "/".join(parts[1:])
+        try:
+            if not self._repo_path or not self._status_map:
+                return
 
-        xy = self._status_for(rel_path)
-        if not xy:
-            return
+            parts: list[str] = []
+            idx = index
+            while idx.isValid():
+                data = idx.data(Qt.ItemDataRole.DisplayRole)
+                if data:
+                    parts.insert(0, data)
+                idx = idx.parent()
+            if len(parts) < 2:
+                return
+            rel_path = "/".join(parts[1:])
 
-        # Приоритет: worktree (Y) > index (X).
-        x, y = xy[0], xy[1]
-        if xy == "??":
-            color = _GIT_COLORS["?"]
-        elif xy == "!!":
-            color = _GIT_COLORS["!"]
-        elif y != " " and y in _GIT_COLORS:
-            color = _GIT_COLORS[y]
-        elif x != " " and x in _GIT_COLORS:
-            color = _GIT_COLORS[x]
-        else:
-            return
+            xy = self._status_for(rel_path)
+            if not xy:
+                return
 
-        option.palette.setColor(QPalette.ColorRole.Text, color)
-        option.palette.setColor(QPalette.ColorRole.HighlightedText, color)
+            x, y = xy[0], xy[1]
+            letter: str | None = None
+            color: QColor | None = None
 
-        if xy == "!!":
-            font = QFont(option.font)
-            font.setItalic(True)
-            option.font = font
+            if xy == "??":
+                letter = _GIT_LETTERS["?"]
+                color = _GIT_COLORS["?"]
+            elif xy == "!!":
+                letter = _GIT_LETTERS["!"]
+                color = _GIT_COLORS["!"]
+            elif y != " " and y in _GIT_COLORS:
+                letter = _GIT_LETTERS.get(y, y)
+                color = _GIT_COLORS[y]
+            elif x != " " and x in _GIT_COLORS:
+                letter = _GIT_LETTERS.get(x, x)
+                color = _GIT_COLORS[x]
+            else:
+                return
+
+            option.palette.setColor(QPalette.ColorRole.Text, color)
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, color)
+
+            # Добавляем букву рядом с именем, как в VS Code.
+            if letter and option.text:
+                option.text = f"{option.text}  {letter}"
+        except Exception:
+            logger.debug("GitStatusDelegate.initStyleOption failed", exc_info=True)

@@ -158,6 +158,15 @@ function closeFile(filePath) {
     if (currentFilePath === filePath) currentFilePath = null;
 }
 
+function renameOpenFile(oldPath, newPath) {
+    const entry = fileModels.get(oldPath);
+    if (!entry) return;
+    fileModels.delete(oldPath);
+    fileModels.set(newPath, entry);
+    if (currentFilePath === oldPath) currentFilePath = newPath;
+    console.log('Renamed in editor: ' + oldPath + ' -> ' + newPath);
+}
+
 async function saveFile() {
     if (!currentFilePath) { updateStatusBar('No file open'); return; }
     const entry = fileModels.get(currentFilePath);
