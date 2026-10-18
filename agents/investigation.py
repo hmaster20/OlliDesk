@@ -12,10 +12,19 @@ from enum import Enum
 # ---------------------------------------------------------------------------
 
 _ENTRY_HINTS: tuple[str, ...] = (
+    # Python
     "main.py", "app.py", "cli.py", "__main__.py",
-    "program.cs", "startup.cs",
-    "index.js", "index.ts", "index.jsx", "index.tsx",
     "server.py", "wsgi.py", "asgi.py", "manage.py",
+    # C# / .NET
+    "program.cs", "startup.cs",
+    # JS/TS
+    "index.js", "index.ts", "index.jsx", "index.tsx",
+    # [D7] Ruby / Go
+    "main.rb", "config.ru", "main.go",
+    # [D7] IaC
+    "main.tf", "variables.tf", "outputs.tf",
+    "site.yml", "site.yaml", "playbook.yml", "playbook.yaml",
+    "vagrantfile",          # без расширения — .lower() совпадёт с Vagrantfile
 )
 
 _CONFIG_HINTS: tuple[str, ...] = (
@@ -94,6 +103,12 @@ class InvestigationState:
     successful_reads: int = 0
     reads_per_file: dict[str, int] = field(default_factory=dict)
 
+    # [D4] Entry-point кандидаты из ProjectIntel. Если модель не открыла
+    # entry-point через read_file, но индекс знает кандидата и прочитано
+    # ≥2 файла — этого достаточно для перехода к синтезу (deterministic
+    # fallback вместо бесконечных нуджей).
+    known_entry_points: list[str] = field(default_factory=list)
+
     def note_call(
         self, name: str, arguments: dict, result_content: str, is_error: bool
     ) -> None:
@@ -150,16 +165,10 @@ class InvestigationState:
         path = max(self.reads_per_file, key=lambda k: self.reads_per_file[k])
         return (path, self.reads_per_file[path])
 
+
     @property
     def sufficient_for_synthesis(self) -> bool:
-        """Есть ли минимум доказательной базы для ответа об архитектуре.
-
-        Условия срабатывают ЛЮБОЕ из:
-          1. Полный: 4+ файла, точка входа и конфиг/README.
-          2. Смягчённый: 6+ файлов и точка входа (конфиг не критичен).
-          3. По объёму: 40+ КБ прочитано и точка входа открыта.
-          4. По числу чтений: 10+ успешных read_file и точка входа открыта.
-        """
+        """Есть ли минимум доказательной базы для ответа об архитектуре."""
         if (
             len(self.read_with_content) >= 4
             and self.read_entry_point
@@ -171,6 +180,10 @@ class InvestigationState:
         if self.total_chars_read >= _ENOUGH_CHARS and self.read_entry_point:
             return True
         if self.successful_reads >= _ENOUGH_READS and self.read_entry_point:
+            return True
+        # [D4] Модель не открыла entry-point, но индекс знает кандидата —
+        # считаем entry покрытым детерминированно.
+        if self.known_entry_points and len(self.read_with_content) >= 2:
             return True
         return False
 

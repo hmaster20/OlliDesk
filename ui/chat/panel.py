@@ -1203,10 +1203,10 @@ class ChatPanel(QWidget):
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
-
         self.input_edit.clear()
         self.input_edit.setFocus()
 
+        # @web и @dir/@file/@path — как сейчас
         if text.startswith("@web"):
             query = text[4:].strip()
             if query:
@@ -1222,7 +1222,17 @@ class ChatPanel(QWidget):
 
         self._create_session()
 
-        user_message = ChatMessage(role="user", content=text)
+        # [D9] идемпотентность: стабильный id = hash(role|content|session).
+        import hashlib
+        msg_id = hashlib.sha1(
+            f"{self._session_id or ''}|user|{text}".encode("utf-8")
+        ).hexdigest()[:16]
+
+        if any(m.id == msg_id for m in self._messages):
+            logger.debug(f"Повтор user-сообщения {msg_id!r} — пропускаем дубль")
+            return
+
+        user_message = ChatMessage(id=msg_id, role="user", content=text)
         self._messages.append(user_message)
         if self._session_id:
             self.session_store.save_message(self._session_id, user_message)
@@ -1587,7 +1597,16 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_thought_chunk(self, token: str) -> None:
-        """Токен мысли модели — в серый поток в реальном времени."""
+        """Токен мысли — в серый поток, кроме ASCII-мусора."""
+        from agents.tool_grammar import looks_like_ascii_junk
+
+        if looks_like_ascii_junk(token):
+            if self._current_thought_stream is not None:
+                self._current_thought_stream.append_nudge(
+                    "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
+                )
+            return
+
         if self._current_thought_stream is None:
             self._current_thought_stream = ChatThoughtStream()
             self.scroll_layout.insertWidget(
@@ -2266,3 +2285,30 @@ class ChatPanel(QWidget):
 
     def set_search_cache(self, cache):
         self.search_cache = cache
+
+    def _resolve_research_mode(
+        self, question: str, *, file_count: int, total_bytes: int,
+    ) -> dict:
+        """Решает, какой флоу использовать для вопроса (D8).
+
+        light (≤100 файлов / ≤300 КБ): 3 итерации, без фаз/гипотез —
+        маленький проект не должен гоняться через full research.
+
+        deep (>500 файлов): research с фазами и гипотезами, 5 итераций.
+
+        medium (остальное): research без фаз, 8 итераций.
+        """
+        light = file_count <= 100 and total_bytes <= 300_000
+        if light:
+            return {
+                "research": False, "max_iters": 3,
+                "split_thoughts": False, "hypotheses": False, "phases": "off",
+            }
+        deep = file_count > 500
+        return {
+            "research": True,
+            "max_iters": 5 if deep else 8,
+            "split_thoughts": deep,
+            "hypotheses": deep,
+            "phases": "full" if deep else "light",
+        }

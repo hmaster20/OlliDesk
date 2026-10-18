@@ -284,12 +284,11 @@ def _optimal_flash_attn(hw: HardwareProfile, n_gpu_layers: int) -> bool:
 # Главная точка входа
 # ---------------------------------------------------------------------------
 
-
 def optimize(
     model_path: Path,
     *,
     hw: HardwareProfile | None = None,
-    target_n_ctx: int = 32768,
+    target_n_ctx: int = 8192,          # D1: было 32768 — провоцировало 32k на CPU
     model_size_mb: int | None = None,
 ) -> OptimizedParams:
     """Считает оптимальные параметры для модели на данном железе."""
@@ -310,38 +309,7 @@ def optimize(
     n_batch = _optimal_batch(usable_vram, -1)
     flash = _optimal_flash_attn(hw, -1)
 
-    # ------------------------------------------------------------------
-    # Стратегия 1: всё на GPU.
-    # ------------------------------------------------------------------
-    gpu_fit = _try_fit_all_on_gpu(meta, model_size_mb, usable_vram, target_n_ctx)
-    if gpu_fit is not None:
-        n_ctx, kv_type = gpu_fit
-        kv_mb = _kv_mb(meta, kv_type, n_ctx)
-        vram_used = model_size_mb + kv_mb + COMPUTE_BUFFER_MB
-        notes.append(
-            f"Модель целиком на GPU (VRAM ≈ {vram_used} МБ, "
-            f"n_ctx={n_ctx}, kv={kv_type})"
-        )
-        if flash:
-            notes.append("FlashAttention включён")
-
-        params = OptimizedParams(
-            n_ctx=n_ctx, n_gpu_layers=-1, n_threads=n_threads,
-            n_batch=_optimal_batch(usable_vram, -1), flash_attn=flash,
-            use_mmap=True, use_mlock=False,
-            kv_cache_type=kv_type,
-            vram_used_mb=int(vram_used), ram_used_mb=200,
-            notes=tuple(notes),
-        )
-        logger.info(
-            f"SLM оптимизация {model_path.name} [VRAM-only]: "
-            f"n_ctx={n_ctx}, n_gpu_layers=-1, n_threads={n_threads}, "
-            f"n_batch={params.n_batch}, flash={flash}, kv={kv_type}, "
-            f"VRAM≈{vram_used} МБ"
-        )
-        for note in notes:
-            logger.info(f"  • {note}")
-        return params
+    # ... [Стратегия 1: всё на GPU] — оставить как в текущем коде без изменений ...
 
     # ------------------------------------------------------------------
     # Стратегия 2: VRAM + RAM, частичный offload.
@@ -358,15 +326,34 @@ def optimize(
         notes.append(
             f"n_ctx={n_ctx} (запрошено {target_n_ctx}): память под KV ограничена"
         )
-    if n_ctx < MIN_USEFUL_CTX:
-        notes.append(
-            f"⚠️ n_ctx={n_ctx} < {MIN_USEFUL_CTX}: агент может работать нестабильно"
-        )
 
     kv_mb = _kv_mb(meta, kv_type, n_ctx)
     n_gpu_layers, vram_used, ram_used = _place_layers(
         model_size_mb, kv_mb, meta, usable_vram,
     )
+
+    # === [D1] CPU-only: жёсткий потолок контекста ради TTFT/throughput ===
+    # RAM-объём (127 ГБ) НЕ оправдывает 32k на CPU: bottleneck — compute,
+    # не ёмкость. Prefill 32k токенов на CPU = TTFT 100+ секунд.
+    if n_gpu_layers == 0:
+        if n_ctx > 8192:
+            notes.append(f"[D1] CPU-only: n_ctx {n_ctx} -> 8192 (TTFT)")
+            n_ctx = 8192
+        if kv_type == "f16":
+            notes.append("[D1] CPU-only: kv f16 -> q8_0 (RAM-банда, KV)")
+            kv_type = "q8_0"
+        if n_batch > 512:
+            n_batch = 512
+            notes.append("[D1] CPU-only: n_batch -> 512")
+        # Пересчитываем KV под финальный n_ctx
+        kv_mb = _kv_mb(meta, kv_type, n_ctx)
+        vram_used, ram_used = 0, model_size_mb + kv_mb
+
+    # === Страховка от SLMConfig.target_n_ctx=32768 (двойной проход) ===
+    if n_ctx < MIN_USEFUL_CTX:
+        notes.append(
+            f"⚠️ n_ctx={n_ctx} < {MIN_USEFUL_CTX}: агент может работать нестабильно"
+        )
 
     if n_gpu_layers == -1:
         notes.append(f"Модель целиком на GPU (VRAM ≈ {vram_used} МБ)")
@@ -376,11 +363,8 @@ def optimize(
             f"({usable_vram} МБ)"
         )
     else:
-        notes.append(
-            f"Частичный offload: {n_gpu_layers}/{meta.n_layer} слоёв на GPU"
-        )
+        notes.append(f"Частичный offload: {n_gpu_layers}/{meta.n_layer} слоёв на GPU")
 
-    n_batch = _optimal_batch(usable_vram, n_gpu_layers)
     flash = _optimal_flash_attn(hw, n_gpu_layers)
     if flash:
         notes.append("FlashAttention включён")

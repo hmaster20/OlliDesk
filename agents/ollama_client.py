@@ -33,12 +33,13 @@ class ToolCall(BaseModel):
 class ChatMessage(BaseModel):
     """Сообщение в чате."""
 
+    id: str | None = None      # стабильный id (устраняет дубли user-реплик)
     role: Literal["system", "user", "assistant", "tool"]
     content: str
-    images: list[str] | None = None  # base64
+    images: list[str] | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
-    name: str | None = None  # для tool-role (Ollama использует name, не tool_call_id)
+    name: str | None = None
 
     def to_ollama_dict(self) -> dict:
         data: dict[str, Any] = {"role": self.role, "content": self.content}

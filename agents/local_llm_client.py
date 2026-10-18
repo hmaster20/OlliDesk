@@ -30,7 +30,19 @@ _LANGUAGE_INSTRUCTION = (
 
 # Температура по умолчанию для встроенной SLM: ниже, чем у Ollama-моделей,
 # чтобы снизить дрейф языка и повысить дисциплину вызовов инструментов.
-_DEFAULT_TEMPERATURE = 0.3
+# Дефолт — только для случая, когда caller не передал op_type/options.
+# Tool/plan/critique — детерминированно (стабильный JSON), синтез — чуть живее.
+_DEFAULT_TEMPERATURE = 0.0   # было 0.3
+
+_TEMPERATURE_BY_OP: dict[str, float] = {
+    "classify": 0.0,
+    "plan": 0.0,
+    "tool_call": 0.0,
+    "critique": 0.0,
+    "module_summary": 0.2,
+    "synthesis": 0.35,
+    "regen": 0.35,
+}
 
 # Директива по форматированию: идет в голову системного сообщения (рядом с
 # языковой), чтобы пережить обрезку и удержать ответ 7B структурированным.
@@ -167,6 +179,7 @@ class LocalLLMClient:
         tools: list[Any] | None = None,
         options: Any | None = None,
         stream: bool = True,
+        op_type: str | None = None,          # [D10] classify/plan/synthesis/...
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
@@ -174,10 +187,14 @@ class LocalLLMClient:
 
         chat_messages = self._prepare_messages(messages, tools)
 
-        temperature = _DEFAULT_TEMPERATURE
+        # Температура: op_type → options → глобальный дефолт.
+        temperature = (
+            _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE)
+            if op_type else _DEFAULT_TEMPERATURE
+        )
         max_tokens = self.max_tokens
         if options:
-            temperature = getattr(options, "temperature", _DEFAULT_TEMPERATURE)
+            temperature = getattr(options, "temperature", temperature)
             max_tokens = getattr(options, "num_predict", self.max_tokens)
 
         chat_messages = self._fit_messages(chat_messages, reserve_tokens=max_tokens + 64)
@@ -519,3 +536,48 @@ class LocalLLMClient:
         exc_tb: object | None,
     ) -> None:
         return None
+
+    def count_tokens(self, text: str) -> int:
+        """Точный подсчёт токенов через загруженный Llama (D5).
+
+        Используется BudgetManager/Orchestrator'ом вместо CHARS_PER_TOKEN —
+        после загрузки модели точность важнее черновой оценки.
+        """
+        return self._count_tokens(text)
+
+    def _count_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        try:
+            return len(self.llm.tokenize(text.encode("utf-8"), add_bos=False))
+        except Exception:
+            return max(1, len(text) // 4)
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        grammar: str | None = None,
+        json_schema: dict | None = None,
+        stream: bool = False,
+        op_type: str | None = None,
+    ) -> Any:
+        """Генерирует ответ на «сырой» промпт (без chat-формата).
+
+        Нужен Orchestrator'у для structured output (3B-planner) и синтеза
+        (7B-analyst). ``grammar``/``json_schema`` принимаются к сведению —
+        GBNF-грамматика llama.cpp пока не пробрасывается (см. заметку ниже).
+        """
+        messages = [ChatMessage(role="user", content=prompt)]
+        parts: list[str] = []
+        async for chunk in self.chat(
+            model="",
+            messages=messages,
+            stream=stream,
+            op_type=op_type or ("synthesis" if temperature > 0.1 else "plan"),
+        ):
+            if chunk.content:
+                parts.append(chunk.content)
+        return "".join(parts)

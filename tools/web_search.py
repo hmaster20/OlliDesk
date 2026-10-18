@@ -11,6 +11,9 @@
 молча падаем на следующий движок.
 """
 
+from core.security import NetworkMode, SecurityPolicy
+from tools.web_search_hygiene import filter_query
+
 import asyncio
 import urllib.parse
 from typing import Any
@@ -245,11 +248,10 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
     name="web_search",
     description=(
         "Ищет АКТУАЛЬНУЮ информацию в интернете. "
-        "ОБЯЗАТЕЛЬНО вызывай этот инструмент, если вопрос касается: "
-        "новостей, текущих событий, курсов валют, ключевой ставки, "
-        "погоды, версий ПО, цен, законов, релизов — "
-        "любых данных, которые могли измениться после обучения модели. "
-        "НЕ отвечай на такие вопросы из памяти — твои знания устарели."
+        "ОБЯЗАТЕЛЬНО вызывай при вопросах про новости, версии ПО, релизы, "
+        "цены, законы, курсы валют — то, что могло измениться после обучения "
+        "модели. НЕ отправляй в запрос фрагменты кода, пути, имена внутренних "
+        "модулей, хостов, ключей/токенов — это утечка."
     ),
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
@@ -258,20 +260,61 @@ async def web_search(
     query: str,
     max_results: int = 5,
     search_cache: SearchCache | None = None,
+    security: SecurityPolicy | None = None,
 ) -> str:
-    """Ищет в интернете.
+    """Ищет в интернете с hygiene-фильтром.
 
     Args:
-        query: Поисковый запрос
-        max_results: Количество результатов (1-10)
-        search_cache: Кэш (пробрасывается автоматически)
+        query: Поисковый запрос (будет очищен от чувствительных данных).
+        max_results: Количество результатов (1-10).
+        search_cache: Кэш запросов (пробрасывается автоматически).
+        security: Политика безопасности проекта (default — NEUTRAL_ONLY,
+            redaction on). Передаётся из ChatPanel/Orchestrator'а после
+            загрузки config v3.
 
     Returns:
-        Отформатированные результаты или сообщение об ошибке.
+        Отформатированные результаты в ``<untrusted>`` или сообщение об
+        ошибке/отказе.
     """
     if not query or not query.strip():
         return "Ошибка: пустой поисковый запрос."
 
+    sec = security or SecurityPolicy()
+    mode = sec.effective_web_mode()
+
+    if mode is NetworkMode.OFF:
+        return (
+            "<untrusted>\n"
+            "web_search отключён политикой безопасности проекта "
+            "(confidential/local_only-off). Используй только локальные данные.\n"
+            "</untrusted>"
+        )
+
+    clean, hits = filter_query(query, mode=mode, policy=sec)
+    if hits:
+        logger.warning(
+            f"web_search hygiene: redacted categories={hits} "
+            f"query={clean[:80]!r}"
+        )
+    if not clean.strip():
+        return (
+            "<untrusted>\n"
+            "Запрос отклонён hygiene-фильтром: содержит только чувствительные "
+            "данные (пути/идентификаторы/имена модулей) или не прошёл проверку "
+            "на нейтральность. Переформулируй вопрос в терминах технологий/"
+            "кодов ошибок.\n"
+            "</untrusted>"
+        )
+
+    return await _web_search_impl(clean, max_results, search_cache)
+
+
+async def _web_search_impl(
+    query: str,
+    max_results: int,
+    search_cache: SearchCache | None,
+) -> str:
+    """Реализация поиска (Yandex → DDGS → DDG HTML → SearX)."""
     if search_cache:
         cached = search_cache.get(query)
         if cached:
@@ -301,7 +344,9 @@ async def web_search(
                     body = (r.get("body", "") or "")[:400]
                     parts.append(f"{i}. {title}\n   {href}\n   {body}")
                 text = "\n\n".join(parts)
-                logger.info(f"web_search: '{query}' via {name}, {len(results)} results")
+                logger.info(
+                    f"web_search: '{query}' via {name}, {len(results)} results"
+                )
                 if search_cache:
                     search_cache.set(query, text)
                 return "<untrusted>\n" + text + "\n</untrusted>"
@@ -313,5 +358,6 @@ async def web_search(
     logger.error(f"web_search: all strategies failed for '{query}': {errors}")
     return (
         f"<untrusted>\nНе удалось найти информацию по запросу «{query}». "
-        f"Все стратегии поиска вернули ошибку. Попробуйте переформулировать запрос.\n</untrusted>"
+        f"Все стратегии поиска вернули ошибку. Попробуйте переформулировать "
+        f"запрос.\n</untrusted>"
     )

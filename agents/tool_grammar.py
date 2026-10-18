@@ -1,89 +1,72 @@
-"""Надёжный tool-calling. ПОПРАВКА C1: OlliDesk использует name/arguments,
-НЕ tool/args (подтверждено дампом 31: парсер состояния читает arguments.get(...),
-системный промпт отдаёт примеры {"name":...,"arguments":{...}})."""
+"""Парсинг и валидация tool-call'ов локальных SLM.
+
+Локальные 3B/7B не имеют нативного function-calling. Задача модуля:
+  • parse_tool_call: извлечь ToolCall из текста ответа модели;
+  • looks_like_ascii_junk: детектор «каракулей» вместо схемы (чинит D9);
+  • should_fallback: нужен ли deterministic сбор данных кодом (чинит D4).
+"""
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
 from typing import Any
 
-# Реальные имена тулов из 31 (_CHAT_AUTO_TOOLS + реестр @tool).
-_TOOL_NAMES = (
-    "read_file", "write_file", "list_directory", "search_codebase", "web_search",
-    "get_weather", "get_current_datetime", "get_exchange_rate",
-    "get_exchange_rates_multi", "get_git_status", "create_snapshot",
-    "undo_last_snapshot", "read_attached_file", "record_hypothesis",
-    "update_hypothesis", "list_hypotheses",
-    # структурные тулы нового слоя (оркестратор/3B-планировщик):
-    "get_project_map", "find_entry_points", "list_top_modules", "list_symbols",
-    "get_module_summary", "find_dependencies", "read_symbol",
+from loguru import logger
+
+from agents.ollama_client import ToolCall
+from agents.tool_call_parser import extract_tool_calls
+
+_ASCII_JUNK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"[|+\-]{5,}"),
+    re.compile(r"(?:\|\s*){3,}\|"),
+    re.compile(r"(?:[-+]\s*){5,}"),
+    re.compile(r"^\s*[|+\-\s]{12,}$", re.MULTILINE),
+    re.compile(r"^\s*\|[\s\-|/\\]{6,}\|\s*$", re.MULTILINE),
 )
 
-# GBNF: строго {"name":"...","arguments":{...}} ИЛИ {"final":true}.
-TOOL_CALL_GBNF = r"""
-root      ::= space? ( toolcall | finalcall ) space?
-toolcall  ::= "{" ws "\"name\"" ws ":" ws toolname ws "," ws "\"arguments\"" ws ":" ws args "}"
-finalcall ::= "{" ws "\"final\"" ws ":" ws "true" ws "}"
-toolname  ::= "\"" ( %s ) "\""
-args      ::= "{" ws ( pair ( ws "," ws pair )* )? ws "}"
-pair      ::= string ws ":" ws value
-value     ::= string | number | "true" | "false" | "null" | array | object
-array     ::= "[" ws ( value ( ws "," ws value )* )? ws "]"
-object    ::= args
-string    ::= "\"" char* "\""
-char      ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
-number    ::= "-"? [0-9]+ ("." [0-9]+)?
-ws        ::= [ \t\n\r]*
-""" % " | ".join(f'"{n}"' for n in _TOOL_NAMES)
+_REACT_LEAK_RE = re.compile(
+    r"(?im)^\s*(?:#+\s*)?(?:action|observation|thought)\s*[:：]",
+)
 
-_JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
-
-
-@dataclass
-class ParsedCall:
-    name: str | None          # C1: name, не tool
-    arguments: dict[str, Any] # C1: arguments, не args
-    is_final: bool
-    raw: str
-    ok: bool
-
-
-def parse_tool_call(text: str) -> ParsedCall:
-    raw = text.strip()
-    m = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
-    candidate = m.group(1) if m else raw
-    jm = _JSON_OBJ.search(candidate)
-    blob = jm.group(0) if jm else candidate
-    blob = re.sub(r",\s*([}\]])", r"\1", blob)
-    try:
-        obj = json.loads(blob)
-    except Exception:
-        return ParsedCall(None, {}, False, raw, ok=False)
-    if obj.get("final") is True:
-        return ParsedCall(None, {}, True, raw, ok=True)
-    name = obj.get("name") or obj.get("tool")          # толерантность к обоим ключам
-    args = obj.get("arguments") or obj.get("args") or {}
-    if not isinstance(args, dict):
-        args = {}
-    if name and isinstance(name, str):
-        return ParsedCall(name, args, False, raw, ok=True)
-    return ParsedCall(None, {}, False, raw, ok=False)
-
-
-_STRUCTURAL = {"architecture", "dependencies", "iaac_role", "terraform_module", "vagrant_box"}
-
-
-def should_fallback(call: ParsedCall, task: str) -> bool:
-    if task not in _STRUCTURAL:
-        return False
-    return (not call.ok) or (call.name is None and not call.is_final)
+_MIN_LEN_FOR_JUNK_CHECK = 20
+_JUNK_HITS_THRESHOLD = 3
 
 
 def looks_like_ascii_junk(text: str) -> bool:
-    lines = [l for l in text.splitlines() if l.strip()]
-    if len(lines) < 4:
+    """True, если текст — характерный ASCII-мусор вместо схемы."""
+    if not text or len(text) < _MIN_LEN_FOR_JUNK_CHECK:
         return False
-    boxish = sum(1 for l in lines if re.match(r"^[|\-+/\\+= ]+$", l))
-    uniq = len(set(lines))
-    return boxish / max(1, len(lines)) > 0.6 and uniq / max(1, len(lines)) < 0.5
+    hits = 0
+    for pattern in _ASCII_JUNK_PATTERNS:
+        hits += len(pattern.findall(text))
+        if hits >= _JUNK_HITS_THRESHOLD:
+            return True
+    return False
+
+
+def parse_tool_call(
+    text: str,
+    tools: list[Any] | None = None,
+) -> ToolCall | None:
+    """Извлекает первый tool-call из текста ответа модели."""
+    if not text:
+        return None
+    calls = extract_tool_calls(text, tools)
+    if calls:
+        logger.debug(f"tool_grammar: извлечено tool_calls={len(calls)}")
+    return calls[0] if calls else None
+
+
+def should_fallback(
+    text: str,
+    tool_calls: list[ToolCall] | None = None,
+) -> bool:
+    """True — оркестратор должен собрать данные кодом (без LLM-цикла)."""
+    if tool_calls:
+        return False
+    if not text:
+        return True
+    if looks_like_ascii_junk(text):
+        return True
+    if _REACT_LEAK_RE.search(text):
+        return True
+    return False

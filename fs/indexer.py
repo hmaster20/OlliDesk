@@ -159,6 +159,9 @@ class FileIndexer:
             ignored_patterns,
         )
         self.allowed_extensions = set(config.index_extensions)
+        self._index_filenames: set[str] = {
+            name.lower() for name in (config.index_filenames or [])
+        }
         self.max_file_size = config.max_file_size_kb * 1024
         self.chunk_size_tokens = config.chunk_size_tokens
         self.chunk_overlap_tokens = config.chunk_overlap_tokens
@@ -190,26 +193,14 @@ class FileIndexer:
         ]
 
     def _iter_visible_files(self, project_path: Path) -> Iterator[tuple[Path, str]]:
-        """Перебирает файлы проекта, прошедшие фильтры (без чтения содержимого).
-
-        Выносит общую логику обхода, чтобы `scan_project` и `list_project_files`
-        отбирали ровно один и тот же набор файлов: игнор-паттерны, расширения,
-        бинарные файлы и лимит размера.
-
-        Args:
-            project_path: Путь к проекту.
-
-        Yields:
-            Пары (абсолютный путь, относительный путь со слэшами).
-        """
+        """Перебирает файлы проекта, прошедшие фильтры (без чтения содержимого)."""
         for file_path in project_path.rglob("*"):
             if not file_path.is_file():
                 continue
 
             rel_path_str = str(file_path.relative_to(project_path)).replace("\\", "/")
 
-            # Служебный каталог OlliDesk никогда не индексируется:
-            # там state проекта, его локальный конфиг и ChromaDB.
+            # Служебный каталог OlliDesk не индексируется.
             if rel_path_str.split("/", 1)[0] == _APP_DIR:
                 continue
 
@@ -217,11 +208,15 @@ class FileIndexer:
                 logger.debug(f"Игнорируется: {rel_path_str}")
                 continue
 
-            if file_path.suffix.lower() not in self.allowed_extensions:
+            # [D6] Фильтр: расширение ИЛИ имя (без расширения).
+            suffix = file_path.suffix.lower()
+            by_name = file_path.name.lower() in self._index_filenames
+            by_ext = suffix in self.allowed_extensions
+            if not (by_name or by_ext):
                 logger.debug(f"Неподдерживаемое расширение: {rel_path_str}")
                 continue
 
-            if file_path.suffix.lower() in BINARY_EXTENSIONS:
+            if not by_name and suffix in BINARY_EXTENSIONS:
                 logger.debug(f"Бинарный файл: {rel_path_str}")
                 continue
 
@@ -235,6 +230,7 @@ class FileIndexer:
                 continue
 
             yield file_path, rel_path_str
+
 
     def list_project_files(self, project_path: Path) -> list[str]:
         """Возвращает относительные пути файлов проекта без хеширования.

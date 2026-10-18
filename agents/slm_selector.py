@@ -115,3 +115,66 @@ def select_best_model(
         f"Автовыбор SLM: ничего не влезает, беру {smallest.display_name}"
     )
     return smallest
+
+def select_pair(
+    hw: HardwareProfile | None = None,
+) -> dict[str, SLMModelInfo | None]:
+    """Возвращает ДВЕ модели по ролям: planner(3B,GPU) + analyst(7B,CPU).
+
+    Используется двухмодельным пайплайном (§3 плана). Не заменяет
+    `select_best_model` — та остаётся для одно-модельного режима на слабом
+    железе, где 3B и 7B не влезают одновременно.
+
+    Args:
+        hw: Профиль железа (по умолчанию собирается один раз за процесс).
+
+    Returns:
+        ``{'planner': SLMModelInfo | None, 'analyst': SLMModelInfo | None}``.
+    """
+    hw = hw or get_hardware_profile()
+    cfg = load_config()
+    candidates = cfg.slm.get_chat_models()
+    if not candidates:
+        logger.warning("select_pair: нет chat-моделей в конфиге")
+        return {"planner": None, "analyst": None}
+
+    fits = [_score_model(m, hw) for m in candidates]
+    gpu = hw.best_gpu
+    vram = gpu.usable_vram_mb if gpu else 0
+
+    # --- Planner: 3B (tier 1), целиком в VRAM ---
+    planner_pool = [
+        f for f in fits
+        if f.info.tier == 1 and f.fits_vram and vram >= 2900
+    ]
+    planner_pool.sort(key=lambda f: f.score, reverse=True)
+    planner: SLMModelInfo | None = (
+        planner_pool[0].info if planner_pool else None
+    )
+    if planner is None:
+        vram_fits = sorted(
+            (f for f in fits if f.fits_vram), key=lambda f: f.score, reverse=True
+        )
+        planner = vram_fits[0].info if vram_fits else None
+
+    # --- Analyst: 7B (tier 2), CPU-only ---
+    analyst_pool = [
+        f for f in fits
+        if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"
+    ]
+    analyst_pool.sort(key=lambda f: f.score, reverse=True)
+    analyst: SLMModelInfo | None = (
+        analyst_pool[0].info if analyst_pool else None
+    )
+    if analyst is None:
+        ram_fits = sorted(
+            (f for f in fits if f.fits_ram), key=lambda f: f.score, reverse=True
+        )
+        analyst = ram_fits[0].info if ram_fits else planner
+
+    logger.info(
+        f"Автовыбор SLM (pair): planner={planner.display_name if planner else None}, "
+        f"analyst={analyst.display_name if analyst else None} "
+        f"[VRAM={vram} МБ, RAM={hw.ram.available_mb} МБ]"
+    )
+    return {"planner": planner, "analyst": analyst}

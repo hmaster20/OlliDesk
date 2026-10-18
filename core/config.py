@@ -393,7 +393,11 @@ class SLMConfig(BaseModel):
     max_tokens: int = 1024
     temperature: float = 0.7
 
-    target_n_ctx: int = 32768
+    # Верхняя граница контекста, которую попробует взять оптимизатор.
+    # [D1] Реальный потолок определит `agents.slm_optimizer.optimize()`:
+    #   • GPU-only: min(target_n_ctx, n_ctx_train);
+    #   • CPU-only: ЖЁСТКО 8192 (иначе prefill 32k на CPU даёт TTFT 100+ с).
+    target_n_ctx: int = 8192          # было 32768
 
     # --- Embedding-модель (одна, отдельно) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
@@ -533,8 +537,17 @@ DEFAULT_INDEX_EXTENSIONS: list[str] = [
     ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".dart", ".swift",
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".m", ".mm",
     ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
+    ".tf", ".tfvars", ".hcl", ".pkr.hcl",
 ]
 
+# Файлы БЕЗ расширения, индексируемые по имени.
+# Ansible-плейбуки site.yml/playbook.yml распознаются ещё и по .yml выше,
+# но Vagrantfile/Rakefile/Gemfile/Dockerfile/Makefile — только по имени.
+DEFAULT_INDEX_FILENAMES: list[str] = [
+    "Vagrantfile", "Rakefile", "Gemfile", "Guardfile", "Podfile",
+    "Dockerfile", "Makefile", "CMakeLists.txt",
+    "Playbook", "site.yml", "playbook.yml",
+]
 
 _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
     {
@@ -572,6 +585,7 @@ class AppConfig(BaseModel):
         ]
     )
     index_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_EXTENSIONS))
+    index_filenames: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_FILENAMES))
     max_file_size_kb: int = 100
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 50

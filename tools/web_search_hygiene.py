@@ -1,17 +1,29 @@
-"""Hygiene + preview для web_search. Самодостаточен, не зависит от невидимых тел.
+"""Hygiene-фильтр web_search: обогащение без утечек.
 
-Регулярки redaction собраны под РЕАЛЬНЫЕ домены ваших проектов.
+Политика (мои рекомендации по вашему вопросу):
+  • Инструмент ОСТАВЛЯЕМ: он полезен для версий ПО, RFC, doc-страниц,
+    кодов ошибок (MSB4019), курсов/ставки — того, что не выведено из
+    локального кода.
+  • В запрос НИКОГДА не попадают: пути/неймспейсы/имена классов проекта,
+    номера договоров/счетов/ИНН/СНИЛС, hostnames/IP/*.local/*.internal,
+    env-секреты (PROXY/DNS_IP), vault-ссылки, содержимое файлов, git-remote.
+  • Режимы (security.network.web_search в v3-конфиге):
+      off        — confidential-проекты, возвращаем заглушку;
+      neutral    — ДЕФОЛТ: шлём только технологии/ошибки, остальное redact/отклоняем;
+      ask_first  — UI-диалог + hygiene (как в текущем ToolPolicy.ASK_FIRST);
+      auto       — hygiene обязателен, диалог не спрашиваем.
+  • Регулярки redact — в `core/security.py:redact_query` (уже есть).
 """
 from __future__ import annotations
 
 import re
-from contextvars import ContextVar
 
 from core.security import NetworkMode, SecurityPolicy, redact_query
 
-# Per-request override от глобуса (ставит ui/chat/panel перед запуском запроса).
-ALLOW_NETWORK_ONCE: ContextVar[bool] = ContextVar("allow_network_once", default=False)
-
+# Технологии/фреймворки/ошибки, которые МОГУТ оставаться в запросе.
+# Важно: это allowlist (что разрешено), а не blocklist — лишние термы
+# безопасны, отсутствие нужного терма — единственный риск (тогда
+# neutral-режим отклонит запрос).
 _TECH_ALLOWLIST = re.compile(
     r"\b(?:python|pyside6?|django|fastapi|flask|ansible|terraform|opentofu|vagrant|"
     r"virtualbox|vmware|docker|nexus|c#|csharp|dotnet|\.net|msbuild|roslyn|winforms|wpf|"
@@ -19,30 +31,50 @@ _TECH_ALLOWLIST = re.compile(
     r"sqlite|chromadb|faiss|llama\.cpp|ollama|qwen|mistral|tree-?sitter|pygls|lsp|"
     r"msb\d{4}|nuget|pip|gem|apt|systemd|sshd|multipathd|unattended-upgrades|"
     r"smart-?lab|moex|акра|эксперт\s*ра|доход|cbr|ключевая\s*ставка|инфляция|"
-    r"rvi|imoex|ofz|oblg|etf|isd|исин|secid|ytm|ltm|ebitda|ips|иис)\b", re.I)
+    r"rvi|imoex|ofz|oblg|etf|isd|исин|secid|ytm|ltm|ebitda|ips|иис)\b",
+    re.I,
+)
+
+# Ошибки/коды/CLI-флаги — тоже нейтральны.
 _ERRCODE = re.compile(
-    r"\b(?:error|exception|failed|warning|traceback|0x[0-9a-f]+|exit\s*code|tls|ssl|certificate)\b", re.I)
-_PATH_RESIDUAL = re.compile(r"[/\\]\w+[/\\]\w+")
-_CAMEL = re.compile(r"\b[A-Z][a-z]+[A-Z]")   # имена классов проекта
+    r"\b(?:error|exception|failed|warning|traceback|0x[0-9a-f]+|exit\s*code|"
+    r"tls|ssl|certificate|http\s*\d{3})\b",
+    re.I,
+)
+
+# Признаки остаточных путей/CamelCase-имён классов проекта.
+_LEFTOVER_PATH = re.compile(r"[/\\]\w+[/\\]\w+")
+_LEFTOVER_CAMEL = re.compile(r"\b[A-Z][a-z]+[A-Z][A-Za-z]*\b")
 
 
-def clean_query(query: str, policy: SecurityPolicy) -> tuple[str, list[str], bool]:
-    """-> (clean, redacted_categories, neutral_ok). neutral_ok=False => в neutral слать нельзя."""
+def filter_query(
+    query: str,
+    *,
+    mode: NetworkMode,
+    policy: SecurityPolicy,
+) -> tuple[str, list[str]]:
+    """Очищает запрос для отправки в интернет.
+
+    Args:
+        query: Исходный запрос от модели.
+        mode: Режим (off/neutral/ask_first/auto). ``off`` обрабатывается
+            вызывающим — сюда не доходит.
+        policy: Политика безопасности (для ``redaction_enabled``).
+
+    Returns:
+        ``(cleaned_query_or_empty, hits)``. Пустая строка означает «отклонить».
+    """
     if not policy.redaction_enabled:
-        return query, [], True
+        return query, []
+
     cleaned, hits = redact_query(query)
-    has_tech = bool(_TECH_ALLOWLIST.search(cleaned) or _ERRCODE.search(cleaned))
-    residual = bool(_PATH_RESIDUAL.search(cleaned)) or bool(_CAMEL.search(cleaned))
-    neutral_ok = has_tech and not residual and bool(cleaned.strip())
-    return cleaned.strip(), hits, neutral_ok
 
+    if mode is NetworkMode.NEUTRAL_ONLY:
+        has_tech = bool(_TECH_ALLOWLIST.search(cleaned) or _ERRCODE.search(cleaned))
+        leftover = bool(_LEFTOVER_PATH.search(cleaned)) or bool(
+            _LEFTOVER_CAMEL.search(cleaned)
+        )
+        if not has_tech or leftover:
+            return "", hits + (["non_neutral_residual"] if leftover else [])
 
-def preview_web_search(query: str, policy: SecurityPolicy) -> dict:
-    """Для UI-диалога: что РЕАЛЬНО уйдёт в сеть. Диалог показывает ТОЛЬКО это."""
-    mode = policy.effective_web_mode()
-    if mode is NetworkMode.OFF:
-        return {"allowed": False, "reason": "off/confidential", "clean": "", "categories": []}
-    clean, hits, neutral_ok = clean_query(query, policy)
-    if mode is NetworkMode.NEUTRAL_ONLY and not neutral_ok:
-        return {"allowed": False, "reason": "non_neutral", "clean": clean, "categories": hits}
-    return {"allowed": True, "reason": "", "clean": clean, "categories": hits}
+    return cleaned, hits
