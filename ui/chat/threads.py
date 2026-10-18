@@ -134,10 +134,22 @@ class AgentChatThread(QThread):
 
             if is_research_question(user_text):
                 try:
-                    await self._run_orchestrator(user_text)
+                    # ИСПРАВЛЕНИЕ: не даем оркестратору висеть вечно
+                    await asyncio.wait_for(
+                        self._run_orchestrator(user_text),
+                        timeout=300.0  # 5 минут максимум на исследование
+                    )
                     return
+                except asyncio.TimeoutError:
+                    logger.error("Orchestrator timed out after 5 minutes")
+                    self.orchestrator_event.emit(
+                        "fallback",
+                        {"reason": "Таймаут 5 минут", "message": "Использую старый ReAct"},
+                    )
                 except Exception as e:
-                    logger.exception("Orchestrator failed; fallback to AgentLoop")
+                    logger.exception(
+                        "Orchestrator failed; fallback to AgentLoop"
+                    )
                     self.orchestrator_event.emit(
                         "fallback",
                         {"reason": str(e), "message": "Использую старый ReAct"},
