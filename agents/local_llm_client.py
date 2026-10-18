@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
@@ -15,7 +15,6 @@ from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
 from agents.tool_call_parser import extract_tool_calls
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agents.slm_optimizer import OptimizedParams
 
@@ -32,7 +31,7 @@ _LANGUAGE_INSTRUCTION = (
 # чтобы снизить дрейф языка и повысить дисциплину вызовов инструментов.
 # Дефолт — только для случая, когда caller не передал op_type/options.
 # Tool/plan/critique — детерминированно (стабильный JSON), синтез — чуть живее.
-_DEFAULT_TEMPERATURE = 0.0   # было 0.3
+_DEFAULT_TEMPERATURE = 0.0  # было 0.3
 
 _TEMPERATURE_BY_OP: dict[str, float] = {
     "classify": 0.0,
@@ -189,7 +188,7 @@ class LocalLLMClient:
         tools: list[Any] | None = None,
         options: Any | None = None,
         stream: bool = True,
-        op_type: str | None = None,          # [D10] classify/plan/synthesis/...
+        op_type: str | None = None,  # [D10] classify/plan/synthesis/...
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
@@ -199,8 +198,7 @@ class LocalLLMClient:
 
         # Температура: op_type → options → глобальный дефолт.
         temperature = (
-            _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE)
-            if op_type else _DEFAULT_TEMPERATURE
+            _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
         )
         max_tokens = self.max_tokens
         if options:
@@ -356,9 +354,7 @@ class LocalLLMClient:
             max_system = int(budget * 0.7)
             if system_tokens > max_system:
                 system = dict(system)
-                system["content"] = self._truncate_text(
-                    str(system.get("content") or ""), max_system
-                )
+                system["content"] = self._truncate_text(str(system.get("content") or ""), max_system)
                 system_tokens = self._count_tokens(str(system["content"]))
             head = [system]
 
@@ -370,9 +366,7 @@ class LocalLLMClient:
                 if kept:
                     break
                 msg = dict(msg)
-                msg["content"] = self._truncate_text(
-                    str(msg.get("content") or ""), max(64, budget - used)
-                )
+                msg["content"] = self._truncate_text(str(msg.get("content") or ""), max(64, budget - used))
                 tokens = self._count_tokens(str(msg["content"]))
             kept.append(msg)
             used += tokens

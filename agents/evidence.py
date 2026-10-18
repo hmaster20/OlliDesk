@@ -5,19 +5,27 @@
 Это даёт: меньше токенов, нулевые галлюцинации путей, проверяемость (verifier),
 кэш резюме модулей между итерациями/сессиями.
 """
+
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 EvidenceKind = Literal[
-    "file_excerpt", "symbol", "project_map", "dependency_edge",
-    "module_summary", "manifest", "entry_point", "tool_result",
-    "vector_chunk", "git_diff", "doc_excerpt",
+    "file_excerpt",
+    "symbol",
+    "project_map",
+    "dependency_edge",
+    "module_summary",
+    "manifest",
+    "entry_point",
+    "tool_result",
+    "vector_chunk",
+    "git_diff",
+    "doc_excerpt",
 ]
 
 
@@ -37,9 +45,9 @@ class EvidenceItem:
 
     def __post_init__(self) -> None:
         if not self.hash:
-            self.hash = hashlib.sha256(
-                f"{self.kind}|{self.source_path}|{self.content}".encode()
-            ).hexdigest()[:16]
+            self.hash = hashlib.sha256(f"{self.kind}|{self.source_path}|{self.content}".encode()).hexdigest()[
+                :16
+            ]
 
 
 class EvidenceStore:
@@ -67,16 +75,25 @@ class EvidenceStore:
         if item.hash in self._by_hash:
             return self._by_hash[item.hash]
         if not item.id:
-            item.id = f"E{len(self._order)+1}"
+            item.id = f"E{len(self._order) + 1}"
         self._items[item.id] = item
         self._order.append(item.id)
         self._by_hash[item.hash] = item.id
         if self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (item.id, item.kind, item.source_path, item.start_line,
-                 item.end_line, item.summary, item.content, item.tokens,
-                 item.relevance, item.hash),
+                (
+                    item.id,
+                    item.kind,
+                    item.source_path,
+                    item.start_line,
+                    item.end_line,
+                    item.summary,
+                    item.content,
+                    item.tokens,
+                    item.relevance,
+                    item.hash,
+                ),
             )
             self._conn.commit()
         return item.id
@@ -96,9 +113,17 @@ class EvidenceStore:
         Каждый элемент форматируется как «[Ei] источник:…\nсодержимое».
         """
         prio: list[EvidenceKind] = [
-            "entry_point", "manifest", "project_map", "dependency_edge",
-            "symbol", "module_summary", "file_excerpt", "vector_chunk",
-            "doc_excerpt", "git_diff", "tool_result",
+            "entry_point",
+            "manifest",
+            "project_map",
+            "dependency_edge",
+            "symbol",
+            "module_summary",
+            "file_excerpt",
+            "vector_chunk",
+            "doc_excerpt",
+            "git_diff",
+            "tool_result",
         ]
         rank = {k: i for i, k in enumerate(prio)}
         ordered = sorted(
@@ -127,6 +152,7 @@ class EvidenceStore:
 
     def ids_referenced(self, text: str) -> set[str]:
         import re
+
         return set(re.findall(r"\[(E\d+)\]", text))
 
     def all_paths(self) -> set[str]:

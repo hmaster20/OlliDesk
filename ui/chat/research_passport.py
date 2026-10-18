@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-import html as html_mod
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,7 +26,6 @@ from PySide6.QtWidgets import (
 )
 
 from ui.chat.message_item import render_markdown
-
 
 _HYPOTHESIS_STATUS_STYLES: dict[str, tuple[str, str]] = {
     "open": ("#4a90e2", "🟦"),
@@ -61,11 +58,7 @@ def _fmt_chars(total: int) -> str:
 
 
 def _escape_html(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 class ChatResearchPassport(QWidget):
@@ -97,9 +90,7 @@ class ChatResearchPassport(QWidget):
         header.setSpacing(6)
 
         title = QLabel("🔎 Паспорт исследования")
-        title.setStyleSheet(
-            "color: #d4d4d4; font-size: 13px; font-weight: 700; padding: 0;"
-        )
+        title.setStyleSheet("color: #d4d4d4; font-size: 13px; font-weight: 700; padding: 0;")
         header.addWidget(title)
         header.addStretch()
 
@@ -139,8 +130,7 @@ class ChatResearchPassport(QWidget):
         if final_answer:
             header_conv = QLabel("Выводы агента")
             header_conv.setStyleSheet(
-                "color: #d4d4d4; font-size: 12px; font-weight: 600;"
-                " padding: 4px 0 0 0;"
+                "color: #d4d4d4; font-size: 12px; font-weight: 600; padding: 4px 0 0 0;"
             )
             body_inner.addWidget(header_conv)
 
@@ -169,17 +159,11 @@ class ChatResearchPassport(QWidget):
             f"📖 Прочитано: {_fmt_count(len(files_read), 'файл', 'файла', 'файлов')} ({_fmt_chars(total_chars)})"
         ]
         if searches:
-            kpi_parts.append(
-                f"🔍 Поисков по коду: {_fmt_count(len(searches), 'поиск', 'поиска', 'поисков')}"
-            )
+            kpi_parts.append(f"🔍 Поисков по коду: {_fmt_count(len(searches), 'поиск', 'поиска', 'поисков')}")
 
         checks: list[str] = []
-        checks.append(
-            "✓ Точка входа" if self._summary.get("read_entry_point") else "✗ Точка входа"
-        )
-        checks.append(
-            "✓ Конфиг/README" if self._summary.get("read_config") else "✗ Конфиг/README"
-        )
+        checks.append("✓ Точка входа" if self._summary.get("read_entry_point") else "✗ Точка входа")
+        checks.append("✓ Конфиг/README" if self._summary.get("read_config") else "✗ Конфиг/README")
         kpi_parts.append(" | ".join(checks))
 
         kpi = QLabel(" · ".join(kpi_parts))
@@ -194,9 +178,7 @@ class ChatResearchPassport(QWidget):
                 files_line += f", … и ещё {len(files_read) - 12}"
             files_label = QLabel(files_line)
             files_label.setWordWrap(True)
-            files_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
+            files_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             files_label.setStyleSheet(
                 "color: #7a7a8a; font-size: 11px;"
                 " font-family: 'Consolas','Cascadia Mono',monospace;"
@@ -208,10 +190,7 @@ class ChatResearchPassport(QWidget):
         hypotheses: list[dict] = list(self._summary.get("hypotheses") or [])
         if hypotheses:
             sep = QLabel("Гипотезы:")
-            sep.setStyleSheet(
-                "color: #d4d4d4; font-size: 12px; font-weight: 600;"
-                " padding: 6px 0 0 0;"
-            )
+            sep.setStyleSheet("color: #d4d4d4; font-size: 12px; font-weight: 600; padding: 6px 0 0 0;")
             body_inner.addWidget(sep)
 
             for h in hypotheses:
@@ -219,9 +198,7 @@ class ChatResearchPassport(QWidget):
 
             counts: dict[str, int] = {}
             for h in hypotheses:
-                counts[str(h.get("status") or "open")] = (
-                    counts.get(str(h.get("status") or "open"), 0) + 1
-                )
+                counts[str(h.get("status") or "open")] = counts.get(str(h.get("status") or "open"), 0) + 1
             summary_parts: list[str] = []
             for key in ("verified", "partial", "refuted", "inconclusive", "open"):
                 if counts.get(key):
@@ -229,15 +206,11 @@ class ChatResearchPassport(QWidget):
                     summary_parts.append(f"{icon} {counts[key]}")
             if summary_parts:
                 total_label = QLabel(" · ".join(summary_parts))
-                total_label.setStyleSheet(
-                    "color: #a8a8b8; font-size: 11px; padding: 2px 0 0 0;"
-                )
+                total_label.setStyleSheet("color: #a8a8b8; font-size: 11px; padding: 2px 0 0 0;")
                 body_inner.addWidget(total_label)
         else:
             no_h = QLabel("Гипотезы не формулировались.")
-            no_h.setStyleSheet(
-                "color: #7a7a8a; font-size: 11px; font-style: italic;"
-            )
+            no_h.setStyleSheet("color: #7a7a8a; font-size: 11px; font-style: italic;")
             body_inner.addWidget(no_h)
 
         body_layout.addWidget(self._body)
@@ -285,9 +258,7 @@ class ChatResearchPassport(QWidget):
                 detail_text = detail_text[:217] + "…"
             detail = QLabel(detail_text)
             detail.setWordWrap(True)
-            detail.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
+            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             detail.setStyleSheet(
                 f"color: {detail_color}; font-size: 11px;"
                 " font-family: 'Consolas','Cascadia Mono',monospace; padding: 0;"
@@ -331,15 +302,9 @@ class ChatResearchPassport(QWidget):
             f"({_fmt_chars(total_chars)})"
         )
         if searches:
-            lines.append(
-                f"**Поисков по коду:** {_fmt_count(len(searches), 'поиск', 'поиска', 'поисков')}"
-            )
-        lines.append(
-            f"**Точка входа:** {'открыта' if s.get('read_entry_point') else 'не найдена'}"
-        )
-        lines.append(
-            f"**Конфиг/README:** {'открыт' if s.get('read_config') else 'не найден'}"
-        )
+            lines.append(f"**Поисков по коду:** {_fmt_count(len(searches), 'поиск', 'поиска', 'поисков')}")
+        lines.append(f"**Точка входа:** {'открыта' if s.get('read_entry_point') else 'не найдена'}")
+        lines.append(f"**Конфиг/README:** {'открыт' if s.get('read_config') else 'не найден'}")
         lines.append("")
 
         if files_read:

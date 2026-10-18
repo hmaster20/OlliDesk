@@ -6,18 +6,20 @@ Mermaid — по переключателю: рендер через QWebEngineV
 растрирование через mermaid-cli при наличии node. Если ни того ни другого —
 UI тихо показывает ASCII (graceful degradation).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QStackedWidget
+from PySide6.QtWidgets import QLabel, QStackedWidget, QWidget
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
+
     _HAS_WEBENGINE = True
 except Exception:
-    QWebEngineView = None       # type: ignore
+    QWebEngineView = None  # type: ignore
     _HAS_WEBENGINE = False
 
 _MERmaid_JS_BUNDLE = Path(__file__).resolve().parent / "vendor" / "mermaid.min.js"
@@ -35,17 +37,20 @@ class DiagramView(QStackedWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._ascii = QLabel(); self._ascii.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._ascii.setStyleSheet("font-family:Consolas,monospace;font-size:12px;color:#cdd6f4;background:#181825;padding:8px;")
+        self._ascii = QLabel()
+        self._ascii.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._ascii.setStyleSheet(
+            "font-family:Consolas,monospace;font-size:12px;color:#cdd6f4;background:#181825;padding:8px;"
+        )
         self._web = None
-        self.addWidget(self._ascii)        # индекс 0 = база
+        self.addWidget(self._ascii)  # индекс 0 = база
         self.set_current_ascii("")
 
     def enable_mermaid(self) -> bool:
         if not _HAS_WEBENGINE or not _MERMAID_JS_BUNDLE.exists():
             return False
         self._web = QWebEngineView()
-        self.addWidget(self._web)          # индекс 1
+        self.addWidget(self._web)  # индекс 1
         return True
 
     def show_ascii(self, text: str) -> None:

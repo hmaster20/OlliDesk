@@ -4,18 +4,29 @@
 подписывает узлы прозой. Renderer гарантирует: имена блоков ∈ граф, связей
 «из головы» нет, пустых рамок не бывает по построению.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
 
-from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
+from fs.intel.graph import DependencyGraph, GraphNode
 
 _KIND_ICON = {
-    "file": "📄", "class": "🟦", "interface": "🟨", "module": "📦",
-    "role": "🎭", "task": "▫️", "resource": "🧱", "module_tf": "📦",
-    "box": "🖥", "provisioner": "⚙️", "function": "ƒ", "method": "m",
-    "var": "$", "namespace": "🗂",
+    "file": "📄",
+    "class": "🟦",
+    "interface": "🟨",
+    "module": "📦",
+    "role": "🎭",
+    "task": "▫️",
+    "resource": "🧱",
+    "module_tf": "📦",
+    "box": "🖥",
+    "provisioner": "⚙️",
+    "function": "ƒ",
+    "method": "m",
+    "var": "$",
+    "namespace": "🗂",
 }
 
 
@@ -27,22 +38,27 @@ class Diagram:
     edges_used: list[tuple[str, str, str]]
 
 
-def render_architecture(graph: DependencyGraph, roots: list[str], *,
-                        max_nodes: int = 24, layout: str = "layered") -> Diagram:
+def render_architecture(
+    graph: DependencyGraph, roots: list[str], *, max_nodes: int = 24, layout: str = "layered"
+) -> Diagram:
     sub = graph.subgraph(roots, depth=2)
     nodes, edges = _prune(graph, sub, max_nodes)
     layers = _to_layers(nodes, edges, roots) if layout == "layered" else None
     ascii_txt = _ascii(layers or [_topo_flat(nodes, edges, roots)], nodes, edges, graph)
     mermaid_txt = _mermaid(nodes, edges, graph)
-    return Diagram(ascii=ascii_txt, mermaid=mermaid_txt,
-                   nodes_used=[n.id for n in nodes],
-                   edges_used=[(e.source, e.target, e.kind) for e in edges])
+    return Diagram(
+        ascii=ascii_txt,
+        mermaid=mermaid_txt,
+        nodes_used=[n.id for n in nodes],
+        edges_used=[(e.source, e.target, e.kind) for e in edges],
+    )
 
 
 def _prune(graph, edges, max_nodes):
     keep_ids: set[str] = set()
     for e in edges:
-        keep_ids.add(e.source); keep_ids.add(e.target)
+        keep_ids.add(e.source)
+        keep_ids.add(e.target)
     nodes = [graph.nodes[i] for i in keep_ids if i in graph.nodes]
     nodes.sort(key=lambda n: -n.score)
     nodes = nodes[:max_nodes]
@@ -55,7 +71,16 @@ def _to_layers(nodes, edges, roots):
     """Слои по расстоянию от корней (BFS по directed-рёбрам imports/references/depends_on/includes/provisions)."""
     fwd = defaultdict(list)
     for e in edges:
-        if e.kind in {"imports", "references", "depends_on", "includes", "provisions", "module_call", "calls", "uses"}:
+        if e.kind in {
+            "imports",
+            "references",
+            "depends_on",
+            "includes",
+            "provisions",
+            "module_call",
+            "calls",
+            "uses",
+        }:
             fwd[e.source].append(e.target)
     layer: dict[str, int] = {r: 0 for r in roots if r in {n.id for n in nodes}}
     if not layer:
@@ -100,7 +125,7 @@ def _ascii(layers, nodes, edges, graph):
         rows.append(cells)
     # Рисуем каждый слой горизонтальной полосой блоков, связи — стрелками вниз.
     out: list[str] = []
-    prev_centers: list[tuple[int, int]] = []   # (x_center, y) предыдущего слоя
+    prev_centers: list[tuple[int, int]] = []  # (x_center, y) предыдущего слоя
     y = 0
     for li, cells in enumerate(rows):
         # верхние рамки
@@ -172,13 +197,26 @@ def _mermaid(nodes, edges, graph):
     nmap = {n.id: n for n in nodes}
     lines = ["flowchart TD"]
     for n in nodes:
-        shape = {"class": "[{lbl}]", "interface": "([{lbl}])", "role": "{{{lbl}}}",
-                 "resource": ">{lbl}]", "module_tf": "[[{lbl}]]", "box": "([lbl])"}.get(n.kind, "[{lbl}]")
+        shape = {
+            "class": "[{lbl}]",
+            "interface": "([{lbl}])",
+            "role": "{{{lbl}}}",
+            "resource": ">{lbl}]",
+            "module_tf": "[[{lbl}]]",
+            "box": "([lbl])",
+        }.get(n.kind, "[{lbl}]")
         lbl = f"{n.kind}: {_short(n)}"
         lines.append(f"  {_mid(n.id)} {shape.format(lbl=_esc(lbl))}")
-    arrow = {"imports": "-->", "references": "-.->", "depends_on": "==>",
-             "includes": "-->", "provisions": "-->", "module_call": "-->",
-             "calls": "-->", "uses": "-.->"}.get("imports", "-->")
+    arrow = {
+        "imports": "-->",
+        "references": "-.->",
+        "depends_on": "==>",
+        "includes": "-->",
+        "provisions": "-->",
+        "module_call": "-->",
+        "calls": "-->",
+        "uses": "-.->",
+    }.get("imports", "-->")
     for e in edges:
         if e.source in nmap and e.target in nmap:
             lines.append(f"  {_mid(e.source)} -->|{e.kind}| {_mid(e.target)}")
@@ -187,6 +225,7 @@ def _mermaid(nodes, edges, graph):
 
 def _mid(nid: str) -> str:
     import hashlib
+
     return "N" + hashlib.md5(nid.encode()).hexdigest()[:6]
 
 

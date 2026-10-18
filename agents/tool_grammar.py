@@ -5,6 +5,7 @@
   • looks_like_ascii_junk: детектор «каракулей» вместо схемы (чинит D9);
   • should_fallback: нужен ли deterministic сбор данных кодом (чинит D4).
 """
+
 from __future__ import annotations
 
 import re

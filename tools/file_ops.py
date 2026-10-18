@@ -9,10 +9,33 @@ from core.config import AgentMode, ToolPolicy
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
-    ".git", ".svn", ".hg", ".vs", ".vscode", ".idea", ".gradle", ".next",
-    ".nuxt", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache",
-    ".ruff_cache", ".cache", ".tox", "venv", ".venv", "env", ".env",
-    "bin", "obj", "dist", "build", "target", "TestResults", "htmlcov",
+    ".git",
+    ".svn",
+    ".hg",
+    ".vs",
+    ".vscode",
+    ".idea",
+    ".gradle",
+    ".next",
+    ".nuxt",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".tox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "bin",
+    "obj",
+    "dist",
+    "build",
+    "target",
+    "TestResults",
+    "htmlcov",
     "coverage",
 }
 
@@ -115,21 +138,14 @@ def read_file(
     size = max(MIN_READ_CHUNK_CHARS, min(requested, MAX_READ_FILE_CHUNK_CHARS))
     limit_note = ""
     if requested < MIN_READ_CHUNK_CHARS:
-        limit_note = (
-            f"\n⚠️ limit={requested} < минимума {MIN_READ_CHUNK_CHARS}; "
-            f"использовано limit={size}."
-        )
+        limit_note = f"\n⚠️ limit={requested} < минимума {MIN_READ_CHUNK_CHARS}; использовано limit={size}."
     elif requested > MAX_READ_FILE_CHUNK_CHARS:
         limit_note = (
-            f"\n⚠️ limit={requested} > максимума {MAX_READ_FILE_CHUNK_CHARS}; "
-            f"использовано limit={size}."
+            f"\n⚠️ limit={requested} > максимума {MAX_READ_FILE_CHUNK_CHARS}; использовано limit={size}."
         )
 
     if start >= total:
-        return (
-            f"Смещение {start} за пределами файла {path} "
-            f"(всего {total} символов)."
-        )
+        return f"Смещение {start} за пределами файла {path} (всего {total} символов)."
 
     chunk = content[start : start + size]
     end = start + len(chunk)
@@ -138,9 +154,7 @@ def read_file(
     percent = int(100 * end / total) if total > 0 else 100
 
     # Заголовок: путь, диапазон, всего символов, прогресс.
-    header = (
-        f"{path} [символы {start}-{end} из {total}, {percent}%]{limit_note}"
-    )
+    header = f"{path} [символы {start}-{end} из {total}, {percent}%]{limit_note}"
 
     # Хинт на продолжение — в КОНЕЦ, чтобы он выжил при вынужденном
     # усечении в AgentLoop (там сохраняется хвост результата).
@@ -157,8 +171,7 @@ def read_file(
             )
         else:
             tail_hint = (
-                f"\n\nПродолжение: read_file(path={path!r}, offset={end})."
-                f"\n… ещё {remaining} символов."
+                f"\n\nПродолжение: read_file(path={path!r}, offset={end}).\n… ещё {remaining} символов."
             )
     else:
         tail_hint = "\n\n(конец файла)"
@@ -262,9 +275,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
                         return f"Файл не изменился: {file_path.name}"
             except Exception:
                 pass
-            snapshot_status = create_snapshot(
-                repo_path, message=f"Before agent write: {file_path.name}"
-            )
+            snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
         if snapshot_status:

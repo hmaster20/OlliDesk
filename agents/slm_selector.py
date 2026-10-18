@@ -29,6 +29,7 @@ def _resolve_size_mb(info: SLMModelInfo) -> int:
     """Реальный размер файла (если скачан) → declared size_mb → 4000."""
     try:
         from agents.download_slm import get_model_path, is_model_installed
+
         if is_model_installed(info.file, repo_id=info.repo):
             path = get_model_path(info.file, repo_id=info.repo)
             if path is not None:
@@ -54,18 +55,18 @@ def _score_model(info: SLMModelInfo, hw: HardwareProfile) -> ModelFit:
     # Tier — главный сигнал качества. Fit определяет, можно ли использовать.
     score = float(info.tier) * 10.0
     if fits_vram:
-        score += 5.0        # полностью на GPU — быстро
+        score += 5.0  # полностью на GPU — быстро
     elif fits_ram:
-        score += 1.0        # CPU-only — медленно, но работает
+        score += 1.0  # CPU-only — медленно, но работает
     else:
-        score -= 100.0      # не влезает вообще — отбраковка
+        score -= 100.0  # не влезает вообще — отбраковка
 
     reason = (
-        "влезает целиком в VRAM" if fits_vram
+        "влезает целиком в VRAM"
+        if fits_vram
         else ("влезает в RAM (CPU)" if fits_ram else "не влезает ни в VRAM, ни в RAM")
     )
-    return ModelFit(info=info, fits_vram=fits_vram, fits_ram=fits_ram,
-                    score=score, reason=reason)
+    return ModelFit(info=info, fits_vram=fits_vram, fits_ram=fits_ram, score=score, reason=reason)
 
 
 def select_best_model(
@@ -111,10 +112,9 @@ def select_best_model(
         return best.info
 
     smallest = min(candidates, key=lambda m: _resolve_size_mb(m))
-    logger.warning(
-        f"Автовыбор SLM: ничего не влезает, беру {smallest.display_name}"
-    )
+    logger.warning(f"Автовыбор SLM: ничего не влезает, беру {smallest.display_name}")
     return smallest
+
 
 def select_pair(
     hw: HardwareProfile | None = None,
@@ -157,31 +157,27 @@ def select_pair(
 
     # --- 2. Автовыбор planner ---
     if planner is None:
-        planner_pool = [
-            f for f in fits
-            if f.info.tier == 1 and f.fits_vram and vram >= 2900
-        ]
+        planner_pool = [f for f in fits if f.info.tier == 1 and f.fits_vram and vram >= 2900]
         planner_pool.sort(key=lambda f: f.score, reverse=True)
         planner = planner_pool[0].info if planner_pool else None
         if planner is None:
             vram_fits = sorted(
                 (f for f in fits if f.fits_vram),
-                key=lambda f: f.score, reverse=True,
+                key=lambda f: f.score,
+                reverse=True,
             )
             planner = vram_fits[0].info if vram_fits else None
 
     # --- 3. Автовыбор analyst ---
     if analyst is None:
-        analyst_pool = [
-            f for f in fits
-            if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"
-        ]
+        analyst_pool = [f for f in fits if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"]
         analyst_pool.sort(key=lambda f: f.score, reverse=True)
         analyst = analyst_pool[0].info if analyst_pool else None
         if analyst is None:
             ram_fits = sorted(
                 (f for f in fits if f.fits_ram),
-                key=lambda f: f.score, reverse=True,
+                key=lambda f: f.score,
+                reverse=True,
             )
             if ram_fits:
                 candidate = ram_fits[0].info

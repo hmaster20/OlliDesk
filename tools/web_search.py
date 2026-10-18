@@ -11,9 +11,6 @@
 молча падаем на следующий движок.
 """
 
-from core.security import NetworkMode, SecurityPolicy
-from tools.web_search_hygiene import filter_query
-
 import asyncio
 import urllib.parse
 from typing import Any
@@ -23,6 +20,8 @@ from loguru import logger
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 from core.search_cache import SearchCache
+from core.security import NetworkMode, SecurityPolicy
+from tools.web_search_hygiene import filter_query
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -292,10 +291,7 @@ async def web_search(
 
     clean, hits = filter_query(query, mode=mode, policy=sec)
     if hits:
-        logger.warning(
-            f"web_search hygiene: redacted categories={hits} "
-            f"query={clean[:80]!r}"
-        )
+        logger.warning(f"web_search hygiene: redacted categories={hits} query={clean[:80]!r}")
     if not clean.strip():
         return (
             "<untrusted>\n"
@@ -344,9 +340,7 @@ async def _web_search_impl(
                     body = (r.get("body", "") or "")[:400]
                     parts.append(f"{i}. {title}\n   {href}\n   {body}")
                 text = "\n\n".join(parts)
-                logger.info(
-                    f"web_search: '{query}' via {name}, {len(results)} results"
-                )
+                logger.info(f"web_search: '{query}' via {name}, {len(results)} results")
                 if search_cache:
                     search_cache.set(query, text)
                 return "<untrusted>\n" + text + "\n</untrusted>"

@@ -4,6 +4,7 @@
 оборванный markdown, JSON-мусор в прозе, слишком длинный/короткий ответ.
 Дешёвый вызов (<2 с), температура 0.
 """
+
 from __future__ import annotations
 
 import json
@@ -59,12 +60,15 @@ async def critique(answer: str, task: str, planner_client) -> Critique:
         "--- ОТВЕТ ---\n" + answer[:6000]
     )
     try:
-        raw = await planner_client.generate(prompt, max_tokens=192, temperature=0.0,
-                                            json_schema=CRITIC_SCHEMA)
+        raw = await planner_client.generate(
+            prompt, max_tokens=192, temperature=0.0, json_schema=CRITIC_SCHEMA
+        )
         obj = json.loads(raw if isinstance(raw, str) else raw.content)
-        return Critique(bool(obj.get("ok", not missing and not issues)),
-                        obj.get("missing_sections", missing),
-                        obj.get("format_issues", issues),
-                        obj.get("hint", ""))
+        return Critique(
+            bool(obj.get("ok", not missing and not issues)),
+            obj.get("missing_sections", missing),
+            obj.get("format_issues", issues),
+            obj.get("hint", ""),
+        )
     except Exception:
         return Critique(not missing and not issues, missing, issues, "критик недоступен")

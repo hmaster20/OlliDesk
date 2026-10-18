@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-
 HypothesisStatus = Literal["open", "verified", "refuted", "partial", "inconclusive"]
 
 # Порядок сортировки для промпта: сначала открытые (нужно проверить),
@@ -50,12 +49,8 @@ class Hypothesis:
     verification_method: str
     status: HypothesisStatus = "open"
     evidence: str = ""
-    created_at: str = field(
-        default_factory=lambda: datetime.now().isoformat(timespec="seconds")
-    )
-    updated_at: str = field(
-        default_factory=lambda: datetime.now().isoformat(timespec="seconds")
-    )
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
 @dataclass

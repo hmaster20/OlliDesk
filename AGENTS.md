@@ -476,11 +476,12 @@ Promise. Py → JS: `open_file(path, line)`, `show_diff`, `accept_diff`, `reject
    from agents.tool_registry import ToolPolicy, tool
    from loguru import logger
 
+
    @tool(
        name="my_tool",
        description="Краткое описание для LLM.",
-       policy=ToolPolicy.ASK_FIRST,   # AUTO | ASK_FIRST | EXCLUDED
-       modes=["agent"],                # chat | plan | agent
+       policy=ToolPolicy.ASK_FIRST,  # AUTO | ASK_FIRST | EXCLUDED
+       modes=["agent"],  # chat | plan | agent
    )
    async def my_tool(query: str, project_root: str | None = None) -> str:
        """Первое предложение докстринга попадёт в описание схемы.

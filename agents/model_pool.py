@@ -7,6 +7,7 @@
 (n_gpu_layers=0). Устройства не конфликтуют → реальный параллелизм.
 RAM 127 ГБ держит обе без напряжения.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,45 +17,64 @@ from typing import Any, Protocol
 
 
 class Role(str, Enum):
-    PLANNER = "planner"   # 3B GPU: classify/plan/critique/tool-grammar
-    ANALYST = "analyst"   # 7B CPU: synthesis/regen (качество)
+    PLANNER = "planner"  # 3B GPU: classify/plan/critique/tool-grammar
+    ANALYST = "analyst"  # 7B CPU: synthesis/regen (качество)
     # Слот на будущее для больших/критичных задач:
-    ANALYST_PRO = "analyst_pro"   # 14B CPU (q4_k_m ≈ 9 ГБ), переключается по флагу
+    ANALYST_PRO = "analyst_pro"  # 14B CPU (q4_k_m ≈ 9 ГБ), переключается по флагу
 
 
 @dataclass
 class RoleSpec:
     role: Role
     model_id: str
-    device: str                 # "GPU" | "CPU"
+    device: str  # "GPU" | "CPU"
     n_ctx: int
-    kv_cache: str               # "q8_0" | "f16"
+    kv_cache: str  # "q8_0" | "f16"
     n_gpu_layers: int
     temperature: float
     top_p: float = 0.9
     repeat_penalty: float = 1.1
-    file: str | None = None     # явный gguf (обходит split-артефакты)
+    file: str | None = None  # явный gguf (обходит split-артефакты)
 
 
 # Дефолты под ваше железо; переопределяются из config v3 models.*
 DEFAULT_SPECS: dict[Role, RoleSpec] = {
     Role.PLANNER: RoleSpec(
-        role=Role.PLANNER, model_id="qwen2.5-3b-instruct", device="GPU",
-        n_ctx=8192, kv_cache="q8_0", n_gpu_layers=-1, temperature=0.0,
+        role=Role.PLANNER,
+        model_id="qwen2.5-3b-instruct",
+        device="GPU",
+        n_ctx=8192,
+        kv_cache="q8_0",
+        n_gpu_layers=-1,
+        temperature=0.0,
     ),
     Role.ANALYST: RoleSpec(
-        role=Role.ANALYST, model_id="qwen2.5-7b-instruct", device="CPU",
-        n_ctx=8192, kv_cache="q8_0", n_gpu_layers=0, temperature=0.35,
+        role=Role.ANALYST,
+        model_id="qwen2.5-7b-instruct",
+        device="CPU",
+        n_ctx=8192,
+        kv_cache="q8_0",
+        n_gpu_layers=0,
+        temperature=0.35,
     ),
 }
 
 
 class ClientLike(Protocol):
     """Минимальный контракт клиента (LocalLLMClient/OllamaClient)."""
+
     n_ctx: int
-    async def generate(self, prompt: str, *, max_tokens: int, temperature: float,
-                       grammar: str | None = None, json_schema: dict | None = None,
-                       stream: bool = False) -> Any: ...
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        grammar: str | None = None,
+        json_schema: dict | None = None,
+        stream: bool = False,
+    ) -> Any: ...
     def count_tokens(self, text: str) -> int: ...
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
@@ -70,9 +90,11 @@ class ModelPool:
     async def load(self, specs: dict[Role, RoleSpec], factory) -> None:
         """factory(spec) -> ClientLike. Грузим planner и analyst параллельно
         (разные устройства → нет contention при загрузке)."""
+
         async def _one(spec: RoleSpec) -> tuple[Role, ClientLike]:
-            c = await asyncio.to_thread(factory, spec)   # блокирующая загрузка llama.cpp
+            c = await asyncio.to_thread(factory, spec)  # блокирующая загрузка llama.cpp
             return spec.role, c
+
         results = await asyncio.gather(*(_one(s) for s in specs.values()))
         for role, client in results:
             self._clients[role] = client

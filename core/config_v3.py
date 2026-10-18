@@ -2,6 +2,7 @@
 AgentLoop не держится. Ключевые отличия от v2: двухмодельный блок models.*,
 security.*, context.policy=dynamic, agent.default_flow=linear, project_intelligence.*.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -35,12 +36,24 @@ class ModelRoleCfg(BaseModel):
 
 
 class ModelsCfg(BaseModel):
-    planner: ModelRoleCfg = Field(default_factory=lambda: ModelRoleCfg(
-        id="qwen2.5-3b-instruct", device="GPU", n_gpu_layers=-1, temperature=0.0,
-        budgets={"classify": 32, "plan": 256, "critique": 192}))
-    analyst: ModelRoleCfg = Field(default_factory=lambda: ModelRoleCfg(
-        id="qwen2.5-7b-instruct", device="CPU", n_gpu_layers=0, temperature=0.35,
-        budgets={"synthesis": 1100, "regen": 900}))
+    planner: ModelRoleCfg = Field(
+        default_factory=lambda: ModelRoleCfg(
+            id="qwen2.5-3b-instruct",
+            device="GPU",
+            n_gpu_layers=-1,
+            temperature=0.0,
+            budgets={"classify": 32, "plan": 256, "critique": 192},
+        )
+    )
+    analyst: ModelRoleCfg = Field(
+        default_factory=lambda: ModelRoleCfg(
+            id="qwen2.5-7b-instruct",
+            device="CPU",
+            n_gpu_layers=0,
+            temperature=0.35,
+            budgets={"synthesis": 1100, "regen": 900},
+        )
+    )
     analyst_pro: ModelRoleCfg | None = None
 
 
@@ -48,9 +61,17 @@ class ContextCfg(BaseModel):
     policy: Literal["dynamic"] = "dynamic"
     tokenizer: Literal["exact_when_loaded", "approx"] = "exact_when_loaded"
     safety_reserve_tokens: int = 256
-    shares: dict[str, dict[str, float]] = Field(default_factory=lambda: {
-        "architecture": {"system": 0.12, "repo_map": 0.25, "evidence": 0.45,
-                         "dynamic": 0.10, "history": 0.08}})
+    shares: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "architecture": {
+                "system": 0.12,
+                "repo_map": 0.25,
+                "evidence": 0.45,
+                "dynamic": 0.10,
+                "history": 0.08,
+            }
+        }
+    )
 
 
 class DeepModeCfg(BaseModel):
@@ -85,15 +106,60 @@ class ProjectIntelligenceCfg(BaseModel):
     call_graph: Literal["off", "lsp_optional"] = "lsp_optional"
     repo_map_levels: list[str] = Field(default_factory=lambda: ["L0", "L1"])
     cache_dir: str = ".ollidesk/graph"
-    index_extensions: list[str] = Field(default_factory=lambda: [
-        ".py", ".pyi", ".cs", ".csx", ".csproj", ".sln", ".rb", ".tf", ".tfvars",
-        ".hcl", ".pkr.hcl", ".yml", ".yaml", ".json", ".toml", ".go", ".js", ".ts",
-        ".tsx", ".jsx", ".html", ".css", ".md", ".xml", ".config", ".resx", ".razor",
-        ".sh", ".bash", ".sql", ".rs", ".java", ".kt", ".php"])
-    index_filenames: list[str] = Field(default_factory=lambda: [
-        "Vagrantfile", "Rakefile", "Gemfile", "Guardfile", "Podfile", "Dockerfile",
-        "Makefile", "Playbook", "site.yml", "playbook.yml", "build.gradle",
-        "CMakeLists.txt"])
+    index_extensions: list[str] = Field(
+        default_factory=lambda: [
+            ".py",
+            ".pyi",
+            ".cs",
+            ".csx",
+            ".csproj",
+            ".sln",
+            ".rb",
+            ".tf",
+            ".tfvars",
+            ".hcl",
+            ".pkr.hcl",
+            ".yml",
+            ".yaml",
+            ".json",
+            ".toml",
+            ".go",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".html",
+            ".css",
+            ".md",
+            ".xml",
+            ".config",
+            ".resx",
+            ".razor",
+            ".sh",
+            ".bash",
+            ".sql",
+            ".rs",
+            ".java",
+            ".kt",
+            ".php",
+        ]
+    )
+    index_filenames: list[str] = Field(
+        default_factory=lambda: [
+            "Vagrantfile",
+            "Rakefile",
+            "Gemfile",
+            "Guardfile",
+            "Podfile",
+            "Dockerfile",
+            "Makefile",
+            "Playbook",
+            "site.yml",
+            "playbook.yml",
+            "build.gradle",
+            "CMakeLists.txt",
+        ]
+    )
 
 
 class ToolsPolicyCfg(BaseModel):

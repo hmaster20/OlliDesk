@@ -8,42 +8,73 @@ from loguru import logger
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 
-
 # Алиасы языков: модель часто пишет «C#», «js», «csharp» — приводим к тому
 # виду, который кладёт `fs.indexer._detect_language` в метаданные чанка.
 _LANGUAGE_ALIASES: dict[str, str] = {
     # C# / .NET
-    "c#": "csharp", "csharp": "csharp", "cs": "csharp", ".cs": "csharp",
-    "csproj": "msbuild", "msbuild": "msbuild",
-    "sln": "solution", "solution": "solution",
+    "c#": "csharp",
+    "csharp": "csharp",
+    "cs": "csharp",
+    ".cs": "csharp",
+    "csproj": "msbuild",
+    "msbuild": "msbuild",
+    "sln": "solution",
+    "solution": "solution",
     # C/C++
-    "c++": "cpp", "cpp": "cpp", "cplusplus": "cpp",
+    "c++": "cpp",
+    "cpp": "cpp",
+    "cplusplus": "cpp",
     # JS/TS
-    "js": "javascript", "javascript": "javascript",
-    "ts": "typescript", "typescript": "typescript",
+    "js": "javascript",
+    "javascript": "javascript",
+    "ts": "typescript",
+    "typescript": "typescript",
     # Python
-    "py": "python", "python": "python", "python3": "python",
+    "py": "python",
+    "python": "python",
+    "python3": "python",
     # Shell
-    "sh": "shell", "bash": "shell", "shell": "shell",
+    "sh": "shell",
+    "bash": "shell",
+    "shell": "shell",
     # YAML
-    "yml": "yaml", "yaml": "yaml",
+    "yml": "yaml",
+    "yaml": "yaml",
     # Markdown
-    "md": "markdown", "markdown": "markdown",
+    "md": "markdown",
+    "markdown": "markdown",
     # Прочее
-    "html": "html", "css": "css", "json": "json", "xml": "xml",
-    "go": "go", "golang": "go",
-    "rs": "rust", "rust": "rust",
-    "java": "java", "kt": "kotlin", "kotlin": "kotlin",
-    "rb": "ruby", "ruby": "ruby",
-    "php": "php", "swift": "swift", "dart": "dart",
-    "sql": "sql", "toml": "toml", "ini": "ini",
-    "vue": "vue", "svelte": "svelte", "astro": "astro",
+    "html": "html",
+    "css": "css",
+    "json": "json",
+    "xml": "xml",
+    "go": "go",
+    "golang": "go",
+    "rs": "rust",
+    "rust": "rust",
+    "java": "java",
+    "kt": "kotlin",
+    "kotlin": "kotlin",
+    "rb": "ruby",
+    "ruby": "ruby",
+    "php": "php",
+    "swift": "swift",
+    "dart": "dart",
+    "sql": "sql",
+    "toml": "toml",
+    "ini": "ini",
+    "vue": "vue",
+    "svelte": "svelte",
+    "astro": "astro",
     # === IaC + Ansible/Vagrant ===
     "hcl": "hcl",
-    "tf": "terraform", "terraform": "terraform",
-    "tfvars": "terraform-vars", "terraform-vars": "terraform-vars",
+    "tf": "terraform",
+    "terraform": "terraform",
+    "tfvars": "terraform-vars",
+    "terraform-vars": "terraform-vars",
     "pkr.hcl": "hcl",
-    "vagrant": "vagrant", "vagrantfile": "vagrant",
+    "vagrant": "vagrant",
+    "vagrantfile": "vagrant",
     "ansible": "ansible",
 }
 
@@ -122,8 +153,7 @@ async def search_codebase(
             hint = ""
             if normalized_language:
                 hint = (
-                    f" (фильтр language={normalized_language!r} — доступные значения: "
-                    f"{_known_languages()})"
+                    f" (фильтр language={normalized_language!r} — доступные значения: {_known_languages()})"
                 )
             return (
                 f"Ничего не найдено по запросу{hint}. "

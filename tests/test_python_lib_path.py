@@ -1,5 +1,8 @@
-import sys, llama_cpp
+import sys
 from pathlib import Path
+
+import llama_cpp
+
 print("Интерпретатор:", sys.executable)
 print("sys.path:")
 for p in sys.path:

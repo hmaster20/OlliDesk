@@ -12,6 +12,7 @@
 Это даёт LLM готовый тезаурус «проект = GUI-трекер + фоновые сетевые загрузчики
 с офлайн-гейтом + гибрид FS-мониторинга + SQLite-ETL», без чтения 10 файлов.
 """
+
 from __future__ import annotations
 
 import ast
@@ -47,17 +48,32 @@ def parse_python_file(p: Path, rec: FileRecord):
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             bases = [_unparse(b) for b in node.bases]
-            syms.append(Symbol(qualified_name=node.name, kind="class", file=rec.path,
-                               line=node.lineno, signature=f"class {node.name}({', '.join(bases)})",
-                               metadata={"bases": bases, "methods": [m.name for m in node.body
-                                          if isinstance(m, ast.FunctionDef)]}))
+            syms.append(
+                Symbol(
+                    qualified_name=node.name,
+                    kind="class",
+                    file=rec.path,
+                    line=node.lineno,
+                    signature=f"class {node.name}({', '.join(bases)})",
+                    metadata={
+                        "bases": bases,
+                        "methods": [m.name for m in node.body if isinstance(m, ast.FunctionDef)],
+                    },
+                )
+            )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             kind = "function"
-            syms.append(Symbol(qualified_name=node.name, kind=kind, file=rec.path,
-                               line=node.lineno,
-                               signature=("async " if isinstance(node, ast.AsyncFunctionDef) else "")
-                                       + f"def {node.name}(...)",
-                               metadata={"decorators": [_unparse(d) for d in node.decorator_list]}))
+            syms.append(
+                Symbol(
+                    qualified_name=node.name,
+                    kind=kind,
+                    file=rec.path,
+                    line=node.lineno,
+                    signature=("async " if isinstance(node, ast.AsyncFunctionDef) else "")
+                    + f"def {node.name}(...)",
+                    metadata={"decorators": [_unparse(d) for d in node.decorator_list]},
+                )
+            )
     # Доменные флаги по всему файлу.
     if _OFFLINE_GATE_RE.search(src):
         meta["flags"].append("network_gated")
@@ -100,24 +116,49 @@ def _unparse(node: ast.AST) -> str:
 def _regex_symbols(src: str, rec: FileRecord) -> list[Symbol]:
     out: list[Symbol] = []
     for m in re.finditer(r"^\s*class\s+(\w+)\s*(?:\(([^)]*)\))?\s*:", src, re.M):
-        out.append(Symbol(qualified_name=m.group(1), kind="class", file=rec.path,
-                          line=src.count("\n", 0, m.start()) + 1,
-                          signature=m.group(0).strip()[:160],
-                          metadata={"bases": [b.strip() for b in (m.group(2) or "").split(",") if b.strip()]}))
+        out.append(
+            Symbol(
+                qualified_name=m.group(1),
+                kind="class",
+                file=rec.path,
+                line=src.count("\n", 0, m.start()) + 1,
+                signature=m.group(0).strip()[:160],
+                metadata={"bases": [b.strip() for b in (m.group(2) or "").split(",") if b.strip()]},
+            )
+        )
     for m in re.finditer(r"^\s*(?:async\s+)?def\s+(\w+)\s*\(", src, re.M):
-        out.append(Symbol(qualified_name=m.group(1), kind="function", file=rec.path,
-                          line=src.count("\n", 0, m.start()) + 1, signature=m.group(0).strip()[:160]))
+        out.append(
+            Symbol(
+                qualified_name=m.group(1),
+                kind="function",
+                file=rec.path,
+                line=src.count("\n", 0, m.start()) + 1,
+                signature=m.group(0).strip()[:160],
+            )
+        )
     return out
 
 
-def _domain_piece(src: str, rec: FileRecord, *, module_doc: str = "",
-                  imports: list[str] | None = None, flags: list[str] | None = None,
-                  partial: bool = False) -> dict | None:
+def _domain_piece(
+    src: str,
+    rec: FileRecord,
+    *,
+    module_doc: str = "",
+    imports: list[str] | None = None,
+    flags: list[str] | None = None,
+    partial: bool = False,
+) -> dict | None:
     fl = flags or []
     if not (fl or module_doc or imports):
         return None
     # Секции конфига, которые читает этот файл.
     sections = sorted(set(re.findall(r"\.get(?:_int|_bool)?\(\s*[\"'](\w+)[\"']", src)))
-    return {"kind": "python_file", "path": rec.path, "doc": module_doc[:400],
-            "imports_head": (imports or [])[:30], "flags": fl,
-            "config_sections": sections, "partial_parse": partial}
+    return {
+        "kind": "python_file",
+        "path": rec.path,
+        "doc": module_doc[:400],
+        "imports_head": (imports or [])[:30],
+        "flags": fl,
+        "config_sections": sections,
+        "partial_parse": partial,
+    }

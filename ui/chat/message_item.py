@@ -1,9 +1,9 @@
 """Виджет одного сообщения в чате."""
 
-from loguru import logger
 import html as html_mod
 import re
 
+from loguru import logger
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
@@ -400,9 +400,7 @@ class ChatSourcesItem(QWidget):
         outer.setContentsMargins(16, 2, 8, 2)
         outer.setSpacing(2)
 
-        self._header_btn = QPushButton(
-            f"📚 Источники проекта ({len(self._sources)}) · ▼ развернуть"
-        )
+        self._header_btn = QPushButton(f"📚 Источники проекта ({len(self._sources)}) · ▼ развернуть")
         self._header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header_btn.setFlat(True)
         self._header_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -432,9 +430,7 @@ class ChatSourcesItem(QWidget):
                 "QPushButton:hover { text-decoration: underline;"
                 " color: #8bc0f0; }"
             )
-            btn.clicked.connect(
-                lambda _=False, p=path, s=start: self.source_activated.emit(p, s)
-            )
+            btn.clicked.connect(lambda _=False, p=path, s=start: self.source_activated.emit(p, s))
             body_layout.addWidget(btn)
 
         self._body.setVisible(False)
@@ -444,9 +440,8 @@ class ChatSourcesItem(QWidget):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         arrow = "▲ свернуть" if self._expanded else "▼ развернуть"
-        self._header_btn.setText(
-            f"📚 Источники проекта ({len(self._sources)}) · {arrow}"
-        )
+        self._header_btn.setText(f"📚 Источники проекта ({len(self._sources)}) · {arrow}")
+
 
 def format_source_label(file_path: str, start: int, end: int) -> str:
     """Формирует подпись источника RAG вида ``file:строка`` или ``file:start-end``."""
@@ -658,6 +653,7 @@ class ChatMessageItem(QWidget):
     def _render_markdown_to_html(self, text: str) -> str:
         return render_markdown(text)
 
+
 class ChatHypothesisItem(QWidget):
     """Виджет отображения гипотезы исследования в ленте чата.
 
@@ -705,22 +701,14 @@ class ChatHypothesisItem(QWidget):
 
         self.body_label = QLabel(statement)
         self.body_label.setWordWrap(True)
-        self.body_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.body_label.setStyleSheet(
-            "color: #d4d4d4; font-size: 13px; font-weight: 600; padding: 0;"
-        )
+        self.body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.body_label.setStyleSheet("color: #d4d4d4; font-size: 13px; font-weight: 600; padding: 0;")
         layout.addWidget(self.body_label)
 
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
-        self.detail_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.detail_label.setStyleSheet(
-            "color: #9a9a9a; font-size: 12px; font-style: italic; padding: 0;"
-        )
+        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.detail_label.setStyleSheet("color: #9a9a9a; font-size: 12px; font-style: italic; padding: 0;")
         layout.addWidget(self.detail_label)
 
         self._refresh()
@@ -740,9 +728,7 @@ class ChatHypothesisItem(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
-        color, label = self._STATUS_STYLES.get(
-            self._status, ("#888888", self._status)
-        )
+        color, label = self._STATUS_STYLES.get(self._status, ("#888888", self._status))
         self.header_label.setText(
             f'<span style="color: #c0c0c0; font-size: 12px; font-weight: 600;">'
             f"💡 Гипотеза [{self.hypothesis_id}]</span> "
@@ -750,17 +736,12 @@ class ChatHypothesisItem(QWidget):
         )
 
         if self._status == "open":
-            text = (
-                f"Проверить: {self._verification_method}"
-                if self._verification_method
-                else ""
-            )
+            text = f"Проверить: {self._verification_method}" if self._verification_method else ""
         else:
-            text = (
-                f"Доказательство: {self._evidence}" if self._evidence else ""
-            )
+            text = f"Доказательство: {self._evidence}" if self._evidence else ""
         self.detail_label.setText(text)
         self.detail_label.setVisible(bool(text))
+
 
 # ---------------------------------------------------------------------------
 # Паспорт исследования
@@ -797,17 +778,16 @@ def _fmt_chars(total: int) -> str:
         return f"~{total // 1000}к символов"
     return f"~{total / 1_000_000:.1f}М символов"
 
+
 def _escape_html(text: str) -> str:
     """Экранирует <, >, & для QLabel RichText."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 # ===========================================================================
 # ChatDiagramItem — схема компонентов с переключателем ASCII ↔ Mermaid
 # ===========================================================================
+
 
 class ChatDiagramItem(QWidget):
     """Схема компонентов: ASCII по умолчанию, Mermaid — опционально.
@@ -851,9 +831,7 @@ class ChatDiagramItem(QWidget):
         header.setSpacing(4)
 
         title = QLabel("🗺 Схема компонентов")
-        title.setStyleSheet(
-            "color: #d4d4d4; font-size: 12px; font-weight: 600;"
-        )
+        title.setStyleSheet("color: #d4d4d4; font-size: 12px; font-weight: 600;")
         header.addWidget(title)
         header.addStretch()
 
@@ -907,8 +885,7 @@ class ChatDiagramItem(QWidget):
             else:
                 self._mermaid_btn.setEnabled(False)
                 self._mermaid_btn.setToolTip(
-                    "Mermaid недоступен: нет QtWebEngine или mermaid.min.js "
-                    "в ui/web_editor/vendor/."
+                    "Mermaid недоступен: нет QtWebEngine или mermaid.min.js в ui/web_editor/vendor/."
                 )
         except Exception as e:
             logger.debug(f"ChatDiagramItem: Mermaid view недоступен: {e}")

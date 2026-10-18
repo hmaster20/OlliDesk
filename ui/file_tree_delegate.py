@@ -19,29 +19,27 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
-from typing import cast
 
 from loguru import logger
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QStyleOptionViewItem,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeView,
 )
 
 # Цвета по одному символу XY из `git status --porcelain`.
 # X — индекс, Y — рабочее дерево.
 _GIT_COLORS: dict[str, QColor] = {
-    "M": QColor("#e5c07b"),   # modified — жёлтый
-    "A": QColor("#98c379"),   # added — зелёный
-    "D": QColor("#e06c75"),   # deleted — красный
-    "R": QColor("#61afef"),   # renamed — синий
-    "C": QColor("#56b6c2"),   # copied — бирюзовый
-    "U": QColor("#d19a66"),   # unmerged — оранжевый
-    "?": QColor("#98c379"),   # untracked — зелёный
-    "!": QColor("#5c6370"),   # ignored — серый
+    "M": QColor("#e5c07b"),  # modified — жёлтый
+    "A": QColor("#98c379"),  # added — зелёный
+    "D": QColor("#e06c75"),  # deleted — красный
+    "R": QColor("#61afef"),  # renamed — синий
+    "C": QColor("#56b6c2"),  # copied — бирюзовый
+    "U": QColor("#d19a66"),  # unmerged — оранжевый
+    "?": QColor("#98c379"),  # untracked — зелёный
+    "!": QColor("#5c6370"),  # ignored — серый
 }
 
 # Отображаемая буква для каждого XY-статуса (для показа рядом с именем).
@@ -115,18 +113,12 @@ class GitStatusDelegate(QStyledItemDelegate):
             root = out.strip()
             if root:
                 self._repo_root = root
-                logger.info(
-                    f"GitStatusDelegate: репозиторий найден "
-                    f"(repo_root='{root}')"
-                )
+                logger.info(f"GitStatusDelegate: репозиторий найден (repo_root='{root}')")
             else:
-                logger.info(
-                    f"GitStatusDelegate: {path} не является git-репозиторием"
-                )
+                logger.info(f"GitStatusDelegate: {path} не является git-репозиторием")
         else:
             logger.info(
-                f"GitStatusDelegate: {path} не является git-репозиторием "
-                "— подсветка статусов отключена"
+                f"GitStatusDelegate: {path} не является git-репозиторием — подсветка статусов отключена"
             )
 
         self._poll_timer.start()
@@ -155,11 +147,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         if not target:
             return None
         try:
-            flags = (
-                subprocess.CREATE_NO_WINDOW
-                if sys.platform == "win32"
-                else 0
-            )
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             result = subprocess.run(
                 ["git", *args],
                 capture_output=True,
@@ -196,9 +184,7 @@ class GitStatusDelegate(QStyledItemDelegate):
             if branch and branch != "HEAD":
                 return branch
 
-        described = self._run_git(
-            "describe", "--tags", "--always", "--abbrev=7"
-        )
+        described = self._run_git("describe", "--tags", "--always", "--abbrev=7")
         if described and described.strip():
             return described.strip()
 
@@ -218,9 +204,7 @@ class GitStatusDelegate(QStyledItemDelegate):
             try:
                 branch = self._read_branch()
             except Exception:
-                logger.debug(
-                    "GitStatusDelegate: чтение ветки упало", exc_info=True
-                )
+                logger.debug("GitStatusDelegate: чтение ветки упало", exc_info=True)
                 branch = ""
 
             if branch != self._branch:
@@ -249,8 +233,7 @@ class GitStatusDelegate(QStyledItemDelegate):
                         self._parse_porcelain_line(raw_line)
                     except Exception:
                         logger.debug(
-                            "GitStatusDelegate: не разобрал строку: "
-                            f"{raw_line!r}",
+                            f"GitStatusDelegate: не разобрал строку: {raw_line!r}",
                         )
 
             self._update_viewport()
@@ -290,9 +273,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         if path.startswith('"') and path.endswith('"'):
             inner = path[1:-1]
             try:
-                path = inner.encode(
-                    "latin-1", "backslashreplace"
-                ).decode("unicode_escape")
+                path = inner.encode("latin-1", "backslashreplace").decode("unicode_escape")
             except Exception:
                 path = inner
 
@@ -345,7 +326,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         if not abs_norm.startswith(repo_norm + sep):
             return None
 
-        rel = abs_str[len(repo_root):].lstrip("\\/")
+        rel = abs_str[len(repo_root) :].lstrip("\\/")
         return rel.replace("\\", "/")
 
     # ------------------------------------------------------------------
@@ -406,14 +387,10 @@ class GitStatusDelegate(QStyledItemDelegate):
                 return
 
             option.palette.setColor(QPalette.ColorRole.Text, color)
-            option.palette.setColor(
-                QPalette.ColorRole.HighlightedText, color
-            )
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 
             # Добавляем букву рядом с именем, как в VS Code.
             if letter and option.text:
                 option.text = f"{option.text}  {letter}"
         except Exception:
-            logger.debug(
-                "GitStatusDelegate.initStyleOption failed", exc_info=True
-            )
+            logger.debug("GitStatusDelegate.initStyleOption failed", exc_info=True)

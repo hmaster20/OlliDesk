@@ -1,7 +1,8 @@
 # tools/test_optimizer.py
 from pathlib import Path
-from agents.hardware_profile import get_hardware_profile
+
 from agents.gguf_reader import read_gguf_meta
+from agents.hardware_profile import get_hardware_profile
 from agents.slm_optimizer import optimize
 from agents.slm_selector import select_best_model
 

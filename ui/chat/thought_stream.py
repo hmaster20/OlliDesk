@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-
 # Цвета сегментов (в стиле «серого лога»)
 _C_THOUGHT = "#9a9a9a"
 _C_ACTION = "#7a9ac8"
@@ -110,9 +109,7 @@ class ChatThoughtStream(QWidget):
         self._body.setReadOnly(True)
         self._body.setFrameShape(QFrame.Shape.NoFrame)
         self._body.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._body.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._body.setMaximumHeight(_BODY_MAX_HEIGHT)
         self._body.setStyleSheet(
             "QTextBrowser {"
@@ -130,19 +127,14 @@ class ChatThoughtStream(QWidget):
     # ---------------------------------------------------------------
 
     def _refresh_header(self) -> None:
-        parts = [
-            '<span style="color: #888; font-size: 12px; font-weight: 600;">'
-            "💭 Рассуждение</span>"
-        ]
+        parts = ['<span style="color: #888; font-size: 12px; font-weight: 600;">💭 Рассуждение</span>']
         if self._actions_count:
             parts.append(
-                f'<span style="color: #7a7a8a; font-size: 11px;">'
-                f"· {self._actions_count} действий</span>"
+                f'<span style="color: #7a7a8a; font-size: 11px;">· {self._actions_count} действий</span>'
             )
         if self._hypotheses_count:
             parts.append(
-                f'<span style="color: #7a7a8a; font-size: 11px;">'
-                f"· {self._hypotheses_count} гипотез</span>"
+                f'<span style="color: #7a7a8a; font-size: 11px;">· {self._hypotheses_count} гипотез</span>'
             )
 
         # Превью последней мысли — только когда виджет свёрнут
@@ -153,8 +145,7 @@ class ChatThoughtStream(QWidget):
                 preview = "…" + preview[-_HEADER_PREVIEW_CHARS:]
             safe = _escape(preview)
             parts.append(
-                f'<span style="color: #6a6a7a; font-size: 11px;'
-                f' font-style: italic;">· {safe}</span>'
+                f'<span style="color: #6a6a7a; font-size: 11px; font-style: italic;">· {safe}</span>'
             )
 
         self._header_label.setText(" ".join(parts))
@@ -166,9 +157,7 @@ class ChatThoughtStream(QWidget):
     def _toggle_body(self) -> None:
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
-        self._toggle_btn.setText(
-            "▲ Свернуть" if self._expanded else "▼ Развернуть"
-        )
+        self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
         self._refresh_header()
         if self._expanded:
             QTimer.singleShot(0, self._scroll_body_to_end)
@@ -206,15 +195,8 @@ class ChatThoughtStream(QWidget):
             self._insert_html('<span style="color: #7a7a8a;">💭 </span>')
             self._current_thought_open = True
 
-        safe = (
-            token.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br>")
-        )
-        self._insert_html(
-            f'<span style="color: {_C_THOUGHT}; font-style: italic;">{safe}</span>'
-        )
+        safe = token.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        self._insert_html(f'<span style="color: {_C_THOUGHT}; font-style: italic;">{safe}</span>')
 
         # Копим буфер для превью в заголовке (ограничиваем 500 символами —
         # хватит для последних 80 в заголовке с запасом).
@@ -232,11 +214,7 @@ class ChatThoughtStream(QWidget):
             return
         self._close_thought_block()
         safe = (
-            text.strip()
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br>")
+            text.strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         )
         self._insert_html(
             f'<span style="color: #7a7a8a;">💭 </span>'
@@ -256,14 +234,10 @@ class ChatThoughtStream(QWidget):
         self._close_thought_block()
         args_summary = ""
         if arguments:
-            args_summary = ", ".join(
-                f"{k}={_short(v)}" for k, v in arguments.items()
-            )
+            args_summary = ", ".join(f"{k}={_short(v)}" for k, v in arguments.items())
         line = f'<span style="color: {_C_ACTION};">🔧 {name}</span>'
         if args_summary:
-            line += (
-                f'<span style="color: #6a7a8a;">({_escape(args_summary)})</span>'
-            )
+            line += f'<span style="color: #6a7a8a;">({_escape(args_summary)})</span>'
         self._insert_html(line)
         self._insert_newline()
         self._actions_count += 1
@@ -279,10 +253,7 @@ class ChatThoughtStream(QWidget):
             preview_clean = preview_clean[:117] + "…"
         line = f'<span style="color: {color};">  {icon} {name}</span>'
         if preview_clean:
-            line += (
-                f' <span style="color: #6a6a7a;">— '
-                f"{_escape(preview_clean)}</span>"
-            )
+            line += f' <span style="color: #6a6a7a;">— {_escape(preview_clean)}</span>'
         self._insert_html(line)
         self._insert_newline()
 
@@ -306,10 +277,7 @@ class ChatThoughtStream(QWidget):
         stmt = _escape(statement.strip())
         if len(stmt) > 140:
             stmt = stmt[:137] + "…"
-        line = (
-            f'<span style="color: {color};">{icon} '
-            f"[{hypothesis_id}] {stmt}</span>"
-        )
+        line = f'<span style="color: {color};">{icon} [{hypothesis_id}] {stmt}</span>'
         if status != "open" and evidence:
             ev = _escape(evidence.strip().replace("\n", " "))
             if len(ev) > 100:
@@ -324,19 +292,13 @@ class ChatThoughtStream(QWidget):
     def append_nudge(self, label: str) -> None:
         """Записывает срабатывание нуджа (переход фазы)."""
         self._close_thought_block()
-        self._insert_html(
-            f'<span style="color: {_C_NUDGE}; font-style: italic;">'
-            f"🔁 {_escape(label)}</span>"
-        )
+        self._insert_html(f'<span style="color: {_C_NUDGE}; font-style: italic;">🔁 {_escape(label)}</span>')
         self._insert_newline()
 
     def append_phase(self, label: str) -> None:
         """Записывает фазу исследования."""
         self._close_thought_block()
-        self._insert_html(
-            f'<span style="color: {_C_NUDGE}; font-style: italic;">'
-            f"📌 {_escape(label)}</span>"
-        )
+        self._insert_html(f'<span style="color: {_C_NUDGE}; font-style: italic;">📌 {_escape(label)}</span>')
         self._insert_newline()
 
     def mark_interrupted(self, reason: str = "") -> None:
@@ -345,8 +307,7 @@ class ChatThoughtStream(QWidget):
         self._insert_newline()
         text = reason or "Рассуждение прервано пользователем."
         self._insert_html(
-            f'<span style="color: {_C_INTERRUPT}; font-style: italic;">'
-            f"⏹ {_escape(text)}</span>"
+            f'<span style="color: {_C_INTERRUPT}; font-style: italic;">⏹ {_escape(text)}</span>'
         )
         self._insert_newline()
         # Разворачиваем, чтобы пользователь увидел, где встал агент.
@@ -368,11 +329,7 @@ class ChatThoughtStream(QWidget):
 
 
 def _escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _short(value: object, limit: int = 60) -> str:

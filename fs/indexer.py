@@ -122,6 +122,7 @@ ARCHIVE_EXTENSIONS: set[str] = {
 
 _APP_DIR = ".ollidesk"
 
+
 class FileIndexer:
     """Индексатор файлов проекта."""
 
@@ -159,9 +160,7 @@ class FileIndexer:
             ignored_patterns,
         )
         self.allowed_extensions = set(config.index_extensions)
-        self._index_filenames: set[str] = {
-            name.lower() for name in (config.index_filenames or [])
-        }
+        self._index_filenames: set[str] = {name.lower() for name in (config.index_filenames or [])}
         self.max_file_size = config.max_file_size_kb * 1024
         self.chunk_size_tokens = config.chunk_size_tokens
         self.chunk_overlap_tokens = config.chunk_overlap_tokens
@@ -230,7 +229,6 @@ class FileIndexer:
                 continue
 
             yield file_path, rel_path_str
-
 
     def list_project_files(self, project_path: Path) -> list[str]:
         """Возвращает относительные пути файлов проекта без хеширования.

@@ -16,6 +16,7 @@ LSP включается точечно для bug_analysis/refactor («где �
 Позиции: LSP использует **0-based** line/character. Вызывающий код обязан
 передавать именно их (не 1-based из UI).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -69,8 +70,13 @@ INSTALLERS: dict[str, LspServerSpec] = {
     ),
     "terraform": LspServerSpec(
         "terraform",
-        ["wget", "-q", "-O", "terraform-ls",
-         "https://github.com/hashicorp/terraform-ls/releases/latest/download/terraform-ls"],
+        [
+            "wget",
+            "-q",
+            "-O",
+            "terraform-ls",
+            "https://github.com/hashicorp/terraform-ls/releases/latest/download/terraform-ls",
+        ],
         ["terraform-ls", "serve"],
         size_mb_est=25,
     ),
@@ -198,9 +204,7 @@ class _LspClient:
             if future is not None and not future.done():
                 if "error" in msg:
                     err = msg["error"]
-                    future.set_exception(
-                        RuntimeError(err.get("message", f"LSP error {err}"))
-                    )
+                    future.set_exception(RuntimeError(err.get("message", f"LSP error {err}")))
                 else:
                     future.set_result(msg.get("result"))
 
@@ -226,9 +230,7 @@ class _LspClient:
             )
             self._opened_files.add(file_path)
 
-    async def definition(
-        self, file_path: str, line: int, col: int, language_id: str
-    ) -> dict | None:
+    async def definition(self, file_path: str, line: int, col: int, language_id: str) -> dict | None:
         """textDocument/definition. line/col — 0-based."""
         await self.ensure_open(file_path, language_id)
         result = await self._request(
@@ -244,9 +246,7 @@ class _LspClient:
             return result[0] if result else None
         return result if isinstance(result, dict) else None
 
-    async def references(
-        self, file_path: str, line: int, col: int, language_id: str
-    ) -> list[dict]:
+    async def references(self, file_path: str, line: int, col: int, language_id: str) -> list[dict]:
         """textDocument/references. line/col — 0-based."""
         await self.ensure_open(file_path, language_id)
         result = await self._request(
@@ -271,7 +271,7 @@ class _LspClient:
             try:
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), timeout=3.0)
-            except (asyncio.TimeoutError, ProcessLookupError):
+            except (TimeoutError, ProcessLookupError):
                 with contextlib.suppress(ProcessLookupError):
                     self.process.kill()
         if self._reader_task is not None:
@@ -298,9 +298,7 @@ class LspBridge:
             return False
         return shutil.which(spec.cmd_serve[0]) is not None
 
-    def ensure_installed(
-        self, language: str, *, interactive_confirm: bool = False
-    ) -> bool:
+    def ensure_installed(self, language: str, *, interactive_confirm: bool = False) -> bool:
         """Ставит сервер, если разрешено политикой (см. §7 плана)."""
         spec = INSTALLERS.get(language)
         if spec is None:
@@ -331,19 +329,18 @@ class LspBridge:
         env = {**os.environ, "PIP_TARGET": str(self.cache / "py")}
         try:
             subprocess.run(
-                spec.cmd_install, check=True, timeout=300, env=env,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                ),
+                spec.cmd_install,
+                check=True,
+                timeout=300,
+                env=env,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
         except Exception as e:
             logger.error(f"LSP {language}: установка не удалась: {e}")
             return False
         return self.available(language)
 
-    async def _get_client(
-        self, language: str, project_root: str | None
-    ) -> _LspClient | None:
+    async def _get_client(self, language: str, project_root: str | None) -> _LspClient | None:
         if not self.available(language):
             return None
         cached = self._clients.get(language)

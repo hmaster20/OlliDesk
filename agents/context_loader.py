@@ -61,10 +61,7 @@ def load_agents_context(project_root: str | Path | None) -> str:
 
     parts = [f"<!-- источник: {label} -->\n{text}" for label, text in blocks]
     joined = _SEPARATOR.join(parts)
-    logger.debug(
-        f"AGENTS.md: загружено {len(blocks)} файл(ов), "
-        f"итого {len(joined)} символов"
-    )
+    logger.debug(f"AGENTS.md: загружено {len(blocks)} файл(ов), итого {len(joined)} символов")
     return joined
 
 

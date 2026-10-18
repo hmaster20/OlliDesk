@@ -109,10 +109,7 @@ def _detect_parts_via_hf(repo_id: str, filename: str) -> int | None:
 
     if max_total > 0:
         _HF_PARTS_CACHE[key] = max_total
-        logger.info(
-            f"HF: {repo_id}/{filename} разбит на {max_total} частей "
-            "(определено автоматически)"
-        )
+        logger.info(f"HF: {repo_id}/{filename} разбит на {max_total} частей (определено автоматически)")
         return max_total
 
     logger.debug(f"HF: {repo_id}/{filename} — не найден")
@@ -248,9 +245,7 @@ def _download_split_model(
     stem = filename.removesuffix(".gguf")
     pattern = f"{stem}-*-of-{parts:05d}.gguf"
 
-    logger.info(
-        f"Скачивание разбитой модели {filename} ({parts} частей) из {repo_id}..."
-    )
+    logger.info(f"Скачивание разбитой модели {filename} ({parts} частей) из {repo_id}...")
 
     snapshot_download(
         repo_id=repo_id,
@@ -269,10 +264,7 @@ def _download_split_model(
         logger.info(f"  ✓ Часть {i}/{parts}: {name}")
 
     assert first_part is not None
-    logger.info(
-        f"Разбитая модель готова: {first_part.name} "
-        f"(+ ещё {parts - 1} частей в той же папке)"
-    )
+    logger.info(f"Разбитая модель готова: {first_part.name} (+ ещё {parts - 1} частей в той же папке)")
     return first_part
 
 
@@ -305,10 +297,7 @@ def download_model(
 
         stale = target_dir / filename
         if stale.exists():
-            logger.info(
-                f"Удаляю устаревший объединённый файл: {stale.name} "
-                "(будет заменён split-частями)"
-            )
+            logger.info(f"Удаляю устаревший объединённый файл: {stale.name} (будет заменён split-частями)")
             try:
                 stale.unlink()
             except OSError as e:

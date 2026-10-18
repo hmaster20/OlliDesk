@@ -1,5 +1,6 @@
 # test_gpu.py в корне проекта
 from pathlib import Path
+
 from llama_cpp import Llama
 
 # model_path = Path.home() / ".ollidesk" / "models" / "qwen2.5-3b-instruct-q5_k_m.gguf"
@@ -13,7 +14,7 @@ if not model_path.exists():
 llm = Llama(
     model_path=str(model_path),
     n_ctx=4096,
-    n_gpu_layers=-1,     # все слои на GPU
+    n_gpu_layers=-1,  # все слои на GPU
     n_threads=8,
     n_batch=512,
     flash_attn=True,

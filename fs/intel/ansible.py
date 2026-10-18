@@ -4,6 +4,7 @@ group_vars/host_vars; collections; vault). Дамп ansible_cloud_1.md приш�
 пустым — реализация по стандарту, интерфейс стабилен, калибровка на реальных
 репо не меняет сигнатуры.
 """
+
 from __future__ import annotations
 
 import re
@@ -14,7 +15,17 @@ import yaml
 
 from fs.intel import FileRecord, Symbol
 
-_ROLE_DIRS = {"tasks", "handlers", "defaults", "vars", "templates", "files", "meta", "library", "module_utils"}
+_ROLE_DIRS = {
+    "tasks",
+    "handlers",
+    "defaults",
+    "vars",
+    "templates",
+    "files",
+    "meta",
+    "library",
+    "module_utils",
+}
 
 
 def parse_yaml_file(p: Path, rec: FileRecord):
@@ -32,28 +43,45 @@ def parse_yaml_file(p: Path, rec: FileRecord):
         for i, task in enumerate(data):
             if isinstance(task, dict):
                 name = task.get("name") or task.get("-") or f"task#{i}"
-                mods = [k for k in task if k in {"notify", "when", "loop", "with_items", "register", "tags", "handler"}]
-                syms.append(Symbol(qualified_name=str(name)[:80], kind="task", file=rec.path,
-                                   line=1, signature=f"{name} [{','.join(mods)}]",
-                                   metadata={"modules": list(task.keys())[:10]}))
+                mods = [
+                    k
+                    for k in task
+                    if k in {"notify", "when", "loop", "with_items", "register", "tags", "handler"}
+                ]
+                syms.append(
+                    Symbol(
+                        qualified_name=str(name)[:80],
+                        kind="task",
+                        file=rec.path,
+                        line=1,
+                        signature=f"{name} [{','.join(mods)}]",
+                        metadata={"modules": list(task.keys())[:10]},
+                    )
+                )
     elif isinstance(data, dict):
         for k in data:
-            syms.append(Symbol(qualified_name=str(k), kind="var", file=rec.path, line=1,
-                               signature=f"{k}: …"))
-    domain = {"kind": "yaml_file", "path": rec.path, "shape": type(data).__name__,
-              "is_playbook": _looks_like_playbook(data), "is_role_part": _role_part(rec.path)}
+            syms.append(Symbol(qualified_name=str(k), kind="var", file=rec.path, line=1, signature=f"{k}: …"))
+    domain = {
+        "kind": "yaml_file",
+        "path": rec.path,
+        "shape": type(data).__name__,
+        "is_playbook": _looks_like_playbook(data),
+        "is_role_part": _role_part(rec.path),
+    }
     return syms, domain
 
 
 def _looks_like_playbook(data: Any) -> bool:
-    return isinstance(data, list) and any(isinstance(x, dict) and ("hosts" in x or "roles" in x or "tasks" in x) for x in data)
+    return isinstance(data, list) and any(
+        isinstance(x, dict) and ("hosts" in x or "roles" in x or "tasks" in x) for x in data
+    )
 
 
 def _role_part(path: str) -> str | None:
     parts = path.split("/")
     for i, seg in enumerate(parts):
         if seg in _ROLE_DIRS and i >= 1:
-            return f"{parts[i-1]}/{seg}"
+            return f"{parts[i - 1]}/{seg}"
     return None
 
 
@@ -74,10 +102,20 @@ def build_ansible_project(root: Path, files: list[FileRecord]) -> dict:
             ri = parts.index("roles")
             if ri + 1 < len(parts):
                 rname = parts[ri + 1]
-                role = role_index.setdefault(rname, {"name": rname, "path": "/".join(parts[:ri + 2]),
-                                                     "tasks": [], "handlers": [], "defaults": [],
-                                                     "vars": [], "templates": [], "files": [],
-                                                     "meta_dependencies": []})
+                role = role_index.setdefault(
+                    rname,
+                    {
+                        "name": rname,
+                        "path": "/".join(parts[: ri + 2]),
+                        "tasks": [],
+                        "handlers": [],
+                        "defaults": [],
+                        "vars": [],
+                        "templates": [],
+                        "files": [],
+                        "meta_dependencies": [],
+                    },
+                )
                 if ri + 2 < len(parts):
                     part = parts[ri + 2]
                     if part in {"tasks", "handlers", "defaults", "vars", "templates", "files"}:
@@ -107,10 +145,16 @@ def build_ansible_project(root: Path, files: list[FileRecord]) -> dict:
     for r in roles:
         for dep in r["meta_dependencies"]:
             edges.append({"from": r["name"], "to": dep, "kind": "depends_on"})
-    return {"roles": roles, "playbooks": playbooks, "inventories": inventories,
-            "group_vars": group_vars, "host_vars": host_vars,
-            "collections": sorted(collections), "vault_files": vaults,
-            "role_edges": edges}
+    return {
+        "roles": roles,
+        "playbooks": playbooks,
+        "inventories": inventories,
+        "group_vars": group_vars,
+        "host_vars": host_vars,
+        "collections": sorted(collections),
+        "vault_files": vaults,
+        "role_edges": edges,
+    }
 
 
 def _read_meta_deps(p: Path) -> list[str]:

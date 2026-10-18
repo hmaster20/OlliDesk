@@ -42,7 +42,6 @@ from core.context_budget import (
 )
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
 
-
 # Максимальное число чтений одного файла, после которого цикл считает это
 # застреванием. Дублируется с `investigation._MAX_READS_PER_FILE`, но здесь
 # используется как «жёсткий стоп» на уровне исполнения tool_call.
@@ -290,8 +289,7 @@ def _fit_sections(
             remaining = others
             continue
         remaining = [
-            (name, truncate_to_chars(value, allowance) if name == key else value)
-            for name, value in remaining
+            (name, truncate_to_chars(value, allowance) if name == key else value) for name, value in remaining
         ]
         remaining = [(name, value) for name, value in remaining if value]
     return remaining
@@ -327,8 +325,7 @@ def _build_system_prompt(
         remaining = max_iterations - (iteration + 1)
         if remaining <= 1:
             iter_line += (
-                " СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer — "
-                "не вызывай инструменты, дай финальный текст."
+                " СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer — не вызывай инструменты, дай финальный текст."
             )
         elif remaining <= 3:
             iter_line += (
@@ -384,15 +381,11 @@ def _build_system_prompt(
     if context.extra_rules:
         variable.append(("rules", f"Дополнительные правила:\n{context.extra_rules}"))
     if context.agents_context:
-        variable.append(
-            ("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}")
-        )
+        variable.append(("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}"))
     if context.hypotheses:
         rendered = context.hypotheses.render_for_prompt()  # type: ignore[attr-defined]
         if rendered:
-            variable.append(
-                ("hypotheses", f"Гипотезы исследования:\n{rendered}")
-            )
+            variable.append(("hypotheses", f"Гипотезы исследования:\n{rendered}"))
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:
@@ -486,9 +479,7 @@ class AgentLoop:
             args = str(tc.arguments)
         return (tc.name, args)
 
-    def _extract_tool_calls_from_text(
-        self, text: str, tools: list | None = None
-    ) -> list[ToolCall]:
+    def _extract_tool_calls_from_text(self, text: str, tools: list | None = None) -> list[ToolCall]:
         """Извлекает вызовы инструментов из текстового ответа модели."""
         return extract_tool_calls(text, tools)
 
@@ -521,14 +512,15 @@ class AgentLoop:
             state.read_with_content.add("AGENTS.md")
             state.total_chars_read += len(context.agents_context)
             logger.debug(
-                f"Pre-seed: AGENTS.md ({len(context.agents_context)} симв.) "
-                "засчитан как прочитанный"
+                f"Pre-seed: AGENTS.md ({len(context.agents_context)} симв.) засчитан как прочитанный"
             )
 
         # [M5] Entry-point кандидаты из карты проекта.
         if context.project_map:
             import re as _re
+
             from agents.investigation import _ENTRY_HINTS
+
             hints = {h.lower() for h in _ENTRY_HINTS}
             # Строки вида "  main.py" / "    Program.cs" — basename в карте.
             for m in _re.finditer(r"(?m)^\s*([A-Za-z0-9_./-]+)\s*$", context.project_map):
@@ -536,9 +528,7 @@ class AgentLoop:
                 if name in hints:
                     state.known_entry_points.append(name)
             if state.known_entry_points:
-                logger.debug(
-                    f"Pre-seed: known_entry_points={state.known_entry_points[:5]}"
-                )
+                logger.debug(f"Pre-seed: known_entry_points={state.known_entry_points[:5]}")
 
     @staticmethod
     def _make_research_summary(
@@ -626,8 +616,7 @@ class AgentLoop:
             messages[0] = ChatMessage(
                 role="system",
                 content=(
-                    messages[0].content
-                    + "\n\nВНИМАНИЕ: инструменты ОТКЛЮЧЕНЫ. "
+                    messages[0].content + "\n\nВНИМАНИЕ: инструменты ОТКЛЮЧЕНЫ. "
                     f"Причина: {reason}. Сформулируй финальный ответ прямо "
                     "сейчас на основе того, что успел прочитать. "
                     "Открытые гипотезы пометь как inconclusive. "
@@ -758,9 +747,7 @@ class AgentLoop:
                 if iteration == 0:
                     await on_status("🤔 Анализирую запрос…")
                 else:
-                    await on_status(
-                        f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…"
-                    )
+                    await on_status(f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…")
 
             if (
                 is_synthesis_phase
@@ -810,9 +797,7 @@ class AgentLoop:
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
-                logger.warning(
-                    f"Модель {self.model} не поддерживает нативные tools, повтор без tools"
-                )
+                logger.warning(f"Модель {self.model} не поддерживает нативные tools, повтор без tools")
                 base_tools = None
                 if on_tools_disabled:
                     await on_tools_disabled()
@@ -820,14 +805,10 @@ class AgentLoop:
 
             # --- Fallback: текстовые tool_calls ---
             if not pending_tool_calls and current_text and tools_to_send:
-                extracted_calls = self._extract_tool_calls_from_text(
-                    current_text, tools_to_send
-                )
+                extracted_calls = self._extract_tool_calls_from_text(current_text, tools_to_send)
                 if extracted_calls:
                     pending_tool_calls = extracted_calls
-                    logger.debug(
-                        f"Извлечено {len(pending_tool_calls)} текстовых tool_calls"
-                    )
+                    logger.debug(f"Извлечено {len(pending_tool_calls)} текстовых tool_calls")
 
             # --- Анти-галлюцинация: похоже на вызов, но не распознан ---
             if (
@@ -838,9 +819,7 @@ class AgentLoop:
                 and _looks_like_tool_attempt(current_text)
             ):
                 nudged_tool_format = True
-                logger.warning(
-                    "Ответ похож на вызов инструмента, но не распознан — прошу формат JSON"
-                )
+                logger.warning("Ответ похож на вызов инструмента, но не распознан — прошу формат JSON")
                 messages.append(ChatMessage(role="assistant", content=current_text))
                 messages.append(ChatMessage(role="user", content=_TOOL_FORMAT_HINT))
                 if on_status:
@@ -850,16 +829,11 @@ class AgentLoop:
             # --- Защита от повторов ---
             if pending_tool_calls and tools_to_send:
                 if on_status:
-                    names = ", ".join(
-                        dict.fromkeys(tc.name for tc in pending_tool_calls)
-                    )
+                    names = ", ".join(dict.fromkeys(tc.name for tc in pending_tool_calls))
                     await on_status(f"🔧 Подготовка вызовов: {names}")
                 signature = self._tool_signature(pending_tool_calls)
                 if signature == prev_signature:
-                    logger.warning(
-                        "Повтор идентичного набора tool_calls — "
-                        "принудительный финальный синтез"
-                    )
+                    logger.warning("Повтор идентичного набора tool_calls — принудительный финальный синтез")
                     if (
                         research_mode
                         and split_thoughts
@@ -870,9 +844,7 @@ class AgentLoop:
                         await on_final_answer_started()
 
                     if current_text:
-                        messages.append(
-                            ChatMessage(role="assistant", content=current_text)
-                        )
+                        messages.append(ChatMessage(role="assistant", content=current_text))
 
                     final_text = await self._final_call_no_tools(
                         messages,
@@ -906,9 +878,7 @@ class AgentLoop:
                 for tc in pending_tool_calls:
                     call_key = self._call_key(tc)
                     if call_key in executed_calls:
-                        logger.debug(
-                            f"Повторный вызов {tc.name} — отдаю кэшированный результат"
-                        )
+                        logger.debug(f"Повторный вызов {tc.name} — отдаю кэшированный результат")
                         messages.append(
                             _create_tool_result_message(
                                 tc.id,
@@ -922,14 +892,11 @@ class AgentLoop:
                     # Жёсткая защита: если модель читает ОДИН и тот же файл
                     # слишком много раз — блокируем вызов.
                     if tc.name == "read_file":
-                        target = str(tc.arguments.get("path") or "").replace(
-                            "\\", "/"
-                        )
+                        target = str(tc.arguments.get("path") or "").replace("\\", "/")
                         reads = state.reads_per_file.get(target, 0)
                         if reads >= _MAX_READS_PER_FILE_HARD:
                             logger.warning(
-                                f"read_file {target}: уже {reads} чтений — "
-                                "блокирую, требую перейти к ответу"
+                                f"read_file {target}: уже {reads} чтений — блокирую, требую перейти к ответу"
                             )
                             messages.append(
                                 _create_tool_result_message(
@@ -953,9 +920,7 @@ class AgentLoop:
 
                     if policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
-                        approved = await on_tool_request(
-                            tc.name, description, tc.arguments
-                        )
+                        approved = await on_tool_request(tc.name, description, tc.arguments)
                         if not approved:
                             messages.append(
                                 _create_tool_result_message(
@@ -984,14 +949,10 @@ class AgentLoop:
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
 
-                    state.note_call(
-                        tc.name, tc.arguments, result.content, result.is_error
-                    )
+                    state.note_call(tc.name, tc.arguments, result.content, result.is_error)
 
                     if on_tool_result:
-                        await on_tool_result(
-                            result.name, result.content, result.is_error
-                        )
+                        await on_tool_result(result.name, result.content, result.is_error)
                     messages.append(
                         _create_tool_result_message(
                             tc.id,
@@ -1027,9 +988,7 @@ class AgentLoop:
                         )
                     )
                     if on_status:
-                        await on_status(
-                            NUDGE_STATUS_LABELS["hypothesis_first"]
-                        )
+                        await on_status(NUDGE_STATUS_LABELS["hypothesis_first"])
 
                 continue
 
@@ -1047,17 +1006,12 @@ class AgentLoop:
                     if key != "verify_hypotheses":
                         state.nudges_fired.add(key)
                     logger.info(
-                        f"Нудж [{key}] на итерации {iteration + 1}: "
-                        f"{state.summary()}, open_hyp={open_h_now}"
+                        f"Нудж [{key}] на итерации {iteration + 1}: {state.summary()}, open_hyp={open_h_now}"
                     )
-                    messages.append(
-                        ChatMessage(role="assistant", content=current_text)
-                    )
+                    messages.append(ChatMessage(role="assistant", content=current_text))
                     messages.append(ChatMessage(role="user", content=hint))
                     if on_status:
-                        await on_status(
-                            NUDGE_STATUS_LABELS.get(key, f"🔁 {key}")
-                        )
+                        await on_status(NUDGE_STATUS_LABELS.get(key, f"🔁 {key}"))
                     current_text = ""
                     continue
 
@@ -1065,16 +1019,9 @@ class AgentLoop:
                 # здесь возвращался current_text — и в паспорт попадали
                 # «мысли» модели, а не финальный ответ. Теперь форсируем
                 # настоящий финальный синтез.
-                logger.info(
-                    "Нуджи исчерпаны, но фаза ≠ SYNTHESIS — "
-                    "принудительный финальный синтез"
-                )
+                logger.info("Нуджи исчерпаны, но фаза ≠ SYNTHESIS — принудительный финальный синтез")
                 messages.append(ChatMessage(role="assistant", content=current_text))
-                if (
-                    split_thoughts
-                    and on_final_answer_started is not None
-                    and not final_started_emitted
-                ):
+                if split_thoughts and on_final_answer_started is not None and not final_started_emitted:
                     final_started_emitted = True
                     await on_final_answer_started()
                 final_text = await self._final_call_no_tools(
@@ -1095,10 +1042,7 @@ class AgentLoop:
             return current_text
 
         # --- Лимит итераций: финальный вызов без tools ---
-        logger.info(
-            f"Достигнут лимит итераций ({max_iterations}), "
-            "делаем финальный вызов без tools"
-        )
+        logger.info(f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools")
 
         if split_thoughts and on_final_answer_started is not None:
             await on_final_answer_started()
@@ -1118,10 +1062,6 @@ class AgentLoop:
             self._finalize(research_mode, state, context)
             return final_text
         except Exception as e:
-            logger.error(
-                f"Ошибка финального вызова после лимита итераций: {e}"
-            )
+            logger.error(f"Ошибка финального вызова после лимита итераций: {e}")
             self._finalize(research_mode, state, context)
-            raise AgentIterationLimitError(
-                f"Агент превысил лимит итераций ({max_iterations})"
-            ) from e
+            raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})") from e

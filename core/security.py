@@ -6,12 +6,12 @@
 инструмент обогащения, но проходит через hygiene-фильтр (см.
 tools/web_search_hygiene.py) и allowlist ниже.
 """
+
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Final
 
 from loguru import logger
@@ -19,34 +19,44 @@ from loguru import logger
 
 class NetworkMode(str, Enum):
     """Режим исходящего трафика для web_search."""
-    OFF = "off"                # полный запрет (confidential-проекты)
-    NEUTRAL_ONLY = "neutral"   # только нейтральные технологии (дефолт)
-    ASK_FIRST = "ask_first"    # диалог перед каждым запросом + hygiene
-    AUTO = "auto"              # hygiene обязателен, диалог не спрашиваем
+
+    OFF = "off"  # полный запрет (confidential-проекты)
+    NEUTRAL_ONLY = "neutral"  # только нейтральные технологии (дефолт)
+    ASK_FIRST = "ask_first"  # диалог перед каждым запросом + hygiene
+    AUTO = "auto"  # hygiene обязателен, диалог не спрашиваем
 
 
 # Единственные хосты, которым разрешён исходящий трафик. Всё остальное —
 # ошибка конфигурации (проверяется тестом-гардом в CI, см. §9).
-OUTBOUND_ALLOWLIST: Final[frozenset[str]] = frozenset({
-    "huggingface.co",
-    "hf-mirror.com",
-    "cas-bridge.xethub.hf.co",     # CDN HF при скачивании gguf
-    "nuget.org", "api.nuget.org",  # LSP: omnisharp/roslyn (dev-инструмент)
-    "pypi.org", "files.pythonhosted.org",  # LSP: pylsp и т.п.
-    "rubygems.org",                # LSP: solargraph
-    "yandex.ru", "duckduckgo.com", "html.duckduckgo.com",  # web_search
-    "searx.be", "search.bus-hit.me", "priv.au",            # web_search fallback
-})
+OUTBOUND_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "huggingface.co",
+        "hf-mirror.com",
+        "cas-bridge.xethub.hf.co",  # CDN HF при скачивании gguf
+        "nuget.org",
+        "api.nuget.org",  # LSP: omnisharp/roslyn (dev-инструмент)
+        "pypi.org",
+        "files.pythonhosted.org",  # LSP: pylsp и т.п.
+        "rubygems.org",  # LSP: solargraph
+        "yandex.ru",
+        "duckduckgo.com",
+        "html.duckduckgo.com",  # web_search
+        "searx.be",
+        "search.bus-hit.me",
+        "priv.au",  # web_search fallback
+    }
+)
 
 
 @dataclass
 class SecurityPolicy:
     """Политика безопасности проекта/глобальная."""
+
     mode: NetworkMode = NetworkMode.NEUTRAL_ONLY
-    telemetry: bool = False                 # всегда False; поле для явного аудита
-    confidential: bool = False              # True => mode принудительно OFF
-    allow_lsp_download: bool = True         # dev-инструменты из allowlist
-    lsp_download_size_mb_warn: int = 50     # порог «большой объём» → спросить/фон
+    telemetry: bool = False  # всегда False; поле для явного аудита
+    confidential: bool = False  # True => mode принудительно OFF
+    allow_lsp_download: bool = True  # dev-инструменты из allowlist
+    lsp_download_size_mb_warn: int = 50  # порог «большой объём» → спросить/фон
     redaction_enabled: bool = True
 
     def effective_web_mode(self) -> NetworkMode:
@@ -55,7 +65,7 @@ class SecurityPolicy:
         return self.mode
 
     @staticmethod
-    def from_dict(d: dict) -> "SecurityPolicy":
+    def from_dict(d: dict) -> SecurityPolicy:
         net = d.get("network", {}) if isinstance(d, dict) else {}
         mode_raw = str(net.get("web_search", "neutral")).lower()
         try:
@@ -79,6 +89,7 @@ def assert_outbound_allowed(url: str) -> None:
     должна зависеть от доброй воли вызывающего кода.
     """
     from urllib.parse import urlparse
+
     host = (urlparse(url).hostname or "").lower()
     if not any(host == a or host.endswith("." + a) for a in OUTBOUND_ALLOWLIST):
         raise PermissionError(
@@ -92,16 +103,24 @@ def assert_outbound_allowed(url: str) -> None:
 # Собраны под РЕАЛЬНЫЕ домены ваших проектов: номера договоров Сбера
 # (machine_138), ISIN/SECID, пути/неймспейсы (LocalMessenger), env-Vagrant.
 _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
-    ("contract_number", re.compile(r"\b\d{4,5}-\d{4,6}(?:-\d)?\b")),      # договор Сбера
-    ("sber_account",    re.compile(r"\b(?:счёт|счет|лицевой)\b[^,.\n]{0,40}", re.I)),
-    ("inn",             re.compile(r"\b\d{10}(\d{2})?\b")),
-    ("snils",           re.compile(r"\b\d{3}-\d{3}-\d{3}\s*\d{2}\b")),
-    ("abs_path",        re.compile(r"(?:[A-Za-z]:\\|/(?:home|Users|mnt)/)[^\s\"']+")),
-    ("rel_path_src",    re.compile(r"\b[\w./\\-]+\.(?:cs|py|rb|tf|yml|yaml|hcl|csproj|sln|json|toml)\b")),
-    ("dotnet_ns",       re.compile(r"\b(?:LocalMessenger|Hmaster20)(?:\.[\w.]+)+\b")),
-    ("env_secret",      re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME|TOKEN|SECRET|PASSWORD|API[_-]?KEY)\b\s*[:=]", re.I)),
-    ("host_or_ip",      re.compile(r"\b(?:https?://|ssh://)?[\w.-]+\.(?:local|internal|corp|intra)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b")),
-    ("vault_ref",       re.compile(r"\bvault://|ansible-vault|\$\{\s*secrets?\b", re.I)),
+    ("contract_number", re.compile(r"\b\d{4,5}-\d{4,6}(?:-\d)?\b")),  # договор Сбера
+    ("sber_account", re.compile(r"\b(?:счёт|счет|лицевой)\b[^,.\n]{0,40}", re.I)),
+    ("inn", re.compile(r"\b\d{10}(\d{2})?\b")),
+    ("snils", re.compile(r"\b\d{3}-\d{3}-\d{3}\s*\d{2}\b")),
+    ("abs_path", re.compile(r"(?:[A-Za-z]:\\|/(?:home|Users|mnt)/)[^\s\"']+")),
+    ("rel_path_src", re.compile(r"\b[\w./\\-]+\.(?:cs|py|rb|tf|yml|yaml|hcl|csproj|sln|json|toml)\b")),
+    ("dotnet_ns", re.compile(r"\b(?:LocalMessenger|Hmaster20)(?:\.[\w.]+)+\b")),
+    (
+        "env_secret",
+        re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME|TOKEN|SECRET|PASSWORD|API[_-]?KEY)\b\s*[:=]", re.I),
+    ),
+    (
+        "host_or_ip",
+        re.compile(
+            r"\b(?:https?://|ssh://)?[\w.-]+\.(?:local|internal|corp|intra)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b"
+        ),
+    ),
+    ("vault_ref", re.compile(r"\bvault://|ansible-vault|\$\{\s*secrets?\b", re.I)),
 ]
 
 

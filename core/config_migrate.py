@@ -12,6 +12,7 @@
                                    + deep_mode.threshold_files
   web_search policy             -> security.network.web_search (дефолт neutral + hygiene)
 """
+
 from __future__ import annotations
 
 import shutil
@@ -21,12 +22,12 @@ from typing import Any
 import yaml
 
 from core.config_v3 import ConfigV3, ModelRoleCfg
-from agents.gpu_utils import detect_optimal_threads  # существующий хелпер
 
 
 def _usable_vram_mb() -> int:
     try:
         from agents.hardware_profile import get_hardware_profile
+
         hp = get_hardware_profile()
         return int(getattr(hp.gpu, "usable_vram_mb", 0) or 0)
     except Exception:
@@ -38,31 +39,48 @@ def migrate(v2: dict[str, Any]) -> ConfigV3:
     vram = _usable_vram_mb()
     # Арифметика размещения (см. model_pool): 3B влезает в VRAM при kv q8_0@8192.
     planner_device = "GPU" if vram >= 2900 else "CPU"
-    analyst_device = "CPU"   # 7B никогда не влезает в T1200-class VRAM
-    analyst_ctx = 8192        # ЖЁСТКИЙ cap для CPU (фикс D1), игнорируем v2 32768
+    analyst_device = "CPU"  # 7B никогда не влезает в T1200-class VRAM
+    analyst_ctx = 8192  # ЖЁСТКИЙ cap для CPU (фикс D1), игнорируем v2 32768
     planner_ctx = 8192 if planner_device == "GPU" else 4096
 
     models = {
-        "planner": ModelRoleCfg(id=_pick(v2, planner_default="qwen2.5-3b-instruct"),
-                                device=planner_device, n_ctx=planner_ctx,
-                                kv_cache="q8_0",
-                                n_gpu_layers=(-1 if planner_device == "GPU" else 0),
-                                temperature=0.0,
-                                budgets={"classify": 32, "plan": 256, "critique": 192}),
-        "analyst": ModelRoleCfg(id=slm.get("selected_model") or "qwen2.5-7b-instruct",
-                                device=analyst_device, n_ctx=analyst_ctx,
-                                kv_cache="q8_0", n_gpu_layers=0, temperature=0.35,
-                                budgets={"synthesis": 1100, "regen": 900}),
+        "planner": ModelRoleCfg(
+            id=_pick(v2, planner_default="qwen2.5-3b-instruct"),
+            device=planner_device,
+            n_ctx=planner_ctx,
+            kv_cache="q8_0",
+            n_gpu_layers=(-1 if planner_device == "GPU" else 0),
+            temperature=0.0,
+            budgets={"classify": 32, "plan": 256, "critique": 192},
+        ),
+        "analyst": ModelRoleCfg(
+            id=slm.get("selected_model") or "qwen2.5-7b-instruct",
+            device=analyst_device,
+            n_ctx=analyst_ctx,
+            kv_cache="q8_0",
+            n_gpu_layers=0,
+            temperature=0.35,
+            budgets={"synthesis": 1100, "regen": 900},
+        ),
     }
     net = v2.get("network", {}) or {}
-    web = "off" if v2.get("confidential") else str(net.get("web_search", v2.get("tool_policies", {}).get("web_search", "neutral")))
+    web = (
+        "off"
+        if v2.get("confidential")
+        else str(net.get("web_search", v2.get("tool_policies", {}).get("web_search", "neutral")))
+    )
     if web in ("auto",):
         web = "neutral"
     security = {
-        "mode": "local_only", "telemetry": False,
+        "mode": "local_only",
+        "telemetry": False,
         "confidential": bool(v2.get("confidential", False)),
-        "network": {"web_search": web, "lsp_download": True,
-                    "lsp_download_size_mb_warn": 50, "huggingface_download": True},
+        "network": {
+            "web_search": web,
+            "lsp_download": True,
+            "lsp_download_size_mb_warn": 50,
+            "huggingface_download": True,
+        },
     }
     pi = v2.get("project_intelligence", {}) or {}
     idx_ext = list(pi.get("index_extensions") or v2.get("index_extensions") or [])
@@ -72,19 +90,28 @@ def migrate(v2: dict[str, Any]) -> ConfigV3:
             idx_ext.append(extra)
     cfg = ConfigV3(
         security=__import__("core.config_v3", fromlist=["SecurityCfg"]).SecurityCfg(**security),
-        backend_priority=v2.get("backends", {}).get("priority") or v2.get("backend_priority") or ["LOCAL_SLM"],
+        backend_priority=v2.get("backends", {}).get("priority")
+        or v2.get("backend_priority")
+        or ["LOCAL_SLM"],
         embed_backend=v2.get("embed_backend", "auto"),
         models=__import__("core.config_v3", fromlist=["ModelsCfg"]).ModelsCfg(**models),
         context=__import__("core.config_v3", fromlist=["ContextCfg"]).ContextCfg(),
         agent=__import__("core.config_v3", fromlist=["AgentCfg"]).AgentCfg(),
-        project_intelligence=__import__("core.config_v3", fromlist=["ProjectIntelligenceCfg"]).ProjectIntelligenceCfg(
+        project_intelligence=__import__(
+            "core.config_v3", fromlist=["ProjectIntelligenceCfg"]
+        ).ProjectIntelligenceCfg(
             index_extensions=idx_ext,
-            index_filenames=__import__("core.config_v3", fromlist=["ProjectIntelligenceCfg"]).ProjectIntelligenceCfg().index_filenames,
+            index_filenames=__import__("core.config_v3", fromlist=["ProjectIntelligenceCfg"])
+            .ProjectIntelligenceCfg()
+            .index_filenames,
             cache_dir=pi.get("cache_dir", ".ollidesk/graph"),
         ),
-        tools=__import__("core.config_v3", fromlist=["ToolsPolicyCfg"]).ToolsPolicyCfg(**(v2.get("tool_policies") or {})),
+        tools=__import__("core.config_v3", fromlist=["ToolsPolicyCfg"]).ToolsPolicyCfg(
+            **(v2.get("tool_policies") or {})
+        ),
         ignored_patterns=v2.get("ignored_patterns", []),
-        last_model=v2.get("last_model"), last_mode=v2.get("last_mode"),
+        last_model=v2.get("last_model"),
+        last_mode=v2.get("last_mode"),
         project_path=v2.get("project_path"),
     )
     return cfg
@@ -107,6 +134,7 @@ def migrate_file(path: Path) -> Path:
     backup = path.with_suffix(path.suffix + ".v2.bak")
     shutil.copy2(path, backup)
     cfg = migrate(raw)
-    path.write_text(yaml.safe_dump(cfg.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
-                    encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(cfg.model_dump(mode="json"), allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
     return backup

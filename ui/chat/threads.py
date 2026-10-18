@@ -19,11 +19,11 @@ from agents.download_slm import download_model, get_model_parts
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
+from agents.orchestrator import Orchestrator, RunResult
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
 from fs.vector_store import SearchResult
-from agents.model_pool import ModelPool, Role, RoleSpec
-from agents.orchestrator import Orchestrator, RunResult
+
 
 def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
     """Оставляет по одному лучшему чанку на файл."""
@@ -35,6 +35,7 @@ def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
         seen.add(r.file_path)
         unique.append(r)
     return unique
+
 
 class AgentChatThread(QThread):
     """Поток агента: ReAct-цикл (старый) ИЛИ Orchestrator (новый линейный флоу).
@@ -71,7 +72,7 @@ class AgentChatThread(QThread):
 
     # --- новые сигналы для Orchestrator ---
     orchestrator_event = Signal(str, dict)
-    orchestrator_result = Signal(object)   # RunResult
+    orchestrator_result = Signal(object)  # RunResult
 
     def __init__(
         self,
@@ -102,15 +103,11 @@ class AgentChatThread(QThread):
         self._tool_response = (approved, arguments)
         self._tool_event.set()
 
-    async def _on_tool_request(
-        self, name: str, description: str, arguments: dict
-    ) -> bool:
+    async def _on_tool_request(self, name: str, description: str, arguments: dict) -> bool:
         args_json = json.dumps(arguments, ensure_ascii=False)
         self.tool_call_detected.emit(name, description, args_json)
         self._tool_event.clear()
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._tool_event.wait
-        )
+        await asyncio.get_event_loop().run_in_executor(None, self._tool_event.wait)
         approved, modified_args = self._tool_response or (False, None)
         if modified_args:
             arguments.clear()
@@ -140,9 +137,7 @@ class AgentChatThread(QThread):
                     await self._run_orchestrator(user_text)
                     return
                 except Exception as e:
-                    logger.exception(
-                        "Orchestrator failed; fallback to AgentLoop"
-                    )
+                    logger.exception("Orchestrator failed; fallback to AgentLoop")
                     self.orchestrator_event.emit(
                         "fallback",
                         {"reason": str(e), "message": "Использую старый ReAct"},
@@ -169,26 +164,20 @@ class AgentChatThread(QThread):
             self.final_answer_started.emit()
 
         async def _run_with(client) -> tuple[str, AgentLoop]:
-            loop = AgentLoop(
-                client=client, registry=self.registry, model=self.model
-            )
+            loop = AgentLoop(client=client, registry=self.registry, model=self.model)
             from agents.investigation import is_research_question
 
             last_user_local = next(
                 (m for m in reversed(self.messages_history) if m.role == "user"),
                 None,
             )
-            self._research_mode = is_research_question(
-                last_user_local.content if last_user_local else ""
-            )
+            self._research_mode = is_research_question(last_user_local.content if last_user_local else "")
             self.research_mode_detected.emit(self._research_mode)
 
             result = await loop.run(
                 context=self.context,
                 messages_history=self.messages_history,
-                on_token=(
-                    _on_final_chunk if self._research_mode else self._on_token
-                ),
+                on_token=(_on_final_chunk if self._research_mode else self._on_token),
                 on_tool_request=self._on_tool_request,
                 max_iterations=self.max_iterations,
                 on_thinking=self._on_thinking,
@@ -197,9 +186,7 @@ class AgentChatThread(QThread):
                 on_status=self._on_status,
                 on_tool_result=self._on_tool_result,
                 on_thought=_on_thought if self._research_mode else None,
-                on_final_answer_started=(
-                    _on_final_started if self._research_mode else None
-                ),
+                on_final_answer_started=(_on_final_started if self._research_mode else None),
             )
             return result, loop
 
@@ -241,9 +228,7 @@ class AgentChatThread(QThread):
             # Зеркалим прогресс в thought-stream — пользователь видит,
             # что работа идёт (без каракулей).
             if kind == "classify":
-                self.thought_chunk.emit(
-                    f"🤔 Классификация: {str(data.get('query', ''))[:80]}\n"
-                )
+                self.thought_chunk.emit(f"🤔 Классификация: {str(data.get('query', ''))[:80]}\n")
             elif kind == "plan":
                 self.thought_chunk.emit(
                     f"📋 План: task={data.get('task')}, "
@@ -256,22 +241,15 @@ class AgentChatThread(QThread):
             elif kind == "synthesize":
                 self.status_changed.emit("✍️ Синтез ответа (7B CPU)…")
             elif kind == "regen":
-                self.thought_chunk.emit(
-                    f"🔄 Регенерация: {data.get('reason', '')}\n"
-                )
+                self.thought_chunk.emit(f"🔄 Регенерация: {data.get('reason', '')}\n")
             elif kind == "nudge":
                 gaps = data.get("gaps") or []
                 preview = ", ".join(str(g) for g in gaps[:3])
-                self.thought_chunk.emit(
-                    f"🔁 Досбор данных (итерация {data.get('iter')}): "
-                    f"{preview}\n"
-                )
+                self.thought_chunk.emit(f"🔁 Досбор данных (итерация {data.get('iter')}): {preview}\n")
 
         project_root = Path(self.context.project_root or ".")
         if not project_root.exists():
-            raise FileNotFoundError(
-                f"Корень проекта не найден: {project_root}"
-            )
+            raise FileNotFoundError(f"Корень проекта не найден: {project_root}")
 
         self.status_changed.emit("🧠 Оркестратор: классификация…")
         result: RunResult = await self.orchestrator.run(
@@ -351,9 +329,7 @@ class RagSearchThread(QThread):
                         f"(строки {r.chunk.start_line}-{r.chunk.end_line})\n"
                         f"```\n{r.chunk.content}\n```"
                     )
-                    sources.append(
-                        (r.file_path, r.chunk.start_line, r.chunk.end_line)
-                    )
+                    sources.append((r.file_path, r.chunk.start_line, r.chunk.end_line))
 
                 context = "\n\n".join(context_parts)
                 self.results_ready.emit(context, sources)
@@ -452,21 +428,15 @@ class _SLMDownloadThread(QThread):
         try:
             parts = get_model_parts(self.model_repo, self.model_file)
             if parts > 1:
-                self.progress.emit(
-                    f"Скачивание {self.model_file} ({parts} частей)..."
-                )
+                self.progress.emit(f"Скачивание {self.model_file} ({parts} частей)...")
             else:
-                self.progress.emit(
-                    f"Скачивание chat-модели {self.model_file}..."
-                )
+                self.progress.emit(f"Скачивание chat-модели {self.model_file}...")
 
             chat = download_model(self.model_repo, self.model_file)
 
             embed_path = ""
             try:
-                self.progress.emit(
-                    f"Скачивание embedding-модели {self.embed_file}..."
-                )
+                self.progress.emit(f"Скачивание embedding-модели {self.embed_file}...")
                 embed = download_model(self.embed_repo, self.embed_file)
                 embed_path = str(embed)
             except Exception as e:
@@ -515,18 +485,14 @@ class WebSearchThread(QThread):
             )
 
             if not search_results or "Ничего не найдено" in search_results:
-                self.error_occurred.emit(
-                    "Поиск не дал результатов. Попробуйте уточнить запрос."
-                )
+                self.error_occurred.emit("Поиск не дал результатов. Попробуйте уточнить запрос.")
                 return
 
             system_prompt = (
                 "Ты — поисковый ассистент. Используй результаты поиска для ответа. "
                 "Отвечай на русском языке, будь лаконичен и полезен."
             )
-            user_content = (
-                f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
-            )
+            user_content = f"Вопрос: {self.query}\n\nРезультаты поиска:\n{search_results}"
 
             messages = [
                 ChatMessage(role="system", content=system_prompt),
@@ -534,9 +500,7 @@ class WebSearchThread(QThread):
                 ChatMessage(role="user", content=user_content),
             ]
 
-            async for chunk in self.router.chat(
-                model=self.model, messages=messages, stream=True
-            ):
+            async for chunk in self.router.chat(model=self.model, messages=messages, stream=True):
                 if chunk.reasoning_content:
                     self.thinking_received.emit(chunk.reasoning_content)
                 if chunk.content:
@@ -546,6 +510,7 @@ class WebSearchThread(QThread):
 
         except Exception as e:
             self.error_occurred.emit(f"Ошибка: {e}")
+
 
 class _ModelPoolLoadThread(QThread):
     """Загружает обе модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО.
@@ -565,7 +530,7 @@ class _ModelPoolLoadThread(QThread):
       указывают на один файл, выдаём понятную ошибку, а не OOM.
     """
 
-    finished = Signal(object)   # ModelPool | None
+    finished = Signal(object)  # ModelPool | None
     error = Signal(str)
     progress = Signal(str)
 
@@ -600,38 +565,34 @@ class _ModelPoolLoadThread(QThread):
 
             planner_path = get_model_path(planner_info.file)
             if planner_path is None:
-                self.error.emit(
-                    f"Файл planner не найден: {planner_info.file}"
-                )
+                self.error.emit(f"Файл planner не найден: {planner_info.file}")
                 return
             analyst_path = get_model_path(analyst_info.file)
             if analyst_path is None:
-                self.error.emit(
-                    f"Файл analyst не найден: {analyst_info.file}"
-                )
+                self.error.emit(f"Файл analyst не найден: {analyst_info.file}")
                 return
 
             # --- Оптимизация: устройство задаётся ЯВНО ---
             # planner на GPU (пытаемся уместить целиком), analyst на CPU
             # (никогда не делит VRAM с planner).
-            self.progress.emit(
-                f"Оптимизация planner: {planner_info.display_name}"
-            )
+            self.progress.emit(f"Оптимизация planner: {planner_info.display_name}")
             try:
                 planner_params = optimize(
-                    planner_path, target_n_ctx=8192, device="GPU",
+                    planner_path,
+                    target_n_ctx=8192,
+                    device="GPU",
                 )
             except Exception as e:
                 logger.exception("planner optimize failed")
                 self.error.emit(f"planner optimize failed: {e}")
                 return
 
-            self.progress.emit(
-                f"Оптимизация analyst: {analyst_info.display_name}"
-            )
+            self.progress.emit(f"Оптимизация analyst: {analyst_info.display_name}")
             try:
                 analyst_params = optimize(
-                    analyst_path, target_n_ctx=8192, device="CPU",
+                    analyst_path,
+                    target_n_ctx=8192,
+                    device="CPU",
                 )
             except Exception as e:
                 logger.exception("analyst optimize failed")
@@ -664,14 +625,8 @@ class _ModelPoolLoadThread(QThread):
             def factory(spec: RoleSpec) -> LocalLLMClient:
                 path = Path(spec.file) if spec.file else None
                 if path is None or not path.exists():
-                    raise FileNotFoundError(
-                        f"Model file missing: {spec.model_id}"
-                    )
-                base = (
-                    planner_params
-                    if spec.role is Role.PLANNER
-                    else analyst_params
-                )
+                    raise FileNotFoundError(f"Model file missing: {spec.model_id}")
+                base = planner_params if spec.role is Role.PLANNER else analyst_params
                 # Safety net: если device=CPU, но n_gpu_layers≠0 —
                 # жёстко обнуляем и выключаем FlashAttention.
                 n_gpu_layers = spec.n_gpu_layers
@@ -679,8 +634,7 @@ class _ModelPoolLoadThread(QThread):
                 if spec.device == "CPU":
                     if n_gpu_layers != 0:
                         logger.warning(
-                            f"SLM {spec.role.value}: device=CPU, "
-                            f"но n_gpu_layers={n_gpu_layers} → 0"
+                            f"SLM {spec.role.value}: device=CPU, но n_gpu_layers={n_gpu_layers} → 0"
                         )
                         n_gpu_layers = 0
                     flash = False
@@ -695,15 +649,11 @@ class _ModelPoolLoadThread(QThread):
                     kv_cache_type=spec.kv_cache,
                     vram_used_mb=base.vram_used_mb if n_gpu_layers != 0 else 0,
                     ram_used_mb=(
-                        base.ram_used_mb
-                        if n_gpu_layers != 0
-                        else base.ram_used_mb + base.vram_used_mb
+                        base.ram_used_mb if n_gpu_layers != 0 else base.ram_used_mb + base.vram_used_mb
                     ),
                     notes=base.notes,
                 )
-                return LocalLLMClient(
-                    model_path=path, params=params, max_tokens=1024
-                )
+                return LocalLLMClient(model_path=path, params=params, max_tokens=1024)
 
             # --- Последовательная загрузка с per-role timeout ---
             pool = ModelPool()
@@ -722,7 +672,7 @@ class _ModelPoolLoadThread(QThread):
                                 timeout=self._ROLE_LOAD_TIMEOUT,
                             )
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.error(
                             f"SLM pool: таймаут загрузки {role.value} "
                             f"({spec.model_id}) за "
@@ -737,13 +687,8 @@ class _ModelPoolLoadThread(QThread):
                         )
                         return
                     except Exception as e:
-                        logger.exception(
-                            f"SLM pool: ошибка загрузки {role.value}"
-                        )
-                        self.error.emit(
-                            f"Ошибка загрузки {role.value} "
-                            f"({spec.model_id}): {e}"
-                        )
+                        logger.exception(f"SLM pool: ошибка загрузки {role.value}")
+                        self.error.emit(f"Ошибка загрузки {role.value} ({spec.model_id}): {e}")
                         return
                     logger.info(
                         f"SLM pool: {role.value} загружен "

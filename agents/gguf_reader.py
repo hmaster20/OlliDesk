@@ -9,7 +9,6 @@ from pathlib import Path
 
 from loguru import logger
 
-
 _GGUF_MAGIC = b"GGUF"
 
 # GGUF value types (см. gguf.md в llama.cpp).
@@ -43,14 +42,22 @@ def _skip_value(f, vtype: int) -> None:
 
 
 def _read_value(f, vtype: int):
-    if vtype == _T_UINT8: return struct.unpack("B", f.read(1))[0]
-    if vtype == _T_INT8: return struct.unpack("b", f.read(1))[0]
-    if vtype == _T_UINT16: return struct.unpack("<H", f.read(2))[0]
-    if vtype == _T_INT16: return struct.unpack("<h", f.read(2))[0]
-    if vtype == _T_UINT32: return struct.unpack("<I", f.read(4))[0]
-    if vtype == _T_INT32: return struct.unpack("<i", f.read(4))[0]
-    if vtype == _T_FLOAT32: return struct.unpack("<f", f.read(4))[0]
-    if vtype == _T_BOOL: return struct.unpack("?", f.read(1))[0]
+    if vtype == _T_UINT8:
+        return struct.unpack("B", f.read(1))[0]
+    if vtype == _T_INT8:
+        return struct.unpack("b", f.read(1))[0]
+    if vtype == _T_UINT16:
+        return struct.unpack("<H", f.read(2))[0]
+    if vtype == _T_INT16:
+        return struct.unpack("<h", f.read(2))[0]
+    if vtype == _T_UINT32:
+        return struct.unpack("<I", f.read(4))[0]
+    if vtype == _T_INT32:
+        return struct.unpack("<i", f.read(4))[0]
+    if vtype == _T_FLOAT32:
+        return struct.unpack("<f", f.read(4))[0]
+    if vtype == _T_BOOL:
+        return struct.unpack("?", f.read(1))[0]
     if vtype == _T_STRING:
         n = struct.unpack("<Q", f.read(8))[0]
         return f.read(n).decode("utf-8", errors="replace")
@@ -59,9 +66,12 @@ def _read_value(f, vtype: int):
         elem_type = struct.unpack("<I", f.read(4))[0]
         n = struct.unpack("<Q", f.read(8))[0]
         return [_read_value(f, elem_type) for _ in range(n)]
-    if vtype == _T_UINT64: return struct.unpack("<Q", f.read(8))[0]
-    if vtype == _T_INT64: return struct.unpack("<q", f.read(8))[0]
-    if vtype == _T_FLOAT64: return struct.unpack("<d", f.read(8))[0]
+    if vtype == _T_UINT64:
+        return struct.unpack("<Q", f.read(8))[0]
+    if vtype == _T_INT64:
+        return struct.unpack("<q", f.read(8))[0]
+    if vtype == _T_FLOAT64:
+        return struct.unpack("<d", f.read(8))[0]
     raise ValueError(f"unknown GGUF type: {vtype}")
 
 
@@ -93,11 +103,16 @@ class GGUFMeta:
 # пропускаем через seek — они не нужны и весят десятки МБ.
 _WANTED = {
     "general.architecture",
-    "llama.block_count", "qwen2.block_count",
-    "llama.embedding_length", "qwen2.embedding_length",
-    "llama.attention.head_count", "qwen2.attention.head_count",
-    "llama.attention.head_count_kv", "qwen2.attention.head_count_kv",
-    "llama.context_length", "qwen2.context_length",
+    "llama.block_count",
+    "qwen2.block_count",
+    "llama.embedding_length",
+    "qwen2.embedding_length",
+    "llama.attention.head_count",
+    "qwen2.attention.head_count",
+    "llama.attention.head_count_kv",
+    "qwen2.attention.head_count_kv",
+    "llama.context_length",
+    "qwen2.context_length",
 }
 
 
@@ -137,13 +152,16 @@ def read_gguf_meta(path: Path | str) -> GGUFMeta:
     n_layer = _get(f"{arch}.block_count", "llama.block_count")
     n_embd = _get(f"{arch}.embedding_length", "llama.embedding_length")
     n_head = _get(f"{arch}.attention.head_count", "llama.attention.head_count")
-    n_head_kv = _get(f"{arch}.attention.head_count_kv",
-                     "llama.attention.head_count_kv", default=n_head)
+    n_head_kv = _get(f"{arch}.attention.head_count_kv", "llama.attention.head_count_kv", default=n_head)
     n_ctx_train = _get(f"{arch}.context_length", "llama.context_length")
 
     result = GGUFMeta(
-        n_layer=n_layer, n_embd=n_embd, n_head=n_head, n_head_kv=n_head_kv,
-        n_ctx_train=n_ctx_train, architecture=arch,
+        n_layer=n_layer,
+        n_embd=n_embd,
+        n_head=n_head,
+        n_head_kv=n_head_kv,
+        n_ctx_train=n_ctx_train,
+        architecture=arch,
     )
     logger.debug(
         f"GGUF {path.name}: arch={arch}, layer={n_layer}, embd={n_embd}, "

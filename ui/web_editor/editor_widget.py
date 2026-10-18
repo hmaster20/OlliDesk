@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QTabBar,
     QVBoxLayout,
     QWidget,
-    QMenu,
 )
-import subprocess
-import sys
 
-from PySide6.QtGui import QGuiApplication
 from core.utils import get_resource_path
 
 
@@ -167,9 +167,7 @@ class EditorWidget(QWidget):
             self._send_open(file_path, line)
 
         self.current_file = file_path
-        logger.info(
-            f"Открыт файл: {file_path}" + (f" (строка {line})" if line else "")
-        )
+        logger.info(f"Открыт файл: {file_path}" + (f" (строка {line})" if line else ""))
 
     def _send_open(self, file_path: str, line: int = 0) -> None:
         if not isinstance(self.web_view, QWebEngineView):
@@ -195,8 +193,7 @@ class EditorWidget(QWidget):
             reply = QMessageBox.question(
                 self,
                 "Несохранённые изменения",
-                f"Файл «{Path(file_path).name}» содержит несохранённые изменения.\n"
-                "Закрыть без сохранения?",
+                f"Файл «{Path(file_path).name}» содержит несохранённые изменения.\nЗакрыть без сохранения?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -340,8 +337,7 @@ class EditorWidget(QWidget):
             reply = QMessageBox.question(
                 self,
                 "Несохранённые изменения",
-                f"{len(dirty)} файл(ов) содержат несохранённые изменения.\n"
-                "Закрыть всё без сохранения?",
+                f"{len(dirty)} файл(ов) содержат несохранённые изменения.\nЗакрыть всё без сохранения?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -378,9 +374,7 @@ class EditorWidget(QWidget):
         if self.current_file == old:
             self.current_file = new
         if isinstance(self.web_view, QWebEngineView):
-            self.web_view.page().runJavaScript(
-                f"renameOpenFile({json.dumps(old)}, {json.dumps(new)})"
-            )
+            self.web_view.page().runJavaScript(f"renameOpenFile({json.dumps(old)}, {json.dumps(new)})")
 
     def close_file_silently(self, path: str) -> None:
         """Закрывает вкладку файла (например, после удаления). Без диалога."""
@@ -395,7 +389,6 @@ class EditorWidget(QWidget):
         self._dirty.pop(target, None)
         if self.current_file == target:
             self.current_file = None
-
 
     # ------------------------------------------------------------------
     # Bridge slots

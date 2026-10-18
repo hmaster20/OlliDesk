@@ -2,6 +2,7 @@
 provider/locals; *.tf, *.tfvars, *.pkr.hcl). Дамп terraform-modules_2.md пуст —
 реализация по стандарту hashicorp/hcl; интерфейс стабилен.
 """
+
 from __future__ import annotations
 
 import re
@@ -11,14 +12,18 @@ from typing import Any
 from fs.intel import FileRecord, Symbol
 
 try:
-    import hcl2 as _hcl2          # python-hcl2
+    import hcl2 as _hcl2  # python-hcl2
+
     _HAS_HCL2 = True
 except Exception:
     _hcl2 = None
     _HAS_Hcl2 = False
     _HAS_HCL2 = False
 
-_BLOCK_RE = re.compile(r'^\s*(resource|data|module|variable|output|provider|locals|terraform)\s+"?([\w.\-]+)"?\s*(?:"?([\w.\-]+)"?)?\s*\{', re.M)
+_BLOCK_RE = re.compile(
+    r'^\s*(resource|data|module|variable|output|provider|locals|terraform)\s+"?([\w.\-]+)"?\s*(?:"?([\w.\-]+)"?)?\s*\{',
+    re.M,
+)
 
 
 def parse_hcl_file(p: Path, rec: FileRecord):
@@ -38,8 +43,16 @@ def parse_hcl_file(p: Path, rec: FileRecord):
         for kind in ("resource", "data", "module", "variable", "output", "provider", "locals"):
             for blk in _iter_hcl_blocks(parsed, kind):
                 addr = blk.get("__address__") or _hcl_addr(kind, blk)
-                syms.append(Symbol(qualified_name=str(addr), kind=kind, file=rec.path, line=1,
-                                   signature=f"{kind} {addr}", metadata={"attrs": list(blk.keys())[:12]}))
+                syms.append(
+                    Symbol(
+                        qualified_name=str(addr),
+                        kind=kind,
+                        file=rec.path,
+                        line=1,
+                        signature=f"{kind} {addr}",
+                        metadata={"attrs": list(blk.keys())[:12]},
+                    )
+                )
                 blocks.append({"kind": kind, "address": str(addr), "raw_keys": list(blk.keys())[:12]})
     else:
         for m in _BLOCK_RE.finditer(text):
@@ -47,15 +60,27 @@ def parse_hcl_file(p: Path, rec: FileRecord):
             a, b = m.group(2), m.group(3)
             addr = f"{kind}.{a}.{b}" if kind in {"resource", "data"} and b else (f"{kind}.{a}" if a else kind)
             line = text.count("\n", 0, m.start()) + 1
-            syms.append(Symbol(qualified_name=addr, kind=kind, file=rec.path, line=line,
-                               signature=m.group(0).strip()[:120]))
+            syms.append(
+                Symbol(
+                    qualified_name=addr,
+                    kind=kind,
+                    file=rec.path,
+                    line=line,
+                    signature=m.group(0).strip()[:120],
+                )
+            )
             blocks.append({"kind": kind, "address": addr})
     # module-calls (ребро root->module) и depends_on.
     mod_calls = [b["address"] for b in blocks if b["kind"] == "module"]
     deps = re.findall(r"depends_on\s*=\s*\[([^\]]*)\]", text)
-    domain = {"kind": "tf_file", "path": rec.path, "blocks": blocks,
-              "module_calls": mod_calls, "depends_on_raw": deps,
-              "is_vars": rec.language == "terraform-vars" or rec.path.endswith(".tfvars")}
+    domain = {
+        "kind": "tf_file",
+        "path": rec.path,
+        "blocks": blocks,
+        "module_calls": mod_calls,
+        "depends_on_raw": deps,
+        "is_vars": rec.language == "terraform-vars" or rec.path.endswith(".tfvars"),
+    }
     return syms, domain
 
 
@@ -114,5 +139,11 @@ def build_terraform_project(root: Path, files: list[FileRecord]) -> dict:
                 providers.add(a.split(".")[-1])
         if f.path.endswith("main.tf") or f.path == "main.tf":
             root_files.append(f.path)
-    return {"modules": modules, "resources": resources, "variables": variables,
-            "outputs": outputs, "providers": sorted(providers), "root_files": root_files}
+    return {
+        "modules": modules,
+        "resources": resources,
+        "variables": variables,
+        "outputs": outputs,
+        "providers": sorted(providers),
+        "root_files": root_files,
+    }

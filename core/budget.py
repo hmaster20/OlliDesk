@@ -5,6 +5,7 @@ observation_budget / compact_history / truncate_to_chars. Правило: ctx_to
 берётся у ЗАГРУЖЕННОГО клиента, output_reserve — по ТИПУ операции,
 tool-results живут в EvidenceStore, а не в истории.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,13 +14,13 @@ from typing import Protocol
 
 
 class OpType(str, Enum):
-    CLASSIFY = "classify"      # 3B: тип запроса
-    PLAN = "plan"              # 3B: compact JSON-план
-    TOOL_CALL = "tool_call"    # structured output
-    CRITIQUE = "critique"      # 3B: проверка формата
-    MODULE_SUMMARY = "mod_sum" # 7B/3B: резюме модуля (кэш)
-    SYNTHESIS = "synthesis"    # 7B: финальная проза
-    REGEN = "regen"            # 7B: 1 регенерация после verifier-fail
+    CLASSIFY = "classify"  # 3B: тип запроса
+    PLAN = "plan"  # 3B: compact JSON-план
+    TOOL_CALL = "tool_call"  # structured output
+    CRITIQUE = "critique"  # 3B: проверка формата
+    MODULE_SUMMARY = "mod_sum"  # 7B/3B: резюме модуля (кэш)
+    SYNTHESIS = "synthesis"  # 7B: финальная проза
+    REGEN = "regen"  # 7B: 1 регенерация после verifier-fail
 
 
 # Резервы output по операции (токены). CPU-7B дорог в длинном output —
@@ -36,18 +37,20 @@ OUTPUT_RESERVE: dict[OpType, int] = {
 
 SAFETY_TOKENS = 256
 # Доли заполнения доступного входа для architecture-задачи.
-ARCH_SHARES = {"system": 0.12, "repo_map": 0.25, "evidence": 0.45,
-               "dynamic": 0.10, "history": 0.08}
+ARCH_SHARES = {"system": 0.12, "repo_map": 0.25, "evidence": 0.45, "dynamic": 0.10, "history": 0.08}
 
 
 class TokenCounter(Protocol):
     """Контракт точного подсчёта (реализация — LocalLLMClient.count_tokens)."""
+
     def count(self, text: str) -> int: ...
 
 
 class ApproxCounter:
     """Черновая оценка до загрузки модели (CHARS_PER_TOKEN fallback)."""
+
     CHARS_PER_TOKEN = 3.0
+
     def count(self, text: str) -> int:
         return max(1, int(len(text) / self.CHARS_PER_TOKEN))
 
@@ -58,8 +61,8 @@ class BudgetPlan:
     output_reserve: int
     safety: int
     available_input: int
-    slots: dict[str, int]          # system/repo_map/evidence/dynamic/history
-    overflow: dict[str, int]       # сколько НЕ влезло по каждому слоту
+    slots: dict[str, int]  # system/repo_map/evidence/dynamic/history
+    overflow: dict[str, int]  # сколько НЕ влезло по каждому слоту
 
     def fits(self) -> bool:
         return sum(self.slots.values()) <= self.available_input
@@ -94,7 +97,7 @@ def plan_budget(
     raw = {k: counter.count(pieces.get(k, "")) for k in shares}
     quota = {k: int(avail * v) for k, v in shares.items()}
     leftover = 0
-    for k in ("history", "dynamic", "repo_map", "system"):   # низший приоритет первым
+    for k in ("history", "dynamic", "repo_map", "system"):  # низший приоритет первым
         take = min(raw[k], quota[k])
         slots[k] = take
         leftover += quota[k] - take

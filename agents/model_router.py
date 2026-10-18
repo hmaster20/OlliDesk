@@ -83,9 +83,7 @@ class ModelRouter:
         Бэкенды не из этого списка игнорируются, даже если физически доступны
         (Ollama запущен, но пользователь его не включал).
         """
-        self._enabled = {
-            _CONFIG_NAMES[name] for name in names if name in _CONFIG_NAMES
-        }
+        self._enabled = {_CONFIG_NAMES[name] for name in names if name in _CONFIG_NAMES}
         self._enabled.add(BackendType.LOCAL_SLM)  # локальный режим — всегда
         logger.info(f"Разрешённые бэкенды: {[b.name for b in self._enabled]}")
         self._update_active()
@@ -103,8 +101,7 @@ class ModelRouter:
                 break
         else:
             self._active_backend = (
-                BackendType.RULE_BASED if self._rule_based is not None
-                else BackendType.NONE
+                BackendType.RULE_BASED if self._rule_based is not None else BackendType.NONE
             )
         logger.info(f"Активный бэкенд LLM: {self._active_backend.name}")
 
@@ -152,7 +149,8 @@ class ModelRouter:
     def _embed_order(self) -> list[BackendType]:
         """Порядок попыток для эмбеддингов."""
         available = [
-            b for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
+            b
+            for b in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
             if b in self._enabled and self._client_for(b) is not None
         ]
         if self._embed_preference is not None:

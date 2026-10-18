@@ -33,7 +33,7 @@ class ToolCall(BaseModel):
 class ChatMessage(BaseModel):
     """Сообщение в чате."""
 
-    id: str | None = None      # стабильный id (устраняет дубли user-реплик)
+    id: str | None = None  # стабильный id (устраняет дубли user-реплик)
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     images: list[str] | None = None

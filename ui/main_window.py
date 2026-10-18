@@ -16,10 +16,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QStandardItemModel
+from PySide6.QtGui import QAction, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -56,9 +58,7 @@ from state.session_store import SessionStore
 from ui.chat import ChatPanel
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_delegate import GitStatusDelegate
-from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QMenu
-from typing import Any
+
 
 class IndexingThread(QThread):
     """Поток для индексации проекта."""
@@ -114,12 +114,8 @@ class IndexingThread(QThread):
 
             # Обрабатываем новые и измененные файлы
             for i, file_meta in enumerate(new_or_modified):
-                content = file_meta.absolute_path.read_text(
-                    encoding="utf-8", errors="replace"
-                )
-                chunks = self.indexer.chunk_file(
-                    content, file_meta.path, file_meta.mtime
-                )
+                content = file_meta.absolute_path.read_text(encoding="utf-8", errors="replace")
+                chunks = self.indexer.chunk_file(content, file_meta.path, file_meta.mtime)
 
                 # Удаляем старые чанки файла (если он был изменен)
                 if file_meta.path in self.previous_state:
@@ -346,12 +342,8 @@ class MainWindow(QMainWindow):
         self.right_panel.setVisible(False)
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
-        self.chat_panel.directory_attach_requested.connect(
-            self._on_directory_attach_requested
-        )
-        self.chat_panel.backend_status_changed.connect(
-            self._on_backend_status_changed
-        )
+        self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
+        self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
         self.chat_panel.source_activated.connect(self.open_file_in_editor)
 
         logger.info("Главное окно создано")
@@ -396,22 +388,16 @@ class MainWindow(QMainWindow):
         # Заголовок: иконка + имя проекта + текущая ветка/тег Git
         header_layout = QHBoxLayout()
         self.project_icon_label = QLabel("📁")
-        self.project_icon_label.setStyleSheet(
-            "font-size: 16px; padding: 8px 0 4px 10px;"
-        )
+        self.project_icon_label.setStyleSheet("font-size: 16px; padding: 8px 0 4px 10px;")
         header_layout.addWidget(self.project_icon_label)
 
         self.project_title_label = QLabel("Проект")
-        self.project_title_label.setStyleSheet(
-            "font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;"
-        )
+        self.project_title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px 10px 4px 0;")
         header_layout.addWidget(self.project_title_label)
 
         self.branch_label = QLabel("")
         self.branch_label.setToolTip("Текущая ветка / тег Git")
-        self.branch_label.setStyleSheet(
-            "font-size: 12px; color: #98c379; padding: 8px 10px 4px 0;"
-        )
+        self.branch_label.setStyleSheet("font-size: 12px; color: #98c379; padding: 8px 10px 4px 0;")
         header_layout.addWidget(self.branch_label)
 
         header_layout.addStretch()
@@ -419,9 +405,7 @@ class MainWindow(QMainWindow):
 
         # Кнопка Reindex наверху
         self.reindex_btn = QPushButton("🔄 Переиндексировать")
-        self.reindex_btn.setStyleSheet(
-            "font-size: 13px; padding: 8px; margin: 4px 10px;"
-        )
+        self.reindex_btn.setStyleSheet("font-size: 13px; padding: 8px; margin: 4px 10px;")
         self.reindex_btn.clicked.connect(self._reindex_project)
         self.reindex_btn.setVisible(False)
         layout.addWidget(self.reindex_btn)
@@ -433,9 +417,7 @@ class MainWindow(QMainWindow):
         self.file_tree.setIndentation(16)
         self.file_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.file_tree.customContextMenuRequested.connect(
-            self._on_file_tree_context_menu
-        )
+        self.file_tree.customContextMenuRequested.connect(self._on_file_tree_context_menu)
         self.file_tree.doubleClicked.connect(self._on_file_tree_double_clicked)
         self.file_tree.clicked.connect(self._on_file_tree_clicked)
         self._git_delegate = GitStatusDelegate(self.file_tree)
@@ -465,16 +447,12 @@ class MainWindow(QMainWindow):
         self.index_progress.setRange(0, 100)
         self.index_progress.setValue(0)
         self.index_progress.setVisible(False)
-        self.index_progress.setStyleSheet(
-            "font-size: 12px; padding: 2px; margin: 4px 10px;"
-        )
+        self.index_progress.setStyleSheet("font-size: 12px; padding: 2px; margin: 4px 10px;")
         layout.addWidget(self.index_progress)
 
         # Статус индексации
         self.index_status_label = QLabel("")
-        self.index_status_label.setStyleSheet(
-            "color: gray; font-size: 12px; padding: 0 10px;"
-        )
+        self.index_status_label.setStyleSheet("color: gray; font-size: 12px; padding: 0 10px;")
         self.index_status_label.setVisible(False)
         layout.addWidget(self.index_status_label)
 
@@ -497,11 +475,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
 
-        default_model = (
-            self.config.default_model
-            if hasattr(self.config, "default_model")
-            else "llama3.2"
-        )
+        default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
             base_url="http://localhost:11434",
@@ -530,10 +504,7 @@ class MainWindow(QMainWindow):
         self.config.last_mode = settings.get("mode", "chat")
         from core.config import save_config
 
-        logger.info(
-            f"⚙️ settings_changed: model={settings.get('model')}, "
-            f"mode={settings.get('mode')}"
-        )
+        logger.info(f"⚙️ settings_changed: model={settings.get('model')}, mode={settings.get('mode')}")
         save_config(self.config)
 
     def _read_file(self, path: str) -> str:
@@ -605,12 +576,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.temp_slider)
 
         self.temp_value_label = QLabel("0.70")
-        self.temp_value_label.setStyleSheet(
-            "font-size: 12px; color: gray; padding: 0 10px;"
-        )
-        self.temp_slider.valueChanged.connect(
-            lambda v: self.temp_value_label.setText(f"{v / 100:.2f}")
-        )
+        self.temp_value_label.setStyleSheet("font-size: 12px; color: gray; padding: 0 10px;")
+        self.temp_slider.valueChanged.connect(lambda v: self.temp_value_label.setText(f"{v / 100:.2f}"))
         layout.addWidget(self.temp_value_label)
 
         # Max tokens
@@ -671,9 +638,7 @@ class MainWindow(QMainWindow):
 
         # Max iterations (агент)
         self.iterations_label = QLabel("Max iterations (агент):")
-        self.iterations_label.setStyleSheet(
-            "font-size: 12px; padding: 8px 10px 0;"
-        )
+        self.iterations_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
         layout.addWidget(self.iterations_label)
 
         self.iterations_spin = QSpinBox()
@@ -716,9 +681,7 @@ class MainWindow(QMainWindow):
             cb = QCheckBox(tool_label)
             cb.setChecked(True)
             cb.setStyleSheet("font-size: 12px; padding: 2px 10px;")
-            cb.toggled.connect(
-                lambda checked, k=tool_key: self._on_tool_toggled(k, checked)
-            )
+            cb.toggled.connect(lambda checked, k=tool_key: self._on_tool_toggled(k, checked))
             tools_layout.addWidget(cb)
             self.tool_checkboxes[tool_key] = cb
         self.tools_box.setStyleSheet("font-size: 12px;")
@@ -754,16 +717,10 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        self.confirm_web_search_action = QAction(
-            "Подтверждать запросы в интернет", self
-        )
+        self.confirm_web_search_action = QAction("Подтверждать запросы в интернет", self)
         self.confirm_web_search_action.setCheckable(True)
-        self.confirm_web_search_action.setChecked(
-            self._config_confirm_web_search()
-        )
-        self.confirm_web_search_action.toggled.connect(
-            self._on_confirm_web_search_toggled
-        )
+        self.confirm_web_search_action.setChecked(self._config_confirm_web_search())
+        self.confirm_web_search_action.toggled.connect(self._on_confirm_web_search_toggled)
         file_menu.addAction(self.confirm_web_search_action)
 
         settings_action = QAction("&Settings...", self)
@@ -789,15 +746,11 @@ class MainWindow(QMainWindow):
         self.show_editor_action.triggered.connect(self._show_editor_tab)
         view_menu.addAction(self.show_editor_action)
 
-        self.project_structure_action = QAction(
-            "Показать/Скрыть &структуру проекта", self
-        )
+        self.project_structure_action = QAction("Показать/Скрыть &структуру проекта", self)
         self.project_structure_action.setShortcut("F4")
         self.project_structure_action.setCheckable(True)
         self.project_structure_action.setChecked(False)
-        self.project_structure_action.toggled.connect(
-            self._toggle_project_structure
-        )
+        self.project_structure_action.toggled.connect(self._toggle_project_structure)
         view_menu.addAction(self.project_structure_action)
 
         view_menu.addSeparator()
@@ -817,17 +770,13 @@ class MainWindow(QMainWindow):
         view_menu.addAction(slm_models_action)
 
         # NEW: предзагрузка двухмодельного пайплайна (planner + analyst)
-        self.preload_pipeline_action = QAction(
-            "Предзагрузить 2-model pipeline", self
-        )
+        self.preload_pipeline_action = QAction("Предзагрузить 2-model pipeline", self)
         self.preload_pipeline_action.setToolTip(
             "Загрузить planner (3B GPU) + analyst (7B CPU) в память сейчас, "
             "не дожидаясь исследовательского вопроса. Требует открытый "
             "проект и две разные установленные модели."
         )
-        self.preload_pipeline_action.triggered.connect(
-            self._preload_two_model_pipeline
-        )
+        self.preload_pipeline_action.triggered.connect(self._preload_two_model_pipeline)
         view_menu.addAction(self.preload_pipeline_action)
 
         view_menu.addAction(self.theme_action)
@@ -843,12 +792,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(manage_sessions_action)
 
         view_menu.addSeparator()
-        self.agent_iterations_action = QAction(
-            "Лимит итераций агента...", self
-        )
-        self.agent_iterations_action.triggered.connect(
-            self._edit_agent_iterations
-        )
+        self.agent_iterations_action = QAction("Лимит итераций агента...", self)
+        self.agent_iterations_action.triggered.connect(self._edit_agent_iterations)
         view_menu.addAction(self.agent_iterations_action)
 
         help_menu = menubar.addMenu("&Help")
@@ -893,9 +838,7 @@ class MainWindow(QMainWindow):
             save_config(cfg)
             logger.info(f"Подтверждение web_search: {'вкл' if checked else 'выкл'}")
         except Exception as e:
-            logger.exception(
-                f"Не удалось сохранить настройку confirm.web_search: {e}"
-            )
+            logger.exception(f"Не удалось сохранить настройку confirm.web_search: {e}")
 
     def _edit_agent_iterations(self) -> None:
         """Позволяет изменить лимит итераций ReAct-цикла агента через меню."""
@@ -919,9 +862,7 @@ class MainWindow(QMainWindow):
             save_config(cfg)
             self.status_bar.showMessage(f"Лимит итераций агента: {value}", 4000)
         except Exception as e:
-            logger.exception(
-                f"Не удалось сохранить лимит итераций агента: {e}"
-            )
+            logger.exception(f"Не удалось сохранить лимит итераций агента: {e}")
 
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
@@ -957,6 +898,7 @@ class MainWindow(QMainWindow):
         """Проверяет подключение к Ollama только если он разрешён в конфиге."""
         try:
             from core.config import load_config
+
             cfg = load_config()
             if "ollama" not in cfg.backends.enabled:
                 self.ollama_status_label.setText("● Ollama: выключен")
@@ -989,21 +931,12 @@ class MainWindow(QMainWindow):
 
         self._update_ollama_status(ok, models)
 
-    def _update_ollama_status(
-        self, ok: bool = False, models: list[str] | None = None
-    ) -> None:
+    def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
         if ok and models:
-            self.ollama_status_label.setText(
-                f"● Ollama: Подключен ({len(models)} моделей)"
-            )
-            self.ollama_status_label.setStyleSheet(
-                "color: green; padding: 5px;"
-            )
+            self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
+            self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
             self.model_registry.sync_with_ollama(models)
-            if (
-                not hasattr(self.chat_panel, "registry")
-                or self.chat_panel.registry is None
-            ):
+            if not hasattr(self.chat_panel, "registry") or self.chat_panel.registry is None:
                 self.chat_panel.set_registry(self.model_registry)
             else:
                 self.chat_panel.update_models(models)
@@ -1013,12 +946,7 @@ class MainWindow(QMainWindow):
                 # Используем моржовый оператор (:=), чтобы сохранить объект
                 # и проверить его на None
                 first_local = next(
-                    (
-                        m
-                        for m in models
-                        if (info := self.model_registry.get(m)) is not None
-                        and info.is_local
-                    ),
+                    (m for m in models if (info := self.model_registry.get(m)) is not None and info.is_local),
                     models[0],
                 )
                 self.chat_panel.set_model(first_local)
@@ -1052,9 +980,7 @@ class MainWindow(QMainWindow):
 
     def _open_project(self) -> None:
         """Открывает диалог выбора проекта."""
-        folder = QFileDialog.getExistingDirectory(
-            self, "Выберите папку проекта"
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку проекта")
         if folder:
             self._do_open_project(Path(folder))
 
@@ -1076,9 +1002,7 @@ class MainWindow(QMainWindow):
         self._recent_actions.clear()
         for path in self.config.recent_projects:
             action = QAction(path, self)
-            action.triggered.connect(
-                lambda checked, p=path: self._open_recent_project(p)
-            )
+            action.triggered.connect(lambda checked, p=path: self._open_recent_project(p))
             self._recent_projects_menu.addAction(action)
             self._recent_actions.append(action)
         if not self.config.recent_projects:
@@ -1120,9 +1044,7 @@ class MainWindow(QMainWindow):
         # гасим его явно, иначе поверх дерева рисуется полоса с именем
         # колонки («Name») в произвольной позиции.
         self.file_tree.setHeaderHidden(True)
-        self.file_tree.setRootIndex(
-            self.file_system_model.index(str(self.project_path))
-        )
+        self.file_tree.setRootIndex(self.file_system_model.index(str(self.project_path)))
         self.file_tree.hideColumn(1)
         self.file_tree.hideColumn(2)
         self.file_tree.hideColumn(3)
@@ -1188,21 +1110,14 @@ class MainWindow(QMainWindow):
         settings = self.config.rerank
         if not settings.enabled:
             return None
-        if (
-            self._reranker is None
-            or self._reranker.model_name != settings.model
-        ):
+        if self._reranker is None or self._reranker.model_name != settings.model:
             self._reranker = CrossEncoderReranker(settings.model)
         return self._reranker
 
     def _embed_models(self) -> dict[str, str]:
         """Карта ``категория -> модель`` для раздельных эмбеддингов (без ``None``)."""
         cfg = self.config.embed_models
-        return {
-            category: model
-            for category, model in (("code", cfg.code), ("docs", cfg.docs))
-            if model
-        }
+        return {category: model for category, model in (("code", cfg.code), ("docs", cfg.docs)) if model}
 
     def _on_directory_attach_requested(self, path_str: str) -> None:
         """Подключает каталог из команды @dir без пересоздания сессии чата.
@@ -1258,9 +1173,7 @@ class MainWindow(QMainWindow):
 
         # Индексация предыдущего каталога должна завершиться, иначе новая не запустится
         if self._indexing_thread and self._indexing_thread.isRunning():
-            logger.info(
-                "@dir: ждём завершения индексации предыдущего каталога"
-            )
+            logger.info("@dir: ждём завершения индексации предыдущего каталога")
             self._indexing_thread.quit()
             self._indexing_thread.wait(3000)
 
@@ -1372,9 +1285,7 @@ class MainWindow(QMainWindow):
         target_dir = self._target_dir_for_new()
         if target_dir is None:
             return
-        name, ok = QInputDialog.getText(
-            self, "Новый файл", f"Имя файла в «{target_dir.name}»:"
-        )
+        name, ok = QInputDialog.getText(self, "Новый файл", f"Имя файла в «{target_dir.name}»:")
         if not ok:
             return
         name = name.strip()
@@ -1402,9 +1313,7 @@ class MainWindow(QMainWindow):
         target_dir = self._target_dir_for_new()
         if target_dir is None:
             return
-        name, ok = QInputDialog.getText(
-            self, "Новая папка", f"Имя папки в «{target_dir.name}»:"
-        )
+        name, ok = QInputDialog.getText(self, "Новая папка", f"Имя папки в «{target_dir.name}»:")
         if not ok:
             return
         name = name.strip()
@@ -1430,9 +1339,7 @@ class MainWindow(QMainWindow):
             return
 
         old_name = cur.name
-        new_name, ok = QInputDialog.getText(
-            self, "Переименовать", "Новое имя:", text=old_name
-        )
+        new_name, ok = QInputDialog.getText(self, "Переименовать", "Новое имя:", text=old_name)
         if not ok:
             return
         new_name = new_name.strip()
@@ -1527,7 +1434,8 @@ class MainWindow(QMainWindow):
                 try:
                     target_resolved.relative_to(src_resolved)
                     QMessageBox.warning(
-                        self, "Ошибка",
+                        self,
+                        "Ошибка",
                         f"Нельзя вставить «{src.name}» внутрь себя.",
                     )
                     continue
@@ -1537,7 +1445,8 @@ class MainWindow(QMainWindow):
                 dst = target_dir / src.name
                 if dst.exists():
                     QMessageBox.warning(
-                        self, "Ошибка",
+                        self,
+                        "Ошибка",
                         f"«{dst.name}» уже существует в целевой папке.",
                     )
                     continue
@@ -1552,9 +1461,7 @@ class MainWindow(QMainWindow):
                     else:
                         shutil.copy2(src, dst)
             except OSError as e:
-                QMessageBox.critical(
-                    self, "Ошибка", f"Не удалось вставить «{src.name}»:\n{e}"
-                )
+                QMessageBox.critical(self, "Ошибка", f"Не удалось вставить «{src.name}»:\n{e}")
 
         if mode == "cut":
             self._fs_clipboard = {"mode": None, "paths": []}
@@ -1616,9 +1523,7 @@ class MainWindow(QMainWindow):
             return
         self.index_progress.setRange(0, total)
         self.index_progress.setValue(current)
-        self.index_status_label.setText(
-            f"⏳ Индексация: {current}/{total} файлов"
-        )
+        self.index_status_label.setText(f"⏳ Индексация: {current}/{total} файлов")
 
     @Slot()
     def _on_index_finished(self):
@@ -1717,10 +1622,7 @@ class MainWindow(QMainWindow):
             visible: True — показать панель, False — скрыть.
         """
         self.left_panel.setVisible(visible)
-        logger.debug(
-            f"Панель структуры проекта: "
-            f"{'показана' if visible else 'скрыта'}"
-        )
+        logger.debug(f"Панель структуры проекта: {'показана' if visible else 'скрыта'}")
 
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""
@@ -1730,8 +1632,7 @@ class MainWindow(QMainWindow):
             wizard = SetupWizard()
         except Exception as e:
             logger.exception("Не удалось открыть визард")
-            QMessageBox.critical(self, "Ошибка визарда",
-                f"Не удалось открыть мастер настройки:\n{e}")
+            QMessageBox.critical(self, "Ошибка визарда", f"Не удалось открыть мастер настройки:\n{e}")
             return
         if wizard.exec():
             from core.config import load_config
@@ -1743,9 +1644,7 @@ class MainWindow(QMainWindow):
                     self.chat_panel.update_models(models)
                     default = self.config.default_model
                     self.chat_panel.set_model(default)
-                    self.chat_panel.set_project_open(
-                        self.project_path is not None
-                    )
+                    self.chat_panel.set_project_open(self.project_path is not None)
                 from core.config import save_config
 
                 save_config(self.config)
@@ -1758,9 +1657,7 @@ class MainWindow(QMainWindow):
         """Открывает диалог настроек."""
         from ui.dialogs.settings_dialog import SettingsDialog
 
-        dlg = SettingsDialog(
-            config=self.config, project_path=self.project_path, parent=self
-        )
+        dlg = SettingsDialog(config=self.config, project_path=self.project_path, parent=self)
         if dlg.exec():
             # Перезагружаем конфиг
             from core.config import load_config
@@ -1784,9 +1681,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About OlliDesk",
-            "OlliDesk v1.0.0\n\n"
-            "Локальный AI-ассистент для написания кода.\n\n"
-            "Powered by Ollama + PySide6",
+            "OlliDesk v1.0.0\n\nЛокальный AI-ассистент для написания кода.\n\nPowered by Ollama + PySide6",
         )
 
     def closeEvent(self, event):
@@ -1795,14 +1690,11 @@ class MainWindow(QMainWindow):
         if self.chat_panel:
             self.config.last_model = self.chat_panel.get_current_model()
             mode_map = {0: "chat", 1: "plan", 2: "agent"}
-            self.config.last_mode = mode_map.get(
-                self.chat_panel.mode_combo.currentIndex(), "chat"
-            )
+            self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
             from core.config import save_config
 
             logger.info(
-                f"🔄 closeEvent: last_model='{self.config.last_model}', "
-                f"last_mode='{self.config.last_mode}'"
+                f"🔄 closeEvent: last_model='{self.config.last_model}', last_mode='{self.config.last_mode}'"
             )
             save_config(self.config)
             logger.info("✅ Конфиг сохранён в closeEvent")
@@ -1842,9 +1734,7 @@ class MainWindow(QMainWindow):
 
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(
-                    self.ollama_client.__aexit__(None, None, None)
-                )
+                loop.run_until_complete(self.ollama_client.__aexit__(None, None, None))
                 loop.close()
             except Exception:
                 pass
@@ -1852,9 +1742,7 @@ class MainWindow(QMainWindow):
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
 
-        dlg = ModelManagerDialog(
-            self.model_registry, self.ollama_client.base_url, self
-        )
+        dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
         dlg.exec()
 
     def _open_slm_manager(self):
@@ -1883,8 +1771,7 @@ class MainWindow(QMainWindow):
                 # пересоздастся при следующем запросе с новыми моделями.
                 self.chat_panel.reload_slm()
                 self.status_bar.showMessage(
-                    "SLM: конфигурация применена. Пайплайн будет "
-                    "пересоздан при следующем research-запросе.",
+                    "SLM: конфигурация применена. Пайплайн будет пересоздан при следующем research-запросе.",
                     6000,
                 )
 
@@ -1912,15 +1799,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if (
-            self.chat_panel._pool_load_thread is not None
-            and self.chat_panel._pool_load_thread.isRunning()
-        ):
+        if self.chat_panel._pool_load_thread is not None and self.chat_panel._pool_load_thread.isRunning():
             QMessageBox.information(
                 self,
                 "2-model pipeline",
-                "Загрузка уже идёт — см. индикатор в панели чата "
-                "(⏳ 2-model: …).",
+                "Загрузка уже идёт — см. индикатор в панели чата (⏳ 2-model: …).",
             )
             return
 
@@ -1928,8 +1811,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "2-model pipeline",
-                "Сначала откройте проект: путь проекта нужен для кэша "
-                "графа и evidence.",
+                "Сначала откройте проект: путь проекта нужен для кэша графа и evidence.",
             )
             return
 
@@ -1937,9 +1819,7 @@ class MainWindow(QMainWindow):
         # не сделал no-op.
         self.chat_panel._pool_load_failed = False
         self.chat_panel._ensure_orchestrator()
-        self.status_bar.showMessage(
-            "Загрузка двух моделей (planner + analyst)…", 5000
-        )
+        self.status_bar.showMessage("Загрузка двух моделей (planner + analyst)…", 5000)
 
     def _start_model_check(self):
         """Запускает или останавливает проверку моделей."""
@@ -1954,31 +1834,20 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        self.status_bar.showMessage(
-            "🔄 Проверка поддержки инструментов моделями..."
-        )
+        self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
         # Меняем текст кнопки на "Стоп" (она остаётся активной)
         self.chat_panel.refresh_models_btn.setText("⏹ Стоп")
         self._is_checking = True
 
-        self._model_check_thread = ModelCheckThread(
-            self.ollama_client.base_url, self.model_registry
-        )
-        self._model_check_thread.progress.connect(
-            self._on_model_check_progress
-        )
+        self._model_check_thread = ModelCheckThread(self.ollama_client.base_url, self.model_registry)
+        self._model_check_thread.progress.connect(self._on_model_check_progress)
         self._model_check_thread.model_checked.connect(self._on_model_checked)
-        self._model_check_thread.finished.connect(
-            self._on_model_check_finished
-        )
+        self._model_check_thread.finished.connect(self._on_model_check_finished)
         self._model_check_thread.start()
 
     def _stop_model_check(self):
         """Останавливает проверку моделей."""
-        if (
-            self._model_check_thread
-            and self._model_check_thread.isRunning()
-        ):
+        if self._model_check_thread and self._model_check_thread.isRunning():
             self._model_check_thread.cancel()
             self._model_check_thread.wait(2000)
             if self._model_check_thread.isRunning():
@@ -1989,12 +1858,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
 
     @Slot(str, int, int)
-    def _on_model_check_progress(
-        self, model_name: str, current: int, total: int
-    ):
-        self.status_bar.showMessage(
-            f"🔄 Проверка {current}/{total}: {model_name}..."
-        )
+    def _on_model_check_progress(self, model_name: str, current: int, total: int):
+        self.status_bar.showMessage(f"🔄 Проверка {current}/{total}: {model_name}...")
 
     @Slot(str, bool)
     def _on_model_checked(self, model_name: str, supports: bool):
@@ -2026,7 +1891,7 @@ class MainWindow(QMainWindow):
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
 
         actions = [
-            ("F2",  self._tree_rename),
+            ("F2", self._tree_rename),
             ("Delete", self._tree_delete),
             ("Ctrl+C", self._tree_copy),
             ("Ctrl+X", self._tree_cut),
@@ -2063,9 +1928,7 @@ class MainWindow(QMainWindow):
             self.file_tree.setCurrentIndex(index)
             target_path = Path(self.file_system_model.filePath(index))
         else:
-            target_path = (
-                self.project_path if self.project_path else None
-            )
+            target_path = self.project_path if self.project_path else None
 
         if target_path is None:
             return
@@ -2077,13 +1940,9 @@ class MainWindow(QMainWindow):
 
         if is_file:
             act_open = menu.addAction("📂 Открыть")
-            act_open.triggered.connect(
-                lambda: self.open_file_in_editor(str(target_path))
-            )
+            act_open.triggered.connect(lambda: self.open_file_in_editor(str(target_path)))
             act_reveal = menu.addAction("📁 Открыть расположение")
-            act_reveal.triggered.connect(
-                lambda: self._reveal_in_explorer(target_path)
-            )
+            act_reveal.triggered.connect(lambda: self._reveal_in_explorer(target_path))
             menu.addSeparator()
 
         act_new_file = menu.addAction("📄 Новый файл")

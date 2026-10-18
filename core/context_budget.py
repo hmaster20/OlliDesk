@@ -66,6 +66,7 @@ READ_CHUNK_CHARS = 8000
 # больше — иначе один вызов съест всё окно.
 MAX_READ_FILE_CHUNK_CHARS = 16000
 
+
 def estimate_tokens(text: str) -> int:
     """Оценивает количество токенов в тексте.
 

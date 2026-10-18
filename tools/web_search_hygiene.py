@@ -14,6 +14,7 @@
       auto       — hygiene обязателен, диалог не спрашиваем.
   • Регулярки redact — в `core/security.py:redact_query` (уже есть).
 """
+
 from __future__ import annotations
 
 import re
@@ -71,9 +72,7 @@ def filter_query(
 
     if mode is NetworkMode.NEUTRAL_ONLY:
         has_tech = bool(_TECH_ALLOWLIST.search(cleaned) or _ERRCODE.search(cleaned))
-        leftover = bool(_LEFTOVER_PATH.search(cleaned)) or bool(
-            _LEFTOVER_CAMEL.search(cleaned)
-        )
+        leftover = bool(_LEFTOVER_PATH.search(cleaned)) or bool(_LEFTOVER_CAMEL.search(cleaned))
         if not has_tech or leftover:
             return "", hits + (["non_neutral_residual"] if leftover else [])
 

@@ -6,12 +6,12 @@ L1 (architecture): по значимым каталогам top-K символо
 L2 (lazy, 0 токенов в базе): полные символы/файлы — только по запросу через
    read_symbol / RAG / инструменты.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,10 +46,17 @@ class RepoMap:
         return "\n\n".join(parts)
 
 
-def build_repomap(files: list[FileRecord], symbols: list[Symbol],
-                  entries: list[str], manifests: list[str],
-                  domain: dict, *, graph: DependencyGraph | None = None,
-                  l1_top_dirs: int = 12, l1_k: int = 5) -> RepoMap:
+def build_repomap(
+    files: list[FileRecord],
+    symbols: list[Symbol],
+    entries: list[str],
+    manifests: list[str],
+    domain: dict,
+    *,
+    graph: DependencyGraph | None = None,
+    l1_top_dirs: int = 12,
+    l1_k: int = 5,
+) -> RepoMap:
     langs: dict[str, int] = defaultdict(int)
     by_dir: dict[str, list[FileRecord]] = defaultdict(list)
     for f in files:
@@ -59,9 +66,14 @@ def build_repomap(files: list[FileRecord], symbols: list[Symbol],
     level0 = _render_l0(by_dir, files)
     level1 = _render_l1(by_dir, symbols, graph, l1_top_dirs=l1_top_dirs, l1_k=l1_k)
     domain_summary = _render_domain(domain)
-    return RepoMap(level0=level0, level1=level1, entries=sorted(set(entries)),
-                   manifests=sorted(set(manifests)), languages=dict(langs),
-                   domain_summary=domain_summary)
+    return RepoMap(
+        level0=level0,
+        level1=level1,
+        entries=sorted(set(entries)),
+        manifests=sorted(set(manifests)),
+        languages=dict(langs),
+        domain_summary=domain_summary,
+    )
 
 
 def _render_l0(by_dir: dict[str, list[FileRecord]], files: list[FileRecord]) -> str:
@@ -109,7 +121,18 @@ def _render_l1(by_dir, symbols, graph, *, l1_top_dirs: int, l1_k: int) -> str:
         items: list[tuple[float, Symbol]] = []
         for f in by_dir[d]:
             for s in sym_by_file.get(f.path, []):
-                if s.kind in {"class", "interface", "role", "module_tf", "resource", "box", "function", "method", "task", "provisioner"}:
+                if s.kind in {
+                    "class",
+                    "interface",
+                    "role",
+                    "module_tf",
+                    "resource",
+                    "box",
+                    "function",
+                    "method",
+                    "task",
+                    "provisioner",
+                }:
                     score = 0.0
                     if graph:
                         node = graph.nodes.get(f"{s.kind}:{s.file}::{s.qualified_name}")
@@ -128,16 +151,21 @@ def _render_domain(domain: dict) -> str:
     out: list[str] = []
     ans = domain.get("ansible") or {}
     if ans.get("roles"):
-        out.append(f"Ansible: {len(ans['roles'])} ролей, {len(ans.get('playbooks', []))} плейбуков, "
-                   f"{len(ans.get('role_edges', []))} межролевых зависимостей")
+        out.append(
+            f"Ansible: {len(ans['roles'])} ролей, {len(ans.get('playbooks', []))} плейбуков, "
+            f"{len(ans.get('role_edges', []))} межролевых зависимостей"
+        )
     tf = domain.get("terraform") or {}
     if tf.get("resources") or tf.get("modules"):
-        out.append(f"Terraform: {len(tf.get('modules', []))} модулей, {len(tf.get('resources', []))} ресурсов, "
-                   f"{len(tf.get('variables', []))} переменных, провайдеры={tf.get('providers')}")
+        out.append(
+            f"Terraform: {len(tf.get('modules', []))} модулей, {len(tf.get('resources', []))} ресурсов, "
+            f"{len(tf.get('variables', []))} переменных, провайдеры={tf.get('providers')}"
+        )
     vg = domain.get("vagrant") or []
     if vg:
         total_prov = sum(len(v.get("provision_chain", [])) for v in vg)
         debt = sum(v.get("commented_provisions", 0) for v in vg)
-        out.append(f"Vagrant: {len(vg)} Vagrantfile, {total_prov} provision-шагов, "
-                   f"техдолг(закомм. provision)={debt}")
+        out.append(
+            f"Vagrant: {len(vg)} Vagrantfile, {total_prov} provision-шагов, техдолг(закомм. provision)={debt}"
+        )
     return "\n".join(out)

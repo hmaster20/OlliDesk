@@ -83,10 +83,7 @@ def _round_512(n: int) -> int:
 
 def _kv_mb(meta: GGUFMeta, kv_type: str, n_ctx: int) -> int:
     """Размер KV-кэша в МБ для заданного типа и n_ctx."""
-    per_tok = (
-        meta.kv_bytes_per_token_fp16 if kv_type == "f16"
-        else meta.kv_bytes_per_token_q8
-    )
+    per_tok = meta.kv_bytes_per_token_fp16 if kv_type == "f16" else meta.kv_bytes_per_token_q8
     if per_tok <= 0:
         return 0
     return (n_ctx * per_tok) // (1024 * 1024)
@@ -94,10 +91,7 @@ def _kv_mb(meta: GGUFMeta, kv_type: str, n_ctx: int) -> int:
 
 def _max_ctx_in_budget(meta: GGUFMeta, kv_budget_mb: int, kv_type: str) -> int:
     """Сколько токенов KV влезет в kv_budget_mb при выбранном типе KV."""
-    per_tok = (
-        meta.kv_bytes_per_token_fp16 if kv_type == "f16"
-        else meta.kv_bytes_per_token_q8
-    )
+    per_tok = meta.kv_bytes_per_token_fp16 if kv_type == "f16" else meta.kv_bytes_per_token_q8
     if per_tok <= 0 or kv_budget_mb <= 0:
         return 0
     return (kv_budget_mb * 1024 * 1024) // per_tok
@@ -115,6 +109,7 @@ def _target_ctx_upper_bound(meta: GGUFMeta, target_ctx: int) -> int:
 # ---------------------------------------------------------------------------
 # Стратегия 1: всё на GPU
 # ---------------------------------------------------------------------------
+
 
 def _try_fit_all_on_gpu(
     meta: GGUFMeta,
@@ -162,6 +157,7 @@ def _try_fit_all_on_gpu(
         return q8_ctx, "q8_0"
 
     return None
+
 
 # ---------------------------------------------------------------------------
 # Стратегия 2: частичный offload (VRAM + RAM)
@@ -250,12 +246,10 @@ def _place_layers(
         layers = max(0, n_layer - 2)
 
     vram_used = int(layers * per_layer_total + COMPUTE_BUFFER_MB)
-    ram_used = int(
-        (model_size_mb - layers * per_layer_weight)
-        + (kv_mb - layers * per_layer_kv)
-    )
+    ram_used = int((model_size_mb - layers * per_layer_weight) + (kv_mb - layers * per_layer_kv))
     ram_used = max(200, ram_used)
     return layers, vram_used, ram_used
+
 
 def _optimal_batch(usable_vram_mb: int, n_gpu_layers: int) -> int:
     if n_gpu_layers == 0:
@@ -284,11 +278,12 @@ def _optimal_flash_attn(hw: HardwareProfile, n_gpu_layers: int) -> bool:
 # Главная точка входа
 # ---------------------------------------------------------------------------
 
+
 def optimize(
     model_path: Path,
     *,
     hw: HardwareProfile | None = None,
-    target_n_ctx: int = 8192,           # было 32768 — провоцировало 32k на CPU
+    target_n_ctx: int = 8192,  # было 32768 — провоцировало 32k на CPU
     model_size_mb: int | None = None,
     device: str | None = None,
 ) -> OptimizedParams:
@@ -364,24 +359,21 @@ def optimize(
         notes.append("Недостаточно памяти: минимальный режим")
         total_budget = max(model_size_mb + 512, 4096)
 
-    n_ctx, kv_type = _pick_n_ctx_with_ram(
-        meta, total_budget, model_size_mb, target_n_ctx
-    )
+    n_ctx, kv_type = _pick_n_ctx_with_ram(meta, total_budget, model_size_mb, target_n_ctx)
     if n_ctx < target_n_ctx:
-        notes.append(
-            f"n_ctx={n_ctx} (запрошено {target_n_ctx}): память под KV ограничена"
-        )
+        notes.append(f"n_ctx={n_ctx} (запрошено {target_n_ctx}): память под KV ограничена")
 
     kv_mb = _kv_mb(meta, kv_type, n_ctx)
     n_gpu_layers, vram_used, ram_used = _place_layers(
-        model_size_mb, kv_mb, meta, usable_vram,
+        model_size_mb,
+        kv_mb,
+        meta,
+        usable_vram,
     )
 
     # device="CPU": жёстко обнуляем GPU-слои, даже если VRAM хватает.
     if device == "CPU" and n_gpu_layers != 0:
-        notes.append(
-            f"device=CPU: принудительно n_gpu_layers=0 (было {n_gpu_layers})"
-        )
+        notes.append(f"device=CPU: принудительно n_gpu_layers=0 (было {n_gpu_layers})")
         n_gpu_layers = 0
         vram_used = 0
         ram_used = model_size_mb + kv_mb
@@ -394,8 +386,7 @@ def optimize(
         # Квантизованный V-кэш требует Flash Attention, на CPU его нет.
         if kv_type != "f16":
             notes.append(
-                f"CPU-only: kv {kv_type} -> f16 "
-                f"(квантизованный KV требует flash_attn, недоступного на CPU)"
+                f"CPU-only: kv {kv_type} -> f16 (квантизованный KV требует flash_attn, недоступного на CPU)"
             )
             kv_type = "f16"
         if n_batch > 512:
@@ -405,17 +396,12 @@ def optimize(
         vram_used, ram_used = 0, model_size_mb + kv_mb
 
     if n_ctx < MIN_USEFUL_CTX:
-        notes.append(
-            f"⚠️ n_ctx={n_ctx} < {MIN_USEFUL_CTX}: агент может работать нестабильно"
-        )
+        notes.append(f"⚠️ n_ctx={n_ctx} < {MIN_USEFUL_CTX}: агент может работать нестабильно")
 
     if n_gpu_layers == -1:
         notes.append(f"Модель целиком на GPU (VRAM ≈ {vram_used} МБ)")
     elif n_gpu_layers == 0:
-        notes.append(
-            f"CPU-only (RAM ≈ {ram_used} МБ): модель не влезает в VRAM "
-            f"({usable_vram} МБ)"
-        )
+        notes.append(f"CPU-only (RAM ≈ {ram_used} МБ): модель не влезает в VRAM ({usable_vram} МБ)")
     else:
         notes.append(f"Частичный offload: {n_gpu_layers}/{meta.n_layer} слоёв на GPU")
 
@@ -424,10 +410,7 @@ def optimize(
         notes.append("FlashAttention включён")
 
     use_mmap = True
-    use_mlock = (
-        n_gpu_layers == 0
-        and hw.ram.available_mb > (model_size_mb + RAM_RESERVE_MB + 4000)
-    )
+    use_mlock = n_gpu_layers == 0 and hw.ram.available_mb > (model_size_mb + RAM_RESERVE_MB + 4000)
     if use_mlock:
         notes.append("mlock включён (модель закреплена в RAM)")
 
@@ -453,5 +436,6 @@ def optimize(
     for note in notes:
         logger.info(f"  • {note}")
     return params
+
 
 #

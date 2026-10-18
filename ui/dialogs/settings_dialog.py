@@ -328,9 +328,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._slm_enabled_check)
 
         self._ollama_enabled_check = QCheckBox("🌐 Ollama (внешний сервис)")
-        self._ollama_enabled_check.setChecked(
-            "ollama" in self._config.backends.enabled
-        )
+        self._ollama_enabled_check.setChecked("ollama" in self._config.backends.enabled)
         self._ollama_enabled_check.setToolTip(
             "Внешний сервис на localhost:11434. Даёт доступ к более крупным "
             "моделям, но требует запущенного сервиса и сетевого трафика. "

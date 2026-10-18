@@ -5,6 +5,7 @@
   B. stdlib/regex-heuristic (Python ast, C#/Ruby/HCL regex) -> базовая карта
   C. только FileRecord (язык по расширению/имени) -> минимум
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -16,26 +17,76 @@ from fs.intel import FileRecord, Symbol
 
 # Файлы БЕЗ расширения, определяемые по имени (D6).
 _NAME_LANG: dict[str, str] = {
-    "vagrantfile": "vagrant", "rakefile": "ruby", "gemfile": "ruby",
-    "guardfile": "ruby", "podfile": "ruby", "dockerfile": "docker",
-    "makefile": "make", "playbook": "ansible", "site.yml": "ansible",
-    "build.gradle": "groovy", "cmakelists.txt": "cmake",
+    "vagrantfile": "vagrant",
+    "rakefile": "ruby",
+    "gemfile": "ruby",
+    "guardfile": "ruby",
+    "podfile": "ruby",
+    "dockerfile": "docker",
+    "makefile": "make",
+    "playbook": "ansible",
+    "site.yml": "ansible",
+    "build.gradle": "groovy",
+    "cmakelists.txt": "cmake",
 }
 _EXT_LANG: dict[str, str] = {
-    ".py": "python", ".pyi": "python", ".cs": "csharp", ".csx": "csharp",
-    ".csproj": "msbuild", ".sln": "solution", ".rb": "ruby", ".tf": "terraform",
-    ".tfvars": "terraform-vars", ".hcl": "hcl", ".pkr.hcl": "hcl",
-    ".yml": "yaml", ".yaml": "yaml", ".json": "json", ".toml": "toml",
-    ".go": "go", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
-    ".jsx": "javascript", ".html": "html", ".css": "css", ".md": "markdown",
-    ".xml": "xml", ".config": "xml", ".resx": "xml", ".razor": "csharp",
-    ".sh": "shell", ".bash": "shell", ".sql": "sql", ".rs": "rust",
-    ".java": "java", ".kt": "kotlin", ".php": "php",
+    ".py": "python",
+    ".pyi": "python",
+    ".cs": "csharp",
+    ".csx": "csharp",
+    ".csproj": "msbuild",
+    ".sln": "solution",
+    ".rb": "ruby",
+    ".tf": "terraform",
+    ".tfvars": "terraform-vars",
+    ".hcl": "hcl",
+    ".pkr.hcl": "hcl",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".json": "json",
+    ".toml": "toml",
+    ".go": "go",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".html": "html",
+    ".css": "css",
+    ".md": "markdown",
+    ".xml": "xml",
+    ".config": "xml",
+    ".resx": "xml",
+    ".razor": "csharp",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".sql": "sql",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".php": "php",
 }
-_SOURCE_EXT = {".py", ".cs", ".rb", ".go", ".js", ".ts", ".tsx", ".jsx", ".rs", ".java", ".kt", ".php", ".tf", ".hcl"}
+_SOURCE_EXT = {
+    ".py",
+    ".cs",
+    ".rb",
+    ".go",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".rs",
+    ".java",
+    ".kt",
+    ".php",
+    ".tf",
+    ".hcl",
+}
 _CONFIG_EXT = {".csproj", ".sln", ".toml", ".json", ".yaml", ".yml", ".config", ".xml", ".tfvars"}
 _DOC_EXT = {".md", ".rst", ".txt"}
-_TEST_HINT = re.compile(r"(?:^|[/\\])(?:tests?|spec[s]?|test_[^/\\]+|[^/\\]+_test\.(?:go|py)|[^/\\]+\.tests?\.cs)(?:$|[./\\])", re.I)
+_TEST_HINT = re.compile(
+    r"(?:^|[/\\])(?:tests?|spec[s]?|test_[^/\\]+|[^/\\]+_test\.(?:go|py)|[^/\\]+\.tests?\.cs)(?:$|[./\\])",
+    re.I,
+)
 
 
 def detect_language(p: Path) -> str:
@@ -55,11 +106,16 @@ def _grammar_or_none(lang: str):
     """Ленивая загрузка tree-sitter grammar; None => уровень B/C."""
     try:
         import tree_sitter as ts
+
         mapping = {
-            "python": "tree_sitter_python", "csharp": "tree_sitter_c_sharp",
-            "ruby": "tree_sitter_ruby", "vagrant": "tree_sitter_ruby",
-            "yaml": "tree_sitter_yaml", "go": "tree_sitter_go",
-            "javascript": "tree_sitter_javascript", "typescript": "tree_sitter_typescript",
+            "python": "tree_sitter_python",
+            "csharp": "tree_sitter_c_sharp",
+            "ruby": "tree_sitter_ruby",
+            "vagrant": "tree_sitter_ruby",
+            "yaml": "tree_sitter_yaml",
+            "go": "tree_sitter_go",
+            "javascript": "tree_sitter_javascript",
+            "typescript": "tree_sitter_typescript",
         }
         mod_name = mapping.get(lang)
         if not mod_name:
@@ -92,14 +148,17 @@ def detect_and_parse_all(root: Path, *, indexer=None):
         syms, dom_piece = _parse_by_lang(p, lang, rec)
         symbols.extend(syms)
         if dom_piece:
-            domain.setdefault(lang if lang in {"ansible","terraform","vagrant","hcl"} else "misc", [])
-            if isinstance(domain.get(lang if lang in {"ansible","terraform","vagrant"} else "misc"), list):
-                domain.setdefault("roles", []); domain.setdefault("modules", []); domain.setdefault("boxes", [])
+            domain.setdefault(lang if lang in {"ansible", "terraform", "vagrant", "hcl"} else "misc", [])
+            if isinstance(domain.get(lang if lang in {"ansible", "terraform", "vagrant"} else "misc"), list):
+                domain.setdefault("roles", [])
+                domain.setdefault("modules", [])
+                domain.setdefault("boxes", [])
             _merge_domain(domain, lang, dom_piece)
     # Доменные сборщики (Ansible/Terraform/Vagrant) над全体 файлами.
     from fs.intel.ansible import build_ansible_project
     from fs.intel.terraform import build_terraform_project
     from fs.intel.vagrant import build_vagrant_project
+
     domain["ansible"] = build_ansible_project(root, files)
     domain["terraform"] = build_terraform_project(root, files)
     domain["vagrant"] = build_vagrant_project(root, files)
@@ -112,18 +171,23 @@ def _parse_by_lang(p: Path, lang: str, rec: FileRecord):
     """Выбор парсера: tree-sitter -> доменный -> regex-heuristic."""
     if lang == "csharp":
         from fs.intel.csharp import parse_csharp_file
+
         return parse_csharp_file(p, rec)
     if lang == "python":
         from fs.intel.python import parse_python_file
+
         return parse_python_file(p, rec)
     if lang in {"vagrant", "ruby"}:
         from fs.intel.vagrant import parse_ruby_file
+
         return parse_ruby_file(p, rec, vagrant=(lang == "vagrant"))
     if lang in {"terraform", "hcl", "terraform-vars"}:
         from fs.intel.terraform import parse_hcl_file
+
         return parse_hcl_file(p, rec)
     if lang in {"yaml", "ansible"}:
         from fs.intel.ansible import parse_yaml_file
+
         return parse_yaml_file(p, rec)
     # generic tree-sitter для остальных
     parser = _grammar_or_none(lang)
@@ -140,19 +204,32 @@ def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
     tree = parser.parse(src)
     out: list[Symbol] = []
     KIND_NODES = {
-        "class_definition": "class", "function_definition": "function",
-        "method_definition": "method", "interface_declaration": "interface",
-        "struct_declaration": "struct", "enum_declaration": "enum",
-        "object_declaration": "object", "type_alias_declaration": "type",
+        "class_definition": "class",
+        "function_definition": "function",
+        "method_definition": "method",
+        "interface_declaration": "interface",
+        "struct_declaration": "struct",
+        "enum_declaration": "enum",
+        "object_declaration": "object",
+        "type_alias_declaration": "type",
     }
+
     def walk(node):
         if node.type in KIND_NODES:
             name = _child_text(node, "name") or _child_text(node, "identifier") or "?"
             sig = _first_line(src, node.start_byte)
-            out.append(Symbol(qualified_name=name, kind=KIND_NODES[node.type],
-                              file=rec.path, line=node.start_point[0] + 1, signature=sig))
+            out.append(
+                Symbol(
+                    qualified_name=name,
+                    kind=KIND_NODES[node.type],
+                    file=rec.path,
+                    line=node.start_point[0] + 1,
+                    signature=sig,
+                )
+            )
         for ch in node.children:
             walk(ch)
+
     walk(tree.root_node)
     return out
 
@@ -184,6 +261,7 @@ def _make_record(p: Path, root: Path, lang: str) -> FileRecord:
     except OSError:
         size, mtime = 0, 0.0
     import hashlib
+
     sha = ""
     if size and size <= 2_000_000:
         try:
@@ -194,20 +272,51 @@ def _make_record(p: Path, root: Path, lang: str) -> FileRecord:
     is_doc = ext in _DOC_EXT or lang == "markdown"
     is_cfg = ext in _CONFIG_EXT or lang in {"msbuild", "solution", "toml", "json", "yaml", "xml"}
     is_src = (ext in _SOURCE_EXT or lang in {"vagrant", "ansible", "terraform", "hcl"}) and not is_doc
-    is_test = bool(_TEST_HINT.search(rel)) or rel.endswith(("_test.go", "test.py")) or ".Tests." in rel or "/Tests/" in rel
+    is_test = (
+        bool(_TEST_HINT.search(rel))
+        or rel.endswith(("_test.go", "test.py"))
+        or ".Tests." in rel
+        or "/Tests/" in rel
+    )
     is_entry = _is_entry(rel, lang)
-    return FileRecord(path=rel, language=lang, size=size, mtime=mtime, sha256=sha,
-                      is_source=is_src, is_config=is_cfg, is_doc=is_doc,
-                      is_test=is_test, is_entry_candidate=is_entry,
-                      module_name=_module_of(rel, lang), namespace=_ns_of(rel, lang),
-                      package=_pkg_of(rel, lang))
+    return FileRecord(
+        path=rel,
+        language=lang,
+        size=size,
+        mtime=mtime,
+        sha256=sha,
+        is_source=is_src,
+        is_config=is_cfg,
+        is_doc=is_doc,
+        is_test=is_test,
+        is_entry_candidate=is_entry,
+        module_name=_module_of(rel, lang),
+        namespace=_ns_of(rel, lang),
+        package=_pkg_of(rel, lang),
+    )
 
 
 _ENTRY_BASENAMES = {
-    "main.py", "app.py", "cli.py", "__main__.py", "wsgi.py", "asgi.py",
-    "manage.py", "program.cs", "startup.cs", "main.go", "main.rb",
-    "config.ru", "vagrantfile", "site.yml", "playbook.yml", "main.tf",
-    "index.ts", "index.js", "server.py", "run.py",
+    "main.py",
+    "app.py",
+    "cli.py",
+    "__main__.py",
+    "wsgi.py",
+    "asgi.py",
+    "manage.py",
+    "program.cs",
+    "startup.cs",
+    "main.go",
+    "main.rb",
+    "config.ru",
+    "vagrantfile",
+    "site.yml",
+    "playbook.yml",
+    "main.tf",
+    "index.ts",
+    "index.js",
+    "server.py",
+    "run.py",
 }
 _ENTRY_DIRHINT = re.compile(r"(?:^|/)(?:src|app|cmd|entrypoint|bootstrap)/", re.I)
 
@@ -217,7 +326,7 @@ def _is_entry(rel: str, lang: str) -> bool:
     if base in _ENTRY_BASENAMES:
         return True
     if lang == "msbuild" and base.endswith(".csproj"):
-        return True   # манифест сборки = кандидат точки входа для .NET
+        return True  # манифест сборки = кандидат точки входа для .NET
     if _ENTRY_DIRHINT.search(rel) and lang in {"python", "csharp", "go", "ruby", "typescript", "javascript"}:
         return True
     return False
@@ -245,9 +354,27 @@ def _pkg_of(rel: str, lang: str) -> str | None:
 
 
 def _load_ignores(root: Path) -> list[str]:
-    pats = [".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
-            "build", ".env", "*.pyc", "obj", "bin", ".idea", ".vs", ".ollidesk",
-            "packages", "TestResults", "*.min.js", ".terraform", "*.tfstate*"]
+    pats = [
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".env",
+        "*.pyc",
+        "obj",
+        "bin",
+        ".idea",
+        ".vs",
+        ".ollidesk",
+        "packages",
+        "TestResults",
+        "*.min.js",
+        ".terraform",
+        "*.tfstate*",
+    ]
     for fname in (".gitignore", ".indexignore"):
         f = root / fname
         if f.exists():
@@ -269,8 +396,11 @@ def _walk(root: Path, ignored: list[str]):
     for dirpath, dirnames, filenames in __import__("os").walk(root):
         dp = Path(dirpath)
         rel_dp = dp.relative_to(root).as_posix()
-        dirnames[:] = [d for d in dirnames
-                       if d not in skip_dirs and not any(fnmatch.fnmatch(f"{rel_dp}/{d}", p) for p in ignored)]
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in skip_dirs and not any(fnmatch.fnmatch(f"{rel_dp}/{d}", p) for p in ignored)
+        ]
         for fn in filenames:
             fp = dp / fn
             rel = fp.relative_to(root).as_posix()

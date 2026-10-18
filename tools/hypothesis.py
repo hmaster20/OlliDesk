@@ -23,7 +23,6 @@ from loguru import logger
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 
-
 _VALID_STATUSES = frozenset({"verified", "refuted", "partial", "inconclusive"})
 
 

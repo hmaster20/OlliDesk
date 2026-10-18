@@ -6,33 +6,62 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-
 # ---------------------------------------------------------------------------
 # Эвристики: какие файлы считаются «точкой входа» и «конфигом сборки»
 # ---------------------------------------------------------------------------
 
 _ENTRY_HINTS: tuple[str, ...] = (
     # Python
-    "main.py", "app.py", "cli.py", "__main__.py",
-    "server.py", "wsgi.py", "asgi.py", "manage.py",
+    "main.py",
+    "app.py",
+    "cli.py",
+    "__main__.py",
+    "server.py",
+    "wsgi.py",
+    "asgi.py",
+    "manage.py",
     # C# / .NET
-    "program.cs", "startup.cs",
+    "program.cs",
+    "startup.cs",
     # JS/TS
-    "index.js", "index.ts", "index.jsx", "index.tsx",
+    "index.js",
+    "index.ts",
+    "index.jsx",
+    "index.tsx",
     # [D7] Ruby / Go
-    "main.rb", "config.ru", "main.go",
+    "main.rb",
+    "config.ru",
+    "main.go",
     # [D7] IaC
-    "main.tf", "variables.tf", "outputs.tf",
-    "site.yml", "site.yaml", "playbook.yml", "playbook.yaml",
-    "vagrantfile",          # без расширения — .lower() совпадёт с Vagrantfile
+    "main.tf",
+    "variables.tf",
+    "outputs.tf",
+    "site.yml",
+    "site.yaml",
+    "playbook.yml",
+    "playbook.yaml",
+    "vagrantfile",  # без расширения — .lower() совпадёт с Vagrantfile
 )
 
 _CONFIG_HINTS: tuple[str, ...] = (
-    "pyproject.toml", "requirements.txt", "setup.py", "setup.cfg",
-    "package.json", "tsconfig.json", "cargo.toml", "go.mod",
-    "pom.xml", "build.gradle", "makefile", "dockerfile",
-    "docker-compose.yml", "*.csproj", "*.sln",
-    "readme.md", "readme.rst", "agents.md",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "setup.cfg",
+    "package.json",
+    "tsconfig.json",
+    "cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "makefile",
+    "dockerfile",
+    "docker-compose.yml",
+    "*.csproj",
+    "*.sln",
+    "readme.md",
+    "readme.rst",
+    "agents.md",
 )
 
 
@@ -109,9 +138,7 @@ class InvestigationState:
     # fallback вместо бесконечных нуджей).
     known_entry_points: list[str] = field(default_factory=list)
 
-    def note_call(
-        self, name: str, arguments: dict, result_content: str, is_error: bool
-    ) -> None:
+    def note_call(self, name: str, arguments: dict, result_content: str, is_error: bool) -> None:
         """Запоминает успешный вызов инструмента."""
         if is_error:
             return
@@ -165,15 +192,10 @@ class InvestigationState:
         path = max(self.reads_per_file, key=lambda k: self.reads_per_file[k])
         return (path, self.reads_per_file[path])
 
-
     @property
     def sufficient_for_synthesis(self) -> bool:
         """Есть ли минимум доказательной базы для ответа об архитектуре."""
-        if (
-            len(self.read_with_content) >= 4
-            and self.read_entry_point
-            and self.read_config
-        ):
+        if len(self.read_with_content) >= 4 and self.read_entry_point and self.read_config:
             return True
         if len(self.read_with_content) >= 6 and self.read_entry_point:
             return True
@@ -391,19 +413,11 @@ def pick_nudge(
     if "deps" not in fired and 2 <= len(state.read_with_content) < 5:
         return "deps", _NUDGE_DEPS
 
-    if (
-        hypotheses_available
-        and open_hypotheses > 0
-        and state.verify_nudges_fired < 2
-    ):
+    if hypotheses_available and open_hypotheses > 0 and state.verify_nudges_fired < 2:
         state.verify_nudges_fired += 1
         return "verify_hypotheses", _NUDGE_VERIFY
 
-    if (
-        "selfcheck" not in fired
-        and state.sufficient_for_synthesis
-        and open_hypotheses == 0
-    ):
+    if "selfcheck" not in fired and state.sufficient_for_synthesis and open_hypotheses == 0:
         return "selfcheck", _NUDGE_SELFCHECK
 
     return None

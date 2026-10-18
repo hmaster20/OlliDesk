@@ -3,7 +3,6 @@
 import logging
 import os
 import sys
-import traceback
 from typing import Any
 
 from loguru import logger
@@ -34,6 +33,7 @@ logging.getLogger("chromadb").setLevel(logging.ERROR)
 for _logger_name in list(logging.root.manager.loggerDict.keys()):
     if _logger_name.startswith("chromadb"):
         logging.getLogger(_logger_name).setLevel(logging.ERROR)
+
 
 # Создаем класс-заглушку с нужными атрибутами
 class PosthogMock:
@@ -84,9 +84,8 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
         # не засоряем лог шумом.
         logger.debug("global_exception_handler: получен пустой вызов (PySide6)")
         return
-    logger.opt(exception=(exc_type, exc_value, exc_tb)).error(
-        "Необработанное исключение"
-    )
+    logger.opt(exception=(exc_type, exc_value, exc_tb)).error("Необработанное исключение")
+
 
 sys.excepthook = global_exception_handler
 

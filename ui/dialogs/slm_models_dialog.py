@@ -153,9 +153,7 @@ class SLMModelsDialog(QDialog):
             "Рекомендуется 3B или 1.5B — должна влезать в VRAM целиком.\n"
             "«(автовыбор)» — используется tier-1 модель, проходящая по VRAM."
         )
-        self.planner_combo.currentIndexChanged.connect(
-            self._on_pipeline_role_changed
-        )
+        self.planner_combo.currentIndexChanged.connect(self._on_pipeline_role_changed)
         pipeline_form.addRow("Planner (GPU):", self.planner_combo)
 
         self.analyst_combo = QComboBox()
@@ -165,9 +163,7 @@ class SLMModelsDialog(QDialog):
             "Рекомендуется 7B или 14B — качество важнее скорости.\n"
             "«(автовыбор)» — используется tier-2 модель, проходящая по RAM."
         )
-        self.analyst_combo.currentIndexChanged.connect(
-            self._on_pipeline_role_changed
-        )
+        self.analyst_combo.currentIndexChanged.connect(self._on_pipeline_role_changed)
         pipeline_form.addRow("Analyst (CPU):", self.analyst_combo)
 
         pipeline_hint = QLabel(
@@ -216,9 +212,7 @@ class SLMModelsDialog(QDialog):
         self.status_label.setStyleSheet("color: #888; font-size: 12px;")
         layout.addWidget(self.status_label)
 
-        self.auto_select_check = QCheckBox(
-            "🔁 Автовыбор модели при запуске (по железу и свободной VRAM)"
-        )
+        self.auto_select_check = QCheckBox("🔁 Автовыбор модели при запуске (по железу и свободной VRAM)")
         self.auto_select_check.setChecked(self.config.slm.auto_select_model)
         self.auto_select_check.setToolTip(
             "Если выключено — при старте приложения загружается модель, "
@@ -275,9 +269,7 @@ class SLMModelsDialog(QDialog):
 
         chat_models = sorted(self.config.slm.get_chat_models(), key=_sort_key)
         if not chat_models:
-            self.status_label.setText(
-                "⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml."
-            )
+            self.status_label.setText("⚠️ В конфиге нет chat-моделей. Проверьте ~/.ollidesk/config.yaml.")
 
         for row, m in enumerate(chat_models):
             self.table.insertRow(row)
@@ -382,37 +374,28 @@ class SLMModelsDialog(QDialog):
                 (self.analyst_combo, self.config.slm.analyst_model_id),
             ):
                 current = combo.currentData() or ""
-                if current and current == (
-                    analyst_id if combo is self.planner_combo else planner_id
-                ):
+                if current and current == (analyst_id if combo is self.planner_combo else planner_id):
                     combo.blockSignals(True)
                     idx = combo.findData(prev_id) if prev_id else 0
                     combo.setCurrentIndex(idx if idx >= 0 else 0)
                     combo.blockSignals(False)
             return
 
-        if (
-            self.config.slm.planner_model_id == planner_id
-            and self.config.slm.analyst_model_id == analyst_id
-        ):
+        if self.config.slm.planner_model_id == planner_id and self.config.slm.analyst_model_id == analyst_id:
             return
 
         self.config.slm.planner_model_id = planner_id
         self.config.slm.analyst_model_id = analyst_id
         save_config(self.config)
         self._changed = True
-        logger.info(
-            f"SLM pipeline: planner={planner_id or '(авто)'}, "
-            f"analyst={analyst_id or '(авто)'}"
-        )
+        logger.info(f"SLM pipeline: planner={planner_id or '(авто)'}, analyst={analyst_id or '(авто)'}")
         self.status_label.setText(
-            f"📌 Pipeline: planner={planner_id or '(авто)'}, "
-            f"analyst={analyst_id or '(авто)'}"
+            f"📌 Pipeline: planner={planner_id or '(авто)'}, analyst={analyst_id or '(авто)'}"
         )
 
     def _real_size_str(self, filename: str) -> str:
         """Реальный размер на диске. Не ходит в HF."""
-        from agents.download_slm import get_local_size_mb, get_models_dir
+        from agents.download_slm import get_local_size_mb
 
         target_dir = get_models_dir()
         merged = target_dir / filename
@@ -426,7 +409,8 @@ class SLMModelsDialog(QDialog):
         if not parts:
             return "—"
         total = sum(p.stat().st_size for p in parts)
-        return f"{total // (1024*1024)} МБ ({len(parts)} частей)"
+        return f"{total // (1024 * 1024)} МБ ({len(parts)} частей)"
+
     # ---------- helpers ----------
 
     def _current_model_info(self) -> SLMModelInfo | None:
@@ -487,14 +471,10 @@ class SLMModelsDialog(QDialog):
         is_currently_downloading = downloading_id == info.id
 
         # Скачать: только если не качается ничего другого и модель ещё не скачана.
-        self.download_btn.setEnabled(
-            not any_downloading and not installed and not is_currently_downloading
-        )
+        self.download_btn.setEnabled(not any_downloading and not installed and not is_currently_downloading)
 
         # Удалить: не активную, не скачиваемую сейчас, и установленную.
-        self.delete_btn.setEnabled(
-            installed and not active and not is_currently_downloading
-        )
+        self.delete_btn.setEnabled(installed and not active and not is_currently_downloading)
 
         # Активировать: только установленную и не активную.
         # Скачивание других моделей — не помеха.
@@ -507,8 +487,7 @@ class SLMModelsDialog(QDialog):
             QMessageBox.information(
                 self,
                 "Скачивание уже идёт",
-                "Дождитесь завершения текущего скачивания. Оно продолжится "
-                "в фоне даже после закрытия окна.",
+                "Дождитесь завершения текущего скачивания. Оно продолжится в фоне даже после закрытия окна.",
             )
             return
 
@@ -574,8 +553,7 @@ class SLMModelsDialog(QDialog):
             QMessageBox.information(
                 self,
                 "Модель скачивается",
-                "Эта модель сейчас скачивается. Дождитесь завершения, "
-                "чтобы удалить её.",
+                "Эта модель сейчас скачивается. Дождитесь завершения, чтобы удалить её.",
             )
             return
 
@@ -603,18 +581,12 @@ class SLMModelsDialog(QDialog):
         self.config.slm.auto_select_model = checked
         save_config(self.config)
         self._changed = True
-        logger.info(
-            f"SLM: auto_select_model = {checked} "
-            f"(selected_model='{self.config.slm.selected_model}')"
-        )
+        logger.info(f"SLM: auto_select_model = {checked} (selected_model='{self.config.slm.selected_model}')")
         if checked:
-            self.status_label.setText(
-                "🔁 Автовыбор включён — модель может подменяться при запуске."
-            )
+            self.status_label.setText("🔁 Автовыбор включён — модель может подменяться при запуске.")
         else:
             self.status_label.setText(
-                "📌 Автовыбор выключен — при запуске загрузится текущая "
-                "выбранная модель."
+                "📌 Автовыбор выключен — при запуске загрузится текущая выбранная модель."
             )
 
     def _activate_selected(self):
@@ -646,10 +618,7 @@ class SLMModelsDialog(QDialog):
             self.auto_select_check.blockSignals(True)
             self.auto_select_check.setChecked(False)
             self.auto_select_check.blockSignals(False)
-            logger.info(
-                f"SLM: пользователь явно выбрал '{info.id}' — "
-                f"auto_select_model переключён в False"
-            )
+            logger.info(f"SLM: пользователь явно выбрал '{info.id}' — auto_select_model переключён в False")
 
         save_config(self.config)
         self._changed = True
@@ -727,13 +696,8 @@ class SLMModelsDialog(QDialog):
         save_config(self.config)
         self._changed = True
 
-        logger.info(
-            f"SLM: добавлена пользовательская модель id={model_id!r}, "
-            f"repo={repo!r}, file={file!r}"
-        )
-        self.status_label.setText(
-            f"➕ Добавлена: {display_name}. Скачайте её кнопкой «⬇️ Скачать»."
-        )
+        logger.info(f"SLM: добавлена пользовательская модель id={model_id!r}, repo={repo!r}, file={file!r}")
+        self.status_label.setText(f"➕ Добавлена: {display_name}. Скачайте её кнопкой «⬇️ Скачать».")
         self._populate()
 
     def _set_busy(self, busy: bool, message: str):

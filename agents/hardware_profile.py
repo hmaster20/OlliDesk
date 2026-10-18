@@ -72,10 +72,7 @@ class HardwareProfile:
 
     def describe(self) -> str:
         gpu = self.best_gpu
-        gpu_str = (
-            f"{gpu.name} ({gpu.total_vram_mb} МБ, свободно {gpu.free_vram_mb})"
-            if gpu else "нет CUDA"
-        )
+        gpu_str = f"{gpu.name} ({gpu.total_vram_mb} МБ, свободно {gpu.free_vram_mb})" if gpu else "нет CUDA"
         return (
             f"CPU: {self.cpu.model} "
             f"({self.cpu.physical_cores}C/{self.cpu.logical_cores}T, "
@@ -88,11 +85,11 @@ class HardwareProfile:
 def _run(cmd: list[str], timeout: float = 5.0) -> str | None:
     try:
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, creationflags=flags)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=flags)
         return r.stdout if r.returncode == 0 else None
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
+
 
 def _detect_cpu() -> CPUInfo:
     """Определяет модель CPU и число ядер.
@@ -112,7 +109,9 @@ def _detect_cpu() -> CPUInfo:
     if sys.platform == "win32":
         out = _run(
             [
-                "wmic", "cpu", "get",
+                "wmic",
+                "cpu",
+                "get",
                 "Name,NumberOfCores,NumberOfLogicalProcessors",
                 "/format:csv",
             ]
@@ -142,6 +141,7 @@ def _detect_cpu() -> CPUInfo:
     if not physical or not logical:
         try:
             import psutil
+
             physical = physical or (psutil.cpu_count(logical=False) or 0)
             logical = logical or (psutil.cpu_count(logical=True) or 0)
         except Exception:
@@ -174,14 +174,17 @@ def _detect_cpu() -> CPUInfo:
         has_fma=has_avx2,
     )
 
+
 def _detect_gpus() -> tuple[GPUInfo, ...]:
     if shutil.which("nvidia-smi") is None:
         return ()
-    out = _run([
-        "nvidia-smi",
-        "--query-gpu=index,name,memory.total,memory.free,compute_cap,driver_version",
-        "--format=csv,noheader,nounits",
-    ])
+    out = _run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,name,memory.total,memory.free,compute_cap,driver_version",
+            "--format=csv,noheader,nounits",
+        ]
+    )
     if not out:
         return ()
     gpus: list[GPUInfo] = []
@@ -190,14 +193,16 @@ def _detect_gpus() -> tuple[GPUInfo, ...]:
         if len(parts) < 6:
             continue
         try:
-            gpus.append(GPUInfo(
-                index=int(parts[0]),
-                name=parts[1],
-                total_vram_mb=int(parts[2]),
-                free_vram_mb=int(parts[3]),
-                compute_capability=parts[4],
-                driver_version=parts[5],
-            ))
+            gpus.append(
+                GPUInfo(
+                    index=int(parts[0]),
+                    name=parts[1],
+                    total_vram_mb=int(parts[2]),
+                    free_vram_mb=int(parts[3]),
+                    compute_capability=parts[4],
+                    driver_version=parts[5],
+                )
+            )
         except ValueError:
             continue
     return tuple(gpus)
@@ -207,6 +212,7 @@ def _detect_ram_via_psutil() -> RAMInfo | None:
     """Основной путь: psutil."""
     try:
         import psutil
+
         vm = psutil.virtual_memory()
         total_mb = vm.total // (1024 * 1024)
         avail_mb = vm.available // (1024 * 1024)
@@ -289,8 +295,7 @@ def _detect_ram() -> RAMInfo:
         info = detector()
         if info is not None and info.total_mb > 0:
             logger.debug(
-                f"RAM: {info.total_mb // 1024} ГБ "
-                f"(доступно {info.available_mb // 1024} ГБ) via {name}"
+                f"RAM: {info.total_mb // 1024} ГБ (доступно {info.available_mb // 1024} ГБ) via {name}"
             )
             return info
 

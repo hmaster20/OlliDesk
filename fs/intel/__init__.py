@@ -4,12 +4,14 @@ LLM НЕ читает проект «в лоб». Этот слой строит
 модель лишь объясняет и дополняет знаниями. Паритет с OpenCode: AST/Repo-Map
 + доменные анализаторы + (опц.) LSP.
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fs.intel.graph import DependencyGraph, GraphNode, GraphEdge
+from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
 from fs.intel.repomap import RepoMap, build_repomap
 
 
@@ -33,7 +35,7 @@ class FileRecord:
 @dataclass
 class Symbol:
     qualified_name: str
-    kind: str                 # class|interface|struct|enum|function|method|role|task|resource|module|box|provisioner
+    kind: str  # class|interface|struct|enum|function|method|role|task|resource|module|box|provisioner
     file: str
     line: int
     signature: str
@@ -51,16 +53,18 @@ class ProjectIntel:
     entry_points: list[str]
     symbols: list[Symbol]
     graph: DependencyGraph
-    domain: dict[str, Any]            # AnsibleProject/TerraformProject/VagrantProject/...
+    domain: dict[str, Any]  # AnsibleProject/TerraformProject/VagrantProject/...
     confidence: float
     repomap: RepoMap
 
 
-def analyze_project(root: Path, *, indexer=None, cache_dir: Path | None = None,
-                    enable_lsp: bool = False) -> ProjectIntel:
+def analyze_project(
+    root: Path, *, indexer=None, cache_dir: Path | None = None, enable_lsp: bool = False
+) -> ProjectIntel:
     """Единая точка входа. Инкрементально: повторный вызов по mtime/sha256
     переиспользует граф и резюме (см. EvidenceStore.get_module_summary)."""
     from fs.intel.langs import detect_and_parse_all
+
     files, symbols, manifests, entries, domain = detect_and_parse_all(root, indexer=indexer)
     graph = DependencyGraph.build(files, symbols, manifests, domain)
     repomap = build_repomap(files, symbols, entries, manifests, domain)
@@ -69,11 +73,17 @@ def analyze_project(root: Path, *, indexer=None, cache_dir: Path | None = None,
         langs[f.language] = langs.get(f.language, 0) + 1
     conf = _confidence(files, symbols, entries, manifests, domain)
     return ProjectIntel(
-        root=str(root), file_count=len(files),
+        root=str(root),
+        file_count=len(files),
         total_bytes=sum(f.size for f in files),
-        languages=langs, manifests=manifests, entry_points=entries,
-        symbols=symbols, graph=graph, domain=domain,
-        confidence=conf, repomap=repomap,
+        languages=langs,
+        manifests=manifests,
+        entry_points=entries,
+        symbols=symbols,
+        graph=graph,
+        domain=domain,
+        confidence=conf,
+        repomap=repomap,
     )
 
 
