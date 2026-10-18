@@ -212,10 +212,24 @@ class DependencyGraph:
         cand.sort(key=lambda n: -n.score)
         return cand[:limit]
 
+    def resolve_root(self, root: str) -> str:
+        """Приводит голый путь entry-point к ID узла графа (`file:<путь>`).
+
+        `ProjectIntel.entry_points` — это относительные пути файлов, а ID узлов
+        в графе — `file:<путь>`; без нормализации BFS от корней ничего не находит.
+        """
+        if root in self.nodes:
+            return root
+        prefixed = f"file:{root}"
+        if prefixed in self.nodes:
+            return prefixed
+        return root
+
     def subgraph(self, roots: list[str], depth: int = 2) -> list[GraphEdge]:
         """BFS-подграф от корней — для evidence-пакета и renderer'а."""
-        seen = set(roots)
-        frontier = list(roots)
+        norm = [self.resolve_root(r) for r in roots]
+        seen = set(norm)
+        frontier = list(norm)
         out: list[GraphEdge] = []
         for _ in range(depth):
             nxt: list[str] = []

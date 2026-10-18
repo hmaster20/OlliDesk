@@ -41,10 +41,11 @@ class Diagram:
 def render_architecture(
     graph: DependencyGraph, roots: list[str], *, max_nodes: int = 24, layout: str = "layered"
 ) -> Diagram:
+    roots = [graph.resolve_root(r) for r in roots]
     sub = graph.subgraph(roots, depth=2)
-    nodes, edges = _prune(graph, sub, max_nodes)
+    nodes, edges = _prune(graph, sub, max_nodes, roots)
     layers = _to_layers(nodes, edges, roots) if layout == "layered" else None
-    ascii_txt = _ascii(layers or [_topo_flat(nodes, edges, roots)], nodes, edges, graph)
+    ascii_txt = _ascii(layers or _topo_flat(nodes, edges, roots), nodes, edges, graph)
     mermaid_txt = _mermaid(nodes, edges, graph)
     return Diagram(
         ascii=ascii_txt,
@@ -54,8 +55,8 @@ def render_architecture(
     )
 
 
-def _prune(graph, edges, max_nodes):
-    keep_ids: set[str] = set()
+def _prune(graph, edges, max_nodes, roots=()):
+    keep_ids: set[str] = set(roots)
     for e in edges:
         keep_ids.add(e.source)
         keep_ids.add(e.target)
@@ -99,6 +100,31 @@ def _to_layers(nodes, edges, roots):
                     layer[tgt] = depth
                     nxt.append(tgt)
         frontier = nxt
+    # Узлы, недостижимые по directed-рёбрам (символы связаны с файлами
+    # только обратным belongs_to), докладываем undirected-BFS, иначе схема
+    # вырождается в один слой из одних файлов.
+    if len(layer) < len({n.id for n in nodes}):
+        und = defaultdict(list)
+        for e in edges:
+            und[e.source].append(e.target)
+            und[e.target].append(e.source)
+        frontier = list(layer)
+        depth = max(layer.values(), default=0)
+        while frontier:
+            depth += 1
+            nxt = []
+            for nid in frontier:
+                for tgt in und.get(nid, []):
+                    if tgt in {n.id for n in nodes} and tgt not in layer:
+                        layer[tgt] = depth
+                        nxt.append(tgt)
+            frontier = nxt
+        # Полностью изолированные узлы — в последний слой.
+        missing = {n.id for n in nodes} - set(layer)
+        if missing:
+            last = max(layer.values(), default=0) + 1
+            for mid in missing:
+                layer[mid] = last
     by_layer: dict[int, list[GraphNode]] = defaultdict(list)
     nmap = {n.id: n for n in nodes}
     for nid, d in layer.items():
@@ -111,43 +137,66 @@ def _topo_flat(nodes, edges, roots):
     return [sorted(nodes, key=lambda n: -n.score)]
 
 
+_MAX_ROW_WIDTH = 110
+
+
 def _ascii(layers, nodes, edges, graph):
-    nmap = {n.id: n for n in nodes}
-    widths = []
-    rows: list[list[str]] = []
+    if not nodes:
+        return ""
+    # Каждый слой пакуем в физические строки шириной <= _MAX_ROW_WIDTH,
+    # иначе слой из 20+ боксов даёт строку на сотни символов.
+    packed: list[list[list]] = []
     for layer in layers:
         cells = []
         for n in layer:
             label = _short(n)
             icon = _KIND_ICON.get(n.kind, "•")
-            box_w = max(len(label) + 4, 12)
-            cells.append((icon, label, box_w))
-        rows.append(cells)
-    # Рисуем каждый слой горизонтальной полосой блоков, связи — стрелками вниз.
+            # Эмодзи занимает 2 терминальные колонки, len() считает 1 — без
+            # поправки рамка уже содержимого (реальный баг на LocalMessenger).
+            inner = f" {icon} {label}"
+            extra = 0 if icon in {"ƒ", "m", "$", "•"} else 1
+            box_w = max(len(inner) + extra + 2, 12)
+            cells.append((icon, label, box_w, inner, extra))
+        phys: list[list] = []
+        cur: list = []
+        cur_w = 0
+        for c in cells:
+            cw = c[2] + 3
+            if cur and cur_w + cw > _MAX_ROW_WIDTH:
+                phys.append(cur)
+                cur = []
+                cur_w = 0
+            cur.append(c)
+            cur_w += cw
+        if cur:
+            phys.append(cur)
+        if phys:
+            packed.append(phys)
+    # Рисуем слои сверху вниз, стрелки — между слоями (перед первыми рамками).
     out: list[str] = []
-    prev_centers: list[tuple[int, int]] = []  # (x_center, y) предыдущего слоя
+    prev_centers: list[tuple[int, int]] = []
     y = 0
-    for li, cells in enumerate(rows):
-        # верхние рамки
-        line_top = ""
-        line_mid = ""
-        xcursor = 0
-        centers = []
-        for icon, label, w in cells:
-            line_top += "+" + "-" * (w - 2) + "+" + "   "
-            line_mid += "|" + f" {icon} {label}".ljust(w - 2) + "|" + "   "
-            centers.append((xcursor + w // 2, y))
-            xcursor += w + 3
-        out.append(line_top.rstrip())
-        out.append(line_mid.rstrip())
-        out.append(line_top.rstrip())
-        y += 3
-        # стрелки от предыдущего слоя
-        if prev_centers:
-            arrow_line = _arrow_row(prev_centers, centers, width=max(xcursor, 1))
-            out.append(arrow_line)
-            y += 1
-        prev_centers = centers
+    for phys in packed:
+        layer_centers: list[tuple[int, int]] = []
+        for cells in phys:
+            line_top = ""
+            line_mid = ""
+            xcursor = 0
+            centers = []
+            for _icon, _label, w, inner, extra in cells:
+                line_top += "+" + "-" * (w - 2) + "+" + "   "
+                line_mid += "|" + inner + " " * max(0, w - 2 - len(inner) - extra) + "|" + "   "
+                centers.append((xcursor + w // 2, y))
+                xcursor += w + 3
+            if prev_centers and not layer_centers:
+                out.append(_arrow_row(prev_centers, centers, width=max(xcursor, 1)))
+                y += 1
+            out.append(line_top.rstrip())
+            out.append(line_mid.rstrip())
+            out.append(line_top.rstrip())
+            y += 3
+            layer_centers.extend(centers)
+        prev_centers = layer_centers
     return "\n".join(out)
 
 
