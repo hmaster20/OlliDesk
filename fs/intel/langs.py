@@ -104,7 +104,7 @@ def detect_and_parse_all(root: Path, *, indexer=None):
     domain["terraform"] = build_terraform_project(root, files)
     domain["vagrant"] = build_vagrant_project(root, files)
     # Entry-points дополняем доменными маркерами (D7).
-    entries = sorted(set(entries) | _domain_entries(domain))
+    entries = sorted(set(entries) | set(_domain_entries(domain)))
     return files, symbols, manifests, entries, domain
 
 
