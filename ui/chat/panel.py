@@ -45,6 +45,7 @@ from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
 from ui.chat.message_item import (
     ChatActivityItem,
+    ChatDiagramItem,
     ChatHypothesisItem,
     ChatMessageItem,
     ChatSourcesItem,
@@ -55,11 +56,15 @@ from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
     WebSearchThread,
+    _ModelPoolLoadThread,
     _OllamaCheckThread,
     _SLMDownloadThread,
     _SLMLoadThread,
 )
 from agents.investigation import is_research_question
+from agents.model_pool import ModelPool
+from agents.orchestrator import Orchestrator, RunResult
+from core.budget import ApproxCounter
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения
 _CHAT_AUTO_TOOLS = (
@@ -198,6 +203,13 @@ class ChatPanel(QWidget):
         self._slm_model_name = ""
         self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
+        # === двухмодельный пайплайн (Orchestrator) ===
+        # Загружается в фоне при первом открытии проекта. Пока не готов —
+        # ChatPanel работает через старый AgentLoop (без Orchestrator).
+        self._model_pool: ModelPool | None = None
+        self._orchestrator: Orchestrator | None = None
+        self._pool_load_thread: _ModelPoolLoadThread | None = None
+        self._pool_load_failed: bool = False
         self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
 
@@ -1137,6 +1149,17 @@ class ChatPanel(QWidget):
         self._research_cancelled = True
         self._generating = False
 
+        # если pool ещё грузится — не ждём 30 с, отменяем.
+        if (
+            self._pool_load_thread is not None
+            and self._pool_load_thread.isRunning()
+        ):
+            self._pool_load_thread.quit()
+            self._pool_load_thread.wait(500)
+            if self._pool_load_thread.isRunning():
+                self._pool_load_thread.terminate()
+                self._pool_load_thread.wait(500)
+
         if (
             self._agent_thread
             and self._agent_thread.isRunning()
@@ -1391,23 +1414,51 @@ class ChatPanel(QWidget):
     def _do_chat(self, text: str):
         """Запускает ReAct-цикл в режиме Chat.
 
-        Research-вопрос получает повышенный лимит итераций — иначе цикл
-        упрётся в 7 шагов на середине DEEP_DIVE (что и происходило:
-        «Достигнут лимит итераций (7), делаем финальный вызов без tools»).
+        Размер проекта определяет флоу:
+          • light (≤100 файлов / ≤300 КБ) — 3 итерации, без research-фаз;
+          • medium — research-вопрос идёт с 8 итерациями, без фаз;
+          • deep (>500 файлов) — 5 итераций с фазами/гипотезами.
+        Раньше research-вопрос всегда гонялся через full research (23 итерации),
+        и маленький 43-файловый проект тратил 15 минут.
         """
         logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
         self._reset_research_state()
 
-        # Определяем research заранее, чтобы задать правильный лимит итераций.
-        # Внутри AgentLoop та же проверка выставит research_mode и разведёт
-        # потоки thoughts/final.
+        # [D8] Определяем размер проекта и режим ДО запуска цикла.
+        # _ensure_project_scan() заполняет self._project_files (кэш на сессию),
+        # тот же вызов уже используется в _project_map_text().
         from agents.investigation import is_research_question
 
-        is_research = is_research_question(text)
+        self._ensure_project_scan()
+        file_count = len(self._project_files)
+        # total_bytes считаем только если файлов мало (≤100) — иначе всё
+        # равно deep/medium, а суммарный размер не влияет на решение.
+        if file_count <= 100:
+            total_bytes = 0
+            for rel in self._project_files:
+                try:
+                    total_bytes += (Path(self.project_root) / rel).stat().st_size
+                except OSError:
+                    pass
+        else:
+            total_bytes = 0  # не используется при file_count > 100
+
+        plan = self._resolve_research_mode(
+            text, file_count=file_count, total_bytes=total_bytes,
+        )
+        is_research = plan["research"] and is_research_question(text)
+        max_iters = plan["max_iters"]
+
         if is_research:
             logger.info(
-                "Chat-режим, research-вопрос: лимит итераций повышен "
-                f"({self._iteration_limit(AgentMode.CHAT, is_research=True)})"
+                f"Chat-режим, research-вопрос: лимит итераций {max_iters} "
+                f"(файлов={file_count}, режим фаз={plan['phases']}, "
+                f"гипотезы={'on' if plan['hypotheses'] else 'off'})"
+            )
+        else:
+            logger.info(
+                f"Chat-режим, {max_iters} итераций "
+                f"(файлов={file_count}, light={'да' if plan['phases'] == 'off' else 'нет'})"
             )
 
         role_prompt = self.get_current_role_prompt()
@@ -1462,9 +1513,8 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=AgentMode.CHAT,
-            max_iterations=self._iteration_limit(
-                AgentMode.CHAT, is_research=is_research
-            ),
+            max_iterations=max_iters,
+            orchestrator=self._orchestrator,
         )
 
         self._connect_agent_thread_signals()
@@ -1472,10 +1522,11 @@ class ChatPanel(QWidget):
     def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
         """Запускает ReAct-цикл в режимах Plan / Agent.
 
-        В Plan-режиме research-вопрос тоже получает повышенный лимит:
-        пользователь может изучать архитектуру без записи. В Agent-режиме
-        лимит уже большой (`agent_max_iterations`), проверка research не
-        меняет поведение, но сохраняет консистентность логирования.
+        Размер проекта определяет лимит итераций и наличие research-фаз:
+          • Agent-режим — всегда `agent_max_iterations` (полный доступ, задача
+            может быть длинной: рефакторинг, миграция), research не ограничиваем;
+          • Plan-режим — как Chat (light=3 / medium=8 / deep=5 итераций),
+            но с read-only инструментами.
         """
         self._reset_research_state()
 
@@ -1485,14 +1536,50 @@ class ChatPanel(QWidget):
             self._reset_send_button()
             return
 
+        # Определяем режим по размеру проекта.
         from agents.investigation import is_research_question
 
-        is_research = is_research_question(text)
-        if is_research and mode == AgentMode.PLAN:
+        self._ensure_project_scan()
+        file_count = len(self._project_files)
+        if file_count <= 100:
+            total_bytes = 0
+            for rel in self._project_files:
+                try:
+                    total_bytes += (Path(self.project_root) / rel).stat().st_size
+                except OSError:
+                    pass
+        else:
+            total_bytes = 0
+
+        plan = self._resolve_research_mode(
+            text, file_count=file_count, total_bytes=total_bytes,
+        )
+        is_research = plan["research"] and is_research_question(text)
+
+        # Agent-режим: полный лимит независимо от размера проекта (рефакторинг
+        # может быть длинным); research-фазы не ограничиваем.
+        if mode == AgentMode.AGENT:
+            try:
+                from core.config import load_config
+                max_iters = load_config().agent_max_iterations
+            except Exception:
+                max_iters = 30
             logger.info(
-                "Plan-режим, research-вопрос: лимит итераций повышен "
-                f"({self._iteration_limit(AgentMode.PLAN, is_research=True)})"
+                f"Agent-режим, {max_iters} итераций "
+                f"(файлов={file_count}, research={'on' if is_research else 'off'})"
             )
+        else:
+            # Plan-режим: как Chat — размер проекта важен.
+            max_iters = plan["max_iters"]
+            if is_research:
+                logger.info(
+                    f"Plan-режим, research-вопрос: лимит {max_iters} "
+                    f"(файлов={file_count}, фазы={plan['phases']})"
+                )
+            else:
+                logger.info(
+                    f"Plan-режим, {max_iters} итераций (файлов={file_count})"
+                )
 
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
@@ -1538,17 +1625,26 @@ class ChatPanel(QWidget):
             context=context,
             messages_history=list(self._messages),
             agent_mode=mode,
-            max_iterations=self._iteration_limit(mode, is_research=is_research),
+            max_iterations=max_iters,
+            orchestrator=self._orchestrator,
         )
 
         self._connect_agent_thread_signals()
 
     def _connect_agent_thread_signals(self) -> None:
-        """Подключает все сигналы AgentChatThread к слотам панели."""
+        """Подключает сигналы AgentChatThread к слотам панели."""
         if self._agent_thread is None:
             return
 
-        # --- новые ---
+        # --- Orchestrator (P3) ---
+        self._agent_thread.orchestrator_event.connect(
+            self._on_orchestrator_event
+        )
+        self._agent_thread.orchestrator_result.connect(
+            self._on_orchestrator_result
+        )
+
+        # --- существующие ---
         self._agent_thread.research_mode_detected.connect(
             self._on_research_mode_detected
         )
@@ -1560,11 +1656,11 @@ class ChatPanel(QWidget):
         self._agent_thread.research_summary_ready.connect(
             self._on_research_summary_ready
         )
-
-        # --- существующие ---
         self._agent_thread.chunk_received.connect(self._on_chunk)
         self._agent_thread.thinking_received.connect(self._on_thinking)
-        self._agent_thread.tool_call_detected.connect(self._on_tool_call_detected)
+        self._agent_thread.tool_call_detected.connect(
+            self._on_tool_call_detected
+        )
         self._agent_thread.tool_executed.connect(self._on_tool_executed)
         self._agent_thread.tool_started.connect(self._on_tool_started)
         self._agent_thread.finish_received.connect(self._on_agent_finish)
@@ -1578,6 +1674,7 @@ class ChatPanel(QWidget):
         )
         self._agent_thread.status_changed.connect(self._on_status_event)
         self._agent_thread.start()
+
 
     # ---------------------------------------------------------
     # Слоты research-режима
@@ -1597,23 +1694,35 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_thought_chunk(self, token: str) -> None:
-        """Токен мысли — в серый поток, кроме ASCII-мусора."""
-        from agents.tool_grammar import looks_like_ascii_junk
+        """Токен мысли — в серый поток.
 
-        if looks_like_ascii_junk(token):
-            if self._current_thought_stream is not None:
-                self._current_thought_stream.append_nudge(
-                    "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
-                )
-            return
+        [M4] looks_like_ascii_junk рассчитан на блоки ≥20 символов, поэтому
+        на каждом отдельном токене не срабатывает. Проверяем накопленный
+        буфер (до 500 символов): если в нём уже накопилось ≥3 «каракулей» —
+        показываем вместо мыслей строку «резервный сбор данных».
+        """
+        from agents.tool_grammar import looks_like_ascii_junk
 
         if self._current_thought_stream is None:
             self._current_thought_stream = ChatThoughtStream()
             self.scroll_layout.insertWidget(
                 self.scroll_layout.count() - 1, self._current_thought_stream
             )
+
         self._current_thought_stream.append_thought_token(token)
+
+        # Периодически проверяем накопленный буфер (после ~5 токенов
+        # по 4+ символа он станет ≥20 и детектор начнёт работать).
+        buf = self._current_thought_stream._current_thought_buffer
+        if len(buf) >= 40 and looks_like_ascii_junk(buf):
+            # Сворачиваем «мысли» и оставляем только пометку.
+            self._current_thought_stream._current_thought_buffer = ""
+            self._current_thought_stream.append_nudge(
+                "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
+            )
+
         QTimer.singleShot(0, self._scroll_to_bottom)
+
 
     @Slot()
     def _on_final_answer_started(self) -> None:
@@ -2065,6 +2174,13 @@ class ChatPanel(QWidget):
         self._project_scanned = False
         self._project_scan_root = None
         self._rag_scope = None
+        # P3: при смене проекта Orchestrator остаётся валиден (ModelPool
+        # не привязан к проекту), но intel-кэш у Orchestrator — per-project.
+        if self._orchestrator is not None:
+            self._orchestrator = None
+        # Отложенный запуск загрузки — не блокируем UI открытия проекта.
+        if project_root:
+            QTimer.singleShot(1500, self._ensure_orchestrator)
 
     def get_settings(self) -> dict:
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
@@ -2312,3 +2428,185 @@ class ChatPanel(QWidget):
             "hypotheses": deep,
             "phases": "full" if deep else "light",
         }
+
+    # ------------------------------------------------------------------
+    # P3: Orchestrator lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_orchestrator(self) -> None:
+        """Ленивая загрузка двух моделей + Orchestrator (в фоне).
+
+        Вызывается при открытии проекта (с задержкой) и из `_do_chat`/
+        `_do_agent` при research-вопросе. Если уже загружен/грузится —
+        no-op. Ошибка → `_pool_load_failed=True`, orchestrator остаётся None.
+        """
+        if self._orchestrator is not None:
+            return
+        if self._pool_load_failed:
+            return
+        if (
+            self._pool_load_thread is not None
+            and self._pool_load_thread.isRunning()
+        ):
+            return
+
+        self._pool_load_thread = _ModelPoolLoadThread()
+        self._pool_load_thread.progress.connect(
+            lambda msg: self.status_label.setText(f"⚙️ {msg}")
+        )
+        self._pool_load_thread.finished.connect(self._on_pool_loaded)
+        self._pool_load_thread.error.connect(self._on_pool_error)
+        self._pool_load_thread.start()
+        self.status_label.setText("⏳ Загрузка двух моделей (3B GPU + 7B CPU)…")
+
+    @Slot(object)
+    def _on_pool_loaded(self, pool: ModelPool | None) -> None:
+        if pool is None:
+            self._on_pool_error("ModelPool вернул None")
+            return
+
+        intel_cache_dir: Path | None = None
+        if self.project_root:
+            intel_cache_dir = (
+                Path(self.project_root) / ".ollidesk" / "graph"
+            )
+            intel_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self._model_pool = pool
+            self._orchestrator = Orchestrator(
+                pool=pool,
+                intel_cache_dir=intel_cache_dir,
+                vector_store=self.vector_store,
+                counter=ApproxCounter(),
+            )
+            logger.info(
+                "Orchestrator готов: planner+analyst загружены, "
+                f"intel_cache={intel_cache_dir}"
+            )
+            self.status_label.setText("✅ Двухмодельный пайплайн готов")
+        except Exception as e:
+            logger.exception("Не удалось создать Orchestrator")
+            self._on_pool_error(f"Orchestrator init: {e}")
+
+    @Slot(str)
+    def _on_pool_error(self, error_msg: str) -> None:
+        logger.warning(f"ModelPool/Orchestrator недоступен: {error_msg}")
+        self._pool_load_failed = True
+        self._orchestrator = None
+        self._model_pool = None
+        self.status_label.setText(
+            f"⚠️ Оркестратор недоступен (ReAct продолжит работу): "
+            f"{error_msg[:100]}"
+        )
+
+    @Slot(object)
+    def _on_orchestrator_result(self, result: RunResult) -> None:
+        """Обрабатывает полный RunResult: ответ + схема + evidence.
+
+        Вызывается из AgentChatThread после `chunk_received` с полным
+        текстом ответа (там уже создан виджет сообщения через _on_chunk).
+        Здесь добавляем диаграмму и краткую сводку evidence, затем cleanup.
+        """
+        try:
+            # Сохраняем assistant-сообщение в историю (иначе следующая
+            # итерация не увидит ответ в messages_history).
+            if result.answer:
+                assistant_message = ChatMessage(
+                    role="assistant", content=result.answer
+                )
+                self._messages.append(assistant_message)
+                if self._session_id:
+                    self.session_store.save_message(
+                        self._session_id, assistant_message
+                    )
+
+            # Диаграмма компонентов (ASCII + Mermaid toggle).
+            if result.ascii_diagram or result.mermaid_diagram:
+                diagram_item = ChatDiagramItem(
+                    result.ascii_diagram or "",
+                    result.mermaid_diagram or "",
+                )
+                self.scroll_layout.insertWidget(
+                    self.scroll_layout.count() - 1, diagram_item
+                )
+
+            # Evidence pack — короткая строка, не мешает чтению.
+            if result.evidence_ids:
+                verify_mark = "✅" if result.verify_ok else "⚠️"
+                critique_mark = "✅" if result.critique_ok else "⚠️"
+                unsupported = result.unsupported_claims
+                summary = (
+                    f"📚 Источников: {len(result.evidence_ids)} · "
+                    f"покрытие {result.coverage:.0%} · "
+                    f"verify {verify_mark} · critique {critique_mark}"
+                )
+                if unsupported:
+                    summary += f" · без доказательств: {unsupported}"
+                self._add_message("system", summary)
+
+            QTimer.singleShot(0, self._scroll_to_bottom)
+        except Exception:
+            logger.exception("_on_orchestrator_result failed")
+        finally:
+            # Cleanup как в _on_agent_finish.
+            self._reset_send_button()
+            self._current_assistant_content = ""
+            self._current_thinking_content = ""
+            self._last_assistant_widget = None
+            self._current_thought_stream = None
+            self._pending_final_answer = ""
+            self._last_research_summary = None
+            self._research_mode_active = False
+            self.status_label.setText("Готов к работе")
+
+    @Slot(str, dict)
+    def _on_orchestrator_event(self, kind: str, data: dict) -> None:
+        """Пробрасывает событие Orchestrator'а в UI (статус + thought)."""
+        if kind == "classify":
+            self.status_label.setText("🧠 Классификация…")
+        elif kind == "plan":
+            task = data.get("task", "?")
+            files = data.get("files", 0)
+            deep = data.get("deep", False)
+            self.status_label.setText(
+                f"📋 План: {task}, файлов={files}"
+                + (" (deep)" if deep else "")
+            )
+        elif kind == "coverage":
+            val = float(data.get("value", 0.0))
+            self.status_label.setText(f"📊 Покрытие: {val:.0%}")
+        elif kind == "synthesize":
+            self.status_label.setText("✍️ Синтез (7B CPU)…")
+        elif kind == "regen":
+            self.status_label.setText(
+                f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}"
+            )
+        elif kind == "fallback":
+            self._add_message(
+                "system",
+                f"⚠️ Оркестратор упал, использую старый ReAct: "
+                f"{data.get('reason', '')[:120]}",
+            )
+        elif kind == "done":
+            elapsed = data.get("elapsed_s")
+            if elapsed is not None:
+                logger.info(f"Orchestrator done за {elapsed} с")
+
+    def shutdown(self) -> None:
+        """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
+        if self._orchestrator is not None:
+            try:
+                # LSP-клиенты живут вне Orchestrator (используются точечно),
+                # но на всякий случай сбрасываем ссылку.
+                self._orchestrator = None
+            except Exception:
+                pass
+        if self._model_pool is not None:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._model_pool.aclose())
+                loop.close()
+            except Exception:
+                pass
+            self._model_pool = None

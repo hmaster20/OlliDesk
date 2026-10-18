@@ -2,6 +2,7 @@
 
 from ui.chat.message_item import (
     ChatActivityItem,
+    ChatDiagramItem,
     ChatHypothesisItem,
     ChatMessageItem,
     ChatSourcesItem,

@@ -22,7 +22,8 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
 from fs.vector_store import SearchResult
-
+from agents.model_pool import ModelPool, Role, RoleSpec
+from agents.orchestrator import Orchestrator, RunResult
 
 def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
     """Оставляет по одному лучшему чанку на файл."""
@@ -35,30 +36,27 @@ def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
         unique.append(r)
     return unique
 
-
 class AgentChatThread(QThread):
-    """Поток для выполнения цикла агента (режимы Plan / Agent).
+    """Поток агента: ReAct-цикл (старый) ИЛИ Orchestrator (новый линейный флоу).
 
-    Сигналы (новые помечены явно):
+    Роутинг: если передан `orchestrator` и последний user-вопрос —
+    research-вопрос (``is_research_question`` → True), поток вызывает
+    ``Orchestrator.run()`` (детерминированный сбор + синтез 7B + renderer).
+    Иначе — старый ReAct-цикл через ``AgentLoop``.
 
-    * ``research_mode_detected(bool)`` — эмитится один раз в начале работы.
-    * ``thought_chunk(str)`` — токены промежуточных мыслей (research).
-    * ``final_answer_started()`` — следующий стриминг — финал.
-    * ``final_chunk(str)`` — токены финального ответа (research).
-    * ``chunk_received(str)`` — старая дорожка, для не-research.
-    * ``research_summary_ready(object)`` — эмитится ПЕРЕД ``finish_received``.
-    * ``finish_received(str)`` — итоговый текст.
-    * ... остальные как раньше.
+    Новые сигналы (только для Orchestrator-пути):
+      * ``orchestrator_event(str, dict)`` — прогресс (classify/plan/coverage/
+        synthesize/regen/error/fallback);
+      * ``orchestrator_result(object)`` — финальный ``RunResult`` (answer,
+        ascii_diagram, mermaid_diagram, evidence_ids, coverage, verify_ok…).
     """
 
-    # --- новые сигналы ---
+    # --- старые сигналы (без изменений) ---
     research_mode_detected = Signal(bool)
     thought_chunk = Signal(str)
     final_answer_started = Signal()
     final_chunk = Signal(str)
     research_summary_ready = Signal(object)
-
-    # --- существующие сигналы ---
     chunk_received = Signal(str)
     thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
@@ -71,6 +69,10 @@ class AgentChatThread(QThread):
     tools_status_changed = Signal(bool)
     status_changed = Signal(str)
 
+    # --- новые сигналы для Orchestrator ---
+    orchestrator_event = Signal(str, dict)
+    orchestrator_result = Signal(object)   # RunResult
+
     def __init__(
         self,
         client: LLMBackend,
@@ -80,6 +82,7 @@ class AgentChatThread(QThread):
         messages_history: list[ChatMessage],
         agent_mode: AgentMode,
         max_iterations: int = 10,
+        orchestrator: Orchestrator | None = None,
     ):
         super().__init__()
         self.client = client
@@ -89,11 +92,10 @@ class AgentChatThread(QThread):
         self.messages_history = messages_history
         self.agent_mode = agent_mode
         self.max_iterations = max_iterations
+        self.orchestrator = orchestrator
 
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
-        # Устанавливается в самом начале _run_agent, чтобы маршрутизировать
-        # сигналы мыслей/финала.
         self._research_mode: bool = False
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
@@ -105,10 +107,10 @@ class AgentChatThread(QThread):
     ) -> bool:
         args_json = json.dumps(arguments, ensure_ascii=False)
         self.tool_call_detected.emit(name, description, args_json)
-
         self._tool_event.clear()
-        await asyncio.get_event_loop().run_in_executor(None, self._tool_event.wait)
-
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._tool_event.wait
+        )
         approved, modified_args = self._tool_response or (False, None)
         if modified_args:
             arguments.clear()
@@ -118,7 +120,36 @@ class AgentChatThread(QThread):
     def run(self):
         asyncio.run(self._run_agent())
 
+    # ------------------------------------------------------------------
+    # Роутинг: Orchestrator (research) → AgentLoop (обычный)
+    # ------------------------------------------------------------------
+
     async def _run_agent(self):
+        # Пытаемся распознать research-вопрос для роутинга.
+        last_user = next(
+            (m for m in reversed(self.messages_history) if m.role == "user"),
+            None,
+        )
+        user_text = last_user.content if last_user else ""
+
+        if self.orchestrator is not None and user_text:
+            from agents.investigation import is_research_question
+
+            if is_research_question(user_text):
+                try:
+                    await self._run_orchestrator(user_text)
+                    return
+                except Exception as e:
+                    logger.exception(
+                        "Orchestrator failed; fallback to AgentLoop"
+                    )
+                    self.orchestrator_event.emit(
+                        "fallback",
+                        {"reason": str(e), "message": "Использую старый ReAct"},
+                    )
+                    # проваливаемся в AgentLoop
+
+        # --- Старый путь: AgentLoop ---
         self.tools_status_changed.emit(True)
 
         async def _notify_tools_disabled():
@@ -141,28 +172,23 @@ class AgentChatThread(QThread):
             loop = AgentLoop(
                 client=client, registry=self.registry, model=self.model
             )
-            # Определяем research_mode через AgentLoop — он сам решает
-            # по последнему user-сообщению. Чтобы эмитить сигнал ДО старта
-            # стриминга, запускаем run() с on_thought, но флаг выставим
-            # в начале самого run() через небольшой хак: он нам доступен
-            # через loop.was_research_mode ПОСЛЕ первого вызова, но нам
-            # нужно ДО. Поэтому определяем research_mode здесь по последнему
-            # user-сообщению — та же логика, что внутри loop.
             from agents.investigation import is_research_question
 
-            last_user = next(
+            last_user_local = next(
                 (m for m in reversed(self.messages_history) if m.role == "user"),
                 None,
             )
             self._research_mode = is_research_question(
-                last_user.content if last_user else ""
+                last_user_local.content if last_user_local else ""
             )
             self.research_mode_detected.emit(self._research_mode)
 
             result = await loop.run(
                 context=self.context,
                 messages_history=self.messages_history,
-                on_token=_on_final_chunk if self._research_mode else self._on_token,
+                on_token=(
+                    _on_final_chunk if self._research_mode else self._on_token
+                ),
                 on_tool_request=self._on_tool_request,
                 max_iterations=self.max_iterations,
                 on_thinking=self._on_thinking,
@@ -195,8 +221,79 @@ class AgentChatThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Ошибка агента: {e}")
 
+    # ------------------------------------------------------------------
+    # Orchestrator-путь
+    # ------------------------------------------------------------------
+
+    async def _run_orchestrator(self, user_query: str) -> None:
+        """Запускает новый линейный пайплайн.
+
+        Важно: НЕ эмитим ``research_mode_detected(True)`` — иначе ChatPanel
+        уйдёт в паспорт исследования (там нет summary и раздел «Выводы»
+        будет пустым). Оркестратор даёт готовый ответ + диаграмму +
+        evidence pack; Panel обрабатывает их через ``orchestrator_result``.
+        """
+        assert self.orchestrator is not None
+
+        def _on_event(kind: str, data: dict) -> None:
+            # Эмитим наружу как есть.
+            self.orchestrator_event.emit(kind, data)
+            # Зеркалим прогресс в thought-stream — пользователь видит,
+            # что работа идёт (без каракулей).
+            if kind == "classify":
+                self.thought_chunk.emit(
+                    f"🤔 Классификация: {str(data.get('query', ''))[:80]}\n"
+                )
+            elif kind == "plan":
+                self.thought_chunk.emit(
+                    f"📋 План: task={data.get('task')}, "
+                    f"scope={data.get('scope')}, deep={data.get('deep')}, "
+                    f"файлов={data.get('files')}\n"
+                )
+            elif kind == "coverage":
+                val = float(data.get("value", 0.0))
+                self.thought_chunk.emit(f"📊 Покрытие: {val:.0%}\n")
+            elif kind == "synthesize":
+                self.status_changed.emit("✍️ Синтез ответа (7B CPU)…")
+            elif kind == "regen":
+                self.thought_chunk.emit(
+                    f"🔄 Регенерация: {data.get('reason', '')}\n"
+                )
+            elif kind == "nudge":
+                gaps = data.get("gaps") or []
+                preview = ", ".join(str(g) for g in gaps[:3])
+                self.thought_chunk.emit(
+                    f"🔁 Досбор данных (итерация {data.get('iter')}): "
+                    f"{preview}\n"
+                )
+
+        project_root = Path(self.context.project_root or ".")
+        if not project_root.exists():
+            raise FileNotFoundError(
+                f"Корень проекта не найден: {project_root}"
+            )
+
+        self.status_changed.emit("🧠 Оркестратор: классификация…")
+        result: RunResult = await self.orchestrator.run(
+            user_query,
+            project_root=project_root,
+            history=self.messages_history,
+            on_event=_on_event,
+            quality_mode=False,
+        )
+
+        # Стримим ответ одним куском (оркестратор не стримит токены).
+        # ChatPanel._on_chunk создаст ChatMessageItem.
+        self.research_mode_detected.emit(False)
+        if result.answer:
+            self.chunk_received.emit(result.answer)
+
+        # Полный RunResult (answer + diagram + evidence) — Panel разрулит.
+        self.orchestrator_result.emit(result)
+        # НЕ эмитим finish_received — Panel сделает cleanup в
+        # _on_orchestrator_result; иначе будет дубль сообщения.
+
     async def _on_token(self, token: str):
-        """Старая дорожка для не-research — идёт в обычный chunk_received."""
         self.chunk_received.emit(token)
 
     async def _on_thinking(self, token: str):
@@ -449,3 +546,129 @@ class WebSearchThread(QThread):
 
         except Exception as e:
             self.error_occurred.emit(f"Ошибка: {e}")
+
+class _ModelPoolLoadThread(QThread):
+    """Загружает обе модели (planner 3B GPU + analyst 7B CPU) параллельно.
+
+    Живёт в фоне: 7B на CPU грузится 10–30 с, нельзя блокировать UI.
+    Возвращает готовый ``ModelPool`` — ChatPanel создаёт на нём
+    ``Orchestrator``.
+
+    Ошибка (любая модель не установлена / OOM / битый файл) → ``error``
+    с понятным сообщением; ChatPanel оставит ``_orchestrator = None``
+    и продолжит работать через старый AgentLoop.
+    """
+
+    finished = Signal(object)   # ModelPool | None
+    error = Signal(str)
+    progress = Signal(str)
+
+    def run(self):
+        try:
+            from agents.download_slm import get_model_path
+            from agents.local_llm_client import LocalLLMClient
+            from agents.model_pool import ModelPool, Role, RoleSpec
+            from agents.slm_optimizer import optimize
+            from agents.slm_selector import select_pair
+
+            pair = select_pair()
+            planner_info = pair.get("planner")
+            analyst_info = pair.get("analyst")
+            if not planner_info or not analyst_info:
+                self.error.emit(
+                    "Нужны две модели: 3B (planner) и 7B (analyst). "
+                    "Скачайте их через «View → Локальные модели»."
+                )
+                return
+
+            planner_path = get_model_path(planner_info.file)
+            if planner_path is None:
+                self.error.emit(
+                    f"Файл planner не найден: {planner_info.file}"
+                )
+                return
+            analyst_path = get_model_path(analyst_info.file)
+            if analyst_path is None:
+                self.error.emit(
+                    f"Файл analyst не найден: {analyst_info.file}"
+                )
+                return
+
+            self.progress.emit(
+                f"Оптимизация planner: {planner_info.display_name}"
+            )
+            try:
+                planner_params = optimize(planner_path, target_n_ctx=8192)
+            except Exception as e:
+                self.error.emit(f"planner optimize failed: {e}")
+                return
+
+            self.progress.emit(
+                f"Оптимизация analyst: {analyst_info.display_name}"
+            )
+            try:
+                analyst_params = optimize(analyst_path, target_n_ctx=8192)
+            except Exception as e:
+                self.error.emit(f"analyst optimize failed: {e}")
+                return
+
+            specs: dict[Role, RoleSpec] = {
+                Role.PLANNER: RoleSpec(
+                    role=Role.PLANNER,
+                    model_id=planner_info.id,
+                    device="GPU",
+                    n_ctx=planner_params.n_ctx,
+                    kv_cache=planner_params.kv_cache_type,
+                    n_gpu_layers=planner_params.n_gpu_layers,
+                    temperature=0.0,
+                    file=str(planner_path),
+                ),
+                Role.ANALYST: RoleSpec(
+                    role=Role.ANALYST,
+                    model_id=analyst_info.id,
+                    device="CPU",
+                    n_ctx=analyst_params.n_ctx,
+                    kv_cache=analyst_params.kv_cache_type,
+                    n_gpu_layers=analyst_params.n_gpu_layers,
+                    temperature=0.35,
+                    file=str(analyst_path),
+                ),
+            }
+
+            def factory(spec: RoleSpec) -> LocalLLMClient:
+                path = Path(spec.file) if spec.file else None
+                if path is None or not path.exists():
+                    raise FileNotFoundError(
+                        f"Model file missing: {spec.model_id}"
+                    )
+                params = (
+                    planner_params
+                    if spec.role is Role.PLANNER
+                    else analyst_params
+                )
+                return LocalLLMClient(
+                    model_path=path, params=params, max_tokens=1024
+                )
+
+            self.progress.emit("Загрузка обеих моделей (parallel)…")
+            pool = ModelPool()
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(pool.load(specs, factory))
+            finally:
+                loop.close()
+
+            # Проверяем, что обе роли действительно загружены.
+            try:
+                pool.client(Role.PLANNER)
+                pool.client(Role.ANALYST)
+            except RuntimeError as e:
+                self.error.emit(f"ModelPool incomplete: {e}")
+                return
+
+            self.progress.emit("Двухмодельный пайплайн готов")
+            self.finished.emit(pool)
+
+        except Exception as e:
+            logger.exception("ModelPool load failed")
+            self.error.emit(str(e))

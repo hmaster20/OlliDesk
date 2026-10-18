@@ -1,5 +1,6 @@
 """Виджет одного сообщения в чате."""
 
+from loguru import logger
 import html as html_mod
 import re
 
@@ -803,3 +804,125 @@ def _escape_html(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+# ===========================================================================
+# ChatDiagramItem — схема компонентов с переключателем ASCII ↔ Mermaid
+# ===========================================================================
+
+class ChatDiagramItem(QWidget):
+    """Схема компонентов: ASCII по умолчанию, Mermaid — опционально.
+
+    ASCII генерируется DiagramRenderer'ом из графа (без LLM), Mermaid —
+    тем же renderer'ом. Mermaid-режим доступен только если есть
+    QtWebEngine и mermaid.min.js в `ui/web_editor/vendor/`. Иначе кнопка
+    Mermaid отключена с подсказкой — UI деградирует gracefully.
+    """
+
+    def __init__(
+        self,
+        ascii_text: str,
+        mermaid_text: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._ascii_text = ascii_text or ""
+        self._mermaid_text = mermaid_text or ""
+        self._mermaid_view = None
+        self._mermaid_available = False
+
+        container = QFrame(self)
+        container.setObjectName("_diagram_container")
+        container.setStyleSheet(
+            "QFrame#_diagram_container {"
+            " background: #1b1b22; border: 1px solid #2f2f3c;"
+            " border-radius: 8px; padding: 8px; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.addWidget(container)
+
+        body = QVBoxLayout(container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(4)
+
+        # --- Header: title + toggle ---
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
+
+        title = QLabel("🗺 Схема компонентов")
+        title.setStyleSheet(
+            "color: #d4d4d4; font-size: 12px; font-weight: 600;"
+        )
+        header.addWidget(title)
+        header.addStretch()
+
+        self._ascii_btn = QPushButton("ASCII")
+        self._mermaid_btn = QPushButton("Mermaid")
+        for btn in (self._ascii_btn, self._mermaid_btn):
+            btn.setCheckable(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid #444;"
+                " border-radius: 10px; color: #aaa; font-size: 11px;"
+                " padding: 2px 10px; }"
+                " QPushButton:checked { background: #2f5a2f; color: #fff; }"
+                " QPushButton:hover { background: rgba(128,128,128,0.15); }"
+                " QPushButton:disabled { color: #555; }"
+            )
+        self._ascii_btn.setChecked(True)
+        self._ascii_btn.clicked.connect(lambda: self._show("ascii"))
+        self._mermaid_btn.clicked.connect(lambda: self._show("mermaid"))
+        header.addWidget(self._ascii_btn)
+        header.addWidget(self._mermaid_btn)
+
+        body.addLayout(header)
+
+        # --- Body: stack (ASCII + Mermaid) ---
+        self._stack = QStackedWidget()
+
+        self._ascii_label = QTextBrowser()
+        self._ascii_label.setPlainText(self._ascii_text)
+        self._ascii_label.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none;"
+            " color: #cdd6f4; font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 12px; padding: 4px; }"
+        )
+        # Адаптивная высота под количество строк (примерно 16px/строка).
+        line_count = max(1, self._ascii_text.count("\n") + 1)
+        self._ascii_label.setFixedHeight(min(max(120, line_count * 16 + 16), 600))
+        self._stack.addWidget(self._ascii_label)
+
+        # Mermaid: пытаемся поднять DiagramView.
+        try:
+            from ui.mermaid_view import DiagramView  # ленивый импорт
+
+            view = DiagramView()
+            if view.enable_mermaid():
+                view.show_mermaid(self._mermaid_text)
+                self._stack.addWidget(view)
+                self._mermaid_view = view
+                self._mermaid_available = True
+            else:
+                self._mermaid_btn.setEnabled(False)
+                self._mermaid_btn.setToolTip(
+                    "Mermaid недоступен: нет QtWebEngine или mermaid.min.js "
+                    "в ui/web_editor/vendor/."
+                )
+        except Exception as e:
+            logger.debug(f"ChatDiagramItem: Mermaid view недоступен: {e}")
+            self._mermaid_btn.setEnabled(False)
+            self._mermaid_btn.setToolTip("Mermaid недоступен")
+
+        body.addWidget(self._stack)
+
+    def _show(self, mode: str) -> None:
+        if mode == "mermaid" and self._mermaid_available:
+            self._stack.setCurrentIndex(1)
+            self._ascii_btn.setChecked(False)
+            self._mermaid_btn.setChecked(True)
+        else:
+            self._stack.setCurrentIndex(0)
+            self._ascii_btn.setChecked(True)
+            self._mermaid_btn.setChecked(False)

@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from fs.intel import FileRecord, Symbol
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fs.intel import FileRecord, Symbol
 
 
 @dataclass

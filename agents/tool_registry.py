@@ -43,6 +43,7 @@ _INJECTED_PARAMS = {
     "search_cache",
     "attached_files",
     "hypotheses",
+    "security",
 }
 
 

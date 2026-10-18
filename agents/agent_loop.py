@@ -510,13 +510,11 @@ class AgentLoop:
     ) -> None:
         """Начальное наполнение state из уже предоставленного контекста.
 
-        Если AGENTS.md уже в промпте (`agents_context` не пуст), считаем его
-        прочитанным: `read_with_content.add("AGENTS.md")` → `read_config`
-        вернёт True → нудж `config` не будет требовать чтения README/конфига,
-        которого в проекте может не быть.
-
-        Это не «галлюцинация прогресса»: `agents_context` действительно
-        пришёл в промпт, и его содержимое доступно модели для анализа.
+        * AGENTS.md (если в промпте) — считаем прочитанным.
+        * [M5] Entry-point кандидаты из project_map (регулярка по basename)
+          → `known_entry_points`. Это включает D4-fallback в
+          `sufficient_for_synthesis`: даже если модель не открыла entry-point
+          через read_file, синтез не блокируется, если индекс знает кандидата.
         """
         if context.agents_context:
             state.read_files.add("AGENTS.md")
@@ -526,6 +524,21 @@ class AgentLoop:
                 f"Pre-seed: AGENTS.md ({len(context.agents_context)} симв.) "
                 "засчитан как прочитанный"
             )
+
+        # [M5] Entry-point кандидаты из карты проекта.
+        if context.project_map:
+            import re as _re
+            from agents.investigation import _ENTRY_HINTS
+            hints = {h.lower() for h in _ENTRY_HINTS}
+            # Строки вида "  main.py" / "    Program.cs" — basename в карте.
+            for m in _re.finditer(r"(?m)^\s*([A-Za-z0-9_./-]+)\s*$", context.project_map):
+                name = m.group(1).rsplit("/", 1)[-1].lower()
+                if name in hints:
+                    state.known_entry_points.append(name)
+            if state.known_entry_points:
+                logger.debug(
+                    f"Pre-seed: known_entry_points={state.known_entry_points[:5]}"
+                )
 
     @staticmethod
     def _make_research_summary(

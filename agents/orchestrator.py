@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
+from loguru import logger
+
 from agents.critic import critique
 from agents.diagram import render_architecture
 from agents.evidence import EvidenceItem, EvidenceStore
@@ -148,9 +150,13 @@ class Orchestrator:
 
     async def _plan(self, task: str, scope: str, intel) -> dict:
         planner = self.pool.client(Role.PLANNER)
-        prompt = (f"Составь compact JSON-план для задачи '{task}' scope='{scope}'. "
-                  f"Полезные узлы (top): {json.dumps([n.name for n in intel.graph.top_nodes(['class','role','module_tf','resource','box','file'], 15)], ensure_ascii=False)}. "
-                  f"Формат: {\"focus\":[...], \"depth\":1|2, \"must_read\":[пути]}. Не выдумывай пути — только из списка.")
+        prompt = (
+            f"Составь compact JSON-план для задачи '{task}' scope='{scope}'. "
+            f"Полезные узлы (top): "
+            f"{json.dumps([n.name for n in intel.graph.top_nodes(['class','role','module_tf','resource','box','file'], 15)], ensure_ascii=False)}. "
+            'Формат: {"focus":[...], "depth":1|2, "must_read":[пути]}. '
+            'Не выдумывай пути — только из списка.'
+        )
         raw = await self._gen(planner, Role.PLANNER, OpType.PLAN, prompt)
         try:
             return json.loads(raw if isinstance(raw, str) else raw.content)
@@ -208,17 +214,19 @@ class Orchestrator:
         # 7. Deterministic fallback уже встроен: сбор делает код, модель не нужна для чтения.
 
     async def _rag_fill(self, evidence: EvidenceStore, terms: list[str]) -> None:
+        # [M1] VectorStore.search — async-функция, to_thread с ней даёт
+        # coroutine-объект (TypeError → молча проглатывалось). Вызываем await.
         try:
             for t in terms[:6]:
-                res = await asyncio.to_thread(self.vector_store.search, str(t), 4)
+                res = await self.vector_store.search(str(t), 4)
                 for r in res or []:
-                    md = r.metadata or {}
+                    md = getattr(r, "metadata", None) or {}
                     evidence.put(EvidenceItem(id="", kind="vector_chunk",
                                               source_path=md.get("file_path"),
                                               start_line=md.get("start_line"), end_line=md.get("end_line"),
-                                              content=(r.text or "")[:1200], relevance=0.5))
-        except Exception:
-            pass
+                                              content=(getattr(r, "text", "") or "")[:1200], relevance=0.5))
+        except Exception as e:
+            logger.warning(f"RAG-досбор не удался: {e}")
 
     async def _fill_gaps(self, evidence: EvidenceStore, gaps: list[str], intel) -> None:
         for g in gaps[:5]:
@@ -294,11 +302,17 @@ class Orchestrator:
         cache = self.intel_cache_dir / "graph.sqlite3" if self.intel_cache_dir else None
         intel = await asyncio.to_thread(analyze_project, root, cache_dir=self.intel_cache_dir)
         # persist графа для инкрементальности
-        try:
-            intel.graph._db = cache
-            intel.graph._init_schema(); intel.graph.persist()
-        except Exception:
-            pass
+        # persist графа: публичный метод, без доступа к приватным _db/_init_schema.
+        if cache is not None:
+            try:
+                from fs.intel.graph import DependencyGraph  # noqa: F401
+                # Пересоздаём граф с persistent-хранилищем (persist создаёт схему).
+                persisted = DependencyGraph(db_path=cache)
+                persisted.nodes = intel.graph.nodes
+                persisted.edges = intel.graph.edges
+                persisted.persist()
+            except Exception as e:
+                logger.debug(f"Graph persist skipped: {e}")
         self._intel_memo[key] = intel
         return intel
 
@@ -317,12 +331,8 @@ class Orchestrator:
         return [n.id for n in intel.graph.top_nodes(["file","class","role","box","module_tf"], 3)]
 
     def _file_record(self, intel, path):
-        for f in []:  # placeholder: реальный список файлов лежит в intel через repomap/graph nodes
-            pass
-        # ищем по узлам графа
-        nid = f"file:{path}"
-        node = intel.graph.nodes.get(nid)
-        return node
+        """Находит узел-файл в графе по относительному пути."""
+        return intel.graph.nodes.get(f"file:{path}")
 
     def _read_excerpt(self, p: Path, *, lines: tuple[int, int]) -> str:
         try:

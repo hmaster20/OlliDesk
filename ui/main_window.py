@@ -1796,6 +1796,13 @@ class MainWindow(QMainWindow):
         self._stop_model_check()
         self.prompt_watcher.stop()
 
+        # K3: освобождаем ModelPool (обе llama.cpp модели) и Orchestrator.
+        if self.chat_panel and hasattr(self.chat_panel, "shutdown"):
+            try:
+                self.chat_panel.shutdown()
+            except Exception:
+                logger.debug("ChatPanel.shutdown failed", exc_info=True)
+
         # Останавливаем фоновый опрос git-статусов у делегата.
         self._git_delegate.set_repo_path(None)
 

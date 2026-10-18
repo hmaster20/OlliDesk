@@ -545,14 +545,6 @@ class LocalLLMClient:
         """
         return self._count_tokens(text)
 
-    def _count_tokens(self, text: str) -> int:
-        if not text:
-            return 0
-        try:
-            return len(self.llm.tokenize(text.encode("utf-8"), add_bos=False))
-        except Exception:
-            return max(1, len(text) // 4)
-
     async def generate(
         self,
         prompt: str,

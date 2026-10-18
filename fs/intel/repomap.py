@@ -12,7 +12,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from fs.intel import FileRecord, Symbol
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fs.intel import FileRecord, Symbol
 from fs.intel.graph import DependencyGraph
 
 
