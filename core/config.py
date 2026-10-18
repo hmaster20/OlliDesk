@@ -346,6 +346,14 @@ class SLMConfig(BaseModel):
     # При auto_select_model=True значение перезаписывается автоматически.
     selected_model: str = "qwen2.5-3b-instruct-q4_k_m"
 
+    # Явный выбор моделей для двухмодельного пайплайна (planner + analyst).
+    # Пустая строка = автовыбор через agents.slm_selector.select_pair().
+    # Заполняется в SLMModelsDialog (View → Локальные модели).
+    # Приоритет над автовыбором: если оба id заданы — используется ровно
+    # этот набор, даже если есть более подходящие по tier/размеру модели.
+    planner_model_id: str = ""
+    analyst_model_id: str = ""
+
     # Каталог доступных моделей.
     # Embedding-модель сюда НЕ добавляем — она задаётся отдельно ниже.
     available_models: list[SLMModelInfo] = Field(
@@ -365,39 +373,19 @@ class SLMConfig(BaseModel):
         return self
 
     # --- Режим автоматической оптимизации ---
-    # auto_select_model: при запуске выбрать лучшую chat-модель под железо
-    #   (по профилю CPU/GPU/RAM и размеру модели). Заменяет selected_model.
-    # auto_tune: автоопределение n_ctx, n_gpu_layers, n_threads, n_batch,
-    #   flash_attn, use_mlock, типа KV-кэша под свободную VRAM/RAM и метаданные
-    #   модели. Значения ниже используются только при auto_tune=False.
-    # prefer_vram_fit: при auto_select_model учитывать только модели, целиком
-    #   влезающие в VRAM (иначе модель будет частично на CPU — это медленнее).
     auto_select_model: bool = True
     auto_tune: bool = True
     prefer_vram_fit: bool = True
 
     # --- Ручные параметры (используются при auto_tune=False) ---
     n_ctx: int = 8192
-    n_threads: int = 0          # 0 = авто по числу физических ядер
+    n_threads: int = 0
     n_batch: int = 512
-
-    # GPU:
-    #   auto_gpu_layers=True  → n_gpu_layers определяется автоматически
-    #                            через nvidia-smi и размер модели
-    #   auto_gpu_layers=False → используется значение n_gpu_layers как есть
-    #                            (0 = CPU-only, -1 = все слои на GPU, N>0 = N слоёв)
     auto_gpu_layers: bool = True
-    n_gpu_layers: int = 0        # 0=CPU, -1=все слои, N>0=первые N слоёв
-
-    # --- Общие ---
+    n_gpu_layers: int = 0
     max_tokens: int = 1024
     temperature: float = 0.7
-
-    # Верхняя граница контекста, которую попробует взять оптимизатор.
-    # [D1] Реальный потолок определит `agents.slm_optimizer.optimize()`:
-    #   • GPU-only: min(target_n_ctx, n_ctx_train);
-    #   • CPU-only: ЖЁСТКО 8192 (иначе prefill 32k на CPU даёт TTFT 100+ с).
-    target_n_ctx: int = 8192          # было 32768
+    target_n_ctx: int = 8192
 
     # --- Embedding-модель (одна, отдельно) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"
@@ -418,7 +406,6 @@ class SLMConfig(BaseModel):
         for m in self.available_models:
             if m.kind == "chat" and m.id == self.selected_model:
                 return m
-        # fallback — первая доступная chat
         for m in self.available_models:
             if m.kind == "chat":
                 return m
@@ -431,6 +418,33 @@ class SLMConfig(BaseModel):
                 return m
         return None
 
+    def get_planner_info(self) -> SLMModelInfo | None:
+        """Явно выбранная planner-модель для двухмодельного пайплайна.
+
+        Returns:
+            SLMModelInfo, если ``planner_model_id`` задан и модель существует
+            и имеет ``kind="chat"``; иначе ``None`` (сигнал для автовыбора).
+        """
+        if not self.planner_model_id:
+            return None
+        for m in self.available_models:
+            if m.id == self.planner_model_id and m.kind == "chat":
+                return m
+        return None
+
+    def get_analyst_info(self) -> SLMModelInfo | None:
+        """Явно выбранная analyst-модель для двухмодельного пайплайна.
+
+        Returns:
+            SLMModelInfo, если ``analyst_model_id`` задан и модель существует
+            и имеет ``kind="chat"``; иначе ``None`` (сигнал для автовыбора).
+        """
+        if not self.analyst_model_id:
+            return None
+        for m in self.available_models:
+            if m.id == self.analyst_model_id and m.kind == "chat":
+                return m
+        return None
 
 class ConfirmSettings(BaseModel):
     """Настройки подтверждения вызова инструментов.

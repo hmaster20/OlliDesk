@@ -229,6 +229,10 @@ class ChatPanel(QWidget):
         Вызывается после явного выбора модели пользователем в диалоге SLM.
         Автовыбор должен быть пропущен, иначе он затрёт выбор (см. баг:
         3B q4_k_m принудительно возвращался вместо выбранной 7B/1.5B/q6_k).
+
+        Также сбрасывает двухмодельный пайплайн — если пользователь
+        изменил planner/analyst в SLMModelsDialog, при следующем
+        исследовательском вопросе пайплайн соберётся уже с новыми моделями.
         """
         self._slm_load_generation += 1
         self._slm_model_name = ""
@@ -242,10 +246,16 @@ class ChatPanel(QWidget):
             f"reload_slm: generation → {self._slm_load_generation}, "
             f"модель будет перечитана из конфига (автовыбор пропущен)"
         )
+        self.reset_pipeline()
+
         self.status_label.setText("⏳ Перезагрузка локальной модели...")
         QTimer.singleShot(
             50, lambda: self._detect_and_load_slm(skip_auto_select=True)
         )
+
+        # ИСПРАВЛЕНИЕ: запускаем двухмодельный пайплайн после ручной смены моделей
+        if self.project_root:
+            QTimer.singleShot(1500, self._ensure_orchestrator)
 
     def _detect_and_load_slm(self, skip_auto_select: bool = False):
         """Автовыбор модели + автооптимизация параметров, затем загрузка.
@@ -2187,8 +2197,10 @@ class ChatPanel(QWidget):
         self._project_scanned = False
         self._project_scan_root = None
         self._rag_scope = None
-        if self._orchestrator is not None:
-            self._orchestrator = None
+
+        # полный сброс пайплайна вместо ручного обнуления
+        self.reset_pipeline()
+
         if project_root:
             QTimer.singleShot(1500, self._ensure_orchestrator)
         self._update_pipeline_status()
@@ -2475,6 +2487,33 @@ class ChatPanel(QWidget):
             "⏳ Загрузка двух моделей (3B GPU + 7B CPU)…"
         )
         self._update_pipeline_status()
+
+    def reset_pipeline(self) -> None:
+        """Сбрасывает двухмодельный пайплайн (после смены моделей в UI).
+
+        Вызывается из `reload_slm()` и из MainWindow после закрытия
+        SLMModelsDialog с изменениями. Следующий `_ensure_orchestrator()`
+        пересоздаст пайплайн с новыми моделями из конфига.
+
+        Также сбрасывает `_pool_load_failed`, чтобы «⚠️ недоступен» не
+        блокировал повторную попытку после исправления конфига
+        (например, скачивания недостающей модели).
+        """
+        if self._model_pool is not None:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._model_pool.aclose())
+                loop.close()
+            except Exception:
+                logger.debug("ModelPool.aclose failed", exc_info=True)
+
+        self._model_pool = None
+        self._orchestrator = None
+        self._pool_load_failed = False
+        self._update_pipeline_status()
+        logger.info(
+            "SLM pipeline сброшен — будет пересоздан при следующем запросе"
+        )
 
     @Slot(object)
     def _on_pool_loaded(self, pool: ModelPool | None) -> None:

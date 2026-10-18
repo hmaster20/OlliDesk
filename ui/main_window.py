@@ -1858,7 +1858,14 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_slm_manager(self):
-        """Открывает диалог управления локальными SLM-моделями."""
+        """Открывает диалог управления локальными SLM-моделями.
+
+        После закрытия:
+          * если модели изменились — перечитываем конфиг;
+          * `reload_slm()` перезагружает активную single-SLM и сбрасывает
+            двухмодельный пайплайн (см. panel.reset_pipeline), чтобы
+            следующий research-запрос шёл уже с новыми planner/analyst.
+        """
         from core.config import load_config
         from ui.dialogs.slm_models_dialog import SLMModelsDialog
 
@@ -1872,7 +1879,14 @@ class MainWindow(QMainWindow):
                 logger.warning(f"Не удалось перезагрузить конфиг: {e}")
 
             if hasattr(self, "chat_panel") and self.chat_panel:
+                # reload_slm внутри вызывает reset_pipeline — пайплайн
+                # пересоздастся при следующем запросе с новыми моделями.
                 self.chat_panel.reload_slm()
+                self.status_bar.showMessage(
+                    "SLM: конфигурация применена. Пайплайн будет "
+                    "пересоздан при следующем research-запросе.",
+                    6000,
+                )
 
     def _preload_two_model_pipeline(self) -> None:
         """View → «Предзагрузить 2-model pipeline».

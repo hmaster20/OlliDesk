@@ -6,7 +6,10 @@ from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -117,7 +120,7 @@ class SLMModelsDialog(QDialog):
         self._download_thread: _DownloadThread | None = None
 
         self.setWindowTitle("Локальные модели (SLM)")
-        self.setMinimumSize(820, 520)
+        self.setMinimumSize(900, 640)
 
         self._setup_ui()
         self._populate()
@@ -129,8 +132,9 @@ class SLMModelsDialog(QDialog):
 
         info = QLabel(
             "Локальные SLM-модели (GGUF, llama.cpp) — <b>основной</b> бэкенд: "
-            "работают без Ollama. <b>Qwen 2.5 7B</b> — хороший баланс качества "
-            "и скорости, <b>14B</b> — максимум качества для мощных машин.<br>"
+            "работают без Ollama. Двухмодельный пайплайн использует "
+            "<b>planner</b> (GPU, 1.5B/3B) для classify/plan/critique "
+            "и <b>analyst</b> (CPU, 7B/14B) для синтеза ответа.<br>"
             "Список сортируется: активная → установленные → остальные.<br>"
             "Скачивание продолжается в фоне даже после закрытия окна."
         )
@@ -138,6 +142,45 @@ class SLMModelsDialog(QDialog):
         info.setStyleSheet("color: #888; padding: 4px 0 8px 0;")
         layout.addWidget(info)
 
+        # --- Двухмодельный пайплайн: явный выбор ролей ---
+        pipeline_group = QGroupBox("Двухмодельный пайплайн (planner + analyst)")
+        pipeline_form = QFormLayout(pipeline_group)
+
+        self.planner_combo = QComboBox()
+        self.planner_combo.setMinimumWidth(360)
+        self.planner_combo.setToolTip(
+            "Модель для planner-роли (GPU): classify/plan/critique.\n"
+            "Рекомендуется 3B или 1.5B — должна влезать в VRAM целиком.\n"
+            "«(автовыбор)» — используется tier-1 модель, проходящая по VRAM."
+        )
+        self.planner_combo.currentIndexChanged.connect(
+            self._on_pipeline_role_changed
+        )
+        pipeline_form.addRow("Planner (GPU):", self.planner_combo)
+
+        self.analyst_combo = QComboBox()
+        self.analyst_combo.setMinimumWidth(360)
+        self.analyst_combo.setToolTip(
+            "Модель для analyst-роли (CPU): synthesis/regen.\n"
+            "Рекомендуется 7B или 14B — качество важнее скорости.\n"
+            "«(автовыбор)» — используется tier-2 модель, проходящая по RAM."
+        )
+        self.analyst_combo.currentIndexChanged.connect(
+            self._on_pipeline_role_changed
+        )
+        pipeline_form.addRow("Analyst (CPU):", self.analyst_combo)
+
+        pipeline_hint = QLabel(
+            "<i>Выбор сохраняется в config.yaml (slm.planner_model_id / "
+            "slm.analyst_model_id). Если не выбрано — используется автовыбор.</i>"
+        )
+        pipeline_hint.setWordWrap(True)
+        pipeline_hint.setStyleSheet("color: #888; font-size: 11px;")
+        pipeline_form.addRow("", pipeline_hint)
+
+        layout.addWidget(pipeline_group)
+
+        # --- Таблица всех chat-моделей ---
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(
@@ -198,7 +241,7 @@ class SLMModelsDialog(QDialog):
 
         self.activate_btn = QPushButton("✅ Сделать активной")
         self.activate_btn.setToolTip(
-            "Назначить выделенную модель активной chat-моделью. "
+            "Назначить выделенную модель активной chat-моделью (single-model). "
             "После этого она загружается при перезапуске — автовыбор её не подменяет."
         )
         self.activate_btn.clicked.connect(self._activate_selected)
@@ -223,7 +266,6 @@ class SLMModelsDialog(QDialog):
     def _populate(self):
         self.table.setRowCount(0)
 
-        # Локальная проверка установки — без HF.
         from agents.download_slm import is_model_installed
 
         def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
@@ -273,7 +315,100 @@ class SLMModelsDialog(QDialog):
         embed_status = "✅ установлена" if embed_installed else "⬇️ не скачана"
         self.embed_label.setText(f"📎 {embed_file} — {embed_status}")
 
+        # Комбобоксы planner/analyst.
+        self._populate_pipeline_roles()
+
         self._update_buttons()
+
+    def _populate_pipeline_roles(self) -> None:
+        """Заполняет комбобоксы planner/analyst (только chat-модели).
+
+        Первый элемент — «(автовыбор)» с data="" (пустая строка), остальные —
+        по одной строке на каждую chat-модель. Установленные модели помечены
+        префиксом ✅ (можно выбрать), неустановленные — ⬇️ (выбор сохранится,
+        но пайплайн стартует только после скачивания).
+        """
+        chat_models = self.config.slm.get_chat_models()
+        from agents.download_slm import is_model_installed
+
+        # Сортируем: сначала установленные, внутри — по tier desc, затем по имени.
+        sorted_models = sorted(
+            chat_models,
+            key=lambda m: (
+                0 if is_model_installed(m.file) else 1,
+                -m.tier,
+                m.display_name.lower(),
+            ),
+        )
+
+        for combo, current_id in (
+            (self.planner_combo, self.config.slm.planner_model_id),
+            (self.analyst_combo, self.config.slm.analyst_model_id),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("(автовыбор)", "")
+            for m in sorted_models:
+                installed = is_model_installed(m.file)
+                prefix = "✅ " if installed else "⬇️ "
+                combo.addItem(f"{prefix}{m.display_name}", m.id)
+
+            idx = combo.findData(current_id) if current_id else 0
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _on_pipeline_role_changed(self, _index: int) -> None:
+        """Сохраняет выбор planner/analyst в конфиг (и в YAML).
+
+        Защита: нельзя назначить одну и ту же модель на обе роли. Если
+        пользователь попытается — показываем предупреждение и откатываем
+        выбор в комбобоксе на предыдущее валидное значение.
+        """
+        planner_id = self.planner_combo.currentData() or ""
+        analyst_id = self.analyst_combo.currentData() or ""
+
+        if planner_id and analyst_id and planner_id == analyst_id:
+            QMessageBox.warning(
+                self,
+                "Одна модель на две роли",
+                "Planner и analyst должны быть РАЗНЫМИ моделями — иначе "
+                "двухмодельный пайплайн бесполезен (две копии одной модели "
+                "съедят вдвое больше памяти).\n\n"
+                "Выбор не сохранён. Выберите другую модель для одной из ролей.",
+            )
+            # Откатываем последний комбобокс к предыдущему валидному значению.
+            for combo, prev_id in (
+                (self.planner_combo, self.config.slm.planner_model_id),
+                (self.analyst_combo, self.config.slm.analyst_model_id),
+            ):
+                current = combo.currentData() or ""
+                if current and current == (
+                    analyst_id if combo is self.planner_combo else planner_id
+                ):
+                    combo.blockSignals(True)
+                    idx = combo.findData(prev_id) if prev_id else 0
+                    combo.setCurrentIndex(idx if idx >= 0 else 0)
+                    combo.blockSignals(False)
+            return
+
+        if (
+            self.config.slm.planner_model_id == planner_id
+            and self.config.slm.analyst_model_id == analyst_id
+        ):
+            return
+
+        self.config.slm.planner_model_id = planner_id
+        self.config.slm.analyst_model_id = analyst_id
+        save_config(self.config)
+        self._changed = True
+        logger.info(
+            f"SLM pipeline: planner={planner_id or '(авто)'}, "
+            f"analyst={analyst_id or '(авто)'}"
+        )
+        self.status_label.setText(
+            f"📌 Pipeline: planner={planner_id or '(авто)'}, "
+            f"analyst={analyst_id or '(авто)'}"
+        )
 
     def _real_size_str(self, filename: str) -> str:
         """Реальный размер на диске. Не ходит в HF."""

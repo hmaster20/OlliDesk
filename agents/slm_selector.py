@@ -119,15 +119,18 @@ def select_best_model(
 def select_pair(
     hw: HardwareProfile | None = None,
 ) -> dict[str, SLMModelInfo | None]:
-    """Возвращает ДВЕ модели по ролям: planner(3B,GPU) + analyst(7B,CPU).
+    """Возвращает ДВЕ модели по ролям: planner + analyst.
 
-    Используется двухмодельным пайплайном. Не заменяет
-    `select_best_model` — та остаётся для одно-модельного режима на слабом
-    железе, где 3B и 7B не влезают одновременно.
+    Приоритет:
+      1. Явный выбор из UI (``slm.planner_model_id`` / ``analyst_model_id``)
+         — используется без каких-либо проверок на tier/размер. Даже если
+         модель «не оптимальна» по железу, пользователь знает лучше.
+      2. Автовыбор для недостающих ролей (tier 1 в VRAM для planner,
+         tier 2 в RAM для analyst).
 
-    Если в каталоге нет подходящего tier-2 (7B) для analyst, возвращает
-    ``analyst=None`` — вызывающий (`_ModelPoolLoadThread`) покажет
-    пользователю внятную ошибку вместо OOM через 5 минут.
+    Guard: если planner и analyst — одна и та же модель, возвращает
+    ``analyst=None`` — вызывающий (`_ModelPoolLoadThread`) покажет внятную
+    ошибку, а не уйдёт в OOM.
 
     Args:
         hw: Профиль железа (по умолчанию собирается один раз за процесс).
@@ -146,58 +149,71 @@ def select_pair(
     gpu = hw.best_gpu
     vram = gpu.usable_vram_mb if gpu else 0
 
-    # --- Planner: 3B (tier 1), целиком в VRAM ---
-    planner_pool = [
-        f for f in fits
-        if f.info.tier == 1 and f.fits_vram and vram >= 2900
-    ]
-    planner_pool.sort(key=lambda f: f.score, reverse=True)
-    planner: SLMModelInfo | None = (
-        planner_pool[0].info if planner_pool else None
-    )
+    # --- 1. Явный выбор из UI ---
+    planner: SLMModelInfo | None = cfg.slm.get_planner_info()
+    analyst: SLMModelInfo | None = cfg.slm.get_analyst_info()
+    planner_source = "явно из конфига" if planner else "автовыбор"
+    analyst_source = "явно из конфига" if analyst else "автовыбор"
+
+    # --- 2. Автовыбор planner ---
     if planner is None:
-        vram_fits = sorted(
-            (f for f in fits if f.fits_vram),
-            key=lambda f: f.score, reverse=True,
-        )
-        planner = vram_fits[0].info if vram_fits else None
+        planner_pool = [
+            f for f in fits
+            if f.info.tier == 1 and f.fits_vram and vram >= 2900
+        ]
+        planner_pool.sort(key=lambda f: f.score, reverse=True)
+        planner = planner_pool[0].info if planner_pool else None
+        if planner is None:
+            vram_fits = sorted(
+                (f for f in fits if f.fits_vram),
+                key=lambda f: f.score, reverse=True,
+            )
+            planner = vram_fits[0].info if vram_fits else None
 
-    # --- Analyst: 7B (tier 2), CPU-only ---
-    analyst_pool = [
-        f for f in fits
-        if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"
-    ]
-    analyst_pool.sort(key=lambda f: f.score, reverse=True)
-    analyst: SLMModelInfo | None = (
-        analyst_pool[0].info if analyst_pool else None
-    )
+    # --- 3. Автовыбор analyst ---
     if analyst is None:
-        ram_fits = sorted(
-            (f for f in fits if f.fits_ram),
-            key=lambda f: f.score, reverse=True,
-        )
-        # НЕ берём planner же модель — двухмодельный режим с одной моделью
-        # бессмыслен (дважды съест память) и приводит к OOM/зависанию.
-        if ram_fits:
-            candidate = ram_fits[0].info
-            if planner is None or candidate.id != planner.id:
-                analyst = candidate
+        analyst_pool = [
+            f for f in fits
+            if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"
+        ]
+        analyst_pool.sort(key=lambda f: f.score, reverse=True)
+        analyst = analyst_pool[0].info if analyst_pool else None
+        if analyst is None:
+            ram_fits = sorted(
+                (f for f in fits if f.fits_ram),
+                key=lambda f: f.score, reverse=True,
+            )
+            if ram_fits:
+                candidate = ram_fits[0].info
+                # Не берём тот же файл, что planner — двухмодельный режим
+                # с одной моделью бессмыслен (дважды съест память).
+                if planner is None or candidate.id != planner.id:
+                    analyst = candidate
 
-    # Guard: planner и analyst — одна и та же модель.
+    # --- 4. Guard: одна модель на две роли ---
     if planner is not None and analyst is not None and planner.id == analyst.id:
-        logger.warning(
-            f"select_pair: planner и analyst — одна модель ({planner.id}). "
-            f"Для двухмодельного пайплайна нужны РАЗНЫЕ модели "
-            f"(planner: 3B или 1.5B, analyst: 7B или 14B)."
-        )
+        if cfg.slm.planner_model_id and cfg.slm.analyst_model_id:
+            logger.warning(
+                f"select_pair: planner и analyst явно выбраны как одна модель "
+                f"({planner.id}). Откройте «View → Локальные модели» и выберите "
+                f"РАЗНЫЕ модели для planner и analyst."
+            )
+        else:
+            logger.warning(
+                f"select_pair: planner и analyst — одна модель ({planner.id}). "
+                f"Для двухмодельного пайплайна нужны РАЗНЫЕ модели. "
+                f"Выберите их явно в «View → Локальные модели» "
+                f"или скачайте недостающую (например, 7B)."
+            )
         analyst = None
 
     logger.info(
         f"Автовыбор SLM (pair): "
-        f"planner={planner.display_name if planner else None}, "
-        f"analyst={analyst.display_name if analyst else None} "
+        f"planner={planner.display_name if planner else None} ({planner_source}), "
+        f"analyst={analyst.display_name if analyst else None} ({analyst_source}) "
         f"[VRAM={vram} МБ, RAM={hw.ram.available_mb} МБ]"
     )
     return {"planner": planner, "analyst": analyst}
+
 
 # ------
