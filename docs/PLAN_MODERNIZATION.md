@@ -15,10 +15,11 @@
 | Встроенный SLM (GGUF / llama.cpp) | ✅ | `agents/local_llm_client.py`, `agents/download_slm.py` |
 | Fallback Ollama → SLM → rule-based | ✅ | `agents/model_router.py` |
 | Tool calling (ReAct-цикл) | ✅ | `agents/agent_loop.py`, `agents/tool_registry.py` |
-| 12 инструментов (файлы, RAG, web, погода, git, валюты) | ✅ | `tools/` |
-| 13-й инструмент: дочитывание `@file`-вложения | ✅ | `tools/attached_files.py::read_attached_file` |
+| 16 инструментов (файлы, RAG, web, погода, git, валюты, гипотезы) | ✅ | `tools/` |
+| Инструмент дочитывания `@file`-вложения | ✅ | `tools/attached_files.py::read_attached_file` |
+| Инструменты гипотез `record/update/list_hypotheses` | ✅ | `tools/hypothesis.py` |
 | Команды `@web` / `@dir` / `@file` / `@path` | ✅ | `ui/chat/panel.py`, `ui/main_window.py` |
-| Токен-бюджет под окно модели для вложений | ✅ | `core/context_budget.py` |
+| Токен-бюджет под окно модели для вложений | ✅ | `core/context_budget.py`, `core/budget.py` |
 | Подтверждение инструментов настраивается | ✅ | `core/config.py::ConfirmSettings`, меню File, `_apply_config_policies` |
 | RAG: индексация + ChromaDB | ✅ базовый | `fs/indexer.py`, `fs/vector_store.py` |
 | Инкрементальная индексация | ✅ | `fs/indexer.py::incremental_scan` |
@@ -27,14 +28,19 @@
 | Сессии (SQLite), настройки проекта | ✅ | `state/` |
 | Тёмная тема | ✅ | `ui/theme.py` |
 | Мастер первой настройки | ✅ | `ui/dialogs/wizard.py` |
-| Диспетчер GPU-слоёв для SLM | ✅ | `agents/gpu_utils.py` |
+| Диспетчер GPU-слоёв для SLM | ✅ | `agents/gpu_utils.py`, `agents/slm_optimizer.py` |
 | CI (ruff → mypy → pytest) | ✅ | `.github/workflows/ci.yml` |
 | Reranking + гибридный поиск (BM25) | ✅ | `fs/bm25.py`, `fs/reranker.py`, `fs/vector_store.py` |
+| **Двухмодельный пайплайн (planner GPU + analyst CPU)** | ✅ | `agents/model_pool.py`, `agents/slm_selector.py`, `ui/chat/threads.py::_ModelPoolLoadThread` |
+| **Orchestrator: линейный конвейер (classify → plan → collect → synthesize → verify)** | ✅ | `agents/orchestrator.py`, `agents/evidence.py`, `agents/diagram.py`, `agents/verifier.py`, `agents/critic.py` |
+| **Project Intelligence (граф зависимостей, repomap, парсеры Ansible/Terraform/Vagrant/C#/Python)** | ✅ | `fs/intel/` |
+| **Research-режим: фазы, гипотезы, нуджи, паспорт исследования** | ✅ | `agents/investigation.py`, `agents/hypotheses.py`, `ui/chat/thought_stream.py`, `ui/chat/research_passport.py` |
+| **AGENTS.md как постоянный контекст проекта** | ✅ | `agents/context_loader.py` |
 | **OCR изображений / PDF** | ❌ | есть только зависимость `rapidocr-onnxruntime` |
 | **MCP** | ❌ | — |
 | **Система плагинов** | ❌ | — |
 | **Событийная модель сообщений (`MessagePart`)** | ❌ | `ChatMessage.content` — строка, `reasoning_content` и `tool_calls` живут отдельно |
-| **Композитный пузырь сообщения** | ⚠️ | размышления рисуются курсивом над текстом, вызовы инструментов в чате не видны |
+| **Композитный пузырь сообщения** | ⚠️ | для research-режима есть `ChatThoughtStream` (сворачиваемый лог мыслей/вызовов/результатов/гипотез), `ChatHypothesisItem`, `ChatDiagramItem`, `ChatResearchPassport`; для обычных сообщений `ChatMessageItem` остаётся однострочным `QTextBrowser` с курсивным `thinking` |
 | **Выполнение shell-команд агентом** | ❌ | — |
 | Компактор истории диалога | ✅ | `agents/history_compactor.py` (вызывается в `AgentLoop`) |
 | Тесты UI / state | ❌ | сознательно: тесты пишем только под изменяемый код, см. 1.5 |
@@ -82,39 +88,54 @@
 ## Фаза 2 — Архитектурные улучшения
 
 ### 2.1 Протокол LLM-бэкенда
-- [ ] Ввести `agents/base.py::LLMBackend(Protocol)` с методами `chat`, `embed`,
-      `cancel_request`, `is_cancelled`, `reset_cancel`, `check_tools_support`.
-- [ ] Типизировать `OllamaClient`, `LocalLLMClient`, `RuleBasedFallback` как `LLMBackend`.
+- [x] Ввести `agents/base.py::LLMBackend(Protocol)` с методами `chat`, `embed`,
+      `cancel_request`, `is_cancelled`, `reset_cancel`. (`runtime_checkable` Protocol,
+      с async context manager. `check_tools_support` в Protocol **не** вынесен —
+      остался методом конкретных реализаций.)
+- [~] Типизировать `OllamaClient`, `LocalLLMClient`, `RuleBasedFallback` как `LLMBackend`:
+      `AgentLoop` объявлен с `client: LLMBackend`, `RagSearchThread`/`VectorStore` работают
+      через протокол `Embedder`; явных `implements LLMBackend` в классах нет (duck-typing
+      + Protocol в сигнатурах).
 - [ ] Убрать `object` / `Any` из `AgentContext.vector_store` / `.search_cache` — ввести
       минимальные протоколы `VectorStoreLike` / `SearchCacheLike`, чтобы `agents` не импортировал
-      `fs` и `core.search_cache`.
+      `fs` и `core.search_cache`. Сейчас поля так и остались `object`; рядом появилось новое
+      `hypotheses: object` и `attached_files: object` — задача расширяется на них.
 - [ ] `AgentLoop` сейчас знает про `fs`/`core` только по duck-типингу — это источник
       неочевидных `None`-ошибок.
 
 ### 2.2 Реестр инструментов
-- [ ] Перенести список инструментов из `ui/chat/panel.py::_build_registry` в
+- [~] Перенести список инструментов из `ui/chat/panel.py::_build_registry` в
       `tools/registry.py` (модуль с декларативным списком), чтобы UI не был единственным
-      местом регистрации.
+      местом регистрации. **`tools/registry.py::ALL_TOOLS` создан, но не используется —
+      `_build_registry` по-прежнему импортирует инструменты по одному.**
 - [ ] Политики — из `core/config.py::AppConfig.tool_policies`, а не из UI-словаря.
+      Сейчас `_apply_config_policies` читает `tool_policies` и `confirm`, но
+      приоритет декоратора (в коде `ASK_FIRST` у `write_file`) всё ещё не переопределён
+      конфигом — только явные `set_policy` из UI и `_CHAT_AUTO_TOOLS`.
 - [x] **Исправить баг:** `search_cache` не инжектился в `web_search` — добавлен в
       `_INJECTED_PARAMS` (`agents/tool_registry.py`) и прокинут из `ChatPanel` через
-      `AgentContext.search_cache`. Рядом добавлен `attached_files`.
+      `AgentContext.search_cache`. Рядом добавлены `attached_files` и `hypotheses`.
 - [ ] Убрать `_resolve_path`-песочницу в пользу единого `SandboxedPathResolver`, если
       добавятся новые файловые инструменты.
 - [ ] Метаданные `is_mutating` / `category` в `@tool` вместо словаря русских названий
       инструментов в UI — см. **4.8.D** (делать вместе с этим пунктом).
 
 ### 2.3 Управление потоками и отменой
-- [ ] Единый `ThreadPool`/`TaskManager` вместо 12 независимых `QThread`-классов.
+- [ ] Единый `ThreadPool`/`TaskManager` вместо независимых `QThread`-классов.
+      Сейчас в `ui/chat/threads.py`: `AgentChatThread`, `RagSearchThread`,
+      `WebSearchThread`, `_OllamaCheckThread`, `_SLMLoadThread`, `_SLMDownloadThread`,
+      `_ModelPoolLoadThread`; плюс `IndexingThread`, `ModelCheckThread` в `main_window.py`
+      и `PullThread` в `model_manager_dialog.py`.
 - [ ] Гарантированная отмена `asyncio`-задач (`asyncio.Task.cancel()`), а не только флага
       `cancel_request()`.
 - [ ] Убрать `new_event_loop()` + `run_until_complete` на GUI-потоке в
-      `MainWindow._do_check_ollama`, `_save_project_state`, `_stop_all_threads`.
-- [ ] `GitStatusDelegate._refresh` и `PullThread` — убрать блокирующий `subprocess` с GUI-потока.
+      `MainWindow._do_check_ollama`, `_save_project_state`, `_stop_all_threads`
+      (все три места остались).
+- [ ] `GitStatusDelegate._do_refresh` и `PullThread` — убрать блокирующий `subprocess` с GUI-потока.
 - [ ] Корректно отменять/удалять потоки при закрытии окна (`closeEvent`).
 
 ### 2.4 Разделение `ui/main_window.py` и `ui/chat/panel.py`
-- [ ] Оба файла >1000 строк и активно используют приватные атрианты друг друга
+- [ ] Оба файла >1000 строк и активно используют приватные атрибуты друг друга
       (`chat_panel._update_mode_tooltips()`, `chat_panel.mode_combo`). Разделить на
       контроллеры/делегаты, общение — только через сигналы.
 - [ ] Вынести меню в отдельный модуль (`ui/menus.py`) с командами (`QAction` + `QCommandLine`).
@@ -126,7 +147,9 @@
 - [x] Гибридный поиск (BM25 + RRF), реранкинг кросс-энкодером, кэш реранка, раздельные
       эмбеддинги по типу файла (`category_for_language`), карта проекта + path-aware RAG,
       фильтры `language`/`path`/даты, инкрементальная индексация, кликабельные источники в
-      UI. Реализовано в `fs/` и `ui/chat/panel.py`.
+      UI. Реализовано в `fs/` и `ui/chat/panel.py`. Дополнительно появился слой `fs/intel/`
+      (Project Intelligence Layer): `DependencyGraph`, `RepoMap`, доменные парсеры
+      Ansible/Terraform/Vagrant/C#/Python — он питает Orchestrator и не заменяет RAG.
 
 ---
 
@@ -135,7 +158,9 @@
 - [x] Компактор истории (`agents/history_compactor.py`), динамический системный промпт с
       бюджетом (`system_prompt_char_budget`), горячая перезагрузка промптов/ролей
       (`core/prompt_watcher.py`), редактор промптов с превью и сбросом к заводским,
-      описание режимов в UI.
+      описание режимов в UI. Добавлены `core/budget.py` (единая точка бюджета по `OpType`),
+      `agents/context_loader.py` (AGENTS.md как постоянный контекст),
+      `agents/investigation.py` (фазы исследования), `agents/hypotheses.py` (гипотезы).
 
 ---
 
@@ -166,14 +191,15 @@
 Идеи из `RECOMEND.md` + рекомендации по моделям из `docs/HARD.md`, которые сознательно
 не реализованы в этой итерации.
 
-- [x] **Qwen2.5-14B в каталоге SLM**: первая запись `_DEFAULT_SLM_MODELS`
-      (`qwen2.5-14b-instruct`, файл `qwen2.5-14b-instruct-q4_k_m.gguf`, `size_mb ≈ 9000`,
-      `n_ctx 8192`) — уже в коде. На HF файл разбит на 2 части (~4.5 ГБ), автопроверка частей
-      через `HfApi.list_repo_files` подхватит это сама. Предупреждение для UI: на T1200
-      (4 ГБ VRAM) `detect_optimal_gpu_layers` вернёт `n_gpu_layers ≈ 11`, модель загрузится,
-      но ~90 % уйдёт на CPU.
+- [x] **Qwen2.5-14B в каталоге SLM**: `_DEFAULT_SLM_MODELS` содержит три варианта
+      `qwen2.5-14b-instruct` (`q4_k_m`, `q5_k_m`, `q6_k`). На HF файл разбит на 2 части
+      (~4.5 ГБ), автопроверка частей через `HfApi.list_repo_files`
+      (`agents/download_slm.py::_detect_parts_via_hf`) подхватит это сама. Предупреждение
+      для UI: на T1200 (4 ГБ VRAM) `detect_optimal_gpu_layers` вернёт `n_gpu_layers ≈ 11`,
+      модель загрузится, но ~90 % уйдёт на CPU.
 - [ ] Для 14B при нехватке VRAM — уменьшать `n_ctx` до 2048 (экономит KV-кэш);
-      связать `n_ctx` с расчётом слоёв в `agents/gpu_utils.py`.
+      связать `n_ctx` с расчётом слоёв в `agents/slm_optimizer.py` (сейчас `optimize()`
+      уже подбирает `n_ctx` под бюджет VRAM+RAM, но без явного «14B → 2048» правила).
 - [ ] Рекомендация «умнее локальной 7B за счёт tool-use» — проверить `qwen2.5-coder:7b`
       через Ollama как альтернативу: качество выше, VRAM можно отдать через `num_gpu`.
 - [ ] **Кодинг-модель Qwen-2.5-Coder-32B-Instruct** (из `HARD.md`): добавить в каталог SLM
@@ -185,18 +211,19 @@
       SLM под сценарий анализа текстов и финансовых документов (МСФО/РСБУ, отчёты,
       стратегии) — `Q8_0` (≈35 ГБ RAM). Цепочка рассуждений перед ответом + Qwen-база
       дают русский язык; парсинг сырых данных и математика — той же Qwen-2.5-Coder-32B.
-- [ ] **Квантование малых моделей: Q4_K_M → Q8_0/Q6_K** (из `HARD.md`): в
-      `_DEFAULT_SLM_MODELS` для 7B/14B экономия 5–10 ГБ бессмысленна при ~100 ГБ свободной
-      RAM — веса Q8_0/Q6_K дают меньше «глупых» синтаксических ошибок. Сделать квантование
-      частью записи каталога (или выбором в `slm_models_dialog`), чтобы один чекпоинт
-      можно было скачать в двух квантах.
-- [x] Температура для дисциплины tool-call: рекомендовать диапазон 0.3–0.5
-      (сейчас дефолт 0.7 в `ChatOptions`). Дублирующий вызов одного инструмента
-      частично закрыт инструкцией в `_TOOL_USE_INSTRUCTION` и `max_iterations=7` в чате.
-      Для встроенной SLM дефолт снижен до `_DEFAULT_TEMPERATURE = 0.3` + добавлена
-      языковая директива (`_LANGUAGE_INSTRUCTION` в начале system-сообщения,
-      `_LANGUAGE_DIRECTIVE` в конце промпта) — лечит дрейф Qwen2.5 на китайский.
-      Для Ollama (`ChatOptions`) диапазон 0.3–0.5 ещё не применён (см. 4.6.B).
+- [~] **Квантование малых моделей: Q4_K_M → Q8_0/Q6_K** (из `HARD.md`): в
+      `_DEFAULT_SLM_MODELS` уже есть варианты `q5_k_m` и `q6_k` для 7B/14B, Q8_0 —
+      пока нет (для 1.5B есть `q8_0`). Сделать Q8_0 частью каталога (или выбором в
+      `slm_models_dialog`), чтобы один чекпоинт можно было скачать в двух квантах.
+- [x] Температура для дисциплины tool-call: дефолт `_DEFAULT_TEMPERATURE` в
+      `LocalLLMClient` снижен до `0.0` (в исходной версии плана было 0.3), добавлен
+      `_TEMPERATURE_BY_OP` с разными значениями для `classify`/`plan`/`tool_call`/
+      `critique`/`module_summary`/`synthesis`/`regen`. Дублирующий вызов одного инструмента
+      частично закрыт инструкцией в `_TOOL_USE_INSTRUCTION` и `max_iterations` в чате.
+      Языковая директива: `_LANGUAGE_INSTRUCTION` в начале system-сообщения
+      (`LocalLLMClient`) + `_LANGUAGE_DIRECTIVE` в конце промпта (`AgentLoop`) — лечит
+      дрейф Qwen2.5 на китайский. Для Ollama (`ChatOptions`) диапазон 0.3–0.5 ещё не
+      применён (см. 4.6.B).
 - [ ] `@dir` не сбрасывает текущую сессию — это сделано намеренно
       (`_on_directory_attach_requested` не трогает историю чата и `recent_projects`).
       Альтернатива «полный перезаход как `File → Open Project`» — заменить тело метода
@@ -219,11 +246,14 @@
 
 ### 4.6.B — Потом: качество ответов
 
-- [ ] **Step-awareness** (`React.md` 2.1): дописывать в system-промпт «Итерация N из M», на
-      последних двух итерациях — «следующий ответ должен быть Final Answer». Сейчас модель не
-      понимает, что пора закругляться, и упирается в лимит.
-- [ ] **Не бросать `AgentIterationLimitError`, а делать финальный вызов без tools**
-      (`React.md` 2.1): суммаризация вместо ошибки — заметно лучше для UX.
+- [x] **Step-awareness** (`React.md` 2.1): дописывать в system-промпт «Итерация N из M», на
+      последних итерациях — «следующий ответ должен быть Final Answer». Реализовано в
+      `agents/agent_loop.py::_build_system_prompt` через `iter_line` с `remaining <= 1`
+      и `remaining <= 3`.
+- [x] **Не бросать `AgentIterationLimitError`, а делать финальный вызов без tools**
+      (`React.md` 2.1): `_final_call_no_tools` вызывается и при повторе tool_calls, и при
+      лимите, и при исчерпании нуджей. `AgentIterationLimitError` бросается только если
+      сам финальный вызов упал.
 - [ ] **Валидация Observation** (`React.md` 2.4): запрет формировать Final Answer без хотя бы
       одного валидного Observation; при пустом/ошибочном результате — требовать другой вызов.
 - [ ] **Классификация ошибок инструментов** (`React.md` 3.3): `ValidationError` →
@@ -231,36 +261,44 @@
       `different_path`, остальное → `report_to_user`. Хвост `retry_hint` в tool-сообщении.
 - [ ] **Внешний верификатор после `write_file`** (`React.md` 4.2): `python -m py_compile` для
       `.py`, ошибка возвращается агенту как Observation. Надёжнее LLM-критика.
+      (Косвенно закрыто для Orchestrator через `agents/verifier.py`, но для `AgentLoop` —
+      нет.)
 - [ ] **История tool-сообщений в сессиях** (`React.md` 1.4): колонка `tool_calls_json TEXT` в
       `messages`, `save_message` принимает `ChatMessage` целиком. Сейчас после перезагрузки
-      сессии агент не знает, какие инструменты уже вызывались.
-- [ ] **`slm.n_ctx: 4096` → 8192** (`React.md` 10.1): 10 итераций ReAct с RAG и вложениями
-      не помещаются в 4K. У Qwen2.5-7B запас есть.
-- [ ] **`temperature` для PLAN/AGENT** (`React.md` 1.1): `ChatOptions(temperature=0.0)` в
-      агентных режимах, текущее значение конфига применять только к CHAT. Проверить, что
-      `AgentLoop` вообще передаёт `options`.
+      сессии агент не знает, какие инструменты уже вызывались (см. 4.8.A — делать вместе).
+- [x] **`slm.n_ctx: 4096` → 8192** (`React.md` 10.1): `SLMConfig.n_ctx` и `target_n_ctx`
+      теперь по умолчанию 8192. `_SLMLoadThread` сохранил дефолт параметра 4096, но
+      фактическое значение приходит из конфига. У Qwen2.5-7B запас есть.
+- [~] **`temperature` для PLAN/AGENT** (`React.md` 1.1): `_TEMPERATURE_BY_OP` в
+      `LocalLLMClient` умеет давать 0.0 для `tool_call`/`plan`/`classify`, но `AgentLoop`
+      не передаёт `op_type` — механизм есть, но не подключён. `ChatOptions` из
+      `AgentLoop` не передаётся вовсе.
 - [x] **Подключить сжатие истории** (`React.md` 1.2): вызывать компактор перед каждым
       `client.chat`, иначе история вылетит за `n_ctx` на длинных сессиях. Сделано:
       `agents/history_compactor.py` вызывается из `AgentLoop._compact_history` перед
       отправкой на бэкенд.
-- [ ] **`ChatMessageItem` рендерит `tool_calls`** (`React.md` 9.4): блок
-      «🔧 Вызваны: web_search(query=…)» — понадобится после миграции 1.4.
-      Полноценный виджет с состоянием и результатом — **4.8.B**; здесь только
-      минимальный блок.
-- [ ] **Кнопка «Продолжить» после исчерпания итераций** (`React.md` 9.3): перезапуск `_do_agent`
-      с историей и подсказкой «Ответь Final Answer, если данных достаточно».
+- [~] **`ChatMessageItem` рендерит `tool_calls`** (`React.md` 9.4): в research-режиме
+      `ChatThoughtStream` показывает вызовы инструментов и их результаты; в обычных
+      сообщениях `ChatMessageItem` по-прежнему рендерит только текст/`thinking`.
+- [ ] **Кнопка «Продолжить» после исчерпания итераций** (`React.md` 9.3): слот
+      `_on_iteration_limit_exceeded` показывает сообщение «Нажмите «Продолжить»», но
+      самой кнопки в UI нет — это нужно доделать.
 - [ ] **`_CHAT_AUTO_TOOLS` в конфиг** (`React.md` 9.1): `chat_auto_tools: list[str]` в
       `AppConfig`, чтобы новый инструмент не требовал подтверждения в чате «из коробки».
-- [ ] **Бюджет RAG-контекста** (`React.md` 7.1): усекать `rag_context` до
-      `attached_char_budget(self._router.num_ctx) // 2`. Для вложений это уже сделано, RAG — нет.
+- [x] **Бюджет RAG-контекста** (`React.md` 7.1): `ChatPanel._on_rag_results` и
+      `_on_agent_rag_ready` усекают `merged` до `rag_char_budget(self._router.num_ctx)`
+      через `truncate_to_chars`.
 
 ### 4.6.C — Позже: новые подсистемы
 
-- [ ] **Reflexion-критик для Final Answer** (`React.md` 4.1): `_verify_answer` — отдельный вызов
-      без tools с JSON-ответом `{ok, issues}`. Дорого по времени (лишний запрос на каждый ответ)
-      и частично дублирует 4.2; включать флагом, по умолчанию выключено.
-- [ ] **Structured trace агента** (`React.md` 8.1): `list[dict]` с итерацией, действием, длиной
-      observation, длительностью → кнопка «Показать трейс» в UI.
+- [~] **Reflexion-критик для Final Answer** (`React.md` 4.1): для Orchestrator это уже
+      сделано — `agents/critic.py` (3B-проверка структуры/формата) и `agents/verifier.py`
+      (код-проверка путей/символов/evidence) вызываются в `Orchestrator.run()`. Для
+      `AgentLoop` (обычные чат-ответы) — по-прежнему не подключено.
+- [~] **Structured trace агента** (`React.md` 8.1): в research-режиме есть
+      `last_research_summary` и `ChatResearchPassport` с прочитанными файлами, поисками,
+      гипотезами. Полноценного трейса (итерация → действие → длина observation →
+      длительность) с кнопкой «Показать трейс» — нет.
 - [ ] **Метрики реестра** (`React.md` 8.2): `_stats` в `ToolRegistry` (calls/errors/by_tool)
       в статус-бар — сколько ошибок tool-call за сессию.
 - [ ] **Эпизодическая память** (`React.md` 7.2): `~/.ollidesk/memory.db` с рефлексиями,
@@ -270,21 +308,23 @@
 - [ ] **`model_digest` в `ModelInfo`** (`React.md` 8.3): инвалидировать `supports_tools`
       при смене версии модели.
 - [ ] **Warning о `n_gpu_layers` в UI** (`React.md` 5.3): показывать итоговое число слоёв в
-      статус-строке при загрузке SLM.
-- [~] **Multi-tool-call у SLM** (`React.md` 5.1): общий `agents/tool_call_parser.py` уже возвращает
+      статус-строке при загрузке SLM. Сейчас `optimize()` пишет в лог, но в UI не выводится.
+- [ ] **Multi-tool-call у SLM** (`React.md` 5.1): общий `agents/tool_call_parser.py` уже возвращает
       список вызовов (JSON + function-call), и `AgentLoop._extract_tool_calls_from_text` их
       принимает все. Осталось: `LocalLLMClient._parse_tool_call` сейчас отдаёт только первый
       вызов — перейти на `_parse_tool_calls` (список).
 
 ### 4.6.D — Удалить (проверить перед удалением)
 
-- [ ] `RouterChatThread` (`React.md` 1.3, 6.3) — второй, менее надёжный путь исполнения без
-      политик `ASK_FIRST`. Сейчас не создаётся — удалить вместе с `OllamaChatThread`
-      (проверить `ui/chat/panel.py`), см. также Фазу 1.4.
+- [x] `RouterChatThread` (`React.md` 1.3, 6.3) — **уже удалён** в Фазе 1.4 вместе с
+      `OllamaChatThread`; в `ui/chat/threads.py` его нет. Задача закрыта.
 - [ ] `ui/dialogs/model_manager_dialog.py::PullThread` — дублирует `_DownloadThread`
       из `slm_models_dialog.py`; объединить.
-- [ ] Закомментированные блоки в `core/search_cache.py`, `fs/vector_store.py`, `main.py` —
-      не восстанавливать, вычистить при рефакторинге.
+- [~] Закомментированные блоки в `core/search_cache.py`, `fs/vector_store.py`, `main.py` —
+      не восстанавливать, вычистить при рефакторинге. Часть закомментированных строк в
+      `main.py` осталась (например, в `_build_system_prompt`), плюс `_OllamaCheckThread`,
+      `_SLMLoadThread`, `_SLMDownloadThread` в `threads.py` с несколькими комментариями
+      «было / стало» — косметически почистить.
 
 ### 4.6.E — Решения, которые нужно подтвердить
 
@@ -300,6 +340,11 @@
 
 Идеи из аудита, сверенные с кодом и с железом (T1200 4 ГБ VRAM, i7-11800H 8C/16T,
 127 ГБ RAM, на диске Qwen2.5 1.5B / 3B / 7B + nomic-embed).
+
+**Актуализация:** двухмодельный пайплайн planner (GPU) + analyst (CPU) уже реализован
+через `agents/model_pool.py` + `agents/orchestrator.py` и поднимается из UI
+(`ChatPanel._ensure_orchestrator`). Остальные пункты фазы (стратегии, классификатор)
+не реализованы.
 
 ### 4.7.A — Сделано в этой итерации — **завершено**
 
@@ -322,8 +367,9 @@
 - [ ] **Тумблер стратегии** в правой панели: `быстро / баланс / точно / авто`.
       Это просто маппинг стратегия → `model_id`, ~30 строк, не требует ни пула,
       ни классификатора. Самая дешёвая полезная часть Этапа 1 аудита.
-- [ ] `SLMConfig`: добавить `strategy` и `max_loaded_models` (каталог `available_models`
-      и `selected_model` уже есть — дублировать в `pool` не нужно).
+- [ ] `SLMConfig`: добавить `strategy` и `max_loaded_models`. Сейчас каталог
+      `available_models`, `selected_model`, `planner_model_id`, `analyst_model_id`
+      уже есть — этого достаточно для явного выбора ролей.
 - [ ] **Маппинг стратегий из `HARD.md`**: «быстро» → 7B в Q8_0/Q6_K (10–20 т/с);
       «баланс» → 14B; «точно» → Qwen-2.5-Coder-32B-Instruct (Q8_0, ≈34 ГБ, 2–5 т/с) или
       DeepSeek-R1-Distill-Qwen-32B для reasoning. 32B грузится только в стратегии «точно»
@@ -331,24 +377,33 @@
 
 ### 4.7.D — ModelPool, но аддитивно (не замена `ModelRouter`)
 
-- [ ] `agents/model_pool.py` как **обёртка**, а не замена: 151 строка fallback-цепочки
-      `ModelRouter` работает и покрывает SLM. Обёртка владеет N экземплярами
-      `LocalLLMClient` и отдаёт `ModelRouter`-у выбранный.
-- [ ] **Модель закрепляется за сессией.** `n_ctx` у моделей разный; история,
-      собранная под одно окно, переполнит другое. Менять модель в середине диалога
-      нельзя без пересчёта бюджета `core/context_budget.py` и усечения истории.
-- [ ] `max_loaded=2` (по RAM дёшево: 102 ГБ свободно), `max_gpu_resident=1` —
-      на 4 ГБ VRAM 1.5B + 3B = 3.07 ГБ впритык, 7B туда не влезает вовсе.
-- [ ] `n_gpu_layers` пересчитывать per-модель через существующий `detect_optimal_gpu_layers`.
+- [x] `agents/model_pool.py` существует: `ModelPool`, `Role` (`PLANNER`, `ANALYST`,
+      `ANALYST_PRO`), `RoleSpec`, `add_role()`, `runtime_ctx()`, `pick_role()`, `aclose()`.
+      **Не заменяет** `ModelRouter`: `ModelRouter` остаётся основным путём для обычных
+      чат-запросов; `ModelPool` живёт только под `Orchestrator` и поднимается лениво.
+      `_ModelPoolLoadThread` (в `ui/chat/threads.py`) грузит роли последовательно с per-role
+      timeout 90 с.
+- [~] **Модель закрепляется за сессией.** `n_ctx` у моделей разный. Сейчас `planner_model_id`
+      и `analyst_model_id` хранятся в `SLMConfig` (глобально / per-project), а не per-session.
+      В рамках проекта пайплайн пересоздаётся при `reset_pipeline()`. Это близко к
+      «закреплению за проектом», но не за сессией.
+- [x] `max_loaded=2` фактически: `_ModelPoolLoadThread` грузит ровно 2 роли
+      (planner + analyst). `max_gpu_resident=1` тоже выполнено: planner жёстко на GPU
+      (`device="GPU"`), analyst — на CPU (`device="CPU"`), `optimize()` для analyst
+      принудительно обнуляет `n_gpu_layers`.
+- [x] `n_gpu_layers` пересчитывается per-модель через `agents/slm_optimizer.optimize()`
+      (VRAM-first с fallback VRAM+RAM; CPU-only cap 8192; отказ от частичного offload <50 %).
 
 ### 4.7.E — Классификатор: отложить
 
 - [ ] Понаблюдать за реальным распределением задач (Фаза 4.7.B) **до** появления
       классификатора. Псевдокод классификатора в аудите (§3.3) — это ~30 строк
       регулярок и длин, а не нейросеть.
-- [ ] Если понадобится: начать **только** с rule-based (`agents/task_classifier.py`),
-      без LLM-классификатора. Подгружать 1.5B ради классификации означает держать
-      в пуле модель, конкурирующую с 3B за те же 4 ГБ VRAM.
+- [~] Если понадобится: начать **только** с rule-based (`agents/task_classifier.py`),
+      без LLM-классификатора. Сейчас `ModelPool.pick_role(task, ...)` делает простейший
+      rule-based выбор: `task in {"classify","plan","critique","tool"}` → `PLANNER`,
+      `quality_mode and project_files > 500` → `ANALYST_PRO`, иначе `ANALYST`. Отдельного
+      `task_classifier.py` нет.
 - [ ] Уровни L4/L5 из матрицы аудита на этом железе нереалистичны: 14B/32B/72B
       на диске нет, а 32B Q4 на CPU даёт 1–2 т/с = 4–8 минут на ответ. Матрицу
       применить только к реально установленным моделям.
@@ -389,10 +444,9 @@
       `content` / `reasoning_content`.
 - [ ] **Клиенты отдают события**: `OllamaClient.chat()` и `LocalLLMClient.chat()` разбирают
       поток в `reasoning_start` / `reasoning_delta` / `text_delta` / `tool_call`.
-      Потребители, которых придётся править: `agents/agent_loop.py` (разбор чанка,
-      стр. ~272), `ui/chat/threads.py` (четыре места с `chunk.reasoning_content`:
-      62, 233, 253, 512), `ui/chat/panel.py`, `state/session_store.py`,
-      `tests/agents/test_ollama_client.py`.
+      Потребители, которых придётся править: `agents/agent_loop.py` (разбор чанка),
+      `ui/chat/threads.py` (четыре места с `chunk.reasoning_content`),
+      `ui/chat/panel.py`, `state/session_store.py`, `tests/agents/test_ollama_client.py`.
 - [ ] **`SessionStore` хранит `ChatMessage` целиком** (это же — 4.6.B «История
       tool-сообщений в сессиях»): выполнять **вместе** с 4.8.A, иначе `parts` не
       переживут перезагрузку сессии.
@@ -404,30 +458,25 @@
 
 ### 4.8.B — Интерфейс: композитный пузырь сообщения
 
-- [ ] **`ChatMessageItem` → композитный виджет** (`ui/chat/message_item.py`): `QVBoxLayout`,
-      в который добавляются виджеты по типу `MessagePart`. Сегодня всё рендерится
-      одним `QTextBrowser`.
-- [ ] **`ReasoningWidget`** — сворачиваемый блок для `ReasoningPart`. **Уточнение:
-      базовый показ уже есть** — `ui/chat/panel.py::_on_thinking` создаёт пузырь с
-      `thinking=`, а `message_item.py` рисует его курсивным `QLabel` над текстом.
-      Не «внедрить с нуля», а доработать: сворачивание по клику, схлопывание по
-      завершении стрима, тумблер «Показывать размышления» (сейчас рассуждения видны
-      всегда и занимают место в длинных ответах).
-      Отдельно: в сессию рассуждения **не** сохраняются (`_on_agent_finish` пишет в
-      `SessionStore` только `content`) — при перезагрузке они исчезают. Решить, сохранять
-      ли `ReasoningPart` (плюс `MessagePart` из 4.8.A) или оставить «только в этой
-      сессии экрана».
-- [ ] **`ToolCallWidget`** — виджет для `ToolCallPart`: иконка и название инструмента,
-      аргументы свёрнуты, индикатор состояния (спиннер → галочка/крестик), по раскрытию —
-      результат (`ToolResultPart`). Дифф-вьюер для `write_file` подключается к
-      существующему `ui/web_editor/editor_widget.py::show_diff` (стр. 262) — он уже
-      принимает `original` / `modified`.
-- [ ] **Динамическая статус-строка.** **Уточнение: сделано процентов на 60** —
-      `ChatPanel::_on_tool_started` уже пишет в `status_label` название инструмента
-      и аргументы (`ui/chat/panel.py:1252`), плюс есть `tool_status_label` с
-      зелёной/оранжевой подсветкой на время работы инструментов. Не хватает статуса
-      размышлений (по `reasoning_delta`) и показа результата инструмента, а не только
-      его старта.
+- [~] **`ChatMessageItem` → композитный виджет** (`ui/chat/message_item.py`): в
+      research-режиме появились композитные виджеты `ChatThoughtStream`,
+      `ChatHypothesisItem`, `ChatDiagramItem`, `ChatResearchPassport` — они собираются в
+      ленту чата. Сам `ChatMessageItem` по-прежнему однострочный `QTextBrowser`.
+- [~] **`ReasoningWidget`** — сворачиваемый блок для `ReasoningPart`. Базовый показ
+      есть: `ChatThoughtStream` показывает рассуждения + действия + результаты +
+      гипотезы одним сворачиваемым виджетом (в research-режиме); для обычных сообщений
+      `ChatMessageItem.update_thinking()` рисует курсивный `QLabel` над текстом.
+      Не хватает: тумблера «Показывать размышления», схлопывания по завершении стрима,
+      сохранения `ReasoningPart` в `SessionStore` (сейчас теряется).
+- [~] **`ToolCallWidget`** — виджет для `ToolCallPart`: в research-режиме
+      `ChatThoughtStream.append_action()` / `append_result()` показывают иконку/имя/args/
+      preview результата; дифф-вьюер для `write_file` не подключён (есть
+      `ui/web_editor/editor_widget.py::show_diff`). В обычном режиме вызовы инструментов
+      идут через `_show_activity` + `ChatActivityItem`.
+- [~] **Динамическая статус-строка.** `ChatPanel::_on_tool_started` пишет в `status_label`
+      название инструмента и аргументы, `tool_status_label` подсвечивается на время
+      работы. Не хватает статуса размышлений (по `reasoning_delta`) и показа результата
+      инструмента, а не только его старта.
 
 ### 4.8.C — Инструмент `run_shell_command`
 
@@ -457,7 +506,7 @@
       Observation» в 4.6.A, а не новый.
 - [ ] **Регистрация и промпт:** `policy=ToolPolicy.ASK_FIRST`,
       `modes=[AgentMode.AGENT]`; в `_CHAT_AUTO_TOOLS` **не** добавлять.
-      В `_TOOL_USE_INSTRUCTION` (`agents/agent_loop.py:39`) описать инструмент и то,
+      В `_TOOL_USE_INSTRUCTION` (`agents/agent_loop.py`) описать инструмент и то,
       что для проверки существования путей в Windows нужен `Test-Path`, а не догадки;
       команда выполняется в корне проекта, вывод усечён.
 - [ ] **Тесты** `tests/tools/test_shell_ops.py`: черный список отклоняется, выход за
@@ -470,19 +519,20 @@
       Добавить `is_mutating: bool = False` и
       `category: Literal["filesystem", "shell", "network", "git", "info"]`.
       Зачем: `ToolCallWidget` сам выбирает значок и цвет, а UI перестаёт держать
-      словарь с русскими названиями инструментов (`ui/chat/panel.py::_TOOL_LABELS`,
-      стр. 1200–1250). Значения по умолчанию — `False` и `filesystem`, чтобы не
-      переписывать все 12 существующих `@tool` разом. Пересекается с **2.2**
-      (декларативный список инструментов) — делать вместе.
+      словари с русскими названиями инструментов (`ui/chat/panel.py::_on_tool_started`,
+      `_on_tool_call_detected`, `_on_tool_executed` — три отдельных `tool_labels`).
+      Значения по умолчанию — `False` и `filesystem`, чтобы не переписывать все 16
+      существующих `@tool` разом. Пересекается с **2.2** (декларативный список
+      инструментов) — делать вместе.
 
 ### 4.8.E — AgentLoop и контекст
 
-- [ ] **`AgentLoop` обрабатывает события, а не `current_text`**
-      (`agents/agent_loop.py`, разбор чанка стр. ~261–316): колбэки `on_reasoning_delta`,
-      `on_text_delta`, `on_tool_start`, `on_tool_result` прокидываются из
-      `AgentChatThread` в UI. Сегодня сигнал один (`chunk_received`), и UI различает
-      токен текста и токен размышления по двум разным слотам; сообщение для следующей
-      итерации собирается из строки `current_text`.
+- [~] **`AgentLoop` обрабатывает события, а не `current_text`**: в research-режиме
+      появились отдельные дорожки `on_thought` (серый поток) и `on_token` (финальный
+      ответ); обычный режим по-прежнему стримит всё в `on_token`. Полного набора
+      `on_reasoning_delta` / `on_text_delta` / `on_tool_start` / `on_tool_result` —
+      нет. Сегодня UI различает токен текста и токен размышления по двум слотам, а
+      сообщение для следующей итерации собирается из строки `current_text`.
 - [x] **Базовый приоритет сжатия в компакторе истории** (модуль удалён в 1.4, переписан в
       Фазе 4 как `agents/history_compactor.py`): первым опустошается содержимое старых
       результатов инструментов, затем выбрасываются старейшие реплики диалога целиком
@@ -557,19 +607,23 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
   - [ ] показывать подсказку выбранного тега в placeholder, когда курсор стоит на `@tag`.
 - [x] F4 — скрыть/показать панель структуры проекта (только левую панель, редактор не трогаем),
       `ui/main_window.py::_toggle_project_structure`.
-- [ ] **Доработка отображения рассуждений модели (`reasoning_content`)** — поток
+- [~] **Доработка отображения рассуждений модели (`reasoning_content`)** — поток
       `thinking_received` уже приходит в панель и **уже виден**:
       `ui/chat/panel.py::_on_thinking` копит токены, `message_item.py` рисует их
-      курсивным `QLabel` над текстом ответа. Чего не хватает:
+      курсивным `QLabel` над текстом ответа. В research-режиме есть
+      `ChatThoughtStream` (сворачиваемый лог мыслей/действий/результатов/гипотез).
+      Чего не хватает:
   - [x] не смешивать с `content` — рассуждения идут отдельным полем
         `_current_thinking_content` и в `content` не попадают;
   - [x] без попадания в `SessionStore` — `_on_agent_finish` сохраняет только `content`
         (обратная сторона: после перезагрузки сессии рассуждения исчезают, см. 4.8.B);
   - [ ] тумблер в настройках панели агента «Показывать размышления» (сейчас видны всегда);
-  - [ ] сворачиваемый блок вместо вечно развёрнутого курсива — общий виджет с 4.8.B,
-        здесь только тумблер и стили;
-  - [ ] обновлять блок инкрементально во время стрима (уже работает через
-        `update_thinking`), схлопывать по завершении;
+  - [~] сворачиваемый блок вместо вечно развёрнутого курсива — общий виджет с 4.8.B,
+        здесь только тумблер и стили. Для research-режима `ChatThoughtStream` уже
+        сворачиваемый; для обычных сообщений — нет;
+  - [x] обновлять блок инкрементально во время стрима (уже работает через
+        `update_thinking` / `append_thought_token`); схлопывание по завершении —
+        по-прежнему нет;
   - [ ] для Ollama включать `think: true` у моделей, которые это умеют
         (`/api/chat`, поле `think`), сейчас поток либо пуст, либо зависит от модели;
   - [ ] для SLM — аналогично, если llama.cpp отдаёт отдельное поле.
@@ -586,7 +640,8 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
       сжатие старых сессий.
 - [ ] Экспорт чата в Markdown/HTML.
 - [ ] Диалог настроек: визуальный редактор `tool_policies` (чекбоксы AUTO/ASK/EXCLUDED),
-      ползунки температуры, top_p, num_ctx.
+      ползунки температуры, top_p, num_ctx. Сейчас во вкладке «Бэкенды LLM» можно
+      включить/выключить Ollama, но политики инструментов в UI не редактируются.
 
 ---
 
@@ -629,7 +684,8 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 
 1. **4.7.B** (замеры) — без цифр всё дальнейшее гадание.
 2. **4.7.C** (тумблер стратегии) — дёшево, не требует пула.
-3. **4.7.D** (ModelPool обёрткой, модель закреплена за сессией).
+3. **4.7.D** (ModelPool обёрткой, модель закреплена за сессией) — базовая часть уже
+   сделана (planner/analyst), осталась стратегия «модель за сессией».
 4. **4.7.E** (классификатор) — только если замеры покажут нехватку.
 
 **Отдельно — порядок по интерфейсу агента** (Фаза 4.8). Сначала **4.8.A**
@@ -663,7 +719,11 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 - [ ] **Целевая версия Python**: `requires-python` ≥ 3.11, а `ruff`/`mypy` нацелены на 3.12
       (`py312`), и в `ui/dialogs/wizard.py` используется `typing.override` (нет в 3.11).
       Решить: поднять `requires-python` до 3.12 или вернуть `py311` + `typing_extensions.override`.
-- [ ] возможность чтения больших файлов фрагментами, например чтение `файл offset=120 limit=200`
-       или проверить что такой функицонал заложен.
+- [x] **Чтение больших файлов фрагментами**: `tools/file_ops.py::read_file(path, offset, limit)`
+      уже поддерживает `offset`/`limit` с жёстким диапазоном
+      `[MIN_READ_CHUNK_CHARS=4000, MAX_READ_FILE_CHUNK_CHARS=30000]`,
+      `DEFAULT_READ_CHUNK_CHARS=12000` и хинт о продолжении в хвосте результата.
+      `tools/attached_files.py::read_attached_file` использует тот же механизм.
+      Возможность реализована в объёме, достаточном для чтения больших файлов.
 
 ---
