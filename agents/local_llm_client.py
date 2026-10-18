@@ -89,6 +89,16 @@ class LocalLLMClient:
             use_mlock = params.use_mlock
             # GGML_TYPE_F16 = 1, GGML_TYPE_Q8_0 = 8
             kv_type_int = 1 if params.kv_cache_type == "f16" else 8
+            # llama.cpp: квантизованный V-кэш (q8_0 и др.) требует Flash Attention.
+            # При flash_attn=False принудительно используем f16, иначе
+            # llama_context не создастся.
+            if not flash_attn and kv_type_int != 1:
+                logger.warning(
+                    "flash_attn=False: квантизованный KV-кэш (%s) требует Flash Attention — "
+                    "переключаю KV на f16",
+                    params.kv_cache_type,
+                )
+                kv_type_int = 1
         else:
             flash_attn = False
             use_mmap = True

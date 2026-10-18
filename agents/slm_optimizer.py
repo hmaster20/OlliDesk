@@ -342,6 +342,9 @@ def optimize(
         if kv_type == "f16":
             notes.append("[D1] CPU-only: kv f16 -> q8_0 (RAM-банда, KV)")
             kv_type = "q8_0"
+        if kv_type != "f16":
+            notes.append("CPU-only: kv q8_0 -> f16 (q8_0 требует flash_attn)")
+            kv_type = "f16"
         if n_batch > 512:
             n_batch = 512
             notes.append("[D1] CPU-only: n_batch -> 512")
