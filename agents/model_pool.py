@@ -78,6 +78,29 @@ class ModelPool:
             self._clients[role] = client
             self._specs[role] = specs[role]
 
+    async def add_role(self, spec: RoleSpec, factory) -> ClientLike:
+        """Загружает ОДНУ роль (для последовательной загрузки с per-role timeout).
+
+        В отличие от `load()`, не запускает параллельную загрузку — caller
+        сам решает, в каком порядке и с каким таймаутом загружать роли.
+        Нужно для двухмодельного пайплайна: planner (GPU) и analyst (CPU)
+        не должны конкурировать за VRAM, а если загрузка одной роли
+        зависнет в нативном коде llama.cpp (OOM на CUDA), timeout на
+        стороне caller'а всё равно вернёт управление.
+
+        Args:
+            spec: Спецификация роли (device, n_ctx, kv_cache, ...).
+            factory: ``factory(spec) -> ClientLike`` — блокирующая загрузка
+                llama.cpp (выполняется через ``asyncio.to_thread``).
+
+        Returns:
+            Загруженный клиент (также сохранён в ``self._clients[spec.role]``).
+        """
+        client = await asyncio.to_thread(factory, spec)
+        self._clients[spec.role] = client
+        self._specs[spec.role] = spec
+        return client
+
     def client(self, role: Role) -> ClientLike:
         if role not in self._clients:
             raise RuntimeError(f"Модель роли {role.value} не загружена")

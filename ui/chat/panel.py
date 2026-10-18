@@ -65,6 +65,7 @@ from agents.investigation import is_research_question
 from agents.model_pool import ModelPool
 from agents.orchestrator import Orchestrator, RunResult
 from core.budget import ApproxCounter
+from agents.model_pool import ModelPool, Role
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения
 _CHAT_AUTO_TOOLS = (
@@ -137,6 +138,7 @@ class ChatPanel(QWidget):
     refresh_models_requested = Signal()
     settings_changed = Signal(dict)
     backend_status_changed = Signal(str)
+    pipeline_status_changed = Signal(str)
 
     directory_attach_requested = Signal(str)
     source_activated = Signal(str, int)
@@ -214,6 +216,7 @@ class ChatPanel(QWidget):
         self._ollama_check_thread: _OllamaCheckThread | None = None
 
         self._setup_ui()
+        self._update_pipeline_status()
         QTimer.singleShot(100, self._detect_backends)
 
     # ---------------------------------------------------------
@@ -452,6 +455,7 @@ class ChatPanel(QWidget):
                 f"✅ Локальная модель загружена: {self._slm_model_name}"
             )
         self._emit_backend_status()
+        self._update_pipeline_status()
 
     def _load_slm_async(self, chat_path: Path, embed_path: Path | None, params=None):
         if self._slm_loading or self._slm_client is not None:
@@ -882,6 +886,15 @@ class ChatPanel(QWidget):
             "font-size: 12px; padding: 4px 8px; color: gray;"
         )
         top_bar.addWidget(self.model_status_label)
+
+        # Постоянный индикатор двухмодельного пайплайна (planner 3B + analyst 7B).
+        # Показывает: 💤 не активирован / ⏳ грузится / ⚡ готов / ⚠️ ошибка.
+        self.pipeline_status_label = QLabel("")
+        self.pipeline_status_label.setStyleSheet(
+            "font-size: 11px; padding: 2px 6px; color: #888;"
+            " background: rgba(128,128,128,0.08); border-radius: 3px;"
+        )
+        top_bar.addWidget(self.pipeline_status_label)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         top_bar.addWidget(self.model_combo)
@@ -2174,13 +2187,11 @@ class ChatPanel(QWidget):
         self._project_scanned = False
         self._project_scan_root = None
         self._rag_scope = None
-        # P3: при смене проекта Orchestrator остаётся валиден (ModelPool
-        # не привязан к проекту), но intel-кэш у Orchestrator — per-project.
         if self._orchestrator is not None:
             self._orchestrator = None
-        # Отложенный запуск загрузки — не блокируем UI открытия проекта.
         if project_root:
             QTimer.singleShot(1500, self._ensure_orchestrator)
+        self._update_pipeline_status()
 
     def get_settings(self) -> dict:
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
@@ -2436,9 +2447,14 @@ class ChatPanel(QWidget):
     def _ensure_orchestrator(self) -> None:
         """Ленивая загрузка двух моделей + Orchestrator (в фоне).
 
-        Вызывается при открытии проекта (с задержкой) и из `_do_chat`/
-        `_do_agent` при research-вопросе. Если уже загружен/грузится —
-        no-op. Ошибка → `_pool_load_failed=True`, orchestrator остаётся None.
+        Вызывается при открытии проекта (с задержкой), из меню
+        «View → Предзагрузить 2-model pipeline» и при research-вопросе.
+        Если уже загружен/грузится — no-op. Ошибка →
+        ``_pool_load_failed=True``, orchestrator остаётся None.
+
+        Индикатор `pipeline_status_label` показывает состояние в UI:
+        ⏳ → ⚡ или ⚠️. Таймаут per-role (90 с) гарантирует, что UI не
+        зависнет, даже если llama.cpp ушёл в бесконечный OOM-retry.
         """
         if self._orchestrator is not None:
             return
@@ -2451,13 +2467,14 @@ class ChatPanel(QWidget):
             return
 
         self._pool_load_thread = _ModelPoolLoadThread()
-        self._pool_load_thread.progress.connect(
-            lambda msg: self.status_label.setText(f"⚙️ {msg}")
-        )
+        self._pool_load_thread.progress.connect(self._on_pool_progress)
         self._pool_load_thread.finished.connect(self._on_pool_loaded)
         self._pool_load_thread.error.connect(self._on_pool_error)
         self._pool_load_thread.start()
-        self.status_label.setText("⏳ Загрузка двух моделей (3B GPU + 7B CPU)…")
+        self.status_label.setText(
+            "⏳ Загрузка двух моделей (3B GPU + 7B CPU)…"
+        )
+        self._update_pipeline_status()
 
     @Slot(object)
     def _on_pool_loaded(self, pool: ModelPool | None) -> None:
@@ -2485,6 +2502,7 @@ class ChatPanel(QWidget):
                 f"intel_cache={intel_cache_dir}"
             )
             self.status_label.setText("✅ Двухмодельный пайплайн готов")
+            self._update_pipeline_status()
         except Exception as e:
             logger.exception("Не удалось создать Orchestrator")
             self._on_pool_error(f"Orchestrator init: {e}")
@@ -2499,6 +2517,7 @@ class ChatPanel(QWidget):
             f"⚠️ Оркестратор недоступен (ReAct продолжит работу): "
             f"{error_msg[:100]}"
         )
+        self._update_pipeline_status()
 
     @Slot(object)
     def _on_orchestrator_result(self, result: RunResult) -> None:
@@ -2610,3 +2629,76 @@ class ChatPanel(QWidget):
             except Exception:
                 pass
             self._model_pool = None
+
+    def _pipeline_status_label(self) -> str:
+        """Короткое описание состояния двухмодельного пайплайна.
+
+        Отвечает на вопрос «загружены ли обе модели 3B + 7B»:
+          • 💤 — не активирован (нет открытого проекта);
+          • ⏸ — модели загружены/ждут, но не в работе;
+          • ⏳ — идёт загрузка planner/analyst;
+          • ⚡ — готов, обе модели в памяти, Orchestrator создан;
+          • ⚠️ — ошибка, работает fallback (одна модель).
+        """
+        if self._model_pool is not None and self._orchestrator is not None:
+            try:
+                planner_id = self._model_pool.spec(Role.PLANNER).model_id
+                analyst_id = self._model_pool.spec(Role.ANALYST).model_id
+                return f"⚡ 2-model: {planner_id} (GPU) + {analyst_id} (CPU)"
+            except Exception:
+                return "⚡ 2-model: загружен"
+
+        if (
+            self._pool_load_thread is not None
+            and self._pool_load_thread.isRunning()
+        ):
+            return "⏳ 2-model: загрузка planner+analyst…"
+
+        if self._pool_load_failed:
+            return "⚠️ 2-model: недоступен (fallback → 1 модель)"
+
+        if self._model_pool is not None:
+            return "⏸ 2-model: модели загружены, ждут проект"
+
+        if not self.project_root:
+            return "💤 2-model: не активирован (нет проекта)"
+
+        return "⏸ 2-model: ожидание запуска"
+
+    def _update_pipeline_status(self) -> None:
+        """Пересчитывает и применяет постоянный индикатор пайплайна."""
+        if not hasattr(self, "pipeline_status_label"):
+            return
+        text = self._pipeline_status_label()
+        self.pipeline_status_label.setText(text)
+
+        if self._model_pool is not None and self._orchestrator is not None:
+            color = "#4e9a06"   # зелёный — готов
+        elif self._pool_load_failed:
+            color = "#d97706"   # оранжевый — ошибка
+        elif (
+            self._pool_load_thread is not None
+            and self._pool_load_thread.isRunning()
+        ):
+            color = "#e5c07b"   # жёлтый — грузится
+        else:
+            color = "#888"      # серый — не активен
+
+        self.pipeline_status_label.setStyleSheet(
+            f"font-size: 11px; padding: 2px 6px; color: {color};"
+            f" background: rgba(128,128,128,0.08); border-radius: 3px;"
+        )
+        self.pipeline_status_changed.emit(text)
+
+    @Slot(str)
+    def _on_pool_progress(self, message: str) -> None:
+        """Прогресс загрузки двух моделей — в transient status и pipeline label."""
+        self.status_label.setText(f"⚙️ {message}")
+        if hasattr(self, "pipeline_status_label"):
+            self.pipeline_status_label.setText(f"⏳ {message}")
+            self.pipeline_status_label.setStyleSheet(
+                "font-size: 11px; padding: 2px 6px; color: #e5c07b;"
+                " background: rgba(128,128,128,0.08); border-radius: 3px;"
+            )
+
+# ---

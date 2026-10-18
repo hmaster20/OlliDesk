@@ -288,10 +288,23 @@ def optimize(
     model_path: Path,
     *,
     hw: HardwareProfile | None = None,
-    target_n_ctx: int = 8192,          # D1: было 32768 — провоцировало 32k на CPU
+    target_n_ctx: int = 8192,           # было 32768 — провоцировало 32k на CPU
     model_size_mb: int | None = None,
+    device: str | None = None,
 ) -> OptimizedParams:
-    """Считает оптимальные параметры для модели на данном железе."""
+    """Считает оптимальные параметры для модели на данном железе.
+
+    Args:
+        model_path: путь к GGUF-файлу (для split — к первой части).
+        hw: профиль железа (None = собрать).
+        target_n_ctx: верхняя граница n_ctx.
+        model_size_mb: переопределить размер (None = посчитать).
+        device: принудительное устройство для двухмодельного пайплайна.
+            ``"CPU"`` — пропустить GPU-fit и жёстко обнулить n_gpu_layers
+            (planner и analyst не должны делить VRAM).
+            ``"GPU"`` или ``None`` — обычное поведение (пытаемся уместить
+            всё на GPU, иначе VRAM+RAM).
+    """
     hw = hw or get_hardware_profile()
     meta = read_gguf_meta(model_path)
 
@@ -309,7 +322,39 @@ def optimize(
     n_batch = _optimal_batch(usable_vram, -1)
     flash = _optimal_flash_attn(hw, -1)
 
-    # ... [Стратегия 1: всё на GPU] — оставить как в текущем коде без изменений ...
+    # --- Стратегия 1: всё на GPU (пропускаем при device="CPU") ---
+    if device != "CPU":
+        fit = _try_fit_all_on_gpu(meta, model_size_mb, usable_vram, target_n_ctx)
+        if fit is not None:
+            n_ctx, kv_type = fit
+            kv_mb = _kv_mb(meta, kv_type, n_ctx)
+            vram_used = model_size_mb + kv_mb + COMPUTE_BUFFER_MB
+            notes.append(f"Модель целиком на GPU (VRAM ≈ {vram_used} МБ)")
+            if flash:
+                notes.append("FlashAttention включён")
+
+            params = OptimizedParams(
+                n_ctx=n_ctx,
+                n_gpu_layers=-1,
+                n_threads=n_threads,
+                n_batch=n_batch,
+                flash_attn=flash,
+                use_mmap=True,
+                use_mlock=False,
+                kv_cache_type=kv_type,
+                vram_used_mb=int(vram_used),
+                ram_used_mb=200,
+                notes=tuple(notes),
+            )
+            logger.info(
+                f"SLM оптимизация {model_path.name} [GPU-only]: "
+                f"n_ctx={n_ctx}, n_gpu_layers=-1, n_threads={n_threads}, "
+                f"n_batch={n_batch}, flash={flash}, kv={kv_type}, "
+                f"VRAM≈{vram_used} МБ"
+            )
+            for note in notes:
+                logger.info(f"  • {note}")
+            return params
 
     # ------------------------------------------------------------------
     # Стратегия 2: VRAM + RAM, частичный offload.
@@ -332,27 +377,33 @@ def optimize(
         model_size_mb, kv_mb, meta, usable_vram,
     )
 
+    # device="CPU": жёстко обнуляем GPU-слои, даже если VRAM хватает.
+    if device == "CPU" and n_gpu_layers != 0:
+        notes.append(
+            f"device=CPU: принудительно n_gpu_layers=0 (было {n_gpu_layers})"
+        )
+        n_gpu_layers = 0
+        vram_used = 0
+        ram_used = model_size_mb + kv_mb
+
     # === [D1] CPU-only: жёсткий потолок контекста ради TTFT/throughput ===
-    # RAM-объём (127 ГБ) НЕ оправдывает 32k на CPU: bottleneck — compute,
-    # не ёмкость. Prefill 32k токенов на CPU = TTFT 100+ секунд.
     if n_gpu_layers == 0:
         if n_ctx > 8192:
             notes.append(f"[D1] CPU-only: n_ctx {n_ctx} -> 8192 (TTFT)")
             n_ctx = 8192
-        if kv_type == "f16":
-            notes.append("[D1] CPU-only: kv f16 -> q8_0 (RAM-банда, KV)")
-            kv_type = "q8_0"
+        # Квантизованный V-кэш требует Flash Attention, на CPU его нет.
         if kv_type != "f16":
-            notes.append("CPU-only: kv q8_0 -> f16 (q8_0 требует flash_attn)")
+            notes.append(
+                f"CPU-only: kv {kv_type} -> f16 "
+                f"(квантизованный KV требует flash_attn, недоступного на CPU)"
+            )
             kv_type = "f16"
         if n_batch > 512:
             n_batch = 512
             notes.append("[D1] CPU-only: n_batch -> 512")
-        # Пересчитываем KV под финальный n_ctx
         kv_mb = _kv_mb(meta, kv_type, n_ctx)
         vram_used, ram_used = 0, model_size_mb + kv_mb
 
-    # === Страховка от SLMConfig.target_n_ctx=32768 (двойной проход) ===
     if n_ctx < MIN_USEFUL_CTX:
         notes.append(
             f"⚠️ n_ctx={n_ctx} < {MIN_USEFUL_CTX}: агент может работать нестабильно"
@@ -381,10 +432,17 @@ def optimize(
         notes.append("mlock включён (модель закреплена в RAM)")
 
     params = OptimizedParams(
-        n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, n_threads=n_threads,
-        n_batch=n_batch, flash_attn=flash, use_mmap=use_mmap, use_mlock=use_mlock,
-        kv_cache_type=kv_type, vram_used_mb=int(vram_used),
-        ram_used_mb=int(ram_used), notes=tuple(notes),
+        n_ctx=n_ctx,
+        n_gpu_layers=n_gpu_layers,
+        n_threads=n_threads,
+        n_batch=n_batch,
+        flash_attn=flash,
+        use_mmap=use_mmap,
+        use_mlock=use_mlock,
+        kv_cache_type=kv_type,
+        vram_used_mb=int(vram_used),
+        ram_used_mb=int(ram_used),
+        notes=tuple(notes),
     )
     logger.info(
         f"SLM оптимизация {model_path.name} [VRAM+RAM]: "
@@ -395,3 +453,5 @@ def optimize(
     for note in notes:
         logger.info(f"  • {note}")
     return params
+
+#

@@ -816,6 +816,20 @@ class MainWindow(QMainWindow):
         slm_models_action.triggered.connect(self._open_slm_manager)
         view_menu.addAction(slm_models_action)
 
+        # NEW: предзагрузка двухмодельного пайплайна (planner + analyst)
+        self.preload_pipeline_action = QAction(
+            "Предзагрузить 2-model pipeline", self
+        )
+        self.preload_pipeline_action.setToolTip(
+            "Загрузить planner (3B GPU) + analyst (7B CPU) в память сейчас, "
+            "не дожидаясь исследовательского вопроса. Требует открытый "
+            "проект и две разные установленные модели."
+        )
+        self.preload_pipeline_action.triggered.connect(
+            self._preload_two_model_pipeline
+        )
+        view_menu.addAction(self.preload_pipeline_action)
+
         view_menu.addAction(self.theme_action)
 
         view_menu.addSeparator()
@@ -1859,6 +1873,59 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "chat_panel") and self.chat_panel:
                 self.chat_panel.reload_slm()
+
+    def _preload_two_model_pipeline(self) -> None:
+        """View → «Предзагрузить 2-model pipeline».
+
+        Загружает planner + analyst в память через тот же
+        ``_ensure_orchestrator``, что и при открытии проекта. Повторный
+        вызов при уже загруженном пайплайне или активной загрузке —
+        показывает уведомление и ничего не делает.
+
+        Разрешает «повторить» после неудачной попытки: сбрасывает
+        ``_pool_load_failed``, чтобы можно было исправить конфиг
+        (скачать 7B) и попробовать снова без рестарта приложения.
+        """
+        if not self.chat_panel:
+            return
+
+        if self.chat_panel._model_pool is not None:
+            QMessageBox.information(
+                self,
+                "2-model pipeline",
+                "Двухмодельный пайплайн уже загружен — planner и analyst "
+                "в памяти. Вопрос об архитектуре уйдёт в него автоматически.",
+            )
+            return
+
+        if (
+            self.chat_panel._pool_load_thread is not None
+            and self.chat_panel._pool_load_thread.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "2-model pipeline",
+                "Загрузка уже идёт — см. индикатор в панели чата "
+                "(⏳ 2-model: …).",
+            )
+            return
+
+        if not self.chat_panel.project_root:
+            QMessageBox.warning(
+                self,
+                "2-model pipeline",
+                "Сначала откройте проект: путь проекта нужен для кэша "
+                "графа и evidence.",
+            )
+            return
+
+        # Сбрасываем флаг прошлой ошибки, чтобы _ensure_orchestrator
+        # не сделал no-op.
+        self.chat_panel._pool_load_failed = False
+        self.chat_panel._ensure_orchestrator()
+        self.status_bar.showMessage(
+            "Загрузка двух моделей (planner + analyst)…", 5000
+        )
 
     def _start_model_check(self):
         """Запускает или останавливает проверку моделей."""

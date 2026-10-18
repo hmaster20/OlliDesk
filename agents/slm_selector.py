@@ -121,9 +121,13 @@ def select_pair(
 ) -> dict[str, SLMModelInfo | None]:
     """Возвращает ДВЕ модели по ролям: planner(3B,GPU) + analyst(7B,CPU).
 
-    Используется двухмодельным пайплайном (§3 плана). Не заменяет
+    Используется двухмодельным пайплайном. Не заменяет
     `select_best_model` — та остаётся для одно-модельного режима на слабом
     железе, где 3B и 7B не влезают одновременно.
+
+    Если в каталоге нет подходящего tier-2 (7B) для analyst, возвращает
+    ``analyst=None`` — вызывающий (`_ModelPoolLoadThread`) покажет
+    пользователю внятную ошибку вместо OOM через 5 минут.
 
     Args:
         hw: Профиль железа (по умолчанию собирается один раз за процесс).
@@ -153,7 +157,8 @@ def select_pair(
     )
     if planner is None:
         vram_fits = sorted(
-            (f for f in fits if f.fits_vram), key=lambda f: f.score, reverse=True
+            (f for f in fits if f.fits_vram),
+            key=lambda f: f.score, reverse=True,
         )
         planner = vram_fits[0].info if vram_fits else None
 
@@ -168,13 +173,31 @@ def select_pair(
     )
     if analyst is None:
         ram_fits = sorted(
-            (f for f in fits if f.fits_ram), key=lambda f: f.score, reverse=True
+            (f for f in fits if f.fits_ram),
+            key=lambda f: f.score, reverse=True,
         )
-        analyst = ram_fits[0].info if ram_fits else planner
+        # НЕ берём planner же модель — двухмодельный режим с одной моделью
+        # бессмыслен (дважды съест память) и приводит к OOM/зависанию.
+        if ram_fits:
+            candidate = ram_fits[0].info
+            if planner is None or candidate.id != planner.id:
+                analyst = candidate
+
+    # Guard: planner и analyst — одна и та же модель.
+    if planner is not None and analyst is not None and planner.id == analyst.id:
+        logger.warning(
+            f"select_pair: planner и analyst — одна модель ({planner.id}). "
+            f"Для двухмодельного пайплайна нужны РАЗНЫЕ модели "
+            f"(planner: 3B или 1.5B, analyst: 7B или 14B)."
+        )
+        analyst = None
 
     logger.info(
-        f"Автовыбор SLM (pair): planner={planner.display_name if planner else None}, "
+        f"Автовыбор SLM (pair): "
+        f"planner={planner.display_name if planner else None}, "
         f"analyst={analyst.display_name if analyst else None} "
         f"[VRAM={vram} МБ, RAM={hw.ram.available_mb} МБ]"
     )
     return {"planner": planner, "analyst": analyst}
+
+# ------

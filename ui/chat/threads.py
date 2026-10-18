@@ -548,27 +548,35 @@ class WebSearchThread(QThread):
             self.error_occurred.emit(f"Ошибка: {e}")
 
 class _ModelPoolLoadThread(QThread):
-    """Загружает обе модели (planner 3B GPU + analyst 7B CPU) параллельно.
+    """Загружает обе модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО.
 
-    Живёт в фоне: 7B на CPU грузится 10–30 с, нельзя блокировать UI.
-    Возвращает готовый ``ModelPool`` — ChatPanel создаёт на нём
-    ``Orchestrator``.
+    Изменения по сравнению с предыдущей версией (после инцидента, когда
+    две qwen2.5-1.5b грузились параллельно на GPU и вешали поток):
 
-    Ошибка (любая модель не установлена / OOM / битый файл) → ``error``
-    с понятным сообщением; ChatPanel оставит ``_orchestrator = None``
-    и продолжит работать через старый AgentLoop.
+    * **Последовательная загрузка** вместо ``asyncio.gather`` — вторая
+      модель не пытается занять VRAM, пока первая не отпустила контекст.
+    * **Per-role timeout 90 с** — если llama.cpp завис в нативном коде
+      (OOM на CUDA), поток всё равно выходит, UI получает ``error`` и
+      показывает «⚠️ 2-model: недоступен», а не «⏳» вечно.
+    * **`device` из `RoleSpec` учитывается** — analyst с ``device="CPU"``
+      жёстко получает ``n_gpu_layers=0`` (в ``optimize()`` и в factory
+      как safety net).
+    * **Fail-fast при одинаковых моделях** — если planner и analyst
+      указывают на один файл, выдаём понятную ошибку, а не OOM.
     """
 
     finished = Signal(object)   # ModelPool | None
     error = Signal(str)
     progress = Signal(str)
 
+    _ROLE_LOAD_TIMEOUT = 90.0
+
     def run(self):
         try:
             from agents.download_slm import get_model_path
             from agents.local_llm_client import LocalLLMClient
             from agents.model_pool import ModelPool, Role, RoleSpec
-            from agents.slm_optimizer import optimize
+            from agents.slm_optimizer import OptimizedParams, optimize
             from agents.slm_selector import select_pair
 
             pair = select_pair()
@@ -576,8 +584,17 @@ class _ModelPoolLoadThread(QThread):
             analyst_info = pair.get("analyst")
             if not planner_info or not analyst_info:
                 self.error.emit(
-                    "Нужны две модели: 3B (planner) и 7B (analyst). "
-                    "Скачайте их через «View → Локальные модели»."
+                    "Двухмодельный пайплайн недоступен. Нужны ДВЕ разные "
+                    "модели: planner (3B или 1.5B) и analyst (7B или 14B). "
+                    "Скачайте недостающую через «View → Локальные модели»."
+                )
+                return
+
+            if planner_info.id == analyst_info.id:
+                self.error.emit(
+                    f"planner и analyst указывают на одну модель "
+                    f"({planner_info.id}). Скачайте вторую модель "
+                    f"(например, 7B) и повторите."
                 )
                 return
 
@@ -594,12 +611,18 @@ class _ModelPoolLoadThread(QThread):
                 )
                 return
 
+            # --- Оптимизация: устройство задаётся ЯВНО ---
+            # planner на GPU (пытаемся уместить целиком), analyst на CPU
+            # (никогда не делит VRAM с planner).
             self.progress.emit(
                 f"Оптимизация planner: {planner_info.display_name}"
             )
             try:
-                planner_params = optimize(planner_path, target_n_ctx=8192)
+                planner_params = optimize(
+                    planner_path, target_n_ctx=8192, device="GPU",
+                )
             except Exception as e:
+                logger.exception("planner optimize failed")
                 self.error.emit(f"planner optimize failed: {e}")
                 return
 
@@ -607,8 +630,11 @@ class _ModelPoolLoadThread(QThread):
                 f"Оптимизация analyst: {analyst_info.display_name}"
             )
             try:
-                analyst_params = optimize(analyst_path, target_n_ctx=8192)
+                analyst_params = optimize(
+                    analyst_path, target_n_ctx=8192, device="CPU",
+                )
             except Exception as e:
+                logger.exception("analyst optimize failed")
                 self.error.emit(f"analyst optimize failed: {e}")
                 return
 
@@ -641,24 +667,94 @@ class _ModelPoolLoadThread(QThread):
                     raise FileNotFoundError(
                         f"Model file missing: {spec.model_id}"
                     )
-                params = (
+                base = (
                     planner_params
                     if spec.role is Role.PLANNER
                     else analyst_params
+                )
+                # Safety net: если device=CPU, но n_gpu_layers≠0 —
+                # жёстко обнуляем и выключаем FlashAttention.
+                n_gpu_layers = spec.n_gpu_layers
+                flash = base.flash_attn
+                if spec.device == "CPU":
+                    if n_gpu_layers != 0:
+                        logger.warning(
+                            f"SLM {spec.role.value}: device=CPU, "
+                            f"но n_gpu_layers={n_gpu_layers} → 0"
+                        )
+                        n_gpu_layers = 0
+                    flash = False
+                params = OptimizedParams(
+                    n_ctx=spec.n_ctx,
+                    n_gpu_layers=n_gpu_layers,
+                    n_threads=base.n_threads,
+                    n_batch=base.n_batch,
+                    flash_attn=flash,
+                    use_mmap=base.use_mmap,
+                    use_mlock=base.use_mlock,
+                    kv_cache_type=spec.kv_cache,
+                    vram_used_mb=base.vram_used_mb if n_gpu_layers != 0 else 0,
+                    ram_used_mb=(
+                        base.ram_used_mb
+                        if n_gpu_layers != 0
+                        else base.ram_used_mb + base.vram_used_mb
+                    ),
+                    notes=base.notes,
                 )
                 return LocalLLMClient(
                     model_path=path, params=params, max_tokens=1024
                 )
 
-            self.progress.emit("Загрузка обеих моделей (parallel)…")
+            # --- Последовательная загрузка с per-role timeout ---
             pool = ModelPool()
             loop = asyncio.new_event_loop()
             try:
-                loop.run_until_complete(pool.load(specs, factory))
+                for role, spec in specs.items():
+                    self.progress.emit(
+                        f"⏳ Загрузка {role.value}: {spec.model_id} "
+                        f"(device={spec.device}, "
+                        f"n_gpu_layers={spec.n_gpu_layers})…"
+                    )
+                    try:
+                        loop.run_until_complete(
+                            asyncio.wait_for(
+                                pool.add_role(spec, factory),
+                                timeout=self._ROLE_LOAD_TIMEOUT,
+                            )
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            f"SLM pool: таймаут загрузки {role.value} "
+                            f"({spec.model_id}) за "
+                            f"{self._ROLE_LOAD_TIMEOUT} с"
+                        )
+                        self.error.emit(
+                            f"Таймаут загрузки {role.value} "
+                            f"({spec.model_id}) за "
+                            f"{self._ROLE_LOAD_TIMEOUT:.0f} с. "
+                            f"Скорее всего не хватает VRAM/RAM или модель "
+                            f"битая. Проверьте свободную память и повторите."
+                        )
+                        return
+                    except Exception as e:
+                        logger.exception(
+                            f"SLM pool: ошибка загрузки {role.value}"
+                        )
+                        self.error.emit(
+                            f"Ошибка загрузки {role.value} "
+                            f"({spec.model_id}): {e}"
+                        )
+                        return
+                    logger.info(
+                        f"SLM pool: {role.value} загружен "
+                        f"(model={spec.model_id}, device={spec.device}, "
+                        f"n_gpu_layers={spec.n_gpu_layers}, "
+                        f"n_ctx={spec.n_ctx}, kv={spec.kv_cache})"
+                    )
             finally:
                 loop.close()
 
-            # Проверяем, что обе роли действительно загружены.
+            # Финальная проверка, что обе роли на месте.
             try:
                 pool.client(Role.PLANNER)
                 pool.client(Role.ANALYST)
@@ -666,7 +762,7 @@ class _ModelPoolLoadThread(QThread):
                 self.error.emit(f"ModelPool incomplete: {e}")
                 return
 
-            self.progress.emit("Двухмодельный пайплайн готов")
+            self.progress.emit("✅ Двухмодельный пайплайн готов")
             self.finished.emit(pool)
 
         except Exception as e:
