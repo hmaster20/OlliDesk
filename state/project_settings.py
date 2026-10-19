@@ -14,6 +14,11 @@ class ProjectSettings(BaseModel):
     mode: str = "chat"
     temperature: float = 0.7
     max_tokens: int = 4096
+    # Показывать reasoning_content модели в чате. False — рассуждения
+    # скрываются, но всё равно пишутся в stderr (logger) для отладки.
+    # Настройка per-project: в одном проекте удобно видеть мысли, в другом —
+    # нет (например, при демонстрации).
+    show_reasoning: bool = True
 
     def save(self, project_path: Path) -> None:
         """Сохраняет настройки в .ollidesk/project_settings.yaml."""

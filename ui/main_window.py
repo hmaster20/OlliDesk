@@ -580,6 +580,17 @@ class MainWindow(QMainWindow):
         self.temp_slider.valueChanged.connect(lambda v: self.temp_value_label.setText(f"{v / 100:.2f}"))
         layout.addWidget(self.temp_value_label)
 
+        # Тумблер показа reasoning_content в чате (4.8.B).
+        self.show_reasoning_check = QCheckBox("Показывать размышления модели")
+        self.show_reasoning_check.setChecked(True)
+        self.show_reasoning_check.setStyleSheet("font-size: 12px; padding: 8px 10px;")
+        self.show_reasoning_check.setToolTip(
+            "Если выключено, reasoning_content модели не отображается в чате "
+            "(полезно при демонстрации или для уменьшения визуального шума)."
+        )
+        self.show_reasoning_check.toggled.connect(self._on_show_reasoning_toggled)
+        layout.addWidget(self.show_reasoning_check)
+
         # Max tokens
         tokens_label = QLabel("Max tokens:")
         tokens_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
@@ -1099,6 +1110,13 @@ class MainWindow(QMainWindow):
                 idx = mode_map.get(self.config.last_mode, 2)
                 self.chat_panel.mode_combo.setCurrentIndex(idx)
 
+        # Синхронизируем чекбокс с фактическим состоянием — apply_settings
+        # мог применить show_reasoning=False из project_settings.yaml.
+        if hasattr(self, "show_reasoning_check"):
+            self.show_reasoning_check.blockSignals(True)
+            self.show_reasoning_check.setChecked(self.chat_panel._show_reasoning)
+            self.show_reasoning_check.blockSignals(False)
+
         self._start_indexing()
 
     def _get_reranker(self) -> CrossEncoderReranker | None:
@@ -1601,6 +1619,12 @@ class MainWindow(QMainWindow):
 
         policy = ToolPolicy.AUTO if checked else ToolPolicy.EXCLUDED
         self.chat_panel.set_tool_policy(tool_key, policy)
+
+    @Slot(bool)
+    def _on_show_reasoning_toggled(self, checked: bool) -> None:
+        """Прокидывает переключение reasoning в ChatPanel."""
+        if self.chat_panel:
+            self.chat_panel.set_show_reasoning(checked)
 
     def _show_chat_tab(self) -> None:
         """Показывает вкладку чата (создаёт если закрыта)."""

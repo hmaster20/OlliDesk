@@ -186,6 +186,9 @@ class ChatPanel(QWidget):
 
         self._generating = False
         self._last_run_params: dict | None = None   # для кнопки «Продолжить»
+        # Показывать reasoning_content модели в чате. Управляется чекбоксом
+        # в правой панели; сохраняется в ProjectSettings.show_reasoning.
+        self._show_reasoning: bool = True
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
         self.registry: ModelRegistry | None = None
@@ -800,6 +803,10 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_thinking(self, token: str):
+        if not self._show_reasoning:
+            # Токены reasoning не отображаем; они уже ушли в logger через
+            # OllamaClient / LocalLLMClient, для отладки доступны.
+            return
         self._current_thinking_content += token
         if self._last_assistant_widget is None:
             widget = ChatMessageItem(
@@ -2158,6 +2165,16 @@ class ChatPanel(QWidget):
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         self.tool_policies[tool_name] = policy
 
+    def set_show_reasoning(self, show: bool) -> None:
+        """Включает/выключает отображение reasoning_content в чате.
+
+        False — токены размышлений продолжают приходить и логируются, но
+        виджет сообщения не создаётся/не обновляется. Уже показанные блоки
+        reasoning не скрываются — это «тумблер для будущих токенов».
+        """
+        self._show_reasoning = bool(show)
+        logger.debug(f"Показ размышлений: {'вкл' if show else 'выкл'}")
+
     def set_vector_store(self, vector_store):
         self.vector_store = vector_store
 
@@ -2183,6 +2200,7 @@ class ChatPanel(QWidget):
         return {
             "model": self.get_current_model(),
             "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
+            "show_reasoning": self._show_reasoning,
         }
 
     def apply_settings(self, settings: dict) -> None:
@@ -2194,6 +2212,7 @@ class ChatPanel(QWidget):
         idx = mode_map.get(mode, 0)
         if 0 <= idx < self.mode_combo.count():
             self.mode_combo.setCurrentIndex(idx)
+        self._show_reasoning = bool(settings.get("show_reasoning", True))
 
     def set_project_open(self, is_open: bool):
         if not is_open:

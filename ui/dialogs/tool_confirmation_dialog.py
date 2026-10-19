@@ -1,11 +1,28 @@
-"""Диалог подтверждения выполнения инструмента агента."""
+"""Диалог подтверждения выполнения инструмента агента.
 
+Редактирование аргументов (React.md 9.2): значения редактируются как текст,
+но исходный тип сохраняется. Для примитивов (int, float, bool) — приведение
+из строки; для list/dict — `json.loads`. При любой ошибке парсинга значение
+остаётся строкой (не падаем: пользователь мог сознательно ввести строку).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -64,7 +81,8 @@ class ToolConfirmationDialog(QDialog):
             diff_edit = QTextEdit()
             diff_edit.setReadOnly(True)
             diff_edit.setStyleSheet(
-                "font-family: Consolas, monospace; font-size: 12px; background: #1e1e1e; color: #d4d4d4;"
+                "font-family: Consolas, monospace; font-size: 12px;"
+                " background: #1e1e1e; color: #d4d4d4;"
             )
             preview = self._format_write_preview(self._arguments)
             diff_edit.setPlainText(preview)
@@ -87,20 +105,29 @@ class ToolConfirmationDialog(QDialog):
 
         approve_btn = QPushButton("✅ Выполнить")
         approve_btn.setStyleSheet(
-            "padding: 6px 16px; background: #1976d2; color: white; border: none; border-radius: 4px;"
+            "padding: 6px 16px; background: #1976d2; color: white;"
+            " border: none; border-radius: 4px;"
         )
         approve_btn.clicked.connect(self._approve)
         btn_layout.addWidget(approve_btn)
 
         layout.addLayout(btn_layout)
 
+    # ---------------------------------------------------------------
+    # Форматирование
+    # ---------------------------------------------------------------
+
     @staticmethod
     def _format_arguments(args: dict) -> str:
-        """Форматирует аргументы для отображения."""
+        """Форматирует аргументы для отображения (без потери информации)."""
         lines = []
         for key, value in args.items():
-            if key == "content" and len(str(value)) > 200:
+            if key == "content" and isinstance(value, str) and len(value) > 200:
                 lines.append(f"{key}: [{len(value)} символов]")
+            elif isinstance(value, (list, dict)):
+                lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+            elif value is None:
+                lines.append(f"{key}: null")
             else:
                 lines.append(f"{key}: {value}")
         return "\n".join(lines)
@@ -110,6 +137,8 @@ class ToolConfirmationDialog(QDialog):
         """Форматирует предпросмотр записи файла."""
         path = args.get("path", "?")
         content = args.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
         lines = [
             f"📄 Файл: {path}",
             f"📝 Размер: {len(content)} символов, {len(content.splitlines())} строк",
@@ -121,26 +150,119 @@ class ToolConfirmationDialog(QDialog):
             lines.append(f"\n... (показано 2000 из {len(content)} символов)")
         return "\n".join(lines)
 
-    def _edit_arguments(self):
-        """Открывает диалог редактирования аргументов."""
-        from PySide6.QtWidgets import QInputDialog
+    # ---------------------------------------------------------------
+    # Редактирование с сохранением типов
+    # ---------------------------------------------------------------
 
-        text = self._format_arguments(self._arguments)
-        new_text, ok = QInputDialog.getMultiLineText(
-            self,
-            "Редактировать аргументы",
-            "Измените аргументы (key: value, одна строка на аргумент):",
-            text,
+    def _edit_arguments(self):
+        """Открывает табличный редактор аргументов.
+
+        В отличие от прежнего ``QInputDialog`` (всё превращалось в строку),
+        исходный тип значения сохраняется. Для list/dict/None значения
+        редактируются как JSON; при ошибке парсинга — остаются строкой.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Редактировать аргументы")
+        dlg.setMinimumSize(600, 400)
+        dlg_layout = QVBoxLayout(dlg)
+
+        hint = QLabel(
+            "Значения редактируются как текст, но исходный тип сохраняется. "
+            "Для list/dict/None вводите валидный JSON. Неверный формат → "
+            "значение останется строкой."
         )
-        if ok and new_text:
-            new_args = {}
-            for line in new_text.strip().split("\n"):
-                if ":" in line:
-                    key, _, value = line.partition(":")
-                    new_args[key.strip()] = value.strip()
-            self._arguments.update(new_args)
-            # --- обновляем отображение аргументов ---
-            self.args_edit.setPlainText(self._format_arguments(self._arguments))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        dlg_layout.addWidget(hint)
+
+        table = QTableWidget()
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Аргумент", "Значение", "Тип"])
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table.setRowCount(len(self._arguments))
+
+        type_names: dict[str, str] = {}
+        for row, (key, value) in enumerate(self._arguments.items()):
+            type_name = type(value).__name__
+            type_names[key] = type_name
+
+            key_item = QTableWidgetItem(key)
+            key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(row, 0, key_item)
+
+            if isinstance(value, (list, dict)) or value is None:
+                display = json.dumps(value, ensure_ascii=False) if value is not None else "null"
+            else:
+                display = str(value)
+            table.setItem(row, 1, QTableWidgetItem(display))
+
+            type_item = QTableWidgetItem(type_name)
+            type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            type_item.setForeground(QColor("#888"))
+            table.setItem(row, 2, type_item)
+
+        dlg_layout.addWidget(table)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_args: dict = {}
+        for row in range(table.rowCount()):
+            key_item = table.item(row, 0)
+            val_item = table.item(row, 1)
+            if key_item is None or val_item is None:
+                continue
+            key = key_item.text()
+            raw = val_item.text()
+            orig_type = type_names.get(key, "str")
+            new_args[key] = self._coerce_value(raw, orig_type)
+
+        self._arguments.clear()
+        self._arguments.update(new_args)
+        self.args_edit.setPlainText(self._format_arguments(self._arguments))
+
+    @staticmethod
+    def _coerce_value(raw: str, orig_type: str) -> Any:
+        """Пытается восстановить исходный тип из строки.
+
+        Никогда не падает: при ошибке парсинга возвращает строку.
+        """
+        if orig_type == "bool":
+            low = raw.strip().lower()
+            if low in ("true", "1", "yes", "on"):
+                return True
+            if low in ("false", "0", "no", "off"):
+                return False
+            return raw
+        if orig_type == "int":
+            try:
+                return int(raw)
+            except ValueError:
+                return raw
+        if orig_type == "float":
+            try:
+                return float(raw)
+            except ValueError:
+                return raw
+        if orig_type in ("list", "dict", "NoneType"):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return raw
+        return raw
+
+    # ---------------------------------------------------------------
+    # Действия
+    # ---------------------------------------------------------------
 
     def _approve(self):
         """Подтверждает выполнение."""
@@ -148,17 +270,9 @@ class ToolConfirmationDialog(QDialog):
         self.accept()
 
     def is_approved(self) -> bool:
-        """Возвращает, было ли подтверждено выполнение.
-
-        Returns:
-            True если пользователь нажал "Выполнить"
-        """
+        """Возвращает, было ли подтверждено выполнение."""
         return self._approved
 
     def get_arguments(self) -> dict:
-        """Возвращает (возможно, отредактированные) аргументы.
-
-        Returns:
-            dict с аргументами
-        """
+        """Возвращает (возможно, отредактированные) аргументы."""
         return self._arguments
