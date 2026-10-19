@@ -1,10 +1,29 @@
-"""Виджет одного сообщения в чате."""
+"""Виджет сообщения чата: композитный пузырь из типизированных частей.
+
+4.8.B: `ChatMessageItem` больше не единый `QTextBrowser`, а набор виджетов:
+* `ReasoningWidget` — сворачиваемые размышления модели (`ReasoningPart`);
+* `TextWidget` — markdown-текст ответа (`TextPart`);
+* `ToolCallCard` — карточка вызова инструмента (`ToolCallPart`).
+
+Старый API сохранён:
+* `ChatMessageItem(role, content, thinking=..., mode_name=...)` — конструктор;
+* `update_content(str)` / `update_thinking(str)` — заменяют текст/reasoning;
+* `.content` / `.thinking` — атрибуты (для копирования/отладки).
+
+Новый API — стриминг:
+* `append_text(token)` / `append_reasoning(token)` — доинкрементально;
+* `append_tool_call(name, args_json)` — встроить карточку в пузырь;
+* `finalize()` — вызывается на finish (сворачивает reasoning).
+"""
+
+from __future__ import annotations
 
 import html as html_mod
+import json
 import re
 
 from loguru import logger
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -13,13 +32,19 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
-    QStackedWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
-_CODE_FENCE_RE = re.compile(r"```[ \t]*(?P<lang>[A-Za-z0-9_+#.-]*)[ \t]*\n?(?P<code>.*?)```", re.DOTALL)
+# ============================================================================
+# Markdown → HTML (без изменений; используется research_passport.py)
+# ============================================================================
+
+_CODE_FENCE_RE = re.compile(
+    r"```[ \t]*(?P<lang>[A-Za-z0-9_+#.-]*)[ \t]*\n?(?P<code>.*?)```",
+    re.DOTALL,
+)
 _CODE_PLACEHOLDER_RE = re.compile(r"^\x00CB(\d+)\x00$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _UL_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
@@ -102,17 +127,13 @@ def _inline(text: str) -> str:
 
 
 def _indent_width(raw: str) -> int:
-    """Ширина отступа строки в пробелах (табы раскрываются по 4)."""
     expanded = raw.expandtabs(4)
     return len(expanded) - len(expanded.lstrip(" "))
 
 
-def _collect_list_items(lines: list[str], start: int) -> tuple[list[tuple[int, bool, str]], int]:
-    """Собирает подряд идущие пункты списка: (отступ, нумерованный, текст).
-
-    Пустые строки между пунктами не прерывают список (loose list), если за ними
-    снова идёт пункт списка — иначе нумерация сбрасывалась бы на «1».
-    """
+def _collect_list_items(
+    lines: list[str], start: int
+) -> tuple[list[tuple[int, bool, str]], int]:
     items: list[tuple[int, bool, str]] = []
     i = start
     n = len(lines)
@@ -141,7 +162,6 @@ def _collect_list_items(lines: list[str], start: int) -> tuple[list[tuple[int, b
 
 
 def _render_list_frame(frame: dict) -> str:
-    """Рендерит один уровень списка, разворачивая вложенные уровни в <li>."""
     tag = "ol" if frame["ordered"] else "ul"
     parts = [f'<{tag} style="margin:6px 0; padding-left:22px;">']
     for text, children in frame["items"]:
@@ -159,7 +179,6 @@ def _render_list_frame(frame: dict) -> str:
 
 
 def _render_list_tree(items: list[tuple[int, bool, str]]) -> str:
-    """Строит вложенные <ul>/<ol> из плоского списка с отступами."""
     root: list[dict] = []
     stack: list[dict] = []
 
@@ -199,7 +218,6 @@ def _render_list_tree(items: list[tuple[int, bool, str]]) -> str:
 
 
 def _split_table_row(line: str) -> list[str]:
-    """Разбивает строку markdown-таблицы на ячейки (без крайних `|`)."""
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
@@ -209,20 +227,20 @@ def _split_table_row(line: str) -> list[str]:
 
 
 def _is_table_separator(line: str) -> bool:
-    """True если строка — разделитель markdown-таблицы (`|---|:--:|`)."""
     cells = _split_table_row(line)
     return bool(cells) and all(_TABLE_SEP_CELL_RE.match(cell) for cell in cells)
 
 
 def _is_table_start(lines: list[str], i: int) -> bool:
-    """True если с позиции `i` начинается таблица (заголовок + разделитель)."""
     return (
-        "|" in lines[i] and i + 1 < len(lines) and "|" in lines[i + 1] and _is_table_separator(lines[i + 1])
+        "|" in lines[i]
+        and i + 1 < len(lines)
+        and "|" in lines[i + 1]
+        and _is_table_separator(lines[i + 1])
     )
 
 
 def _render_table(header: list[str], rows: list[list[str]]) -> str:
-    """Рендерит markdown-таблицу в HTML `<table>` для QTextBrowser."""
     width = len(header)
     parts = [
         '<table border="1" cellspacing="0" cellpadding="5"'
@@ -262,7 +280,6 @@ def _is_block_start(lines: list[str], i: int) -> bool:
 
 
 def _render_blocks(text: str, code_blocks: list[str]) -> str:
-    """Разбирает текст на блочные элементы: заголовки, списки, цитаты, абзацы."""
     lines = text.split("\n")
     out: list[str] = []
     i = 0
@@ -314,7 +331,7 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
 
         if _is_table_start(lines, i):
             header = _split_table_row(lines[i])
-            i += 2  # пропускаем заголовок и разделитель
+            i += 2
             rows: list[list[str]] = []
             while i < n and lines[i].strip() and "|" in lines[i]:
                 rows.append(_split_table_row(lines[i]))
@@ -332,13 +349,7 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
 
 
 def render_markdown(text: str) -> str:
-    """Преобразует markdown-ответ модели в HTML для QTextBrowser.
-
-    Поддерживает заголовки, списки (в т.ч. чек-листы), таблицы, цитаты, hr,
-    блоки кода с подсветкой, инлайн-код, ссылки, жирный/курсив/зачёркнутый и
-    абзацные отступы. Незакрытый блок кода (типичный при стриминге)
-    достраивается до конца текста, чтобы вывод не «ломался» на каждом токене.
-    """
+    """Преобразует markdown-ответ модели в HTML для QTextBrowser."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if text.count("```") % 2 == 1:
         text += "\n```"
@@ -351,17 +362,17 @@ def render_markdown(text: str) -> str:
 
     stashed = _CODE_FENCE_RE.sub(_stash, text)
     body = _render_blocks(stashed, code_blocks)
-    # Блоки кода, оказавшиеся внутри строки (не на отдельной строке).
     body = re.sub(r"\x00CB(\d+)\x00", lambda m: code_blocks[int(m.group(1))], body)
     return f'<div style="line-height:1.5;">{body}</div>'
 
 
-class ChatActivityItem(QWidget):
-    """Серая строка-событие о ходе работы агента (журнал фаз).
+# ============================================================================
+# Вспомогательные элементы
+# ============================================================================
 
-    Отдельный немаркированный элемент ленты: «🤔 Модель думает…»,
-    «🔍 Ищу в кодовой базе…», «🔧 Чтение файла: path=…» и т. п.
-    """
+
+class ChatActivityItem(QWidget):
+    """Серая строка-событие о ходе работы агента (журнал фаз)."""
 
     def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -372,19 +383,17 @@ class ChatActivityItem(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
+        label.setStyleSheet(
+            "color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;"
+        )
         layout.addWidget(label, 1)
         self.label = label
 
 
 class ChatSourcesItem(QWidget):
-    """Сворачиваемый блок источников RAG.
+    """Сворачиваемый блок источников RAG."""
 
-    По умолчанию свёрнут — видна только строка «📚 Источники (N)».
-    Кнопка «▼» разворачивает список; клик по ссылке открывает файл.
-    Так меньше визуального шума, когда источников много, но пользователь
-    может развернуть, если ему нужно перейти в файл.
-    """
+    from PySide6.QtCore import Signal  # локально — не тянем на модульном уровне
 
     source_activated = Signal(str, int)
 
@@ -431,7 +440,9 @@ class ChatSourcesItem(QWidget):
                 "QPushButton:hover { text-decoration: underline;"
                 " color: #8bc0f0; }"
             )
-            btn.clicked.connect(lambda _=False, p=path, s=start: self.source_activated.emit(p, s))
+            btn.clicked.connect(
+                lambda _=False, p=path, s=start: self.source_activated.emit(p, s)
+            )
             body_layout.addWidget(btn)
 
         self._body.setVisible(False)
@@ -441,26 +452,310 @@ class ChatSourcesItem(QWidget):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         arrow = "▲ свернуть" if self._expanded else "▼ развернуть"
-        self._header_btn.setText(f"📚 Источники проекта ({len(self._sources)}) · {arrow}")
+        self._header_btn.setText(
+            f"📚 Источники проекта ({len(self._sources)}) · {arrow}"
+        )
 
 
 def format_source_label(file_path: str, start: int, end: int) -> str:
-    """Формирует подпись источника RAG вида ``file:строка`` или ``file:start-end``."""
+    """Подпись источника RAG вида ``file:строка`` или ``file:start-end``."""
     return f"{file_path}:{start}-{end}" if end != start else f"{file_path}:{start}"
 
 
-class ChatMessageItem(QWidget):
-    """Виджет одного сообщения в чате.
+# ============================================================================
+# 4.8.B: части сообщения
+# ============================================================================
 
-    Текст рендерится в QTextBrowser (выделение мышью, Ctrl+C, кликабельные
-    ссылки, встроенное контекстное меню). Кнопка 📋 под текстом сообщения
-    копирует исходный markdown в буфер обмена.
+
+class ReasoningWidget(QWidget):
+    """Сворачиваемый блок размышлений модели (ReasoningPart).
+
+    Во время стриминга развёрнут на первом токене и остаётся развёрнутым,
+    пока пользователь не свернёт вручную. `collapse()` вызывается в
+    `ChatMessageItem.finalize()` — после завершения ответа блок сам
+    схлопывается, чтобы не занимать визуальное место.
+    """
+
+    _PREVIEW_CHARS = 0  # 0 = показываем весь текст; заголовок только со счётчиком
+
+    def __init__(self, initial_text: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._text = initial_text or ""
+        self._expanded = bool(self._text)
+
+        container = QFrame(self)
+        container.setObjectName("_reasoning_widget")
+        container.setStyleSheet(
+            "QFrame#_reasoning_widget {"
+            " background: rgba(120, 120, 140, 0.06);"
+            " border: 1px solid #3a3a48;"
+            " border-radius: 6px;"
+            " padding: 4px 8px; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.addWidget(container)
+
+        body = QVBoxLayout(container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(2)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+
+        self._header_label = QLabel()
+        self._header_label.setTextFormat(Qt.TextFormat.RichText)
+        header_row.addWidget(self._header_label, stretch=1)
+
+        self._toggle_btn = QPushButton("▲ Свернуть" if self._expanded else "▼ Развернуть")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._toggle_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none;"
+            " color: #888; font-size: 11px; padding: 0 4px; }"
+            " QPushButton:hover { color: #ccc; text-decoration: underline; }"
+        )
+        self._toggle_btn.clicked.connect(self._toggle)
+        header_row.addWidget(self._toggle_btn)
+
+        body.addLayout(header_row)
+
+        self._browser = QTextBrowser()
+        self._browser.setReadOnly(True)
+        self._browser.setFrameShape(QFrame.Shape.NoFrame)
+        self._browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._browser.setStyleSheet(
+            "QTextBrowser {"
+            " background: transparent; border: none; color: #a8a8b8;"
+            " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 12px; padding: 2px 0; }"
+        )
+        self._browser.setMaximumHeight(240)
+        body.addWidget(self._browser)
+
+        self._refresh_browser()
+        self._apply_visibility()
+
+    def _refresh_browser(self) -> None:
+        """Пересобирает HTML из `_text` (курсив, серый)."""
+        safe = (
+            self._text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br>")
+        )
+        self._browser.setHtml(
+            f'<div style="color:#a8a8b8; font-style:italic;">{safe}</div>'
+        )
+        # Авто-высота: ~16px на строку, потолок 240.
+        line_count = self._text.count("\n") + 1
+        h = min(max(40, line_count * 16 + 8), 240)
+        self._browser.setFixedHeight(h)
+        self._refresh_header()
+
+    def _refresh_header(self) -> None:
+        n = len(self._text)
+        unit = "символ" if n % 10 == 1 and n % 100 != 11 else (
+            "символа" if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14) else "символов"
+        )
+        self._header_label.setText(
+            f'<span style="color: #7a7a8a; font-size: 11px; font-weight: 600;">'
+            f"💭 Размышления</span> "
+            f'<span style="color: #6a6a7a; font-size: 11px;">· {n} {unit}</span>'
+        )
+
+    def _apply_visibility(self) -> None:
+        self._browser.setVisible(self._expanded)
+        self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
+
+    def _toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._apply_visibility()
+
+    # --- Публичный API ---
+
+    def set_text(self, text: str) -> None:
+        self._text = text or ""
+        if self._text and not self._expanded:
+            # Если пришёл непустой текст, а блок свёрнут — разворачиваем.
+            self._expanded = True
+            self._apply_visibility()
+        self._refresh_browser()
+
+    def append_text(self, token: str) -> None:
+        if not token:
+            return
+        was_empty = not self._text
+        self._text += token
+        if was_empty and not self._expanded:
+            # Первый токен — развернуть.
+            self._expanded = True
+            self._apply_visibility()
+        self._refresh_browser()
+
+    def collapse(self) -> None:
+        """Свернуть блок (вызывается на finish)."""
+        if self._expanded:
+            self._expanded = False
+            self._apply_visibility()
+
+
+class TextWidget(QTextBrowser):
+    """Markdown-текст ответа модели с авто-высотой под содержимое."""
+
+    def __init__(self, initial_text: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._raw_text = ""
+        self.setOpenExternalLinks(True)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.document().setDocumentMargin(0)
+        self.setStyleSheet(
+            "QTextBrowser {"
+            " font-family: 'Segoe UI', Roboto, sans-serif;"
+            " font-size: 14px; color: #e0e0e0;"
+            " background: transparent; border: none; padding: 0;"
+            " }"
+        )
+        if initial_text:
+            self.set_text(initial_text)
+
+    def set_text(self, text: str) -> None:
+        self._raw_text = text or ""
+        self.setHtml(render_markdown(self._raw_text))
+        self._adjust_height()
+
+    def append_text(self, token: str) -> None:
+        if not token:
+            return
+        self._raw_text += token
+        self.setHtml(render_markdown(self._raw_text))
+        self._adjust_height()
+
+    def _adjust_height(self) -> None:
+        """Подгоняет высоту под содержимое при текущей ширине."""
+        doc: QTextDocument = self.document()
+        viewport_width = self.viewport().width()
+        if viewport_width <= 0:
+            return  # resizeEvent вызовет повторно
+        doc.setTextWidth(viewport_width)
+        height = int(doc.size().height()) + 4
+        self.setFixedHeight(max(height, 22))
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._adjust_height()
+
+
+class ToolCallCard(QWidget):
+    """Карточка вызова инструмента (ToolCallPart).
+
+    Показывает иконку, имя и аргументы в компактном виде. Результат
+    инструмента приходит отдельным сообщением (role="tool"), чтобы не
+    разрастаться в один пузырь. Дифф-вьюер `write_file` — отдельная задача
+    (нужно пробрасывать сигнал до EditorWidget).
+    """
+
+    _ICONS: dict[str, str] = {
+        "read_file": "📖",
+        "write_file": "✏️",
+        "list_directory": "📁",
+        "search_codebase": "🔍",
+        "web_search": "🌐",
+        "get_weather": "🌤",
+        "get_current_datetime": "🕒",
+        "get_exchange_rate": "💱",
+        "get_exchange_rates_multi": "💱",
+        "get_git_status": "🔎",
+        "create_snapshot": "📸",
+        "undo_last_snapshot": "⏪",
+        "read_attached_file": "📄",
+        "record_hypothesis": "💡",
+        "update_hypothesis": "🔬",
+        "list_hypotheses": "📋",
+        "run_shell_command": "⚡",
+    }
+
+    def __init__(
+        self,
+        name: str,
+        arguments_json: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        try:
+            args = json.loads(arguments_json) if arguments_json else {}
+        except json.JSONDecodeError:
+            args = {}
+
+        container = QFrame(self)
+        container.setObjectName("_tool_card")
+        container.setStyleSheet(
+            "QFrame#_tool_card {"
+            " background: rgba(80, 120, 180, 0.08);"
+            " border: 1px solid #3a4a5a;"
+            " border-radius: 6px;"
+            " padding: 4px 10px; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.addWidget(container)
+
+        body = QHBoxLayout(container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(6)
+
+        icon = self._ICONS.get(name, "🔧")
+        icon_label = QLabel(icon)
+        icon_label.setStyleSheet("font-size: 14px;")
+        body.addWidget(icon_label)
+
+        args_summary = _format_args_short(args)
+        text = f"{name}({args_summary})" if args_summary else f"{name}()"
+        label = QLabel(text)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setStyleSheet(
+            "color: #8db1d6; font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 12px;"
+        )
+        body.addWidget(label, stretch=1)
+
+
+def _format_args_short(args: dict, limit_per_value: int = 60) -> str:
+    """Короткое представление аргументов для карточки tool_call."""
+    parts: list[str] = []
+    for key, value in args.items():
+        s = str(value).replace("\n", " ")
+        if len(s) > limit_per_value:
+            s = s[: limit_per_value - 1] + "…"
+        parts.append(f"{key}={s!r}")
+    return ", ".join(parts)
+
+
+# ============================================================================
+# ChatMessageItem: композитный пузырь
+# ============================================================================
+
+
+class ChatMessageItem(QWidget):
+    """Композитный пузырь сообщения: reasoning + text + tool_calls.
+
+    Для role="user" и role="tool" остаётся одноблочным (простого текста
+    достаточно). Для role="assistant" собирается из подвиджетов по мере
+    поступления частей через `append_*`.
     """
 
     def __init__(
         self,
         role: str,
-        content: str,
+        content: str = "",
         thinking: str = "",
         mode_name: str = "",
         parent: QWidget | None = None,
@@ -469,17 +764,31 @@ class ChatMessageItem(QWidget):
         self.role = role
         self.content = content
         self.thinking = thinking
-        self.think_label: QLabel | None = None
+        self.mode_name = mode_name
 
+        # Внутреннее состояние — по образцу ChatMessage(parts=[...]).
+        self._reasoning_widget: ReasoningWidget | None = None
+        self._text_widget: TextWidget | None = None
+        self._tool_cards: list[ToolCallCard] = []
+
+        self._build_ui()
+
+        # Инициализация из переданного content/thinking (обратная совместимость).
+        if thinking:
+            self._ensure_reasoning_widget().set_text(thinking)
+        if content:
+            self._ensure_text_widget().set_text(content)
+
+    def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
         outer.setSpacing(0)
 
         bubble = QFrame()
         bubble.setObjectName("_bubble")
-        is_user = role == "user"
-        is_assistant = role == "assistant"
-        is_tool = role in ("tool", "system")
+        is_user = self.role == "user"
+        is_assistant = self.role == "assistant"
+        is_tool = self.role in ("tool", "system")
 
         if is_user:
             bg = "#3d3d3d"
@@ -505,17 +814,17 @@ class ChatMessageItem(QWidget):
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
-        bubble_layout.setSpacing(2)
-        self.bubble_layout = bubble_layout
+        bubble_layout.setSpacing(4)
+        self._bubble_layout = bubble_layout
+        self.bubble = bubble
         self.text_color = text_color
 
-        # --- Заголовок: имя роли (для assistant/tool) ---
+        # Заголовок для assistant
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(4)
-
         if not is_tool and not is_user:
-            header = f"Ассистент ({mode_name})" if is_assistant else role
+            header = f"Ассистент ({self.mode_name})" if is_assistant else self.role
             role_label = QLabel(header)
             role_label.setStyleSheet(f"""
                 background-color: {bg};
@@ -525,45 +834,23 @@ class ChatMessageItem(QWidget):
                 padding: 2px 0 4px 0;
             """)
             header_row.addWidget(role_label)
-
         header_row.addStretch()
-
         bubble_layout.addLayout(header_row)
 
-        if thinking:
-            think_label = QLabel(thinking)
-            think_label.setStyleSheet(
-                f"font-size: 12px; color: {text_color}; opacity: 0.6; font-style: italic;"
-            )
-            think_label.setWordWrap(True)
-            bubble_layout.addWidget(think_label)
-            self.think_label = think_label
+        # Сюда добавляются части (reasoning/text/tool_call) через _ensure_*.
+        self._parts_container = QWidget()
+        parts_layout = QVBoxLayout(self._parts_container)
+        parts_layout.setContentsMargins(0, 0, 0, 0)
+        parts_layout.setSpacing(4)
+        self._parts_layout = parts_layout
+        bubble_layout.addWidget(self._parts_container)
 
-        # --- Текст сообщения ---
-        self.content_browser = QTextBrowser()
-        self.content_browser.setOpenExternalLinks(True)
-        self.content_browser.setReadOnly(True)
-        self.content_browser.setFrameShape(QFrame.Shape.NoFrame)
-        self.content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.content_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.content_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.content_browser.document().setDocumentMargin(0)
-        self.content_browser.setStyleSheet(
-            f"QTextBrowser {{"
-            f" font-family: 'Segoe UI', Roboto, sans-serif;"
-            f" font-size: 14px; color: {text_color};"
-            f" background: transparent; border: none; padding: 0;"
-            f" }}"
-        )
-        bubble_layout.addWidget(self.content_browser)
-
-        # --- Кнопка «копировать» под текстом сообщения ---
+        # Кнопка «Копировать» под текстом
         if is_user or is_assistant:
             copy_row = QHBoxLayout()
             copy_row.setContentsMargins(0, 2, 0, 0)
             copy_row.setSpacing(4)
             copy_row.addStretch()
-
             copy_btn = QPushButton("Копировать")
             copy_btn.setToolTip("Копировать сообщение (markdown)")
             copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -579,8 +866,6 @@ class ChatMessageItem(QWidget):
             self.copy_button = copy_btn
             bubble_layout.addLayout(copy_row)
 
-        self._set_content(content)
-
         inner = QHBoxLayout()
         inner.setContentsMargins(6, 0, 6, 0)
         if is_user:
@@ -589,318 +874,89 @@ class ChatMessageItem(QWidget):
             inner.addStretch()
         else:
             inner.addWidget(bubble, 1)
-
         outer.addLayout(inner)
-        self.bubble = bubble
 
-    # ---------------------------------------------------------
-    # Контент и высота
-    # ---------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Ленивое создание частей
+    # ---------------------------------------------------------------
 
-    def _set_content(self, text: str):
-        html = self._render_markdown_to_html(text)
-        self.content_browser.setHtml(html)
-        # Обновляем высоту после смены контента.
-        self._adjust_browser_height()
+    def _ensure_reasoning_widget(self) -> ReasoningWidget:
+        if self._reasoning_widget is None:
+            self._reasoning_widget = ReasoningWidget()
+            self._parts_layout.addWidget(self._reasoning_widget)
+        return self._reasoning_widget
 
-    def _adjust_browser_height(self):
-        """Подгоняет высоту QTextBrowser под содержимое при текущей ширине."""
-        doc: QTextDocument = self.content_browser.document()
-        viewport_width = self.content_browser.viewport().width()
-        if viewport_width <= 0:
-            # Виджет ещё не отрисован — выйдем, resizeEvent вызовет повторно.
+    def _ensure_text_widget(self) -> TextWidget:
+        if self._text_widget is None:
+            self._text_widget = TextWidget()
+            # Текст всегда ПОСЛЕ reasoning и tool_call-карточек — иначе при
+            # стриминге «думаю → отвечаю» reasoning окажется под ответом.
+            # Поэтому вставляем в конец контейнера.
+            self._parts_layout.addWidget(self._text_widget)
+        return self._text_widget
+
+    # ---------------------------------------------------------------
+    # Стриминг: новые части
+    # ---------------------------------------------------------------
+
+    def append_text(self, token: str) -> None:
+        self.content += token
+        self._ensure_text_widget().append_text(token)
+
+    def append_reasoning(self, token: str) -> None:
+        if self.role != "assistant":
+            logger.debug(
+                f"append_reasoning для role={self.role!r} — игнорирую"
+            )
             return
-        doc.setTextWidth(viewport_width)
-        height = int(doc.size().height()) + 4
-        self.content_browser.setFixedHeight(max(height, 22))
+        self.thinking += token
+        self._ensure_reasoning_widget().append_text(token)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._adjust_browser_height()
+    def append_tool_call(self, name: str, arguments_json: str) -> None:
+        if self.role != "assistant":
+            logger.debug(
+                f"append_tool_call для role={self.role!r} — игнорирую"
+            )
+            return
+        card = ToolCallCard(name, arguments_json)
+        self._tool_cards.append(card)
+        self._parts_layout.addWidget(card)
 
-    # ---------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Старый API (обратная совместимость)
+    # ---------------------------------------------------------------
+
+    def update_content(self, new_content: str) -> None:
+        self.content = new_content
+        self._ensure_text_widget().set_text(new_content)
+
+    def update_thinking(self, new_thinking: str) -> None:
+        self.thinking = new_thinking
+        self._ensure_reasoning_widget().set_text(new_thinking)
+
+    def _set_content(self, text: str) -> None:
+        """Устаревший приватный метод — оставлен как тонкая обёртка."""
+        self.update_content(text)
+
+    # ---------------------------------------------------------------
+    # Финализация
+    # ---------------------------------------------------------------
+
+    def finalize(self) -> None:
+        """Свернуть reasoning после завершения ответа."""
+        if self._reasoning_widget is not None:
+            self._reasoning_widget.collapse()
+
+    # ---------------------------------------------------------------
     # Копирование
-    # ---------------------------------------------------------
+    # ---------------------------------------------------------------
 
-    def _copy_to_clipboard(self):
+    def _copy_to_clipboard(self) -> None:
         QApplication.clipboard().setText(self.content)
 
-    # ---------------------------------------------------------
-    # Обновление во время стриминга
-    # ---------------------------------------------------------
-
-    def update_content(self, new_content: str):
-        self.content = new_content
-        self._set_content(new_content)
-
-    def update_thinking(self, new_thinking: str):
-        self.thinking = new_thinking
-        if self.think_label is None:
-            think_label = QLabel(new_thinking)
-            think_label.setStyleSheet(
-                f"font-size: 12px; color: {self.text_color}; opacity: 0.6; font-style: italic;"
-            )
-            think_label.setWordWrap(True)
-            index = self.bubble_layout.indexOf(self.content_browser)
-            self.bubble_layout.insertWidget(index, think_label)
-            self.think_label = think_label
-        else:
-            self.think_label.setText(new_thinking)
-
-    # ---------------------------------------------------------
-    # Markdown → HTML
-    # ---------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Обёртка для обратной совместимости (используется в тестах)
+    # ---------------------------------------------------------------
 
     def _render_markdown_to_html(self, text: str) -> str:
         return render_markdown(text)
-
-
-class ChatHypothesisItem(QWidget):
-    """Виджет отображения гипотезы исследования в ленте чата.
-
-    Создаётся при `record_hypothesis` и **обновляется на месте** при
-    `update_hypothesis`. Панель держит словарь `{hypothesis_id: widget}`
-    для in-place обновления — иначе лента засорилась бы парными
-    «создана/обновлена».
-
-    Стиль: компактная строка с эмодзи 💡, id гипотезы, статусным бейджем
-    и подписью (метод проверки для открытых, доказательство для закрытых).
-    """
-
-    _STATUS_STYLES: dict[str, tuple[str, str]] = {
-        "open": ("#4a90e2", "🟦 открыта"),
-        "verified": ("#4caf50", "✅ подтверждена"),
-        "refuted": ("#e57373", "❌ опровергнута"),
-        "partial": ("#ffb74d", "🟨 частично"),
-        "inconclusive": ("#888888", "⚪ не проверена"),
-    }
-
-    def __init__(
-        self,
-        hypothesis_id: str,
-        statement: str,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.hypothesis_id = hypothesis_id
-        self._status = "open"
-        self._verification_method = ""
-        self._evidence = ""
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 4, 8, 4)
-        layout.setSpacing(2)
-
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(0)
-        self.header_label = QLabel()
-        self.header_label.setTextFormat(Qt.TextFormat.RichText)
-        header_row.addWidget(self.header_label)
-        header_row.addStretch()
-        layout.addLayout(header_row)
-
-        self.body_label = QLabel(statement)
-        self.body_label.setWordWrap(True)
-        self.body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.body_label.setStyleSheet("color: #d4d4d4; font-size: 13px; font-weight: 600; padding: 0;")
-        layout.addWidget(self.body_label)
-
-        self.detail_label = QLabel("")
-        self.detail_label.setWordWrap(True)
-        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.detail_label.setStyleSheet("color: #9a9a9a; font-size: 12px; font-style: italic; padding: 0;")
-        layout.addWidget(self.detail_label)
-
-        self._refresh()
-
-    def update_state(
-        self,
-        status: str,
-        evidence: str = "",
-        verification_method: str = "",
-    ) -> None:
-        """Обновляет статус/доказательство и перерисовывает виджет."""
-        self._status = status or self._status
-        if evidence:
-            self._evidence = evidence
-        if verification_method:
-            self._verification_method = verification_method
-        self._refresh()
-
-    def _refresh(self) -> None:
-        color, label = self._STATUS_STYLES.get(self._status, ("#888888", self._status))
-        self.header_label.setText(
-            f'<span style="color: #c0c0c0; font-size: 12px; font-weight: 600;">'
-            f"💡 Гипотеза [{self.hypothesis_id}]</span> "
-            f'<span style="color: {color}; font-size: 12px;">· {label}</span>'
-        )
-
-        if self._status == "open":
-            text = f"Проверить: {self._verification_method}" if self._verification_method else ""
-        else:
-            text = f"Доказательство: {self._evidence}" if self._evidence else ""
-        self.detail_label.setText(text)
-        self.detail_label.setVisible(bool(text))
-
-
-# ---------------------------------------------------------------------------
-# Паспорт исследования
-# ---------------------------------------------------------------------------
-
-
-_HYPOTHESIS_STATUS_STYLES: dict[str, tuple[str, str]] = {
-    "open": ("#4a90e2", "🟦"),
-    "verified": ("#4caf50", "✅"),
-    "refuted": ("#e57373", "❌"),
-    "partial": ("#ffb74d", "🟨"),
-    "inconclusive": ("#888888", "⚪"),
-}
-
-
-def _fmt_count(n: int, singular: str, plural2: str, plural5: str) -> str:
-    """Русская форма множественного числа: 1 файл / 2 файла / 5 файлов."""
-    n_abs = abs(n) % 100
-    last = n_abs % 10
-    if 11 <= n_abs <= 14:
-        return f"{n} {plural5}"
-    if last == 1:
-        return f"{n} {singular}"
-    if 2 <= last <= 4:
-        return f"{n} {plural2}"
-    return f"{n} {plural5}"
-
-
-def _fmt_chars(total: int) -> str:
-    """~45к символов / ~1.2М символов."""
-    if total < 1000:
-        return f"{total} символов"
-    if total < 1_000_000:
-        return f"~{total // 1000}к символов"
-    return f"~{total / 1_000_000:.1f}М символов"
-
-
-def _escape_html(text: str) -> str:
-    """Экранирует <, >, & для QLabel RichText."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-# ===========================================================================
-# ChatDiagramItem — схема компонентов с переключателем ASCII ↔ Mermaid
-# ===========================================================================
-
-
-class ChatDiagramItem(QWidget):
-    """Схема компонентов: ASCII по умолчанию, Mermaid — опционально.
-
-    ASCII генерируется DiagramRenderer'ом из графа (без LLM), Mermaid —
-    тем же renderer'ом. Mermaid-режим доступен только если есть
-    QtWebEngine и mermaid.min.js в `ui/web_editor/vendor/`. Иначе кнопка
-    Mermaid отключена с подсказкой — UI деградирует gracefully.
-    """
-
-    def __init__(
-        self,
-        ascii_text: str,
-        mermaid_text: str,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self._ascii_text = ascii_text or ""
-        self._mermaid_text = mermaid_text or ""
-        self._mermaid_view = None
-        self._mermaid_available = False
-
-        container = QFrame(self)
-        container.setObjectName("_diagram_container")
-        container.setStyleSheet(
-            "QFrame#_diagram_container {"
-            " background: #1b1b22; border: 1px solid #2f2f3c;"
-            " border-radius: 8px; padding: 8px; }"
-        )
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 4, 6, 4)
-        outer.addWidget(container)
-
-        body = QVBoxLayout(container)
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(4)
-
-        # --- Header: title + toggle ---
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(4)
-
-        title = QLabel("🗺 Схема компонентов")
-        title.setStyleSheet("color: #d4d4d4; font-size: 12px; font-weight: 600;")
-        header.addWidget(title)
-        header.addStretch()
-
-        self._ascii_btn = QPushButton("ASCII")
-        self._mermaid_btn = QPushButton("Mermaid")
-        for btn in (self._ascii_btn, self._mermaid_btn):
-            btn.setCheckable(True)
-            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(
-                "QPushButton { background: transparent; border: 1px solid #444;"
-                " border-radius: 10px; color: #aaa; font-size: 11px;"
-                " padding: 2px 10px; }"
-                " QPushButton:checked { background: #2f5a2f; color: #fff; }"
-                " QPushButton:hover { background: rgba(128,128,128,0.15); }"
-                " QPushButton:disabled { color: #555; }"
-            )
-        self._ascii_btn.setChecked(True)
-        self._ascii_btn.clicked.connect(lambda: self._show("ascii"))
-        self._mermaid_btn.clicked.connect(lambda: self._show("mermaid"))
-        header.addWidget(self._ascii_btn)
-        header.addWidget(self._mermaid_btn)
-
-        body.addLayout(header)
-
-        # --- Body: stack (ASCII + Mermaid) ---
-        self._stack = QStackedWidget()
-
-        self._ascii_label = QTextBrowser()
-        self._ascii_label.setPlainText(self._ascii_text)
-        self._ascii_label.setStyleSheet(
-            "QTextBrowser { background: transparent; border: none;"
-            " color: #cdd6f4; font-family: 'Consolas','Cascadia Mono',monospace;"
-            " font-size: 12px; padding: 4px; }"
-        )
-        # Адаптивная высота под количество строк (примерно 16px/строка).
-        line_count = max(1, self._ascii_text.count("\n") + 1)
-        self._ascii_label.setFixedHeight(min(max(120, line_count * 16 + 16), 600))
-        self._stack.addWidget(self._ascii_label)
-
-        # Mermaid: пытаемся поднять DiagramView.
-        try:
-            from ui.mermaid_view import DiagramView  # ленивый импорт
-
-            view = DiagramView()
-            if view.enable_mermaid():
-                view.show_mermaid(self._mermaid_text)
-                self._stack.addWidget(view)
-                self._mermaid_view = view
-                self._mermaid_available = True
-            else:
-                self._mermaid_btn.setEnabled(False)
-                self._mermaid_btn.setToolTip(
-                    "Mermaid недоступен: нет QtWebEngine или mermaid.min.js в ui/web_editor/vendor/."
-                )
-        except Exception as e:
-            logger.debug(f"ChatDiagramItem: Mermaid view недоступен: {e}")
-            self._mermaid_btn.setEnabled(False)
-            self._mermaid_btn.setToolTip("Mermaid недоступен")
-
-        body.addWidget(self._stack)
-
-    def _show(self, mode: str) -> None:
-        if mode == "mermaid" and self._mermaid_available:
-            self._stack.setCurrentIndex(1)
-            self._ascii_btn.setChecked(False)
-            self._mermaid_btn.setChecked(True)
-        else:
-            self._stack.setCurrentIndex(0)
-            self._ascii_btn.setChecked(True)
-            self._mermaid_btn.setChecked(False)
