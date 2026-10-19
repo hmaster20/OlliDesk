@@ -1,7 +1,11 @@
 """Реестр инструментов (декларативный список).
 
-Централизованное место регистрации всех инструментов. UI может импортировать
-список ALL_TOOLS для регистрации в одном месте.
+Централизованное место регистрации всех инструментов. ``ChatPanel._build_registry``
+обходит ``ALL_TOOLS`` и регистрирует каждый в ``ToolRegistry``; UI не держит
+собственный список импортов.
+
+Порядок важен для читаемости (группировка по файлам), но не для поведения:
+``ToolRegistry`` разрешает инструменты по ``mode`` и ``policy``, а не по порядку.
 """
 
 from __future__ import annotations
@@ -14,11 +18,12 @@ from tools import (
     file_ops,
     git_ops_tool,
     hypothesis,
+    shell_ops,
     weather,
     web_search,
 )
 
-# Список всех инструментов для явной регистрации
+# Список всех инструментов для явной регистрации.
 ALL_TOOLS = [
     # file_ops
     file_ops.read_file,
@@ -39,10 +44,12 @@ ALL_TOOLS = [
     git_ops_tool.tool_git_status,
     git_ops_tool.tool_create_snapshot,
     git_ops_tool.tool_undo_snapshot,
-    # attached_files
+    # attached_files (register unconditionally; ChatPanel filters by availability)
     attached_files.read_attached_file,
     # hypothesis
     hypothesis.record_hypothesis,
     hypothesis.update_hypothesis,
     hypothesis.list_hypotheses,
+    # shell_ops
+    shell_ops.run_shell_command,
 ]

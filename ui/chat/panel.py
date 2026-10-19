@@ -67,7 +67,9 @@ from ui.chat.threads import (
     _SLMLoadThread,
 )
 
-# Инструменты, которые в Chat-режиме должны выполняться без подтверждения
+# Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
+# Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
+# если конфиг не читается (повреждён, отсутствует). См. _build_registry().
 _CHAT_AUTO_TOOLS = (
     "web_search",
     "read_file",
@@ -1681,10 +1683,21 @@ class ChatPanel(QWidget):
     # ---------------------------------------------------------
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
+        """Собирает реестр из декларативного ALL_TOOLS.
+
+        * `read_attached_file` регистрируется, только если есть прикреплённые
+          файлы (инструмент бесполезен без store).
+        * В CHAT-режиме политики инструментов из `cfg.chat_auto_tools`
+          принудительно ставятся в AUTO. Если конфиг не читается —
+          используется встроенный `_CHAT_AUTO_TOOLS`.
+        * `cfg.tool_policies` и явные `set_policy` из UI применяются
+          последними и могут переопределить AUTO/ASK_FIRST.
+        """
         from tools.registry import ALL_TOOLS
 
         registry = ToolRegistry()
         has_attached = bool(self._attached_files)
+
         for tool_func in ALL_TOOLS:
             meta = getattr(tool_func, "_tool_meta", None)
             if meta is None:
@@ -1694,7 +1707,15 @@ class ChatPanel(QWidget):
             registry.register(tool_func)
 
         if mode == AgentMode.CHAT:
-            for name in _CHAT_AUTO_TOOLS:
+            try:
+                cfg = load_config()
+                auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
+            except Exception as e:
+                logger.debug(
+                    f"chat_auto_tools: fallback на встроенный список: {e}"
+                )
+                auto_tools = list(_CHAT_AUTO_TOOLS)
+            for name in auto_tools:
                 registry.set_policy(name, ToolPolicy.AUTO)
 
         self._apply_config_policies(registry)
@@ -1742,6 +1763,7 @@ class ChatPanel(QWidget):
             "record_hypothesis": "Запись гипотезы",
             "update_hypothesis": "Обновление гипотезы",
             "list_hypotheses": "Список гипотез",
+            "run_shell_command": "Shell-команда",
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
@@ -1853,6 +1875,7 @@ class ChatPanel(QWidget):
             "record_hypothesis": "💡 Запись гипотезы",
             "update_hypothesis": "🔬 Обновление гипотезы",
             "list_hypotheses": "📋 Список гипотез",
+            "run_shell_command": "⚡ Shell-команда",
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         activity = f"{label}: {arg_summary}" if arg_summary else label

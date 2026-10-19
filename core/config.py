@@ -728,6 +728,28 @@ class AppConfig(BaseModel):
     embed_models: EmbedModels = Field(default_factory=EmbedModels)
     models: list[ModelConfig] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicy] = Field(default_factory=dict)
+    # Инструменты, которые в режиме CHAT выполняются без подтверждения.
+    # Раньше список жил в `ui/chat/panel.py::_CHAT_AUTO_TOOLS` — теперь он
+    # в конфиге: пользователь может дополнить его своим инструментом (например,
+    # read-only плагином), не пересобирая приложение. Проектный `.ollidesk/
+    # config.yaml` может переопределить список — так же, как `tool_policies`.
+    chat_auto_tools: list[str] = Field(
+        default_factory=lambda: [
+            "web_search",
+            "read_file",
+            "search_codebase",
+            "list_directory",
+            "get_weather",
+            "get_current_datetime",
+            "get_exchange_rate",
+            "get_exchange_rates_multi",
+            "get_git_status",
+            "read_attached_file",
+            "record_hypothesis",
+            "update_hypothesis",
+            "list_hypotheses",
+        ]
+    )
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
