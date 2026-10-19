@@ -252,6 +252,21 @@ _TOOL_FORMAT_HINT = (
     "Если данные из инструментов не нужны — дай обычный ответ по существу."
 )
 
+# Нудж при валидации Observation (React.md 2.4): модель пыталась вызывать
+# инструменты, но ВСЕ вызовы упали — ни одного валидного Observation.
+# Финальный ответ по таким данным — галлюцинация; требуем смены стратегии.
+_OBSERVATION_NUDGE = (
+    "Все твои вызовы инструментов завершились ошибкой — валидных Observation "
+    "нет. НЕЛЬЗЯ давать Final Answer по данным, которых ты не получил. "
+    "Смени стратегию:\n"
+    "  • search_codebase вместо read_file для поиска по смыслу;\n"
+    "  • list_directory, чтобы проверить существование пути;\n"
+    "  • другие аргументы (например, другой файл/каталог);\n"
+    "  • run_shell_command с `Test-Path`, если нужно проверить наличие файла "
+    "в Windows (только в режиме Agent).\n"
+    "Если данные действительно недоступны — честно сообщи пользователю, что "
+    "именно не удалось получить, и почему."
+)
 
 def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента."""
@@ -737,6 +752,7 @@ class AgentLoop:
         prev_signature: tuple[tuple[str, str], ...] | None = None
         nudged_tool_format = False
         nudged_hypothesis_first = False
+        nudged_observation_failure = False
 
         executed_calls: dict[tuple[str, str], str] = {}
         observation_budget = 0
@@ -1024,6 +1040,33 @@ class AgentLoop:
                         await on_status(NUDGE_STATUS_LABELS["hypothesis_first"])
 
                 continue
+
+            # --- Валидация Observation (React.md 2.4) ---
+            # Если модель уже пыталась вызывать инструменты, но ВСЕ вызовы
+            # упали (attempted > 0, successful == 0), финальный ответ по
+            # несуществующим данным — галлюцинация. Вклиниваемся ОДИН раз
+            # с требованием сменить стратегию. В synthesis-фазе и на последней
+            # итерации проверка отключена — там уже не до нуджей.
+            if (
+                current_text
+                and not is_synthesis_phase
+                and not nudged_observation_failure
+                and state.attempted_calls > 0
+                and state.successful_observations == 0
+            ):
+                nudged_observation_failure = True
+                logger.warning(
+                    "Все tool_calls упали "
+                    f"(attempted={state.attempted_calls}, successful=0) — "
+                    "прошу сменить стратегию"
+                )
+                messages.append(ChatMessage(role="assistant", content=current_text))
+                messages.append(ChatMessage(role="user", content=_OBSERVATION_NUDGE))
+                if on_status:
+                    await on_status("🔁 Все вызовы инструментов упали — прошу сменить стратегию…")
+                current_text = ""
+                continue
+
 
             # --- Нет tool_calls: модель пытается дать финальный ответ ---
             if current_text and research_mode and not is_synthesis_phase:

@@ -132,16 +132,32 @@ class InvestigationState:
     successful_reads: int = 0
     reads_per_file: dict[str, int] = field(default_factory=dict)
 
-    # [D4] Entry-point кандидаты из ProjectIntel. Если модель не открыла
+    # Entry-point кандидаты из ProjectIntel. Если модель не открыла
     # entry-point через read_file, но индекс знает кандидата и прочитано
     # ≥2 файла — этого достаточно для перехода к синтезу (deterministic
     # fallback вместо бесконечных нуджей).
     known_entry_points: list[str] = field(default_factory=list)
 
+    # Счётчики ВСЕХ вызовов и только успешных — для валидации Observation
+    # (React.md 2.4). Если модель «пыталась», но все вызовы упали
+    # (successful_observations == 0), AgentLoop не даст сформировать Final
+    # Answer: сначала нужно честно перепробовать другой инструмент/путь.
+    attempted_calls: int = 0
+    successful_observations: int = 0
+
     def note_call(self, name: str, arguments: dict, result_content: str, is_error: bool) -> None:
-        """Запоминает успешный вызов инструмента."""
+        """Запоминает вызов инструмента.
+
+        ``attempted_calls`` инкрементится ВСЕГДА (даже при ошибке) —
+        это индикатор «модель пыталась». ``successful_observations`` — только
+        для успешных вызовов; используется в AgentLoop для валидации
+        Observation (React.md 2.4): «все вызовы упали» — отдельный кейс,
+        отличный от «модель ничего не вызывала».
+        """
+        self.attempted_calls += 1
         if is_error:
             return
+        self.successful_observations += 1
         if name == "read_file":
             path = str(arguments.get("path") or "").strip()
             if path:

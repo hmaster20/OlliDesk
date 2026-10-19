@@ -1,5 +1,7 @@
 """Инструменты для чтения и записи файлов."""
 
+import subprocess
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -246,17 +248,53 @@ def list_directory(path: str, project_root: str = "") -> str:
     except Exception as e:
         return f"Ошибка чтения директории: {e}"
 
+def _verify_python_syntax(file_path: Path) -> str:
+    """Проверяет синтаксис .py-файла через ``python -m py_compile``.
+
+    Используется как внешний верификатор после ``write_file`` (React.md 4.2):
+    LLM-критик часто пропускает банальные опечатки (незакрытая скобка,
+    лишний отступ), а ``py_compile`` ловит их детерминированно. Для не-``.py``
+    файлов проверка отключена.
+
+    Args:
+        file_path: Путь к только что записанному файлу.
+
+    Returns:
+        Строка с текстом ошибки компиляции (stderr/stdout ``py_compile``)
+        или пустая строка, если синтаксис корректен либо проверить нельзя.
+    """
+    if file_path.suffix.lower() != ".py":
+        return ""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(file_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        logger.debug(f"py_compile для {file_path} пропущен: {e}")
+        return ""
+    if result.returncode != 0:
+        return (result.stderr or result.stdout or "unknown syntax error").strip()
+    return ""
 
 @tool(
     name="write_file",
     description="Записывает содержимое в файл. Перед записью создаёт Git-снапшот для отката.",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
-    is_mutating=True,
-    category="filesystem",
 )
 def write_file(path: str, content: str, project_root: str = "") -> str:
-    """Записывает содержимое в файл."""
+    """Записывает содержимое в файл.
+
+    После записи для ``.py`` запускается ``py_compile``; при синтаксической
+    ошибке её текст возвращается модели как Observation, чтобы она могла
+    исправить файл (React.md 4.2 — внешний верификатор надёжнее LLM-критика).
+    """
     file_path = _resolve_path(path, project_root)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
@@ -280,18 +318,28 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
             snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
+
+        # Внешний верификатор: py_compile для .py. Ошибка не откатывает
+        # запись (пользователь вправе видеть состояние), но возвращается
+        # модели в Observation — она должна исправить файл следующим вызовом.
+        syntax_error = _verify_python_syntax(file_path)
+
         if snapshot_status:
-            return f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
-        return (
-            f"Файл успешно обновлён: {file_path.name}. "
-            "(Git-снапшот не создан – проверьте наличие репозитория или наличие изменений.)"
-        )
+            base = f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
+        else:
+            base = (
+                f"Файл успешно обновлён: {file_path.name}. "
+                "(Git-снапшот не создан – проверьте наличие репозитория или наличие изменений.)"
+            )
+
+        if syntax_error:
+            logger.warning(f"py_compile {file_path} выявил синтаксическую ошибку")
+            return f"{base}\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
+        return base
     except PermissionError:
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
-
-
 def _resolve_path(path: str, project_root: str) -> Path | None:
     """Безопасно резолвит путь, не давая выйти за пределы project_root."""
     p = Path(path)
