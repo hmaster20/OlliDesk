@@ -68,6 +68,7 @@ class Orchestrator:
         on_event: Callable[[str, dict], None] | None = None,
         quality_mode: bool = False,
         deep: bool | None = None,
+        time_budget_s: float | None = None,
     ) -> RunResult:
         t0 = time.time()
         ev = on_event or (lambda k, d: None)
@@ -97,7 +98,9 @@ class Orchestrator:
         )
         analyst = self.pool.client(Role.ANALYST)
         ev("synthesize", {"role": "analyst", "input_chars": len(synth_prompt)})
+        t_synth = time.time()
         prose = await self._gen(analyst, Role.ANALYST, OpType.SYNTHESIS, synth_prompt)
+        synth_s = time.time() - t_synth
 
         answer = self._merge(prose, diagram)
         # Критика + верификация.
@@ -111,22 +114,37 @@ class Orchestrator:
             strict=not light,
         )
         if (not ver.ok or not crit.ok) and not light:
-            ev("regen", {"reason": ver.summary() or crit.hint})
-            fix = self._regen_hint(ver, crit)
-            prose2 = await self._gen(
-                analyst, Role.ANALYST, OpType.REGEN, synth_prompt + "\n\nИСПРАВЬ: " + fix
-            )
-            answer2 = self._merge(prose2, diagram)
-            ver2 = verify(
-                answer2,
-                graph=intel.graph,
-                evidence=evidence,
-                known_paths=self._known_paths(intel),
-                known_symbols=self._known_symbols(intel),
-                strict=False,
-            )
-            if ver2.ok or len(ver2.missing_paths) < len(ver.missing_paths):
-                answer, ver = answer2, ver2
+            # Регенерация стоит столько же, сколько синтез (~synth_s).
+            # Если она не укладывается в бюджет — берём первый ответ как есть.
+            elapsed = time.time() - t0
+            if time_budget_s is not None and elapsed + synth_s > time_budget_s:
+                ev(
+                    "regen_skipped",
+                    {
+                        "reason": "бюджет времени исчерпан",
+                        "elapsed_s": round(elapsed, 1),
+                        "synth_s": round(synth_s, 1),
+                        "verify_ok": ver.ok,
+                        "critique_ok": crit.ok,
+                    },
+                )
+            else:
+                ev("regen", {"reason": ver.summary() or crit.hint})
+                fix = self._regen_hint(ver, crit)
+                prose2 = await self._gen(
+                    analyst, Role.ANALYST, OpType.REGEN, synth_prompt + "\n\nИСПРАВЬ: " + fix
+                )
+                answer2 = self._merge(prose2, diagram)
+                ver2 = verify(
+                    answer2,
+                    graph=intel.graph,
+                    evidence=evidence,
+                    known_paths=self._known_paths(intel),
+                    known_symbols=self._known_symbols(intel),
+                    strict=False,
+                )
+                if ver2.ok or len(ver2.missing_paths) < len(ver.missing_paths):
+                    answer, ver = answer2, ver2
 
         metrics = {
             "elapsed_s": round(time.time() - t0, 1),
@@ -450,7 +468,21 @@ class Orchestrator:
         return {
             n.name
             for n in intel.graph.nodes.values()
-            if n.kind in {"class", "interface", "role", "module_tf", "resource", "box", "module", "namespace"}
+            if n.kind
+            in {
+                "class",
+                "interface",
+                "role",
+                "module_tf",
+                "resource",
+                "box",
+                "module",
+                "namespace",
+                "method",
+                "function",
+                "task",
+                "provisioner",
+            }
         }
 
     def _domain_summaries(self, intel) -> list[str]:
@@ -484,7 +516,13 @@ class Orchestrator:
         def _run(*args):
             try:
                 return subprocess.run(
-                    args, cwd=str(root), capture_output=True, text=True, timeout=5
+                    args,
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
                 ).stdout.strip()
             except Exception:
                 return ""

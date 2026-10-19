@@ -24,6 +24,13 @@ from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
 from fs.vector_store import SearchResult
 
+# Лимит времени Orchestrator. Синтез 7B на CPU занимает 200-250 с,
+# поэтому 5 минут не хватало даже без регенерации.
+ORCHESTRATOR_TIMEOUT_S = 600.0
+# Доля бюджета, которая остаётся под регенерацию (≈ такой же по длительности
+# повторный синтез); при исчерпании orchestrator пропускает regen сам.
+ORCHESTRATOR_TIME_BUDGET_S = 540.0
+
 
 def _dedupe_by_file(results: list[SearchResult]) -> list[SearchResult]:
     """Оставляет по одному лучшему чанку на файл."""
@@ -134,22 +141,24 @@ class AgentChatThread(QThread):
 
             if is_research_question(user_text):
                 try:
-                    # ИСПРАВЛЕНИЕ: не даем оркестратору висеть вечно
+                    # ИСПРАВЛЕНИЕ: не даем оркестратору висеть вечно.
+                    # 5 минут не хватало: синтез 7B на CPU — 200-250 с.
                     await asyncio.wait_for(
                         self._run_orchestrator(user_text),
-                        timeout=300.0  # 5 минут максимум на исследование
+                        timeout=ORCHESTRATOR_TIMEOUT_S,
                     )
                     return
-                except asyncio.TimeoutError:
-                    logger.error("Orchestrator timed out after 5 minutes")
+                except TimeoutError:
+                    logger.error(f"Orchestrator timed out after {ORCHESTRATOR_TIMEOUT_S:.0f}s")
                     self.orchestrator_event.emit(
                         "fallback",
-                        {"reason": "Таймаут 5 минут", "message": "Использую старый ReAct"},
+                        {
+                            "reason": f"Таймаут {ORCHESTRATOR_TIMEOUT_S / 60:.0f} минут",
+                            "message": "Использую старый ReAct",
+                        },
                     )
                 except Exception as e:
-                    logger.exception(
-                        "Orchestrator failed; fallback to AgentLoop"
-                    )
+                    logger.exception("Orchestrator failed; fallback to AgentLoop")
                     self.orchestrator_event.emit(
                         "fallback",
                         {"reason": str(e), "message": "Использую старый ReAct"},
@@ -254,6 +263,10 @@ class AgentChatThread(QThread):
                 self.status_changed.emit("✍️ Синтез ответа (7B CPU)…")
             elif kind == "regen":
                 self.thought_chunk.emit(f"🔄 Регенерация: {data.get('reason', '')}\n")
+            elif kind == "regen_skipped":
+                self.thought_chunk.emit(
+                    f"⏭ Регенерация пропущена ({data.get('reason', '')}) — оставляю первый вариант\n"
+                )
             elif kind == "nudge":
                 gaps = data.get("gaps") or []
                 preview = ", ".join(str(g) for g in gaps[:3])
@@ -270,6 +283,7 @@ class AgentChatThread(QThread):
             history=self.messages_history,
             on_event=_on_event,
             quality_mode=False,
+            time_budget_s=ORCHESTRATOR_TIME_BUDGET_S,
         )
 
         # Стримим ответ одним куском (оркестратор не стримит токены).

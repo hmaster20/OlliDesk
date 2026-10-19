@@ -17,7 +17,8 @@ from agents.evidence import EvidenceStore
 from fs.intel.graph import DependencyGraph
 
 _PATH_RE = re.compile(
-    r"(?:[\w./\\-]+\.(?:cs|py|rb|tf|yml|yaml|hcl|csproj|sln|json|toml|go|ts|js|md|config|resx|razor))(?::\d+)?"
+    r"(?:[\w./\\-]+\.(?:csproj|sln|razor|config|resx|yaml|yml|json|toml|md|cs|py|rb|tf|hcl|go|ts|js))"
+    r"(?![\w])(?::\d+)?"
 )
 _IDENT_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,})\b")  # классы/роли с большой буквы
 
@@ -65,53 +66,18 @@ def verify(
     # 2. Символы-идентификаторы (только те, что выглядят как классы/роли проекта).
     for name in set(_IDENT_RE.findall(answer)):
         if name in {
-            "ASCII",
-            "JSON",
-            "Markdown",
-            "Mermaid",
-            "UTF",
-            "HTTP",
-            "TCP",
-            "UDP",
-            "AES",
-            "HMAC",
-            "PBKDF2",
-            "DI",
-            "UI",
-            "API",
-            "CLI",
-            "ETL",
-            "RAG",
-            "LLM",
-            "SLM",
-            "GPU",
-            "CPU",
-            "RAM",
-            "VRAM",
-            "KV",
-            "TTFT",
-            "CI",
-            "RU",
-            "ISIN",
-            "SECID",
-            "MOEX",
-            "IPS",
-            "YTM",
-            "LTM",
-            "EBITDA",
-            "AKRA",
-            "OFGZ",
-            "RVI",
-            "IMOEX",
+            "NUnit",
+            "MSTest",
+            "xUnit",
         }:
             continue
-        if not any(name == s or name in s or s.endswith("." + name) or s == name for s in known_symbols):
-            # допускаем, если имя встречается в evidence-тексте дословно
-            if name not in evidence_pack_text(evidence):
-                res.unknown_symbols.append(name)
+        if not any(
+            name == s or name in s or s.endswith("." + name) or s == name for s in known_symbols
+        ) and name not in evidence_pack_text(evidence):
+            res.unknown_symbols.append(name)
     # 3. Пустые/повторяющиеся блоки ASCII.
     res.empty_blocks = len(re.findall(r"\+[-+]+\+\s*\n\s*\|\s+\|\s*\n\s*\+[-+]+\+", answer))
-    lines = [l for l in answer.splitlines() if l.strip()]
+    lines = [ln for ln in answer.splitlines() if ln.strip()]
     if lines:
         uniq = len(set(lines))
         res.repeats = len(lines) - uniq

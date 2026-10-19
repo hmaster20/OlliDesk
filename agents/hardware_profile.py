@@ -85,7 +85,9 @@ class HardwareProfile:
 def _run(cmd: list[str], timeout: float = 5.0) -> str | None:
     try:
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=flags)
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, errors="replace", timeout=timeout, creationflags=flags
+        )
         return r.stdout if r.returncode == 0 else None
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None

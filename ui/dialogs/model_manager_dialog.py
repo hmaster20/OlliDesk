@@ -39,6 +39,7 @@ class PullThread(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",
                 bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )

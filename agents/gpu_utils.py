@@ -34,6 +34,7 @@ def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             creationflags=creationflags,
         )
