@@ -1,14 +1,14 @@
 """Сжатие истории диалога при приближении к лимиту контекста.
 
 История в OlliDesk растёт неограниченно (`ChatPanel._messages`), а окно
-локальных моделей маленькое (по умолчанию 4096 токенов). Прежняя реализация
-(LLM-суммаризация всей истории) удалена в 1.4 как мёртвая: она запускала полную
-генерацию на каждом превышении и теряла структуру диалога.
+локальных моделей маленькое. Здесь — детерминированное прореживание по
+приоритету выбрасывания (4.8.E): сначала содержимое результатов инструментов
+(самые объёмные и наименее важные), затем старейшие реплики диалога целиком.
+Ведущие `system`-сообщения и последняя реплика сохраняются всегда.
 
-Здесь — детерминированное прореживание по приоритету выбрасывания (4.8.E):
-сначала содержимое результатов инструментов (самые объёмные и наименее важные),
-затем старейшие реплики диалога целиком. Ведущие `system`-сообщения и последняя
-реплика (текущий вопрос с последним ответом) сохраняются всегда.
+После миграции на MessagePart (4.8.A) `ChatMessage.content` — read-only
+свойство, поэтому замена содержимого делается через `with_content()`
+(см. `_stub_old_tool_results`).
 """
 
 from __future__ import annotations
@@ -34,16 +34,7 @@ MIN_BUDGET_TOKENS = 256
 
 
 def messages_tokens(messages: list[ChatMessage]) -> int:
-    """Оценивает число токенов в списке сообщений.
-
-    Учитывает текст, аргументы и имена tool-вызовов (они тоже уходят в промпт).
-
-    Args:
-        messages: Сообщения диалога.
-
-    Returns:
-        Оценка числа токенов (сверху).
-    """
+    """Оценивает число токенов в списке сообщений."""
     total = 0
     for message in messages:
         total += estimate_tokens(message.content or "")
@@ -67,15 +58,6 @@ def compact_history(
     содержимое старых результатов инструментов, затем выбрасываются старейшие
     реплики диалога целиком (вместе с их tool-вызовами, чтобы не оставлять
     «осиротевших» tool-сообщений). Последняя реплика не удаляется никогда.
-
-    Args:
-        messages: Полный список сообщений промпта (system + история).
-        num_ctx: Окно контекста модели в токенах.
-        threshold: Доля окна, выше которой включается сжатие.
-        keep_recent: Сколько последних сообщений диалога не трогать.
-
-    Returns:
-        Сжатый список сообщений (тот же объект, если сжатие не требуется).
     """
     if not messages or num_ctx <= 0:
         return messages
@@ -106,12 +88,17 @@ def compact_history(
 
 
 def _stub_old_tool_results(dialogue: list[ChatMessage], keep_recent: int) -> list[ChatMessage]:
-    """Заменяет содержимое старых `tool`-сообщений на короткую пометку."""
+    """Заменяет содержимое старых `tool`-сообщений на короткую пометку.
+
+    ``ChatMessage.content`` — read-only (property), поэтому замена идёт через
+    ``with_content()``: это создаёт копию с новым TextPart, сохраняя
+    ``tool_call_id``/``name`` и прочие части.
+    """
     protected_from = max(0, len(dialogue) - keep_recent)
     result: list[ChatMessage] = []
     for index, message in enumerate(dialogue):
         if index < protected_from and message.role == "tool" and message.content != TOOL_RESULT_STUB:
-            result.append(message.model_copy(update={"content": TOOL_RESULT_STUB}))
+            result.append(message.with_content(TOOL_RESULT_STUB))
         else:
             result.append(message)
     return result

@@ -3,11 +3,11 @@
 import json
 from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, Union, cast
 
 import httpx
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.context_budget import DEFAULT_NUM_CTX
 from core.exceptions import ModelNotFoundError, OllamaConnectionError, ToolsNotSupportedError
@@ -30,16 +30,153 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# MessagePart: типизированные части ChatMessage / ChatChunk (4.8.A)
+#
+# Раньше reasoning_content и tool_calls жили отдельными полями и либо
+# терялись при сохранении сессии, либо «склеивались» в один content.
+# Теперь — список типизированных частей; ChatMessage.content остаётся
+# read-only свойством, собираемым из TextPart (переходный период).
+# ---------------------------------------------------------------------------
+
+
+class TextPart(BaseModel):
+    """Текстовая часть сообщения (ответ модели / реплика пользователя)."""
+
+    kind: Literal["text"] = "text"
+    text: str = ""
+
+
+class ReasoningPart(BaseModel):
+    """Рассуждения модели (reasoning_content, thinking, chain-of-thought)."""
+
+    kind: Literal["reasoning"] = "reasoning"
+    text: str = ""
+
+
+class ToolCallPart(BaseModel):
+    """Запрос модели на вызов одного или нескольких инструментов."""
+
+    kind: Literal["tool_call"] = "tool_call"
+    calls: list[ToolCall] = Field(default_factory=list)
+
+
+class ToolResultPart(BaseModel):
+    """Результат выполнения инструмента (для будущей миграции role="tool").
+
+    Сейчас роль ``tool`` кодируется полями ``tool_call_id``/``name`` у
+    ChatMessage, но ToolResultPart доступен для перехода на единый формат.
+    """
+
+    kind: Literal["tool_result"] = "tool_result"
+    call_id: str = ""
+    name: str = ""
+    content: str = ""
+    is_error: bool = False
+
+
+# Discriminated union: pydantic выбирает конкретный тип по полю ``kind``.
+MessagePart = Annotated[
+    Union[TextPart, ReasoningPart, ToolCallPart, ToolResultPart],
+    Field(discriminator="kind"),
+]
+
+
 class ChatMessage(BaseModel):
-    """Сообщение в чате."""
+    """Сообщение в чате.
+
+    Основное хранилище — ``parts``. ``content`` / ``reasoning_content`` /
+    ``tool_calls`` — read-only свойства для обратной совместимости со всем
+    кодом, который ещё читает их как строки. Конструкторы вида
+    ``ChatMessage(role="user", content="hi")`` работают: ``model_validator``
+    конвертирует ``content`` в ``parts=[TextPart(text="hi")]``.
+    """
 
     id: str | None = None  # стабильный id (устраняет дубли user-реплик)
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    parts: list[MessagePart] = Field(default_factory=list)
     images: list[str] | None = None
-    tool_calls: list[ToolCall] | None = None
-    tool_call_id: str | None = None
-    name: str | None = None
+    tool_call_id: str | None = None  # для role="tool": id исходного tool_call
+    name: str | None = None          # для role="tool": имя инструмента
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_fields(cls, data: Any) -> Any:
+        """Принимает старый стиль ``content=/reasoning_content=/tool_calls=``.
+
+        Если ``parts`` уже передан — старые поля игнорируются (см. комментарий
+        в `history_compactor._stub_old_tool_results`: там нельзя использовать
+        `model_copy(update={"content": ...})`).
+        """
+        if not isinstance(data, dict):
+            return data
+        if "parts" in data:
+            data.pop("content", None)
+            data.pop("reasoning_content", None)
+            data.pop("tool_calls", None)
+            return data
+
+        parts: list[dict[str, Any]] = []
+        reasoning = data.pop("reasoning_content", None)
+        if reasoning:
+            parts.append({"kind": "reasoning", "text": reasoning})
+        content = data.pop("content", None)
+        if content:
+            parts.append({"kind": "text", "text": content})
+        tool_calls = data.pop("tool_calls", None)
+        if tool_calls:
+            parts.append({"kind": "tool_call", "calls": tool_calls})
+        data["parts"] = parts
+        return data
+
+    # --- read-only свойства для обратной совместимости ---
+
+    @property
+    def content(self) -> str:
+        """Собранный текст из всех TextPart."""
+        return "".join(p.text for p in self.parts if isinstance(p, TextPart))
+
+    @property
+    def reasoning_content(self) -> str:
+        """Собранные рассуждения из всех ReasoningPart."""
+        return "".join(p.text for p in self.parts if isinstance(p, ReasoningPart))
+
+    @property
+    def tool_calls(self) -> list[ToolCall] | None:
+        """Собранные tool_calls из всех ToolCallPart."""
+        calls: list[ToolCall] = []
+        for p in self.parts:
+            if isinstance(p, ToolCallPart):
+                calls.extend(p.calls)
+        return calls or None
+
+    # --- helper: заменить текст, сохранив остальные части ---
+
+    def with_content(self, new_content: str) -> "ChatMessage":
+        """Возвращает копию с заменённым текстом, сохраняя прочие части.
+
+        Используется компактором истории: содержимое старых tool-сообщений
+        схлопывается до заглушки, но ``tool_call_id``/``name`` и порядок
+        частей сохраняются, чтобы не нарушить структуру вызовов.
+        """
+        new_parts: list[MessagePart] = []
+        replaced = False
+        for p in self.parts:
+            if not replaced and isinstance(p, TextPart):
+                new_parts.append(TextPart(text=new_content))
+                replaced = True
+            else:
+                new_parts.append(p)
+        if not replaced:
+            new_parts.insert(0, TextPart(text=new_content))
+        return ChatMessage(
+            id=self.id,
+            role=self.role,
+            parts=new_parts,
+            images=self.images,
+            tool_call_id=self.tool_call_id,
+            name=self.name,
+        )
 
     def to_ollama_dict(self) -> dict:
         data: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -55,12 +192,60 @@ class ChatMessage(BaseModel):
 
 
 class ChatChunk(BaseModel):
-    """Один токен из стрима."""
+    """Один элемент стрима.
 
-    content: str = ""
-    reasoning_content: str = ""
-    tool_calls: list[ToolCall] | None = None
+    Основное хранилище — ``part`` + ``event_type``. ``content`` /
+    ``reasoning_content`` / ``tool_calls`` — read-only свойства для обратной
+    совместимости (см. `ChatMessage`).
+    """
+
+    part: MessagePart | None = None
+    event_type: Literal["start", "delta", "end", "tool_call"] | None = None
     done: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_fields(cls, data: Any) -> Any:
+        """Принимает старый стиль ``content=/reasoning_content=/tool_calls=``."""
+        if not isinstance(data, dict):
+            return data
+        if "part" in data:
+            data.pop("content", None)
+            data.pop("reasoning_content", None)
+            data.pop("tool_calls", None)
+            return data
+
+        reasoning = data.pop("reasoning_content", None)
+        content = data.pop("content", None)
+        tool_calls = data.pop("tool_calls", None)
+        if reasoning:
+            data["part"] = {"kind": "reasoning", "text": reasoning}
+            data.setdefault("event_type", "delta")
+        elif content:
+            data["part"] = {"kind": "text", "text": content}
+            data.setdefault("event_type", "delta")
+        elif tool_calls:
+            data["part"] = {"kind": "tool_call", "calls": tool_calls}
+            data.setdefault("event_type", "tool_call")
+        return data
+
+    @property
+    def content(self) -> str:
+        if isinstance(self.part, TextPart):
+            return self.part.text
+        return ""
+
+    @property
+    def reasoning_content(self) -> str:
+        if isinstance(self.part, ReasoningPart):
+            return self.part.text
+        return ""
+
+    @property
+    def tool_calls(self) -> list[ToolCall] | None:
+        if isinstance(self.part, ToolCallPart):
+            return self.part.calls or None
+        return None
 
 
 class ToolSchema(BaseModel):
@@ -104,7 +289,6 @@ class OllamaClient:
         self._cancel_requested = False
 
     async def __aenter__(self) -> "OllamaClient":
-        """Контекстный менеджер: вход."""
         self._client = httpx.AsyncClient(timeout=self.timeout)
         return self
 
@@ -114,27 +298,16 @@ class OllamaClient:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Контекстный менеджер: выход."""
         if self._client:
             await self._client.aclose()
             self._client = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Возвращает HTTP-клиент (создает при необходимости)."""
         if not self._client or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self.timeout)
         return self._client
 
     async def list_models(self) -> list[OllamaModelInfo]:
-        """
-        Получает список доступных моделей.
-
-        Returns:
-            list[OllamaModelInfo]: Список моделей
-
-        Raises:
-            OllamaConnectionError: Если не удалось подключиться
-        """
         client = await self._get_client()
         try:
             response = await client.get(f"{self.base_url}/api/tags")
@@ -149,7 +322,6 @@ class OllamaClient:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
     async def is_available(self) -> bool:
-        """Проверяет доступность сервера Ollama."""
         try:
             client = await self._get_client()
             response = await client.get(f"{self.base_url}/api/tags", timeout=3.0)
@@ -158,17 +330,40 @@ class OllamaClient:
             return False
 
     def cancel_request(self) -> None:
-        """Отменяет текущий стриминг-запрос (безопасно из любого потока)."""
         self._cancel_requested = True
 
     @property
     def is_cancelled(self) -> bool:
-        """True если запрос отменён."""
         return self._cancel_requested
 
     def reset_cancel(self) -> None:
-        """Сбрасывает флаг отмены."""
         self._cancel_requested = False
+
+    @staticmethod
+    def _chunks_from_ollama_message(msg: dict[str, Any]) -> list[ChatChunk]:
+        """Разбирает `message` из ответа Ollama на отдельные ChatChunk.
+
+        Возвращает: reasoning-delta, text-delta, tool_call — в порядке,
+        в котором их принято показывать (сначала мысли, потом текст, потом
+        вызовы). Если все поля пустые — пустой список.
+        """
+        chunks: list[ChatChunk] = []
+        reasoning = msg.get("reasoning_content", "")
+        if reasoning:
+            chunks.append(ChatChunk(part=ReasoningPart(text=reasoning), event_type="delta"))
+        content = msg.get("content", "")
+        if content:
+            chunks.append(ChatChunk(part=TextPart(text=content), event_type="delta"))
+        raw_calls = msg.get("tool_calls")
+        if raw_calls:
+            try:
+                calls = [ToolCall(**tc["function"]) for tc in raw_calls]
+            except (KeyError, TypeError) as e:
+                logger.warning(f"Некорректный tool_calls от Ollama: {e}; {raw_calls!r}")
+                calls = []
+            if calls:
+                chunks.append(ChatChunk(part=ToolCallPart(calls=calls), event_type="tool_call"))
+        return chunks
 
     async def chat(
         self,
@@ -179,36 +374,16 @@ class OllamaClient:
         stream: bool = True,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
-        """
-        Отправляет запрос в чат со стримингом.
-
-        Args:
-            model: Имя модели
-            messages: Список сообщений
-            tools: Список инструментов (JSON-схемы)
-            options: Опции чата
-            stream: Использовать стриминг
-
-        Yields:
-            ChatChunk: Токены из стрима
-
-        Raises:
-            OllamaConnectionError: Если не удалось подключиться
-            ModelNotFoundError: Если модель не найдена
-            ToolsNotSupportedError: Если модель не поддерживает инструменты
-        """
+        """Отправляет запрос в чат со стримингом."""
         client = await self._get_client()
 
-        # Формируем запрос
-        request_data = {
+        request_data: dict[str, Any] = {
             "model": model,
             "messages": [m.to_ollama_dict() for m in messages],
             "stream": stream,
         }
-
         if tools:
             request_data["tools"] = [t.model_dump() for t in tools]
-
         if options:
             request_data["options"] = options.model_dump()
 
@@ -237,23 +412,18 @@ class OllamaClient:
                         async for line in response.aiter_lines():
                             if self._cancel_requested:
                                 return
-                            if line:
-                                chunk_data = json.loads(line)
-                                msg = chunk_data.get("message", {})
-                                chunk = ChatChunk(
-                                    content=msg.get("content", ""),
-                                    reasoning_content=msg.get("reasoning_content", ""),
-                                    tool_calls=[
-                                        ToolCall(**tc["function"]) for tc in msg.get("tool_calls", [])
-                                    ]
-                                    if msg.get("tool_calls")
-                                    else None,
-                                    done=chunk_data.get("done", False),
-                                )
-                                yield chunk
+                            if not line:
+                                continue
+                            chunk_data = json.loads(line)
+                            msg = chunk_data.get("message", {})
+                            for c in self._chunks_from_ollama_message(msg):
+                                yield c
+                            if chunk_data.get("done", False):
+                                yield ChatChunk(event_type="end", done=True)
                 except httpx.HTTPStatusError as e:
-                    # Перехватываем HTTPStatusError из client.stream()
-                    logger.error(f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}")
+                    logger.error(
+                        f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}"
+                    )
                     if e.response.status_code == 404:
                         raise ModelNotFoundError(f"Модель '{model}' не найдена") from e
                     if e.response.status_code == 400 and "does not support tools" in e.response.text:
@@ -269,14 +439,9 @@ class OllamaClient:
                 response.raise_for_status()
                 data = response.json()
                 msg = data.get("message", {})
-                yield ChatChunk(
-                    content=msg.get("content", ""),
-                    reasoning_content=msg.get("reasoning_content", ""),
-                    tool_calls=[ToolCall(**tc["function"]) for tc in msg.get("tool_calls", [])]
-                    if msg.get("tool_calls")
-                    else None,
-                    done=True,
-                )
+                for c in self._chunks_from_ollama_message(msg):
+                    yield c
+                yield ChatChunk(event_type="end", done=True)
 
         except httpx.ConnectError as e:
             logger.error(f"Ollama ConnectError ({type(e).__name__}): {e!r}")
@@ -286,36 +451,17 @@ class OllamaClient:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
-        """
-        Получает эмбеддинги для списка текстов.
-
-        Args:
-            model: Имя модели
-            texts: Список текстов
-
-        Returns:
-            list[list[float]]: Список векторов
-
-        Raises:
-            OllamaConnectionError: Если не удалось подключиться
-            ModelNotFoundError: Если модель не найдена
-        """
         client = await self._get_client()
-
         try:
             response = await client.post(
                 f"{self.base_url}/api/embed",
-                json={
-                    "model": model,
-                    "input": texts,
-                },
+                json={"model": model, "input": texts},
             )
             response.raise_for_status()
             data = response.json()
             embeddings = data.get("embeddings", [])
             logger.debug(f"Получено эмбеддингов: {len(embeddings)}")
             return cast(list[list[float]], embeddings)
-
         except httpx.ConnectError as e:
             raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPStatusError as e:
@@ -326,10 +472,6 @@ class OllamaClient:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
     async def check_tools_support(self, model: str) -> bool:
-        """
-        Проверяет поддержку инструментов моделью через dummy tool call.
-        Возвращает True, если модель поддерживает tools, иначе False.
-        """
         dummy_tool = ToolSchema(
             function={
                 "name": "check_tools_support",
@@ -349,7 +491,6 @@ class OllamaClient:
             response.raise_for_status()
             return True
         except httpx.HTTPStatusError as e:
-            # Ollama возвращает 400 с сообщением "does not support tools"
             if e.response.status_code == 400 and "does not support tools" in e.response.text:
                 logger.info(f"Модель {model} не поддерживает инструменты.")
                 return False

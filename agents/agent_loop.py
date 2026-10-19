@@ -31,6 +31,7 @@ from agents.investigation import (
     pick_nudge,
 )
 from agents.ollama_client import ChatMessage, ToolCall
+from agents.ollama_client import ReasoningPart, TextPart, ToolCallPart
 from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ErrorCategory, ToolRegistry
 from core.config import AgentMode, ToolPolicy
@@ -680,11 +681,13 @@ class AgentLoop:
                 stream=True,
             )
             async for chunk in stream:
-                if chunk.reasoning_content and on_thinking:
-                    await on_thinking(chunk.reasoning_content)
-                if chunk.content:
-                    final_text += chunk.content
-                    await on_token(chunk.content)
+                part = chunk.part
+                if isinstance(part, ReasoningPart) and part.text:
+                    if on_thinking:
+                        await on_thinking(part.text)
+                elif isinstance(part, TextPart) and part.text:
+                    final_text += part.text
+                    await on_token(part.text)
         except Exception as e:
             logger.error(f"Ошибка финального синтеза ({reason}): {e}")
         return final_text
@@ -828,16 +831,18 @@ class AgentLoop:
                 )
 
                 async for chunk in stream:
-                    if chunk.reasoning_content and on_thinking:
-                        await on_thinking(chunk.reasoning_content)
-                    if chunk.content:
-                        current_text += chunk.content
+                    part = chunk.part
+                    if isinstance(part, ReasoningPart) and part.text:
+                        if on_thinking:
+                            await on_thinking(part.text)
+                    elif isinstance(part, TextPart) and part.text:
+                        current_text += part.text
                         if split_thoughts and not is_synthesis_phase:
-                            await on_thought(chunk.content)  # type: ignore[misc]
+                            await on_thought(part.text)  # type: ignore[misc]
                         else:
-                            await on_token(chunk.content)
-                    if chunk.tool_calls:
-                        pending_tool_calls.extend(chunk.tool_calls)
+                            await on_token(part.text)
+                    elif isinstance(part, ToolCallPart) and part.calls:
+                        pending_tool_calls.extend(part.calls)
 
                 if self.client.is_cancelled:
                     logger.info("Запрос отменён пользователем")
