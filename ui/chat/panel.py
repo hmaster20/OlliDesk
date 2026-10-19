@@ -597,6 +597,25 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, self._scroll_to_bottom)
         return widget
 
+    def _ensure_assistant_widget(self) -> ChatMessageItem:
+        """Гарантирует наличие текущего пузыря ассистента.
+
+        Композитный пузырь 4.8.B: reasoning, text и tool_call-карточки
+        добавляются в ОДИН виджет по мере стриминга. Если текущего пузыря
+        нет (например, модель сразу вызвала tool без reasoning/текста) —
+        создаём его.
+        """
+        if self._last_assistant_widget is None:
+            widget = ChatMessageItem(
+                "assistant", "", mode_name=self._current_mode_name()
+            )
+            self._last_assistant_widget = widget
+            self.scroll_layout.insertWidget(
+                self.scroll_layout.count() - 1, widget
+            )
+            self._update_bubble_width(widget)
+        return self._last_assistant_widget
+
     def _show_activity(self, text: str) -> None:
         if not text:
             return
@@ -808,36 +827,16 @@ class ChatPanel(QWidget):
             # OllamaClient / LocalLLMClient, для отладки доступны.
             return
         self._current_thinking_content += token
-        if self._last_assistant_widget is None:
-            widget = ChatMessageItem(
-                "assistant",
-                "",
-                thinking=self._current_thinking_content,
-                mode_name=self._current_mode_name(),
-            )
-            self._last_assistant_widget = widget
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-            self._update_bubble_width(widget)
-        else:
-            self._last_assistant_widget.update_thinking(self._current_thinking_content)
+        widget = self._ensure_assistant_widget()
+        widget.append_reasoning(token)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     @Slot(str)
     def _on_chunk(self, content: str):
-        """Старая дорожка (не-research): стриминг в обычное сообщение."""
+        """Стриминг текста в композитный пузырь (TextPart)."""
         self._current_assistant_content += content
-        if self._last_assistant_widget is None:
-            widget = ChatMessageItem(
-                "assistant",
-                self._current_assistant_content,
-                thinking=self._current_thinking_content,
-                mode_name=self._current_mode_name(),
-            )
-            self._last_assistant_widget = widget
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-            self._update_bubble_width(widget)
-        else:
-            self._last_assistant_widget.update_content(self._current_assistant_content)
+        widget = self._ensure_assistant_widget()
+        widget.append_text(content)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _setup_ui(self):
@@ -1939,8 +1938,19 @@ class ChatPanel(QWidget):
         if not self._research_mode_active:
             self._show_activity(activity)
 
+        # 4.8.B: карточка tool_call — в ТЕКУЩИЙ пузырь ассистента.
+        # Если модель вызвала инструмент без предварительного текста —
+        # пузырь создастся здесь же (см. _ensure_assistant_widget).
+        if not self._research_mode_active:
+            widget = self._ensure_assistant_widget()
+            widget.append_tool_call(name, arguments_json)
+
+        # Сброс для следующей итерации: следующий текст/рассуждение пойдут
+        # уже в новый пузырь. Reasoning сбрасывается тоже — это другая
+        # итерация модели.
         self._last_assistant_widget = None
         self._current_assistant_content = ""
+        self._current_thinking_content = ""
 
     @Slot(str)
     def _on_status_event(self, text: str):
@@ -1969,6 +1979,10 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_agent_finish(self, result: str):
+        # 4.8.B: свернуть reasoning в последнем пузыре — модель закончила.
+        if self._last_assistant_widget is not None:
+            self._last_assistant_widget.finalize()
+
         # --- Research-режим: паспорт с выводами, без обычного пузыря ---
         if self._research_mode_active and not self._research_cancelled:
             summary = self._last_research_summary
@@ -2058,6 +2072,9 @@ class ChatPanel(QWidget):
         )
 
     def _send_finished(self):
+        if self._last_assistant_widget is not None:
+            self._last_assistant_widget.finalize()
+
         if self._current_assistant_content:
             assistant_message = ChatMessage(role="assistant", content=self._current_assistant_content)
             self._messages.append(assistant_message)
@@ -2551,6 +2568,10 @@ class ChatPanel(QWidget):
         Здесь добавляем диаграмму и краткую сводку evidence, затем cleanup.
         """
         try:
+            # 4.8.B: свернуть reasoning перед фиксацией ответа.
+            if self._last_assistant_widget is not None:
+                self._last_assistant_widget.finalize()
+
             # Сохраняем assistant-сообщение в историю (иначе следующая
             # итерация не увидит ответ в messages_history).
             if result.answer:
