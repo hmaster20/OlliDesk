@@ -32,7 +32,7 @@ from agents.investigation import (
 )
 from agents.ollama_client import ChatMessage, ToolCall
 from agents.tool_call_parser import extract_tool_calls
-from agents.tool_registry import ToolRegistry
+from agents.tool_registry import ErrorCategory, ToolRegistry
 from core.config import AgentMode, ToolPolicy
 from core.context_budget import (
     CHARS_PER_TOKEN,
@@ -402,6 +402,27 @@ def _build_system_prompt(
 
     return _assemble_prompt(pre, variable)
 
+# Подсказки модели при ошибке инструмента: дописываются в конец tool-сообщения,
+# чтобы модель не повторяла тот же вызов «в лоб», а скорректировала стратегию.
+# Категория выставляется в ToolRegistry.execute по типу исключения.
+_RETRY_HINTS: dict[ErrorCategory, str] = {
+    ErrorCategory.FIX_ARGUMENTS: (
+        "\n\n💡 Аргументы не прошли валидацию. Перечитай схему инструмента "
+        "и исправь типы/обязательные поля. Не повторяй тот же вызов."
+    ),
+    ErrorCategory.DIFFERENT_PATH: (
+        "\n\n💡 Файл/путь не найден. Проверь путь через list_directory "
+        "или search_codebase и попробуй ДРУГОЙ путь — не тот же самый."
+    ),
+    ErrorCategory.RETRY_LATER: (
+        "\n\n💡 Временная сетевая ошибка. Можешь повторить вызов через "
+        "паузу, либо продолжить с тем, что уже есть."
+    ),
+    ErrorCategory.REPORT_TO_USER: (
+        "\n\n💡 Инструмент упал. Сообщи пользователю причину честно, "
+        "не подменяй выдумкой."
+    ),
+}
 
 def _create_tool_result_message(
     tool_call_id: str,
@@ -409,6 +430,7 @@ def _create_tool_result_message(
     content: str,
     is_error: bool = False,
     max_chars: int = 0,
+    error_category: ErrorCategory | None = None,
 ) -> ChatMessage:
     """Создаёт сообщение с результатом выполнения инструмента.
 
@@ -418,6 +440,9 @@ def _create_tool_result_message(
     хвоста модель теряет ориентир, где она остановилась.
 
     ``max_chars=0`` отключает усечение — так сообщение передаётся «как есть».
+
+    Если ``is_error`` и ``error_category`` заданы — к результату дописывается
+    ``retry_hint`` (после обрезки, чтобы подсказка гарантированно сохранилась).
     """
     if max_chars > 0 and len(content) > max_chars:
         marker = "\n\n… [середина результата опущена] …\n\n"
@@ -428,13 +453,13 @@ def _create_tool_result_message(
         else:
             content = content[:max_chars]
     prefix = "❌ Ошибка:\n" if is_error else ""
+    hint = _RETRY_HINTS.get(error_category, "") if (is_error and error_category is not None) else ""
     return ChatMessage(
         role="tool",
-        content=f"{prefix}{content}",
+        content=f"{prefix}{content}{hint}",
         tool_call_id=tool_call_id,
         name=name,
     )
-
 
 class AgentLoop:
     """Цикл ReAct агента (CHAT / PLAN / AGENT)."""
@@ -967,6 +992,7 @@ class AgentLoop:
                             result.content,
                             is_error=result.is_error,
                             max_chars=observation_budget,
+                            error_category=result.error_category,
                         )
                     )
 

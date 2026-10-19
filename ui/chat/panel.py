@@ -185,6 +185,7 @@ class ChatPanel(QWidget):
         self._current_thought_stream: ChatThoughtStream | None = None
 
         self._generating = False
+        self._last_run_params: dict | None = None   # для кнопки «Продолжить»
         self._last_assistant_widget: ChatMessageItem | None = None
         self.tool_policies: dict[str, ToolPolicy] = {}
         self.registry: ModelRegistry | None = None
@@ -962,8 +963,20 @@ class ChatPanel(QWidget):
         self.input_edit.installEventFilter(self)
         input_layout.addWidget(self.input_edit, stretch=1)
 
-        self.input_edit.textChanged.connect(self._highlight_web_command)
-        self.scroll_area.viewport().installEventFilter(self)
+        # Кнопка «Продолжить» показывается только при исчерпании лимита
+        # итераций (см. _on_iteration_limit_exceeded / _continue_after_limit).
+        self.continue_btn = QPushButton("▶ Продолжить")
+        self.continue_btn.setToolTip(
+            "Дать агенту больше шагов: увеличить лимит в 2 раза (макс. 200) "
+            "и повторить запрос с текущей историей."
+        )
+        self.continue_btn.setStyleSheet(
+            "font-size: 14px; padding: 8px 16px; background: #f57c00;"
+            " color: white; border: none; border-radius: 4px;"
+        )
+        self.continue_btn.setVisible(False)
+        self.continue_btn.clicked.connect(self._continue_after_limit)
+        input_layout.addWidget(self.continue_btn)
 
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
@@ -1103,6 +1116,9 @@ class ChatPanel(QWidget):
         if not keep_session:
             self._session_id = None
         self._last_assistant_widget = None
+        self._last_run_params = None
+        if hasattr(self, "continue_btn"):
+            self.continue_btn.setVisible(False)
         self.status_label.setText("Чат очищен")
 
     def _create_session(self):
@@ -1187,6 +1203,8 @@ class ChatPanel(QWidget):
         self._research_mode_active = False
         self._research_cancelled = False
         self._current_thought_stream = None
+        if hasattr(self, "continue_btn"):
+            self.continue_btn.setVisible(False)
 
     def _send_message(self):
         if self._generating:
@@ -1194,6 +1212,8 @@ class ChatPanel(QWidget):
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
+        if hasattr(self, "continue_btn"):
+            self.continue_btn.setVisible(False)
         self.input_edit.clear()
         self.input_edit.setFocus()
 
@@ -1372,7 +1392,7 @@ class ChatPanel(QWidget):
         self._last_research_summary = None
         self._current_thought_stream = None
 
-    def _do_chat(self, text: str):
+    def _do_chat(self, text: str, override_limit: int | None = None):
         """Запускает ReAct-цикл в режиме Chat.
 
         Размер проекта определяет флоу:
@@ -1409,7 +1429,7 @@ class ChatPanel(QWidget):
             total_bytes=total_bytes,
         )
         is_research = plan["research"] and is_research_question(text)
-        max_iters = plan["max_iters"]
+        max_iters = override_limit if override_limit is not None else plan["max_iters"]
 
         if is_research:
             logger.info(
@@ -1474,10 +1494,22 @@ class ChatPanel(QWidget):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
         )
+        self._last_run_params = {
+            "kind": "chat",
+            "text": text,
+            "rag_context": self._rag_context or "",
+            "max_iters": max_iters,
+        }
 
         self._connect_agent_thread_signals()
 
-    def _do_agent(self, text: str, mode: AgentMode, rag_context: str):
+    def _do_agent(
+        self,
+        text: str,
+        mode: AgentMode,
+        rag_context: str,
+        override_limit: int | None = None,
+    ):
         """Запускает ReAct-цикл в режимах Plan / Agent.
 
         Размер проекта определяет лимит итераций и наличие research-фаз:
@@ -1518,19 +1550,21 @@ class ChatPanel(QWidget):
         # Agent-режим: полный лимит независимо от размера проекта (рефакторинг
         # может быть длинным); research-фазы не ограничиваем.
         if mode == AgentMode.AGENT:
-            try:
-                from core.config import load_config
-
-                max_iters = load_config().agent_max_iterations
-            except Exception:
-                max_iters = 30
+            if override_limit is not None:
+                max_iters = override_limit
+            else:
+                try:
+                    from core.config import load_config
+                    max_iters = load_config().agent_max_iterations
+                except Exception:
+                    max_iters = 30
             logger.info(
                 f"Agent-режим, {max_iters} итераций "
                 f"(файлов={file_count}, research={'on' if is_research else 'off'})"
             )
         else:
             # Plan-режим: как Chat — размер проекта важен.
-            max_iters = plan["max_iters"]
+            max_iters = override_limit if override_limit is not None else plan["max_iters"]
             if is_research:
                 logger.info(
                     f"Plan-режим, research-вопрос: лимит {max_iters} "
@@ -1582,6 +1616,14 @@ class ChatPanel(QWidget):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
         )
+
+        self._last_run_params = {
+            "kind": "agent",
+            "text": text,
+            "mode": mode,
+            "rag_context": rag_context,
+            "max_iters": max_iters,
+        }
 
         self._connect_agent_thread_signals()
 
@@ -2035,10 +2077,55 @@ class ChatPanel(QWidget):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
+        # Прерываем возможный research-прогон: паспорт не строим, флаги
+        # сбрасываем. Кнопка «Продолжить» даст пользователю шанс.
+        self._reset_research_state()
+        self._reset_send_button()
         self._show_activity(
-            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы агент сформировал Final Answer"
+            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать "
+            "агенту больше шагов."
         )
-        self.status_label.setText("Достигнут лимит итераций — готово к продолжению")
+        self.status_label.setText("Достигнут лимит итераций — можно продолжить")
+        self.continue_btn.setVisible(True)
+        self.continue_btn.setEnabled(True)
+
+    @Slot()
+    def _continue_after_limit(self) -> None:
+        """Перезапускает запрос с удвоенным лимитом итераций.
+
+        Модель начинает с ТЕКУЩЕЙ истории диалога (включая прошлый
+        незавершённый ответ), но получает больше бюджета шагов. Если снова
+        упрётся — кнопка появится снова, и можно будет продолжить дальше.
+        """
+        if self._generating:
+            return
+        params = self._last_run_params
+        if not params:
+            self.continue_btn.setVisible(False)
+            return
+
+        current = int(params.get("max_iters", 10))
+        # Удваиваем, но не меньше +10 и не больше 200 — иначе 7B на CPU
+        # будет считать часами.
+        new_limit = min(max(current * 2, current + 10), 200)
+
+        self.continue_btn.setVisible(False)
+        self._add_message(
+            "system",
+            f"▶ Продолжаю с увеличенным лимитом: {current} → {new_limit} шагов. "
+            "Модель начнёт с текущей истории, но получит больше бюджета. "
+            "Если снова упрётся — кнопка появится опять.",
+        )
+
+        if params["kind"] == "chat":
+            self._do_chat(params["text"], override_limit=new_limit)
+        else:
+            self._do_agent(
+                params["text"],
+                params["mode"],
+                params["rag_context"],
+                override_limit=new_limit,
+            )
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):

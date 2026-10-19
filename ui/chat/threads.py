@@ -223,9 +223,12 @@ class AgentChatThread(QThread):
                 self.research_summary_ready.emit(summary)
 
             self.finish_received.emit(result)
-        except AgentIterationLimitError as e:
+        except AgentIterationLimitError:
+            # error_occurred НЕ эмитим: UI в _on_iteration_limit_exceeded
+            # показывает «⏸ Достигнут лимит» и кнопку «Продолжить». Дубль
+            # «❌ Ошибка агента: ...» только запутал бы пользователя —
+            # это не сбой, а исчерпание бюджета шагов.
             self.iteration_limit_exceeded.emit()
-            self.error_occurred.emit(str(e))
         except Exception as e:
             self.error_occurred.emit(f"Ошибка агента: {e}")
 

@@ -3,8 +3,10 @@
 import inspect
 import json
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Any, TypeVar, get_type_hints
 
+import httpx
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError, create_model
 
@@ -15,14 +17,44 @@ from core.exceptions import ToolExecutionError
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class ErrorCategory(StrEnum):
+    """Категория ошибки инструмента — подсказывает модели следующий шаг.
+
+    Используется `AgentLoop` при формировании tool-сообщения: к тексту ошибки
+    дописывается `retry_hint` (см. `agents/agent_loop.py::_RETRY_HINTS`), чтобы
+    модель не повторяла тот же вызов «в лоб», а скорректировала стратегию.
+    """
+
+    # Аргументы не прошли валидацию (pydantic/JSON-схема, неизвестный
+    # инструмент). Модель должна перечитать схему и исправить вызов.
+    FIX_ARGUMENTS = "fix_arguments"
+    # Файл/каталог не найден. Модель должна проверить путь и попробовать
+    # ДРУГОЙ — повтор с тем же аргументом бесполезен.
+    DIFFERENT_PATH = "different_path"
+    # Транспортная сетевая ошибка (connect/timeout). Повтор через паузу
+    # может помочь; продолжать с тем, что есть, тоже допустимо.
+    RETRY_LATER = "retry_later"
+    # Прочие падения. Модель должна честно сообщить пользователю, а не
+    # подменять результат выдумкой.
+    REPORT_TO_USER = "report_to_user"
+
+
 class ToolResult:
     """Результат выполнения инструмента."""
 
-    def __init__(self, tool_call_id: str, name: str, content: str, is_error: bool = False):
+    def __init__(
+        self,
+        tool_call_id: str,
+        name: str,
+        content: str,
+        is_error: bool = False,
+        error_category: ErrorCategory | None = None,
+    ):
         self.tool_call_id = tool_call_id
         self.name = name
         self.content = content
         self.is_error = is_error
+        self.error_category = error_category
 
 
 def _type_to_json_schema(tp: type) -> dict[str, Any]:
@@ -127,7 +159,7 @@ def tool(
     policy: ToolPolicy = ToolPolicy.ASK_FIRST,
     modes: list[AgentMode] | None = None,
     is_mutating: bool = False,
-    category: str = "filesystem",  # "filesystem"|"shell"|"network"|"git"|"info"
+    category: str = "filesystem",
 ) -> Callable[[F], F]:
     """Декоратор для регистрации функции как инструмента.
 
@@ -136,6 +168,10 @@ def tool(
         description: Описание для LLM
         policy: Политика выполнения
         modes: Режимы агента, в которых доступен инструмент
+        is_mutating: True, если инструмент меняет состояние (файлы, git,
+            shell). Используется UI для выбора иконки/цвета; дефолт False.
+        category: ``filesystem`` | ``shell`` | ``network`` | ``git`` | ``info``.
+            Тоже для UI-подсказок; дефолт ``filesystem``.
     """
 
     def decorator(func: F) -> F:
@@ -228,7 +264,9 @@ class ToolRegistry:
             extra_kwargs: Дополнительные аргументы (например, project_root, vector_store)
 
         Returns:
-            ToolResult с результатом или ошибкой
+            ToolResult с результатом или ошибкой. У ошибок выставлен
+            ``error_category``, чтобы ``AgentLoop`` мог дописать подсказку
+            (см. `agents/agent_loop.py::_RETRY_HINTS`).
         """
         meta = self._tools.get(tool_call.name)
         if not meta:
@@ -242,6 +280,7 @@ class ToolRegistry:
                 name=tool_call.name,
                 content=json.dumps(payload, ensure_ascii=False),
                 is_error=True,
+                error_category=ErrorCategory.FIX_ARGUMENTS,
             )
 
         func = meta["func"]
@@ -260,6 +299,7 @@ class ToolRegistry:
                     name=tool_call.name,
                     content=f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
                     is_error=True,
+                    error_category=ErrorCategory.FIX_ARGUMENTS,
                 )
             args_from_model = validated.model_dump()
         else:
@@ -279,6 +319,24 @@ class ToolRegistry:
             )
         except ToolExecutionError:
             raise
+        except FileNotFoundError as e:
+            logger.warning(f"Инструмент {tool_call.name}: файл не найден: {e}")
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=f"Ошибка: файл не найден: {e}",
+                is_error=True,
+                error_category=ErrorCategory.DIFFERENT_PATH,
+            )
+        except (ConnectionError, TimeoutError, httpx.TransportError) as e:
+            logger.warning(f"Инструмент {tool_call.name}: временная сетевая ошибка: {e}")
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=f"Ошибка: временная сетевая проблема: {e}",
+                is_error=True,
+                error_category=ErrorCategory.RETRY_LATER,
+            )
         except Exception as e:
             logger.error(f"Ошибка выполнения инструмента {tool_call.name}: {e}")
             return ToolResult(
@@ -286,4 +344,5 @@ class ToolRegistry:
                 name=tool_call.name,
                 content=f"Ошибка: {e}",
                 is_error=True,
+                error_category=ErrorCategory.REPORT_TO_USER,
             )
