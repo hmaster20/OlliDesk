@@ -263,14 +263,14 @@ class LocalLLMClient:
                     + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
                     + f", промпт ~{prompt_chars} симв."
                 )
-
-                tool_call: ToolCall | None = None
+                tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
-                    tool_call = self._parse_tool_call(full_text, tools)
+                    tool_calls = self._parse_tool_calls(full_text, tools)
 
-                if tool_call is not None:
-                    logger.info(f"SLM: распознан tool_call → {tool_call.name}({tool_call.arguments})")
-                    _safe_put(ChatChunk(content="", tool_calls=[tool_call], done=False))
+                if tool_calls:
+                    for tc in tool_calls:
+                        logger.info(f"SLM: распознан tool_call → {tc.name}({tc.arguments})")
+                    _safe_put(ChatChunk(content="", tool_calls=tool_calls, done=False))
                     _safe_put(ChatChunk(content="", done=True))
                 else:
                     if full_text:
@@ -400,8 +400,7 @@ class LocalLLMClient:
     # --- Tool-call parsing ---
 
     def _parse_tool_call(self, text: str, tools: list[Any] | None = None) -> ToolCall | None:
-        calls = extract_tool_calls(text, tools)
-        return calls[0] if calls else None
+        return extract_tool_calls(text, tools)
 
     # --- Инструкция для модели ---
 

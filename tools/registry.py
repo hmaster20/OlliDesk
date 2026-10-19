@@ -13,6 +13,7 @@ from tools import (
     exchange_rate,
     file_ops,
     git_ops_tool,
+    hypothesis,
     weather,
     web_search,
 )
@@ -40,4 +41,8 @@ ALL_TOOLS = [
     git_ops_tool.tool_undo_snapshot,
     # attached_files
     attached_files.read_attached_file,
+    # hypothesis
+    hypothesis.record_hypothesis,
+    hypothesis.update_hypothesis,
+    hypothesis.list_hypotheses,
 ]

@@ -252,6 +252,8 @@ def list_directory(path: str, project_root: str = "") -> str:
     description="Записывает содержимое в файл. Перед записью создаёт Git-снапшот для отката.",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
+    is_mutating=True,
+    category="filesystem",
 )
 def write_file(path: str, content: str, project_root: str = "") -> str:
     """Записывает содержимое в файл."""

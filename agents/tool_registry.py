@@ -126,6 +126,8 @@ def tool(
     description: str,
     policy: ToolPolicy = ToolPolicy.ASK_FIRST,
     modes: list[AgentMode] | None = None,
+    is_mutating: bool = False,
+    category: str = "filesystem",  # "filesystem"|"shell"|"network"|"git"|"info"
 ) -> Callable[[F], F]:
     """Декоратор для регистрации функции как инструмента.
 
@@ -142,6 +144,8 @@ def tool(
             "description": description,
             "policy": policy,
             "modes": modes or [AgentMode.PLAN, AgentMode.AGENT],
+            "is_mutating": is_mutating,
+            "category": category,
             "func": func,
         }
         func._tool_meta = tool_meta  # type: ignore[attr-defined]
@@ -210,6 +214,8 @@ class ToolRegistry:
                 "name": name,
                 "description": meta.get("description", ""),
                 "policy": meta.get("policy", ToolPolicy.AUTO),
+                "is_mutating": meta.get("is_mutating", False),
+                "category": meta.get("category", "filesystem"),
             }
             for name, meta in self._tools.items()
         ]

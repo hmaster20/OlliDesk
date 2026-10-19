@@ -1681,48 +1681,17 @@ class ChatPanel(QWidget):
     # ---------------------------------------------------------
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
-        from tools.codebase_search import search_codebase
-        from tools.current_datetime import get_current_datetime
-        from tools.exchange_rate import (
-            get_exchange_rate,
-            get_exchange_rates_multi,
-        )
-        from tools.file_ops import list_directory, read_file, write_file
-        from tools.git_ops_tool import (
-            tool_create_snapshot,
-            tool_git_status,
-            tool_undo_snapshot,
-        )
-        from tools.hypothesis import (
-            list_hypotheses,
-            record_hypothesis,
-            update_hypothesis,
-        )
-        from tools.weather import get_weather
-        from tools.web_search import web_search
+        from tools.registry import ALL_TOOLS
 
         registry = ToolRegistry()
-        registry.register(read_file)
-        registry.register(list_directory)
-        registry.register(write_file)
-        registry.register(search_codebase)
-        registry.register(web_search)
-        registry.register(get_weather)
-        registry.register(get_current_datetime)
-        registry.register(get_exchange_rate)
-        registry.register(get_exchange_rates_multi)
-        registry.register(tool_git_status)
-        registry.register(tool_create_snapshot)
-        registry.register(tool_undo_snapshot)
-
-        if self._attached_files:
-            from tools.attached_files import read_attached_file
-
-            registry.register(read_attached_file)
-
-        registry.register(record_hypothesis)
-        registry.register(update_hypothesis)
-        registry.register(list_hypotheses)
+        has_attached = bool(self._attached_files)
+        for tool_func in ALL_TOOLS:
+            meta = getattr(tool_func, "_tool_meta", None)
+            if meta is None:
+                continue
+            if meta["name"] == "read_attached_file" and not has_attached:
+                continue
+            registry.register(tool_func)
 
         if mode == AgentMode.CHAT:
             for name in _CHAT_AUTO_TOOLS:
