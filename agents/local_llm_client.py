@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any, cast
 from loguru import logger
 
 from agents.gpu_utils import detect_optimal_threads
-from agents.ollama_client import ChatChunk, ChatMessage, ToolCall
+from agents.ollama_client import (
+    ChatChunk,
+    ChatMessage,
+    ReasoningPart,
+    TextPart,
+    ToolCall,
+    ToolCallPart,
+)
 from agents.tool_call_parser import extract_tool_calls
 
 if TYPE_CHECKING:
@@ -29,9 +36,7 @@ _LANGUAGE_INSTRUCTION = (
 
 # Температура по умолчанию для встроенной SLM: ниже, чем у Ollama-моделей,
 # чтобы снизить дрейф языка и повысить дисциплину вызовов инструментов.
-# Дефолт — только для случая, когда caller не передал op_type/options.
-# Tool/plan/critique — детерминированно (стабильный JSON), синтез — чуть живее.
-_DEFAULT_TEMPERATURE = 0.0  # было 0.3
+_DEFAULT_TEMPERATURE = 0.0
 
 _TEMPERATURE_BY_OP: dict[str, float] = {
     "classify": 0.0,
@@ -43,8 +48,7 @@ _TEMPERATURE_BY_OP: dict[str, float] = {
     "regen": 0.35,
 }
 
-# Директива по форматированию: идет в голову системного сообщения (рядом с
-# языковой), чтобы пережить обрезку и удержать ответ 7B структурированным.
+# Директива по форматированию: идет в голову системного сообщения.
 _FORMAT_INSTRUCTION = (
     "ФОРМАТ: отвечай структурированным Markdown. Отделяй смысловые блоки пустой "
     "строкой, не смешивай их. Заголовки — ## и ###. Перечисления — списками "
@@ -56,9 +60,16 @@ _FORMAT_INSTRUCTION = (
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
 
-    Используется как fallback, когда Ollama недоступен.
-    Поддерживает стриминг, «мягкий» tool-calling через JSON-парсинг
-    и эмбеддинги (если загружена embedding-модель).
+    Используется как fallback, когда Ollama недоступен. Поддерживает
+    стриминг, «мягкий» tool-calling через JSON-парсинг и эмбеддинги
+    (если загружена embedding-модель).
+
+    Стрим отдаёт типизированные `ChatChunk`:
+      * `TextPart` — токены ответа (event_type="delta");
+      * `ToolCallPart` — распознанные вызовы инструментов (event_type="tool_call");
+      * `event_type="end"` — финальный маркер (done=True).
+    Reasoning-части (`ReasoningPart`) локальная модель не отдаёт отдельным
+    полем — llama.cpp не поддерживает stream reasoning, поэтому их здесь нет.
     """
 
     def __init__(
@@ -88,9 +99,6 @@ class LocalLLMClient:
             use_mlock = params.use_mlock
             # GGML_TYPE_F16 = 1, GGML_TYPE_Q8_0 = 8
             kv_type_int = 1 if params.kv_cache_type == "f16" else 8
-            # llama.cpp: квантизованный V-кэш (q8_0 и др.) требует Flash Attention.
-            # При flash_attn=False принудительно используем f16, иначе
-            # llama_context не создастся.
             if not flash_attn and kv_type_int != 1:
                 logger.warning(
                     "flash_attn=False: квантизованный KV-кэш (%s) требует Flash Attention — "
@@ -188,7 +196,7 @@ class LocalLLMClient:
         tools: list[Any] | None = None,
         options: Any | None = None,
         stream: bool = True,
-        op_type: str | None = None,  # [D10] classify/plan/synthesis/...
+        op_type: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
@@ -196,7 +204,6 @@ class LocalLLMClient:
 
         chat_messages = self._prepare_messages(messages, tools)
 
-        # Температура: op_type → options → глобальный дефолт.
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
         )
@@ -250,7 +257,7 @@ class LocalLLMClient:
                 if cancelled:
                     self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
-                    _safe_put(ChatChunk(content="", done=True))
+                    _safe_put(ChatChunk(done=True, event_type="end"))
                     return
 
                 full_text = "".join(full_text_parts)
@@ -263,6 +270,7 @@ class LocalLLMClient:
                     + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
                     + f", промпт ~{prompt_chars} симв."
                 )
+
                 tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
                     tool_calls = self._parse_tool_calls(full_text, tools)
@@ -270,16 +278,34 @@ class LocalLLMClient:
                 if tool_calls:
                     for tc in tool_calls:
                         logger.info(f"SLM: распознан tool_call → {tc.name}({tc.arguments})")
-                    _safe_put(ChatChunk(content="", tool_calls=tool_calls, done=False))
-                    _safe_put(ChatChunk(content="", done=True))
+                    _safe_put(
+                        ChatChunk(
+                            part=ToolCallPart(calls=tool_calls),
+                            event_type="tool_call",
+                            done=False,
+                        )
+                    )
+                    _safe_put(ChatChunk(done=True, event_type="end"))
                 else:
                     if full_text:
-                        _safe_put(ChatChunk(content=full_text, done=False))
-                    _safe_put(ChatChunk(content="", done=True))
+                        _safe_put(
+                            ChatChunk(
+                                part=TextPart(text=full_text),
+                                event_type="delta",
+                                done=False,
+                            )
+                        )
+                    _safe_put(ChatChunk(done=True, event_type="end"))
 
             except Exception as e:
                 logger.error(f"SLM generation error: {e}")
-                _safe_put(ChatChunk(content=f"\n[Ошибка SLM: {e}]", done=True))
+                _safe_put(
+                    ChatChunk(
+                        part=TextPart(text=f"\n[Ошибка SLM: {e}]"),
+                        event_type="delta",
+                        done=True,
+                    )
+                )
 
         thread = threading.Thread(target=_generate, daemon=True)
         thread.start()
@@ -319,24 +345,10 @@ class LocalLLMClient:
         messages: list[dict[str, Any]],
         reserve_tokens: int,
     ) -> list[dict[str, Any]]:
-        """Обрезает промпт под окно контекста модели.
-
-        ВАЖНО: reserve_tokens не может превышать половину n_ctx. Иначе
-        системный промпт уходит в ноль (был баг: при n_ctx=1024,
-        max_tokens=1024, reserve = 1088 > n_ctx → budget = 256 токенов,
-        системный промпт сжимался до ~150 токенов и терял tool-инструкции).
-
-        Args:
-            messages: Сообщения в формате llama.cpp.
-            reserve_tokens: Сколько токенов оставить на генерируемый ответ.
-
-        Returns:
-            Список сообщений, помещающийся в ``n_ctx``.
-        """
+        """Обрезает промпт под окно контекста модели."""
         if not messages:
             return messages
 
-        # Жёсткий лимит: половина окна под ответ, половина под промпт.
         reserve_tokens = min(reserve_tokens, self.n_ctx // 2)
         budget = max(256, self.n_ctx - reserve_tokens)
 
@@ -350,7 +362,6 @@ class LocalLLMClient:
         system_tokens = 0
         if system is not None:
             system_tokens = self._count_tokens(str(system.get("content") or ""))
-            # Системе отдаём до 70% бюджета: инструкции важнее истории.
             max_system = int(budget * 0.7)
             if system_tokens > max_system:
                 system = dict(system)
@@ -399,7 +410,7 @@ class LocalLLMClient:
 
     # --- Tool-call parsing ---
 
-    def _parse_tool_call(self, text: str, tools: list[Any] | None = None) -> ToolCall | None:
+    def _parse_tool_calls(self, text: str, tools: list[Any] | None = None) -> list[ToolCall]:
         return extract_tool_calls(text, tools)
 
     # --- Инструкция для модели ---
@@ -487,6 +498,13 @@ class LocalLLMClient:
         return chat_messages
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Конвертирует ChatMessage в формат llama.cpp.
+
+        Использует read-only свойства `.content` / `.reasoning_content` /
+        `.tool_calls`, поэтому работает и со старыми, и с новыми сообщениями.
+        Reasoning подаётся обратно модели в обрамлении `<thought>…</thought>`,
+        чтобы SLM видела свою цепочку рассуждений при повторной итерации.
+        """
         result: list[dict[str, Any]] = []
         for msg in messages:
             if msg.role == "tool":
@@ -502,13 +520,20 @@ class LocalLLMClient:
                     for tc in msg.tool_calls
                 )
                 content = (msg.content or "").strip()
+                if msg.reasoning_content:
+                    thought = msg.reasoning_content.strip()
+                    content = f"<thought>{thought}</thought>\n{content}" if content else f"<thought>{thought}</thought>"
                 if content:
                     content = f"{content}\n{calls_json}"
                 else:
                     content = calls_json
                 result.append({"role": "assistant", "content": content})
             else:
-                result.append({"role": msg.role, "content": msg.content or ""})
+                content = msg.content or ""
+                if msg.role == "assistant" and msg.reasoning_content:
+                    thought = msg.reasoning_content.strip()
+                    content = f"<thought>{thought}</thought>\n{content}" if content else f"<thought>{thought}</thought>"
+                result.append({"role": msg.role, "content": content})
         return result
 
     # --- Эмбеддинги ---
@@ -541,11 +566,7 @@ class LocalLLMClient:
         return None
 
     def count_tokens(self, text: str) -> int:
-        """Точный подсчёт токенов через загруженный Llama (D5).
-
-        Используется BudgetManager/Orchestrator'ом вместо CHARS_PER_TOKEN —
-        после загрузки модели точность важнее черновой оценки.
-        """
+        """Точный подсчёт токенов через загруженный Llama (D5)."""
         return self._count_tokens(text)
 
     async def generate(
@@ -559,12 +580,7 @@ class LocalLLMClient:
         stream: bool = False,
         op_type: str | None = None,
     ) -> Any:
-        """Генерирует ответ на «сырой» промпт (без chat-формата).
-
-        Нужен Orchestrator'у для structured output (3B-planner) и синтеза
-        (7B-analyst). ``grammar``/``json_schema`` принимаются к сведению —
-        GBNF-грамматика llama.cpp пока не пробрасывается (см. заметку ниже).
-        """
+        """Генерирует ответ на «сырой» промпт (без chat-формата)."""
         messages = [ChatMessage(role="user", content=prompt)]
         parts: list[str] = []
         async for chunk in self.chat(
