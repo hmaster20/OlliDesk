@@ -1,5 +1,6 @@
 """Панель чата с поддержкой режимов Chat / Plan / Agent."""
 
+import asyncio
 import contextlib
 import json
 import os
