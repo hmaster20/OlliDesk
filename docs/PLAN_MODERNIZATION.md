@@ -599,15 +599,19 @@ read-only property для обратной совместимости (см. 4.8
 
 ### 4.8.E — AgentLoop и контекст
 
-- [~] **`AgentLoop` обрабатывает события, а не `current_text`**: dispatch по
+- [x] **`AgentLoop` обрабатывает события, а не `current_text`**: dispatch по
       `isinstance(part, ...)` в двух циклах (`_final_call_no_tools` и `run`) —
       `ReasoningPart` → `on_thinking`, `TextPart` → `on_token`/`on_thought`,
-      `ToolCallPart` → `pending_tool_calls.extend(calls)`. Отдельных колбэков
-      `on_reasoning_delta` / `on_text_delta` / `on_tool_start` / `on_tool_result`
-      нет — существующие `on_thinking`/`on_thought`/`on_token` работают как
-      event-callbacks, но не отражают границы событий (`start`/`end`). Полная
-      событийная модель — после того, как появится реальный триггер
-      (например, отдельный стрим reasoning из llama.cpp).
+      `ToolCallPart` → `pending_tool_calls.extend(calls)`. [4.8.E] Добавлены
+      низкоуровневые event-callbacks: `on_text_delta` / `on_reasoning_delta` /
+      `on_stream_start` / `on_stream_end`; клиенты (`OllamaClient`,
+      `LocalLLMClient`) эмитят явный `event_type="start"` в начале стрима.
+      В `AgentChatThread` проброшены 4 новых сигнала (`text_delta`,
+      `reasoning_delta`, `stream_started`, `stream_finished`), в `ChatPanel`
+      подключены к `logger.trace` — UI-поведение не изменилось (высокоуровневые
+      `chunk_received`/`thinking_received` остаются источником для композитного
+      пузыря). Существующие `on_thinking`/`on_thought`/`on_token` сохранены
+      как высокоуровневые колбэки.
 - [x] **Базовый приоритет сжатия в компакторе истории** (модуль удалён в 1.4, переписан в
       Фазе 4 как `agents/history_compactor.py`): три ступени — reasoning → содержимое
       старых tool-результатов → старейшие реплики целиком (вместе с tool-вызовами).

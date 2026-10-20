@@ -1659,6 +1659,16 @@ class ChatPanel(QWidget):
             self._agent_thread.iteration_limit_exceeded.connect(self._on_iteration_limit_exceeded)
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
+
+        # [4.8.E] Низкоуровневые delta-события. Пока только для диагностики:
+        # UI по-прежнему получает токены через _on_chunk/_on_thinking,
+        # чтобы не дублировать композитный пузырь. Будущие потребители —
+        # TTFT-метрики, раздельная подсветка reasoning-блоков.
+        self._agent_thread.text_delta.connect(self._on_text_delta_event)
+        self._agent_thread.reasoning_delta.connect(self._on_reasoning_delta_event)
+        self._agent_thread.stream_started.connect(self._on_stream_started_event)
+        self._agent_thread.stream_finished.connect(self._on_stream_finished_event)
+
         self._agent_thread.start()
 
     # ---------------------------------------------------------
@@ -1967,6 +1977,35 @@ class ChatPanel(QWidget):
         if not self._research_mode_active:
             self._show_activity(text)
         self.status_label.setText(text)
+
+    # ---------------------------------------------------------
+    # [4.8.E] Низкоуровневые delta-события (диагностика)
+    # ---------------------------------------------------------
+
+    @Slot(str)
+    def _on_text_delta_event(self, token: str) -> None:
+        """[4.8.E] Text-delta от AgentLoop.
+
+        Не пишет в UI — высокоуровневый `_on_chunk` остаётся единственным
+        источником для `TextWidget`. `logger.trace` включается только при
+        `LOGURU_LEVEL=TRACE`, в проде — no-op.
+        """
+        logger.trace(f"text_delta: {token[:40]!r}")
+
+    @Slot(str)
+    def _on_reasoning_delta_event(self, token: str) -> None:
+        """[4.8.E] Reasoning-delta от AgentLoop. Аналогично, только лог."""
+        logger.trace(f"reasoning_delta: {token[:40]!r}")
+
+    @Slot()
+    def _on_stream_started_event(self) -> None:
+        """[4.8.E] Начало нового стрима модели (start-event)."""
+        logger.trace("stream_started")
+
+    @Slot()
+    def _on_stream_finished_event(self) -> None:
+        """[4.8.E] Конец стрима модели (end-event)."""
+        logger.trace("stream_finished")
 
     @Slot()
     def _on_finish(self):

@@ -26,6 +26,13 @@ class LLMBackend(Protocol):
     ) -> AsyncIterator[ChatChunk]:
         """Стриминг ответа через клиента LLM.
 
+        Инварианты событий (4.8.E):
+          * ``event_type="start"`` — первый чанк, если клиент его эмитит.
+            Необязателен; отсутствие не ломает потребителей.
+          * ``event_type="delta"`` — TextPart/ReasoningPart по мере генерации.
+          * ``event_type="tool_call"`` — ToolCallPart с распознанными вызовами.
+          * ``event_type="end"``, ``done=True`` — последний чанк.
+
         Реализации могут бросать:
         - ToolsNotSupportedError — при запросе инструментов у модели, которая их не поддерживает
         """

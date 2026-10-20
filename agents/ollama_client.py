@@ -369,86 +369,136 @@ class OllamaClient:
         self,
         model: str,
         messages: list[ChatMessage],
-        tools: list[ToolSchema] | None = None,
-        options: ChatOptions | None = None,
+        tools: list[Any] | None = None,
+        options: Any | None = None,
         stream: bool = True,
+        op_type: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
-        """Отправляет запрос в чат со стримингом."""
-        client = await self._get_client()
+        """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling.
 
-        request_data: dict[str, Any] = {
-            "model": model,
-            "messages": [m.to_ollama_dict() for m in messages],
-            "stream": stream,
-        }
-        if tools:
-            request_data["tools"] = [t.model_dump() for t in tools]
+        [4.8.E] Эмитит явный ``event_type="start"`` до первого токена —
+        симметрично OllamaClient.
+        """
+        self.reset_cancel()
+
+        chat_messages = self._prepare_messages(messages, tools)
+
+        temperature = (
+            _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
+        )
+        max_tokens = self.max_tokens
         if options:
-            request_data["options"] = options.model_dump()
+            temperature = getattr(options, "temperature", temperature)
+            max_tokens = getattr(options, "num_predict", self.max_tokens)
 
-        req_preview = json.dumps(request_data, default=str, ensure_ascii=False)[:2000]
-        logger.info(f"Ollama request: {req_preview}")
+        chat_messages = self._fit_messages(chat_messages, reserve_tokens=max_tokens + 64)
 
-        try:
-            if stream:
-                try:
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/api/chat",
-                        json=request_data,
-                    ) as response:
-                        if response.status_code >= 400:
-                            await response.aread()
-                            body = response.text[:2000]
-                            logger.error(f"Ollama {response.status_code}: {body}")
-                            if response.status_code == 404:
-                                raise ModelNotFoundError(f"Модель '{model}' не найдена")
-                            if "does not support tools" in body:
-                                raise ToolsNotSupportedError(
-                                    f"Модель '{model}' не поддерживает вызов инструментов"
-                                )
-                            response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            if self._cancel_requested:
-                                return
-                            if not line:
-                                continue
-                            chunk_data = json.loads(line)
-                            msg = chunk_data.get("message", {})
-                            for c in self._chunks_from_ollama_message(msg):
-                                yield c
-                            if chunk_data.get("done", False):
-                                yield ChatChunk(event_type="end", done=True)
-                except httpx.HTTPStatusError as e:
-                    logger.error(
-                        f"Ollama HTTPStatusError ({e.response.status_code}): {e!r}"
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue[ChatChunk | None] = asyncio.Queue()
+
+        def _safe_put(chunk: ChatChunk) -> None:
+            with contextlib.suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+
+        def _generate() -> None:
+            """Синхронная генерация в отдельном потоке."""
+            # [4.8.E] start-event до первого токена.
+            _safe_put(ChatChunk(event_type="start", done=False))
+            cancelled = False
+            full_text_parts: list[str] = []
+            prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
+            gen_started = time.perf_counter()
+            first_token_at: float | None = None
+            try:
+                with self._lock:
+                    response = self.llm.create_chat_completion(
+                        messages=cast(Any, chat_messages),
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=0.8,
+                        stream=True,
+                        stop=["<|im_end|>", "<|im_start|>"],
                     )
-                    if e.response.status_code == 404:
-                        raise ModelNotFoundError(f"Модель '{model}' не найдена") from e
-                    if e.response.status_code == 400 and "does not support tools" in e.response.text:
-                        raise ToolsNotSupportedError(
-                            f"Модель '{model}' не поддерживает вызов инструментов"
-                        ) from e
-                    raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
-            else:
-                response = await client.post(
-                    f"{self.base_url}/api/chat",
-                    json=request_data,
-                )
-                response.raise_for_status()
-                data = response.json()
-                msg = data.get("message", {})
-                for c in self._chunks_from_ollama_message(msg):
-                    yield c
-                yield ChatChunk(event_type="end", done=True)
+                    for chunk in response:
+                        if self._cancel_requested:
+                            cancelled = True
+                            break
+                        choices = cast(Any, chunk).get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        content = str(delta.get("content") or "")
+                        if content:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                            full_text_parts.append(content)
 
-        except httpx.ConnectError as e:
-            logger.error(f"Ollama ConnectError ({type(e).__name__}): {e!r}")
-            raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
-        except httpx.HTTPError as e:
-            logger.error(f"Ollama HTTPError ({type(e).__name__}): {e!r}")
-            raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
+                gen_ms = (time.perf_counter() - gen_started) * 1000
+
+                if cancelled:
+                    self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
+                    logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
+                    _safe_put(ChatChunk(done=True, event_type="end"))
+                    return
+
+                full_text = "".join(full_text_parts)
+                tokens = self._count_tokens(full_text)
+                ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
+                self.last_stats = self._make_stats(prompt_chars, tokens, gen_ms, ttft_ms)
+                logger.info(
+                    f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
+                    f"({tokens / (gen_ms / 1000):.1f} ток/с)"
+                    + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
+                    + f", промпт ~{prompt_chars} симв."
+                )
+
+                tool_calls: list[ToolCall] = []
+                if tools and full_text.strip():
+                    tool_calls = self._parse_tool_calls(full_text, tools)
+
+                if tool_calls:
+                    for tc in tool_calls:
+                        logger.info(f"SLM: распознан tool_call → {tc.name}({tc.arguments})")
+                    _safe_put(
+                        ChatChunk(
+                            part=ToolCallPart(calls=tool_calls),
+                            event_type="tool_call",
+                            done=False,
+                        )
+                    )
+                    _safe_put(ChatChunk(done=True, event_type="end"))
+                else:
+                    if full_text:
+                        _safe_put(
+                            ChatChunk(
+                                part=TextPart(text=full_text),
+                                event_type="delta",
+                                done=False,
+                            )
+                        )
+                    _safe_put(ChatChunk(done=True, event_type="end"))
+
+            except Exception as e:
+                logger.error(f"SLM generation error: {e}")
+                _safe_put(
+                    ChatChunk(
+                        part=TextPart(text=f"\n[Ошибка SLM: {e}]"),
+                        event_type="delta",
+                        done=True,
+                    )
+                )
+
+        thread = threading.Thread(target=_generate, daemon=True)
+        thread.start()
+
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            yield chunk
+            if chunk.done:
+                break
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         client = await self._get_client()

@@ -57,6 +57,12 @@ class AgentChatThread(QThread):
         synthesize/regen/error/fallback);
       * ``orchestrator_result(object)`` — финальный ``RunResult`` (answer,
         ascii_diagram, mermaid_diagram, evidence_ids, coverage, verify_ok…).
+
+    [4.8.E] Низкоуровневые delta-сигналы:
+      * ``text_delta(str)`` / ``reasoning_delta(str)`` — каждый токен
+        текста/reasoning от модели;
+      * ``stream_started()`` / ``stream_finished()`` — границы одного
+        стрима (start/end-event от клиента).
     """
 
     # --- старые сигналы (без изменений) ---
@@ -76,6 +82,12 @@ class AgentChatThread(QThread):
     iteration_changed = Signal(int, int)
     tools_status_changed = Signal(bool)
     status_changed = Signal(str)
+
+    # [4.8.E] Низкоуровневые delta-события (ортогональны chunk_received).
+    text_delta = Signal(str)
+    reasoning_delta = Signal(str)
+    stream_started = Signal()
+    stream_finished = Signal()
 
     # --- новые сигналы для Orchestrator ---
     orchestrator_event = Signal(str, dict)
@@ -184,6 +196,19 @@ class AgentChatThread(QThread):
         async def _on_final_started():
             self.final_answer_started.emit()
 
+        # [4.8.E] Низкоуровневые события от AgentLoop.
+        async def _on_text_delta(token: str):
+            self.text_delta.emit(token)
+
+        async def _on_reasoning_delta(token: str):
+            self.reasoning_delta.emit(token)
+
+        async def _on_stream_start():
+            self.stream_started.emit()
+
+        async def _on_stream_finish():
+            self.stream_finished.emit()
+
         async def _run_with(client) -> tuple[str, AgentLoop]:
             loop = AgentLoop(client=client, registry=self.registry, model=self.model)
             from agents.investigation import is_research_question
@@ -208,6 +233,11 @@ class AgentChatThread(QThread):
                 on_tool_result=self._on_tool_result,
                 on_thought=_on_thought if self._research_mode else None,
                 on_final_answer_started=(_on_final_started if self._research_mode else None),
+                # [4.8.E] низкоуровневые события
+                on_text_delta=_on_text_delta,
+                on_reasoning_delta=_on_reasoning_delta,
+                on_stream_start=_on_stream_start,
+                on_stream_end=_on_stream_finish,
             )
             return result, loop
 
@@ -311,7 +341,6 @@ class AgentChatThread(QThread):
 
     async def _on_tool_result(self, name: str, content: str, is_error: bool):
         self.tool_executed.emit(name, content, is_error)
-
 
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""

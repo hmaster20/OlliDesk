@@ -638,6 +638,11 @@ class AgentLoop:
         on_status: Callable[[str], Awaitable[None]] | None,
         *,
         reason: str,
+        # [4.8.E] Низкоуровневые delta-колбэки — пробрасываются из run().
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_start: Callable[[], Awaitable[None]] | None = None,
+        on_stream_end: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Делает финальный вызов без tools и стримит результат в `on_token`.
 
@@ -653,6 +658,10 @@ class AgentLoop:
             on_thinking: Колбэк reasoning-токенов (может быть None).
             on_status: Колбэк статусов для UI (может быть None).
             reason: Причина прерывания — попадёт в system-промпт.
+            on_text_delta: [4.8.E] Text-delta колбэк.
+            on_reasoning_delta: [4.8.E] Reasoning-delta колбэк.
+            on_stream_start: [4.8.E] Колбэк начала стрима.
+            on_stream_end: [4.8.E] Колбэк конца стрима.
 
         Returns:
             Собранный финальный текст (может быть пустым при ошибке).
@@ -681,12 +690,29 @@ class AgentLoop:
                 stream=True,
             )
             async for chunk in stream:
+                # [4.8.E] Границы стрима: до первого delta.
+                if chunk.event_type == "start":
+                    if on_stream_start:
+                        await on_stream_start()
+                    continue
+                # [4.8.E] Границы стрима: после последнего delta.
+                if chunk.event_type == "end":
+                    if on_stream_end:
+                        await on_stream_end()
+                    continue
+
                 part = chunk.part
                 if isinstance(part, ReasoningPart) and part.text:
+                    # [4.8.E] Reasoning-delta — новый колбэк + старый on_thinking.
+                    if on_reasoning_delta:
+                        await on_reasoning_delta(part.text)
                     if on_thinking:
                         await on_thinking(part.text)
                 elif isinstance(part, TextPart) and part.text:
                     final_text += part.text
+                    # [4.8.E] Text-delta — новый колбэк + старый on_token.
+                    if on_text_delta:
+                        await on_text_delta(part.text)
                     await on_token(part.text)
         except Exception as e:
             logger.error(f"Ошибка финального синтеза ({reason}): {e}")
@@ -706,6 +732,12 @@ class AgentLoop:
         on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
         on_thought: Callable[[str], Awaitable[None]] | None = None,
         on_final_answer_started: Callable[[], Awaitable[None]] | None = None,
+        # [4.8.E] Низкоуровневые delta-колбэки и границы стрима.
+        # Ортогональны существующим on_thinking/on_thought/on_token.
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_start: Callable[[], Awaitable[None]] | None = None,
+        on_stream_end: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Запускает ReAct-цикл."""
         last_user = next(
@@ -831,12 +863,30 @@ class AgentLoop:
                 )
 
                 async for chunk in stream:
+                    # [4.8.E] Границы стрима: до первого delta.
+                    if chunk.event_type == "start":
+                        if on_stream_start:
+                            await on_stream_start()
+                        continue
+                    # [4.8.E] Границы стрима: после последнего delta.
+                    if chunk.event_type == "end":
+                        if on_stream_end:
+                            await on_stream_end()
+                        continue
+
                     part = chunk.part
                     if isinstance(part, ReasoningPart) and part.text:
+                        # [4.8.E] Reasoning-delta — новый колбэк + on_thinking.
+                        if on_reasoning_delta:
+                            await on_reasoning_delta(part.text)
                         if on_thinking:
                             await on_thinking(part.text)
                     elif isinstance(part, TextPart) and part.text:
                         current_text += part.text
+                        # [4.8.E] Text-delta — новый колбэк + маршрут
+                        # (on_thought в research-фазе / on_token в финале).
+                        if on_text_delta:
+                            await on_text_delta(part.text)
                         if split_thoughts and not is_synthesis_phase:
                             await on_thought(part.text)  # type: ignore[misc]
                         else:
@@ -906,6 +956,10 @@ class AgentLoop:
                         on_thinking,
                         on_status,
                         reason="повторные вызовы без прогресса",
+                        on_text_delta=on_text_delta,
+                        on_reasoning_delta=on_reasoning_delta,
+                        on_stream_start=on_stream_start,
+                        on_stream_end=on_stream_end,
                     )
                     self._finalize(research_mode, state, context)
                     if not final_text:
@@ -1072,7 +1126,6 @@ class AgentLoop:
                 current_text = ""
                 continue
 
-
             # --- Нет tool_calls: модель пытается дать финальный ответ ---
             if current_text and research_mode and not is_synthesis_phase:
                 open_h_now = self._count_open_hypotheses(context)
@@ -1112,6 +1165,10 @@ class AgentLoop:
                     on_thinking,
                     on_status,
                     reason="нуджи исчерпаны без прогресса",
+                    on_text_delta=on_text_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                    on_stream_start=on_stream_start,
+                    on_stream_end=on_stream_end,
                 )
                 self._finalize(research_mode, state, context)
                 return final_text or current_text
@@ -1136,6 +1193,10 @@ class AgentLoop:
                 on_thinking,
                 on_status,
                 reason="лимит итераций",
+                on_text_delta=on_text_delta,
+                on_reasoning_delta=on_reasoning_delta,
+                on_stream_start=on_stream_start,
+                on_stream_end=on_stream_end,
             )
             if self.client.is_cancelled:
                 self._finalize(research_mode, state, context)
