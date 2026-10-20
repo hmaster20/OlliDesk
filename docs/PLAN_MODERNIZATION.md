@@ -113,12 +113,20 @@
       `AgentLoop` объявлен с `client: LLMBackend`, `RagSearchThread`/`VectorStore` работают
       через протокол `Embedder`; явных `implements LLMBackend` в классах нет (duck-typing
       + Protocol в сигнатурах).
-- [ ] Убрать `object` / `Any` из `AgentContext.vector_store` / `.search_cache` — ввести
-      минимальные протоколы `VectorStoreLike` / `SearchCacheLike`, чтобы `agents` не импортировал
-      `fs` и `core.search_cache`. Сейчас поля так и остались `object`; рядом появилось новое
-      `hypotheses: object` и `attached_files: object` — задача расширяется на них.
-- [ ] `AgentLoop` сейчас знает про `fs`/`core` только по duck-типингу — это источник
-      неочевидных `None`-ошибок.
+- [x] Убрать `object` / `Any` из `AgentContext.vector_store` / `.search_cache`: введены
+      минимальные протоколы `agents/protocols.py::VectorStoreLike` /
+      `SearchCacheLike` / `AttachedFilesLike` (плюс `ChunkLike` / `SearchResultLike`).
+      Поля `AgentContext` типизированы: `vector_store: VectorStoreLike | None`,
+      `search_cache: SearchCacheLike | None`, `attached_files: AttachedFilesLike | None`.
+      `hypotheses: HypothesisStore | None` — прямая типизация без протокола (цикла
+      `agents → hypotheses` нет, `hypotheses.py` импортирует только stdlib).
+      `hasattr(...)`-проверки в `_count_open_hypotheses` / `_make_research_summary`
+      убраны; `# type: ignore[attr-defined]` в `_build_system_prompt` убран.
+      `cast(Any, raw_cache)` в `panel._do_chat` / `_do_agent` убран.
+- [x] `AgentLoop` больше не знает про `fs`/`core` по duck-типингу: `VectorStoreLike`,
+      `SearchCacheLike`, `AttachedFilesLike` — структурные контракты, конкретные
+      реализации (`fs.vector_store.VectorStore`, `core.search_cache.SearchCache`,
+      `tools.attached_files.AttachedFileStore`) им удовлетворяют (проверяется mypy).
 
 ### 2.2 Реестр инструментов
 - [x] Перенести список инструментов из `ui/chat/panel.py::_build_registry` в

@@ -22,6 +22,7 @@ from loguru import logger
 
 from agents.base import LLMBackend
 from agents.history_compactor import compact_history
+from agents.hypotheses import HypothesisStore
 from agents.investigation import (
     NUDGE_STATUS_LABELS,
     InvestigationState,
@@ -32,6 +33,7 @@ from agents.investigation import (
 )
 from agents.ollama_client import ChatMessage, ToolCall
 from agents.ollama_client import ReasoningPart, TextPart, ToolCallPart
+from agents.protocols import AttachedFilesLike, SearchCacheLike, VectorStoreLike
 from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ErrorCategory, ToolRegistry
 from core.config import AgentMode, ToolPolicy
@@ -59,7 +61,16 @@ class AgentError(OlliDeskError):
 
 @dataclass
 class AgentContext:
-    """Контекст для запуска агента."""
+    """Контекст для запуска агента.
+
+    2.1: поля-сервисы типизированы минимальными Protocol-контрактами
+    (`VectorStoreLike` / `SearchCacheLike` / `AttachedFilesLike`) вместо
+    `object`. `hypotheses` — конкретный `HypothesisStore` (без цикла:
+    `agents.hypotheses` не импортирует `agents.agent_loop`).
+
+    Это устраняет `hasattr(...)`-проверки в `AgentLoop` и `type: ignore`
+    на местах использования — mypy теперь ловит несовместимые реализации.
+    """
 
     system_prompt: str = ""
     rag_context: str = ""
@@ -67,14 +78,14 @@ class AgentContext:
     project_root: str = ""
     project_name: str = ""
     project_map: str = ""
-    vector_store: object = None
+    vector_store: VectorStoreLike | None = None
     extra_rules: str = ""
     max_tokens: int = 4096
     num_ctx: int = 0
     mode: AgentMode = AgentMode.AGENT
-    search_cache: object = None
-    attached_files: object = None
-    hypotheses: object = None
+    search_cache: SearchCacheLike | None = None
+    attached_files: AttachedFilesLike | None = None
+    hypotheses: HypothesisStore | None = None
 
 
 # --- System prompt ---------------------------------------------------------
@@ -406,7 +417,7 @@ def _build_system_prompt(
     if context.agents_context:
         variable.append(("agents", f"Контекст проекта (AGENTS.md):\n{context.agents_context}"))
     if context.hypotheses:
-        rendered = context.hypotheses.render_for_prompt()  # type: ignore[attr-defined]
+        rendered = context.hypotheses.render_for_prompt()
         if rendered:
             variable.append(("hypotheses", f"Гипотезы исследования:\n{rendered}"))
     if context.project_map:
@@ -533,13 +544,21 @@ class AgentLoop:
 
     @staticmethod
     def _count_open_hypotheses(context: AgentContext) -> int:
-        """Сколько гипотез со статусом open сейчас в хранилище."""
+        """Сколько гипотез со статусом open сейчас в хранилище.
+
+        2.1: `hasattr` больше не нужен — `HypothesisStore` типизирован.
+        `try/except` оставлен: `count_open` дёргает пользовательский код
+        (метод может быть переопределён в тестовой заглушке), и сбой
+        счётчика не должен валить весь прогон — возвращаем 0 как
+        безопасный дефолт (модель просто увидит «0 открытых гипотез»).
+        """
         store = context.hypotheses
-        if store is None or not hasattr(store, "count_open"):
+        if store is None:
             return 0
         try:
             return int(store.count_open())
         except Exception:
+            logger.debug("count_open() упал — считаю гипотезы открытыми", exc_info=True)
             return 0
 
     @staticmethod
@@ -588,11 +607,15 @@ class AgentLoop:
         Финальный текст модели в этот словарь НЕ входит — он передаётся
         отдельной дорожкой (см. `on_token`) и складывается в паспорт на
         стороне UI.
+
+        2.1: `hasattr(store, "items")` больше не нужен — `HypothesisStore`
+        типизирован в `AgentContext`. `store.items` — read-only property,
+        возвращает копию внутреннего списка (см. `agents/hypotheses.py`).
         """
         hypotheses_data: list[dict[str, Any]] = []
         store = context.hypotheses
-        if store is not None and hasattr(store, "items"):
-            for h in store.items:  # type: ignore[attr-defined]
+        if store is not None:
+            for h in store.items:
                 hypotheses_data.append(
                     {
                         "id": h.id,

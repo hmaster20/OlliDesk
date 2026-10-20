@@ -8,7 +8,7 @@ import re
 
 os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
@@ -1472,7 +1472,8 @@ class ChatPanel(QWidget):
             vector_store=self.vector_store,
             num_ctx=self._router.num_ctx,
             mode=AgentMode.CHAT,
-            search_cache=cast(Any, raw_cache),
+            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
+            search_cache=raw_cache,
             attached_files=self._attached_files if self._attached_files else None,
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
@@ -1602,7 +1603,8 @@ class ChatPanel(QWidget):
             vector_store=self.vector_store,
             num_ctx=self._router.num_ctx,
             mode=mode,
-            search_cache=cast(Any, raw_cache),
+            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
+            search_cache=raw_cache,
             attached_files=self._attached_files if self._attached_files else None,
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
