@@ -173,26 +173,73 @@
       Удалены методы `_config_confirm_web_search`, `_on_confirm_web_search_toggled`,
       `_update_recent_projects_menu` (логика переехала в `AppMenuBar`).
       `AppMenuBar.set_config(...)` вызывается после `self.config = load_config(...)`
-      в `_run_wizard` / `_open_settings` — иначе `confirm.web_search`
-      сохранялся бы в устаревший объект конфига.
+      в `_run_wizard` / `_open_settings` / `_open_slm_manager` — иначе
+      `confirm.web_search` сохранялся бы в устаревший объект конфига.
 - [x] **Публичный API `ChatPanel` вместо приватных полей**:
       `update_mode_tooltips()` / `update_model_list()` / `set_mode_by_name(mode)` /
       `get_show_reasoning()` / `set_refresh_button_text(text)`.
       `MainWindow` больше не обращается к `chat_panel._update_mode_tooltips`,
       `chat_panel.mode_combo`, `chat_panel._show_reasoning`,
-      `chat_panel._update_model_list`, `chat_panel.refresh_models_btn`.
+      `chat_panel._update_model_list`, `chat_panel.refresh_model_btn`.
       `core/app.py` переведён на `set_mode_by_name` вместо
       `mode_combo.setCurrentIndex`.
-- [ ] Оставшиеся >1000-строчные `main_window.py` и `panel.py` — разбить
-      на контроллеры/делегаты в отдельной итерации: `main_window.py` →
-      `ui/file_tree_controller.py` (операции над деревом: copy/cut/paste,
-      new/rename/delete, контекстное меню, `GitStatusDelegate` wiring),
-      `ui/indexing_controller.py` (`IndexingThread`, `ProjectState`,
-      `_start_indexing`/`_on_index_*`); `panel.py` → `ui/chat/backends.py`
-      (`_detect_and_load_slm`, `_load_slm_async`, `_download_and_load_slm`,
-      `_on_slm_*`), `ui/chat/research.py` (`_on_research_*`,
-      `_on_thought_chunk`, `_on_final_chunk`, `_show_research_passport`).
-      Меню из этого списка **исключено** — сделано.
+- [x] **`main_window.py` разбит на контроллеры**:
+  - **`ui/file_tree_controller.py::FileTreeController`** — `QTreeView` +
+    `GitStatusDelegate` + все операции над деревом (`_tree_new_file` /
+    `_tree_new_folder` / `_tree_rename` / `_tree_delete` / `_tree_copy` /
+    `_tree_cut` / `_tree_paste` / `_tree_refresh`, контекстное меню,
+    F2/Del/Ctrl+C/X/V/N/R, `_reveal_in_explorer`, `_is_inside_project`).
+    Публикует сигналы `file_open_requested(str)` / `file_renamed(str, str)` /
+    `file_deleted(str)` / `branch_changed(str)`; `MainWindow` подключает их
+    к `open_file_in_editor` / `editor_widget.rename_open_file` /
+    `editor_widget.close_file_silently` / `_on_branch_changed`.
+    Поля `file_tree`, `file_system_model`, `_git_delegate`, `_fs_clipboard`,
+    `_empty_model` больше не принадлежат `MainWindow`.
+    `FileTreeController.git_delegate` — публичное свойство для
+    `MainWindow._write_file` (после Ctrl+S в редакторе обновляем подсветку).
+  - **`ui/indexing_controller.py`** — `IndexingThread` (QThread) +
+    `ProjectState` (per-project JSON) + `IndexingController(QObject)`.
+    Публикует сигналы `progress(int, int)` / `finished()` / `error(str)` /
+    `summary(list, list)`; `MainWindow` подключает `_on_index_progress` /
+    `_on_index_finished` / `_on_index_error` / `_on_indexing_summary`
+    (это чистые UI-слоты — рисуют прогресс-бар, статус, reindex-кнопку).
+    `_start_indexing` / `_reindex_project` в `MainWindow` — тонкие обёртки
+    над `indexing_controller.start()` / `.reindex()`. `_save_project_state`
+    и `_previous_state` переехали в контроллер (`_on_thread_finished` сам
+    сканирует и сохраняет `ProjectState`). `MainWindow._stop_all_threads`
+    вызывает `indexing_controller.stop()`; `closeEvent` сбрасывает делегат
+    через `file_tree_controller.set_project_root(None)`.
+    Удалены ~30 методов/атрибутов из `MainWindow`.
+  - `ModelCheckThread` **оставлен в `main_window.py`**: одноразовая
+    операция, привязанная к жизненному циклу окна (`_start_model_check` /
+    `_stop_model_check`). Вынести в `ui/model_check_controller.py` — при
+    появлении третьего потребителя (сейчас — один).
+- [ ] `ui/chat/panel.py` → `ui/chat/backends.py` + `ui/chat/research.py`.
+      `panel.py` всё ещё >2000 строк:
+      - `backends.py` — `_detect_and_load_slm`, `_load_slm_async`,
+        `_download_and_load_slm`, `_on_slm_*`, `_apply_backend_config`,
+        `_detect_backends`, `_check_ollama_async`, `_on_ollama_check_result`,
+        `_on_slm_loaded`, `reload_slm`, `_config_slm_enabled`;
+      - `research.py` — `_on_research_mode_detected`, `_on_thought_chunk`,
+        `_on_final_answer_started`, `_on_final_chunk`,
+        `_on_research_summary_ready`, `_show_research_passport`,
+        `_should_show_passport`, `_on_orchestrator_event`,
+        `_on_orchestrator_result`, `_pipeline_status_label`,
+        `_update_pipeline_status`, `_on_pool_loaded`, `_on_pool_error`,
+        `_on_pool_progress`, `_ensure_orchestrator`, `reset_pipeline`.
+      Объём — ~700 строк миграции, сложная сеть сигналов
+      (`_SLMLoadThread`, `_ModelPoolLoadThread`, research-слоты).
+      Требует отдельного захода с прогоном на живой сборке.
+- [ ] `QCommandLine` вместо `QAction` для меню. На macOS `QAction`-шорткаты
+      всё равно уходят в системное меню; `QCommandLine` даёт выигрыш только
+      при появлении CLI-режима (`ollidesk --headless`). Отдельная задача.
+
+`MainWindow` из «всё-в-одном» превратился в UI-оркестратор: владеет
+виджетами прогресса/статуса и подключает сигналы контроллеров к своим
+слотам, но не знает про `QFileSystemModel`, `GitStatusDelegate`,
+`IndexingThread` и `ProjectState`. Приватная связь `MainWindow ↔ chat_panel`
+(прямой доступ к полям) заменена на 5 публичных методов `ChatPanel`
+(см. выше).
 
 ---
 

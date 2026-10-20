@@ -8,29 +8,33 @@
 * `IndexingThread._run_indexing` при нуле изменений эмитит `indexing_finished`
   сразу, без прогресс-бара — панель не показывает «Индексация: 0/0 файлов».
 * `_on_index_progress` при `total == 0` скрывает прогресс немедленно.
+
+План 2.4 — разбиение `main_window.py` на контроллеры:
+
+* Меню-бар вынесен в `ui.menus.AppMenuBar` — все `QAction` и подменю
+  Recent Projects живут там, `MainWindow._setup_menu` только связывает сигналы.
+* Дерево файлов и файловые операции — `ui.file_tree_controller.FileTreeController`
+  (QTreeView + GitStatusDelegate + new/rename/delete/copy/cut/paste/reload,
+  F2/Del/Ctrl+C/X/V/N/R, контекстное меню).
+* Индексация и `ProjectState` — `ui.indexing_controller.IndexingController`
+  (+ `IndexingThread` и `ProjectState` в том же файле).
+* `MainWindow` остаётся UI-оркестратором: владеет виджетами прогресса/статуса,
+  подключает сигналы контроллеров к своим слотам, но не знает про внутренности.
 """
 
 import asyncio
-import json
-import shutil
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
-from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence, QStandardItemModel
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
-    QFileSystemModel,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -38,7 +42,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
-    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -50,91 +53,27 @@ from core.prompt_watcher import PromptWatcher
 from core.search_cache import SearchCache
 from core.system_prompts import SystemPromptManager
 from core.utils import get_app_data_dir
-from fs.indexer import FileIndexer, FileMetadata
+from fs.indexer import FileIndexer
 from fs.reranker import CrossEncoderReranker
 from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from ui.chat import ChatPanel
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
-from ui.file_tree_delegate import GitStatusDelegate
+from ui.file_tree_controller import FileTreeController
+from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 
 
-class IndexingThread(QThread):
-    """Поток для индексации проекта."""
-
-    progress_updated = Signal(int, int)  # current, total
-    indexing_finished = Signal()
-    indexing_summary = Signal(list, list)
-    indexing_error = Signal(str)
-
-    def __init__(
-        self,
-        indexer: FileIndexer,
-        vector_store: VectorStore,
-        project_path: Path,
-        previous_state: dict,
-    ):
-        super().__init__()
-        self.indexer = indexer
-        self.vector_store = vector_store
-        self.project_path = project_path
-        self.previous_state = previous_state
-
-    def run(self):
-        """Запускает индексацию."""
-        asyncio.run(self._run_indexing())
-
-    async def _run_indexing(self):
-        """Выполняет индексацию проекта."""
-        try:
-            # Инкрементальный скан
-            new_or_modified, deleted = await self.indexer.incremental_scan(
-                self.project_path, self.previous_state
-            )
-
-            total = len(new_or_modified)
-            paths = [m.path for m in new_or_modified]
-            # Если изменений нет и удалять нечего — не дёргаем прогресс
-            # (эмитим (0, 0), панель поймёт и не покажет прогресс-бар).
-            if total == 0 and not deleted:
-                logger.info(
-                    "Индексация не требуется: изменений нет, "
-                    f"состояние проекта актуально ({len(self.previous_state)} файлов)"
-                )
-                self.indexing_summary.emit([], [])
-                self.indexing_finished.emit()
-                return
-
-            self.progress_updated.emit(0, total)
-
-            # Удаляем чанки удаленных файлов
-            if deleted:
-                await self.vector_store.delete_by_file(deleted)
-
-            # Обрабатываем новые и измененные файлы
-            for i, file_meta in enumerate(new_or_modified):
-                content = file_meta.absolute_path.read_text(encoding="utf-8", errors="replace")
-                chunks = self.indexer.chunk_file(content, file_meta.path, file_meta.mtime)
-
-                # Удаляем старые чанки файла (если он был изменен)
-                if file_meta.path in self.previous_state:
-                    await self.vector_store.delete_by_file([file_meta.path])
-
-                # Добавляем новые чанки
-                if chunks:
-                    await self.vector_store.add_chunks(chunks)
-
-                self.progress_updated.emit(i + 1, total)
-
-            self.indexing_summary.emit(paths, list(deleted))
-            self.indexing_finished.emit()
-        except Exception as e:
-            self.indexing_error.emit(str(e))
-
-
 class ModelCheckThread(QThread):
+    """Поток для проверки поддержки инструментов моделями Ollama.
+
+    Остаётся в `main_window.py`, потому что это одноразовая операция,
+    привязанная к жизненному циклу окна (`_start_model_check` / `_stop_model_check`).
+    При появлении третьего потребителя — вынести в `ui/model_check_controller.py`
+    по образцу `FileTreeController`/`IndexingController`.
+    """
+
     progress = Signal(str, int, int)  # model_name, current, total
     model_checked = Signal(str, bool)  # model_name, supports_tools
     finished = Signal(dict)
@@ -150,8 +89,6 @@ class ModelCheckThread(QThread):
         self._cancel = True
 
     def run(self):
-        import asyncio
-
         asyncio.run(self._check())
 
     async def _check(self):
@@ -191,94 +128,24 @@ class ModelCheckThread(QThread):
         self.finished.emit(results)
 
 
-class ProjectState:
-    """Состояние проекта для инкрементальной индексации.
-
-    Хранится per-project в `<project>/.ollidesk/project_state.json` — это
-    критично: глобальный файл (как было раньше) сбрасывался при каждом
-    переключении проекта, и возврат к первому проекту давал полную
-    переиндексацию всех файлов заново (см. `Add of existing embedding ID`
-    в консоли ChromaDB).
-
-    Все методы — статические: экземпляр не нужен, путь к проекту
-    передаётся явно.
-    """
-
-    STATE_DIRNAME = ".ollidesk"
-    STATE_FILENAME = "project_state.json"
-
-    @classmethod
-    def _state_file(cls, project_path: Path) -> Path:
-        return project_path / cls.STATE_DIRNAME / cls.STATE_FILENAME
-
-    @classmethod
-    def load(cls, project_path: Path) -> dict:
-        """Загружает состояние проекта.
-
-        Args:
-            project_path: Корень проекта.
-
-        Returns:
-            dict: {relative_path: FileMetadata}
-        """
-        state_file = cls._state_file(project_path)
-        if not state_file.exists():
-            return {}
-        try:
-            raw = json.loads(state_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Ошибка загрузки состояния проекта: {e}")
-            return {}
-
-        result = {}
-        for path_str, meta_dict in raw.items():
-            # absolute_path восстанавливаем из project_path — в файле
-            # он сохранён как строка, но для FileMetadata нужен Path.
-            abs_path = project_path / meta_dict["path"]
-            meta_dict["absolute_path"] = str(abs_path)
-            try:
-                result[path_str] = FileMetadata.model_validate(meta_dict)
-            except Exception as e:
-                logger.warning(f"Ошибка валидации state для {path_str}: {e}")
-        logger.debug(f"Состояние проекта загружено: {len(result)} файлов")
-        return result
-
-    @classmethod
-    def save(cls, files: dict, project_path: Path) -> None:
-        """Сохраняет состояние проекта.
-
-        Args:
-            files: {relative_path: FileMetadata}
-            project_path: Корень проекта.
-        """
-        state_file = cls._state_file(project_path)
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        serializable = {}
-        for path, meta in files.items():
-            serializable[path] = {
-                "path": meta.path,
-                "sha256": meta.sha256,
-                "mtime": meta.mtime,
-                "size_bytes": meta.size_bytes,
-                "extension": meta.extension,
-                "absolute_path": str(meta.absolute_path),
-            }
-        state_file.write_text(
-            json.dumps(serializable, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.debug(f"Состояние проекта сохранено: {len(files)} файлов")
-
-    @classmethod
-    def clear(cls, project_path: Path) -> None:
-        """Удаляет файл состояния (для полной переиндексации)."""
-        state_file = cls._state_file(project_path)
-        if state_file.exists():
-            state_file.unlink()
-
-
 class MainWindow(QMainWindow):
-    """Главное окно приложения."""
+    """Главное окно приложения.
+
+    Контроллеры (создаются в `_setup_ui`):
+      * `self.file_tree_controller` — дерево файлов, git-подсветка,
+        new/rename/delete/copy/cut/paste, контекстное меню.
+      * `self.indexing_controller` — `IndexingThread` + `ProjectState`.
+
+    Связь MainWindow ↔ контроллеры — только сигналы:
+      * `file_tree_controller.file_open_requested(str)` → `open_file_in_editor`;
+      * `file_tree_controller.file_renamed(str, str)` → `_on_file_renamed`;
+      * `file_tree_controller.file_deleted(str)` → `_on_file_deleted`;
+      * `file_tree_controller.branch_changed(str)` → `_on_branch_changed`;
+      * `indexing_controller.progress(int, int)` → `_on_index_progress`;
+      * `indexing_controller.finished()` → `_on_index_finished`;
+      * `indexing_controller.error(str)` → `_on_index_error`;
+      * `indexing_controller.summary(list, list)` → `_on_indexing_summary`.
+    """
 
     theme_changed = Signal(str)
 
@@ -294,7 +161,6 @@ class MainWindow(QMainWindow):
 
         # Состояние проекта (должно быть до _update_window_title)
         self.project_path: Path | None = None
-        self._previous_state: dict = {}
 
         self._update_window_title()
         self.setMinimumSize(1200, 800)
@@ -327,7 +193,6 @@ class MainWindow(QMainWindow):
         # Индексация
         self.indexer = FileIndexer(config, self.project_path)
         self.vector_store: VectorStore | None = None
-        self._indexing_thread: IndexingThread | None = None
         # Реранкер создаётся лениво при открытии проекта и кэшируется по имени модели
         self._reranker: CrossEncoderReranker | None = None
 
@@ -349,8 +214,30 @@ class MainWindow(QMainWindow):
 
         logger.info("Главное окно создано")
 
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+
     def _setup_ui(self) -> None:
-        """Настраивает UI: левая панель + центр + кнопка + правая панель."""
+        """Настраивает UI: левая панель + центр + кнопка + правая панель.
+
+        Контроллеры (план 2.4) создаются до `_create_left_panel`, потому что
+        левая панель вставляет их виджеты в layout и подключает их сигналы
+        к слотам MainWindow.
+        """
+        # --- Контроллеры ---
+        self.file_tree_controller = FileTreeController(parent=self)
+        self.file_tree_controller.file_open_requested.connect(self.open_file_in_editor)
+        self.file_tree_controller.file_renamed.connect(self._on_file_renamed)
+        self.file_tree_controller.file_deleted.connect(self._on_file_deleted)
+
+        self.indexing_controller = IndexingController(parent=self)
+        self.indexing_controller.progress.connect(self._on_index_progress)
+        self.indexing_controller.finished.connect(self._on_index_finished)
+        self.indexing_controller.error.connect(self._on_index_error)
+        self.indexing_controller.summary.connect(self._on_indexing_summary)
+
+        # --- Виджеты ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -381,7 +268,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.right_panel)
 
     def _create_left_panel(self) -> QWidget:
-        """Создает левую панель (дерево файлов проекта + индексация)."""
+        """Создает левую панель (дерево файлов проекта + индексация).
+
+        Дерево файлов приходит из `self.file_tree_controller.tree`; всё
+        остальное (заголовок, кнопка reindex, прогресс-бар, статус) —
+        UI-элементы MainWindow, потому что они управляются слотами
+        прогресса/ошибок индексации.
+        """
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -411,37 +304,12 @@ class MainWindow(QMainWindow):
         self.reindex_btn.setVisible(False)
         layout.addWidget(self.reindex_btn)
 
-        # Дерево файлов (пустое до открытия проекта)
-        self.file_tree = QTreeView()
-        self.file_tree.setHeaderHidden(True)
-        self.file_tree.setAnimated(True)
-        self.file_tree.setIndentation(16)
-        self.file_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
-        self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.file_tree.customContextMenuRequested.connect(self._on_file_tree_context_menu)
-        self.file_tree.doubleClicked.connect(self._on_file_tree_double_clicked)
-        self.file_tree.clicked.connect(self._on_file_tree_clicked)
-        self._git_delegate = GitStatusDelegate(self.file_tree)
-        self.file_tree.setItemDelegate(self._git_delegate)
-        self._git_delegate.branch_changed.connect(self._on_branch_changed)
-        self._install_tree_shortcuts()
-
-        # Пустая модель — никакие диски не показываем.
-        # Заголовок скрыт (setHeaderHidden(True)), поэтому подписи колонок
-        # смысла не имеют. Раньше текст «Проект не открыт» мог «всплывать»
-        # в QHeaderView после setModel и рисоваться поверх области дерева —
-        # это выглядело так, будто «название секции уплыло в середину окна».
-        self.file_system_model: QFileSystemModel | None = None
-        self._empty_model = QStandardItemModel()
-        self.file_tree.setModel(self._empty_model)
-        self.file_tree.setRootIndex(QModelIndex())
-        self.file_tree.setHeaderHidden(True)
-
-        # Дерево — единственный растягиваемый элемент левой панели.
-        # Без явного stretch свободное место распределялось между виджетами
-        # по их sizeHint, и шапка/прогресс-бар «разъезжались» в середину.
-        layout.addWidget(self.file_tree, stretch=1)
-        layout.setStretchFactor(self.file_tree, 1)
+        # Дерево файлов — из FileTreeController (план 2.4).
+        # Контроллер уже создал QTreeView с git-делегатом и шорткатами;
+        # осталось вставить в layout и подключить branch_changed.
+        self.file_tree_controller.branch_changed.connect(self._on_branch_changed)
+        layout.addWidget(self.file_tree_controller.tree, stretch=1)
+        layout.setStretchFactor(self.file_tree_controller.tree, 1)
 
         # Прогресс-бар индексации
         self.index_progress = QProgressBar()
@@ -457,8 +325,6 @@ class MainWindow(QMainWindow):
         self.index_status_label.setVisible(False)
         layout.addWidget(self.index_status_label)
 
-        # Внутренний буфер для Copy/Cut/Paste файлов.
-        self._fs_clipboard: dict[str, Any] = {"mode": None, "paths": []}
         return panel
 
     def _create_center_panel(self) -> QWidget:
@@ -526,7 +392,8 @@ class MainWindow(QMainWindow):
             file_path.write_text(content, encoding="utf-8")
             logger.info(f"Файл сохранен: {path}")
             # После сохранения git-статус мог измениться — обновляем делегат.
-            self._git_delegate.refresh()
+            # План 2.4: делегат живёт в FileTreeController.
+            self.file_tree_controller.git_delegate.refresh()
             return True
         except Exception as e:
             logger.error(f"Ошибка записи файла: {e}")
@@ -866,21 +733,29 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(base)
 
-    def _on_file_tree_clicked(self, index: QModelIndex) -> None:
-        """Открывает файл из дерева проекта в редакторе."""
-        if self.file_system_model is None:
-            return
-        file_path = self.file_system_model.filePath(index)
-        if Path(file_path).is_file():
-            self.open_file_in_editor(file_path)
-
     @Slot(str)
     def _on_branch_changed(self, branch: str) -> None:
-        """Обновляет лейбл с текущей веткой Git в шапке левой панели."""
+        """Обновляет лейбл с текущей веткой Git в шапке левой панели.
+
+        Сигнал приходит из `self.file_tree_controller.branch_changed`
+        (план 2.4). `branch_label` создаётся в `_create_left_panel`.
+        """
         if branch:
             self.branch_label.setText(f"🌿 {branch}")
         else:
             self.branch_label.setText("")
+
+    @Slot(str, str)
+    def _on_file_renamed(self, old_path: str, new_path: str) -> None:
+        """Переименование из FileTreeController → обновить вкладку редактора."""
+        if hasattr(self, "editor_widget"):
+            self.editor_widget.rename_open_file(old_path, new_path)
+
+    @Slot(str)
+    def _on_file_deleted(self, path: str) -> None:
+        """Удаление из FileTreeController → закрыть вкладку редактора."""
+        if hasattr(self, "editor_widget"):
+            self.editor_widget.close_file_silently(path)
 
     def _open_project(self) -> None:
         """Открывает диалог выбора проекта."""
@@ -891,9 +766,8 @@ class MainWindow(QMainWindow):
     def _add_recent_project(self, path: str) -> None:
         """Добавляет проект в список недавних и перерисовывает меню.
 
-        Раньше вызывала `_update_recent_projects_menu` (удалён в 2.4).
-        Теперь — `self.menu_bar.set_recent_projects`, которая пересобирает
-        подменю Recent Projects в `AppMenuBar`.
+        План 2.4: `AppMenuBar.set_recent_projects` пересобирает подменю
+        Recent Projects; `_update_recent_projects_menu` удалён.
         """
         from core.config import save_config
 
@@ -932,28 +806,18 @@ class MainWindow(QMainWindow):
                 self.menu_bar.set_recent_projects(self.config.recent_projects)
 
     def _do_open_project(self, project_path: Path) -> None:
-        """Внутренняя логика открытия проекта (без диалога)."""
+        """Внутренняя логика открытия проекта (без диалога).
+
+        План 2.4: дерево файлов настраивается через `FileTreeController`,
+        индексация — через `IndexingController` (configure + start).
+        """
         self.project_path = project_path
         logger.info(f"Открыт проект: {self.project_path}")
         self.project_label.setText(f"Проект: {self.project_path.name}")
 
-        self.file_system_model = QFileSystemModel()
-        self.file_system_model.setRootPath(str(self.project_path))
-        self.file_tree.setModel(self.file_system_model)
-        # После подмены модели QHeaderView может снова стать видимым —
-        # гасим его явно, иначе поверх дерева рисуется полоса с именем
-        # колонки («Name») в произвольной позиции.
-        self.file_tree.setHeaderHidden(True)
-        self.file_tree.setRootIndex(self.file_system_model.index(str(self.project_path)))
-        self.file_tree.hideColumn(1)
-        self.file_tree.hideColumn(2)
-        self.file_tree.hideColumn(3)
+        # Дерево — через FileTreeController (план 2.4).
+        self.file_tree_controller.set_project_root(self.project_path)
         self.project_title_label.setText(self.project_path.name)
-
-        # Делегат: обновляем view на всякий случай и запускаем опрос git.
-        self._git_delegate.set_view(self.file_tree)
-        self._git_delegate.set_repo_path(str(self.project_path))
-
         self._update_window_title()
 
         persist_dir = self.project_path / ".ollidesk" / "vector_db"
@@ -981,8 +845,12 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
 
-        # Состояние проекта читаем из <project>/.ollidesk/project_state.json
-        self._previous_state = ProjectState.load(self.project_path)
+        # Индексация: контроллер сам загрузит previous_state (план 2.4).
+        self.indexing_controller.configure(
+            project_path=self.project_path,
+            indexer=self.indexer,
+            vector_store=self.vector_store,
+        )
         self._add_recent_project(str(self.project_path))
         self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
@@ -1032,6 +900,9 @@ class MainWindow(QMainWindow):
         Отличие от `_do_open_project`: текущая сессия и история чата не трогаются,
         каталог не добавляется в список недавних. Пользователь может держать
         открытым один проект, а вопросы задавать по другому каталогу.
+
+        План 2.4: дерево — `file_tree_controller.set_project_root`,
+        индексация — `indexing_controller.configure`/`start`.
         """
         path = Path(path_str).expanduser().resolve()
         if not path.is_dir():
@@ -1042,19 +913,8 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self.project_label.setText(f"Проект: {path.name}")
 
-        self.file_system_model = QFileSystemModel()
-        self.file_system_model.setRootPath(str(path))
-        self.file_tree.setModel(self.file_system_model)
-        self.file_tree.setRootIndex(self.file_system_model.index(str(path)))
-        self.file_tree.hideColumn(1)
-        self.file_tree.hideColumn(2)
-        self.file_tree.hideColumn(3)
+        self.file_tree_controller.set_project_root(path)
         self.project_title_label.setText(path.name)
-
-        # Делегат: привязываем к актуальному view и стартуем опрос git.
-        self._git_delegate.set_view(self.file_tree)
-        self._git_delegate.set_repo_path(str(path))
-
         self._update_window_title()
 
         # Индекс хранится в .ollidesk внутри самого каталога
@@ -1073,347 +933,52 @@ class MainWindow(QMainWindow):
         # Пересоздаём индексер для нового каталога
         self.indexer = FileIndexer(self.config, self.project_path)
 
-        # Состояние — из <project>/.ollidesk/project_state.json
-        self._previous_state = ProjectState.load(path)
+        # Индексация: контроллер сам загрузит previous_state (план 2.4).
+        if self.indexing_controller.is_running:
+            logger.info("@dir: ждём завершения индексации предыдущего каталога")
+            self.indexing_controller.stop()
+
+        self.indexing_controller.configure(
+            project_path=path,
+            indexer=self.indexer,
+            vector_store=self.vector_store,
+        )
         self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
-
-        # Индексация предыдущего каталога должна завершиться, иначе новая не запустится
-        if self._indexing_thread and self._indexing_thread.isRunning():
-            logger.info("@dir: ждём завершения индексации предыдущего каталога")
-            self._indexing_thread.quit()
-            self._indexing_thread.wait(3000)
-
         self._start_indexing()
 
     # ------------------------------------------------------------------
-    # Файловые операции дерева проекта
+    # Индексация (тонкие обёртки над IndexingController, план 2.4)
     # ------------------------------------------------------------------
-
-    def _current_tree_path(self) -> Path | None:
-        """Путь выделенного элемента дерева (или None)."""
-        if self.file_system_model is None:
-            return None
-        index = self.file_tree.currentIndex()
-        if not index.isValid():
-            return None
-        return Path(self.file_system_model.filePath(index))
-
-    def _target_dir_for_new(self) -> Path | None:
-        """Каталог, куда создавать новый файл/папку.
-
-        Если выделен каталог — он. Если файл — его родитель. Если ничего —
-        корень проекта.
-        """
-        cur = self._current_tree_path()
-        if cur and cur.is_dir():
-            return cur
-        if cur and cur.is_file():
-            return cur.parent
-        return self.project_path
-
-    def _is_inside_project(self, path: Path) -> bool:
-        """True, если путь лежит внутри открытого проекта (защита от выхода)."""
-        if not self.project_path:
-            return False
-        try:
-            path.resolve().relative_to(self.project_path.resolve())
-            return True
-        except ValueError:
-            return False
-
-    # --- Открыть расположение в проводнике ---
-
-    def _reveal_in_explorer(self, path: Path) -> None:
-        try:
-            if sys.platform == "win32":
-                if path.is_file():
-                    subprocess.Popen(["explorer", "/select,", str(path)])
-                else:
-                    subprocess.Popen(["explorer", str(path)])
-            elif sys.platform == "darwin":
-                if path.is_file():
-                    subprocess.Popen(["open", "-R", str(path)])
-                else:
-                    subprocess.Popen(["open", str(path)])
-            else:
-                target = path if path.is_dir() else path.parent
-                subprocess.Popen(["xdg-open", str(target)])
-        except Exception as e:
-            logger.warning(f"Не удалось открыть проводник: {e}")
-
-    # --- Обновление ---
-
-    def _tree_refresh(self) -> None:
-        """Пересоздаёт QFileSystemModel и перерисовывает git-статусы.
-
-        Ручной «обновить» из контекстного меню/Ctrl+R. Сам `refresh()`
-        делегат делает `_reload_file_tree`; повторный вызов здесь не нужен.
-        """
-        if not self.project_path:
-            return
-        self._reload_file_tree()
-
-    def _reload_file_tree(self) -> None:
-        """Пересоздаёт модель файлового дерева с сохранением root path.
-
-        ВАЖНО:
-        * делегат `GitStatusDelegate` хранит прямую ссылку на view — после
-        подмены модели синхронизируем view и просим делегат заново
-        разобрать `git status`, иначе подкраска пропадёт до следующего
-        таймерного тика;
-        * `setHeaderHidden(True)` ставим ПОСЛЕ `setModel` — некоторые сборки
-        PySide6 повторно показывают `QHeaderView` при смене модели, и он
-        рисуется поверх дерева.
-        """
-        if not self.project_path:
-            return
-
-        root = str(self.project_path)
-        model = QFileSystemModel()
-        model.setRootPath(root)
-
-        self.file_system_model = model
-        self.file_tree.setModel(model)
-        # Скрываем заголовок после смены модели — иначе полоса с именем
-        # колонки («Name») появляется в середине панели.
-        self.file_tree.setHeaderHidden(True)
-        self.file_tree.setRootIndex(model.index(root))
-        self.file_tree.hideColumn(1)
-        self.file_tree.hideColumn(2)
-        self.file_tree.hideColumn(3)
-
-        # Синхронизируем делегат с актуальным view и перечитываем статусы,
-        # чтобы подсветка не «отваливалась» после пересоздания модели.
-        self._git_delegate.set_view(self.file_tree)
-        self._git_delegate.refresh()
-
-    def _tree_new_file(self) -> None:
-        target_dir = self._target_dir_for_new()
-        if target_dir is None:
-            return
-        name, ok = QInputDialog.getText(self, "Новый файл", f"Имя файла в «{target_dir.name}»:")
-        if not ok:
-            return
-        name = name.strip()
-        if not name:
-            return
-        new_path = target_dir / name
-        if new_path.exists():
-            QMessageBox.warning(self, "Ошибка", f"«{name}» уже существует")
-            return
-        try:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            new_path.write_text("", encoding="utf-8")
-        except OSError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл:\n{e}")
-            return
-        self._git_delegate.refresh()
-        QTimer.singleShot(200, self._open_new_path_in_editor, str(new_path))
-
-    def _open_new_path_in_editor(self, path: str) -> None:
-        """Открывает только что созданный файл (вызывается с задержкой)."""
-        self._reload_file_tree()
-        self.open_file_in_editor(path)
-
-    def _tree_new_folder(self) -> None:
-        target_dir = self._target_dir_for_new()
-        if target_dir is None:
-            return
-        name, ok = QInputDialog.getText(self, "Новая папка", f"Имя папки в «{target_dir.name}»:")
-        if not ok:
-            return
-        name = name.strip()
-        if not name:
-            return
-        new_path = target_dir / name
-        if new_path.exists():
-            QMessageBox.warning(self, "Ошибка", f"«{name}» уже существует")
-            return
-        try:
-            new_path.mkdir(parents=True, exist_ok=False)
-        except OSError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать папку:\n{e}")
-            return
-        self._git_delegate.refresh()
-        QTimer.singleShot(200, self._reload_file_tree)
-
-    # --- Переименование ---
-
-    def _tree_rename(self) -> None:
-        cur = self._current_tree_path()
-        if cur is None or not self._is_inside_project(cur):
-            return
-
-        old_name = cur.name
-        new_name, ok = QInputDialog.getText(self, "Переименовать", "Новое имя:", text=old_name)
-        if not ok:
-            return
-        new_name = new_name.strip()
-        if not new_name or new_name == old_name:
-            return
-
-        new_path = cur.parent / new_name
-        if new_path.exists():
-            QMessageBox.warning(self, "Ошибка", f"«{new_name}» уже существует")
-            return
-
-        try:
-            cur.rename(new_path)
-        except OSError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать:\n{e}")
-            return
-
-        # Обновляем вкладку редактора, если файл открыт.
-        if cur.is_file() or (new_path.is_file() and not new_path.is_dir()):
-            self.editor_widget.rename_open_file(str(cur), str(new_path))
-
-        self._git_delegate.refresh()
-        QTimer.singleShot(200, self._reload_file_tree)
-
-    # --- Удаление ---
-
-    def _tree_delete(self) -> None:
-        cur = self._current_tree_path()
-        if cur is None or not self._is_inside_project(cur):
-            return
-
-        what = "файл" if cur.is_file() else "папку"
-        reply = QMessageBox.question(
-            self,
-            "Удаление",
-            f"Удалить {what} «{cur.name}»?\n"
-            + ("Содержимое будет удалено безвозвратно." if cur.is_dir() else ""),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            if cur.is_dir():
-                shutil.rmtree(cur)
-            else:
-                cur.unlink()
-        except OSError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить:\n{e}")
-            return
-
-        if cur.is_file():
-            self.editor_widget.close_file_silently(str(cur))
-
-        self._git_delegate.refresh()
-        QTimer.singleShot(200, self._reload_file_tree)
-
-    # --- Copy / Cut / Paste ---
-
-    def _tree_copy(self) -> None:
-        cur = self._current_tree_path()
-        if cur is None or not self._is_inside_project(cur):
-            return
-        self._fs_clipboard = {"mode": "copy", "paths": [cur]}
-        self.status_bar.showMessage(f"Скопировано: {cur.name}", 3000)
-
-    def _tree_cut(self) -> None:
-        cur = self._current_tree_path()
-        if cur is None or not self._is_inside_project(cur):
-            return
-        self._fs_clipboard = {"mode": "cut", "paths": [cur]}
-        self.status_bar.showMessage(f"Вырезано: {cur.name}", 3000)
-
-    def _tree_paste(self) -> None:
-        mode = self._fs_clipboard.get("mode")
-        paths: list[Path] = self._fs_clipboard.get("paths") or []
-        if not mode or not paths:
-            return
-
-        # Куда вставлять: выделенный каталог, родитель файла, корень проекта.
-        target_dir = self._target_dir_for_new()
-        if target_dir is None or not target_dir.is_dir():
-            return
-
-        for src in paths:
-            if not src.exists():
-                continue
-            try:
-                src_resolved = src.resolve()
-                target_resolved = target_dir.resolve()
-                # Запрещаем вставлять папку саму в себя.
-                try:
-                    target_resolved.relative_to(src_resolved)
-                    QMessageBox.warning(
-                        self,
-                        "Ошибка",
-                        f"Нельзя вставить «{src.name}» внутрь себя.",
-                    )
-                    continue
-                except ValueError:
-                    pass
-
-                dst = target_dir / src.name
-                if dst.exists():
-                    QMessageBox.warning(
-                        self,
-                        "Ошибка",
-                        f"«{dst.name}» уже существует в целевой папке.",
-                    )
-                    continue
-
-                if mode == "cut":
-                    shutil.move(str(src), str(dst))
-                    if src.is_file():
-                        self.editor_widget.rename_open_file(str(src), str(dst))
-                else:
-                    if src.is_dir():
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
-            except OSError as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось вставить «{src.name}»:\n{e}")
-
-        if mode == "cut":
-            self._fs_clipboard = {"mode": None, "paths": []}
-
-        self._git_delegate.refresh()
-        QTimer.singleShot(200, self._reload_file_tree)
 
     def _reindex_project(self) -> None:
-        """Запускает полную переиндексацию."""
+        """Запускает полную переиндексацию.
+
+        Сброс `previous_state` и `ProjectState.clear` — внутри контроллера
+        (`IndexingController.reindex`). MainWindow только готовит UI.
+        """
         if not self.project_path:
             return
-
-        # Сбрасываем предыдущее состояние для полной переиндексации
-        self._previous_state = {}
-        if self.project_path:
-            ProjectState.clear(self.project_path)
-        self._start_indexing()
-
-    def _start_indexing(self) -> None:
-        """Запускает индексацию проекта в фоновом потоке."""
-        if not self.project_path or not self.vector_store:
-            return
-
-        if self._indexing_thread and self._indexing_thread.isRunning():
-            logger.warning("Индексация уже выполняется")
-            return
-
-        # Показываем прогресс
         self.index_progress.setVisible(True)
         self.index_progress.setValue(0)
         self.index_status_label.setVisible(True)
         self.index_status_label.setText("⏳ Индексация...")
         self.reindex_btn.setEnabled(False)
+        self.indexing_controller.reindex()
 
-        self._indexing_thread = IndexingThread(
-            indexer=self.indexer,
-            vector_store=self.vector_store,
-            project_path=self.project_path,
-            previous_state=self._previous_state,
-        )
-        self._indexing_thread.progress_updated.connect(self._on_index_progress)
-        self._indexing_thread.indexing_summary.connect(self._on_indexing_summary)
-        self._indexing_thread.indexing_finished.connect(self._on_index_finished)
-        self._indexing_thread.indexing_error.connect(self._on_index_error)
-        self._indexing_thread.start()
+    def _start_indexing(self) -> None:
+        """Запускает индексацию в фоне (тонкая обёртка над контроллером)."""
+        if not self.project_path or not self.vector_store:
+            return
+        if self.indexing_controller.is_running:
+            logger.warning("Индексация уже выполняется")
+            return
+        self.index_progress.setVisible(True)
+        self.index_progress.setValue(0)
+        self.index_status_label.setVisible(True)
+        self.index_status_label.setText("⏳ Индексация...")
+        self.reindex_btn.setEnabled(False)
+        self.indexing_controller.start()
 
     @Slot(int, int)
     def _on_index_progress(self, current: int, total: int):
@@ -1434,16 +999,15 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_index_finished(self):
-        """Обрабатывает завершение индексации."""
-        # Прогресс мог остаться от предыдущего запуска — прячем его.
+        """Обрабатывает завершение индексации (UI).
+
+        Сохранение `ProjectState` теперь делает `IndexingController`
+        в `_on_thread_finished` — здесь только UI: прогресс-бар и сообщение.
+        """
         if self.index_progress.isVisible():
             self.index_progress.setValue(self.index_progress.maximum())
             self.index_status_label.setText("✅ Индексация завершена")
 
-        # Сохраняем новое состояние (сканируем снова для актуальных метаданных)
-        self._save_project_state()
-
-        # Скрываем прогресс через 3 секунды
         QTimer.singleShot(3000, self._hide_progress)
         self.reindex_btn.setEnabled(True)
 
@@ -1469,27 +1033,6 @@ class MainWindow(QMainWindow):
             logger.info(f"  + {p}")
         for p in deleted:
             logger.info(f"  − {p}")
-
-    def _save_project_state(self) -> None:
-        """Сохраняет состояние проекта после индексации."""
-        if not self.project_path:
-            return
-
-        # Создаем локальную переменную. Теперь mypy на 100% уверен,
-        # что path имеет тип Path
-        path = self.project_path
-
-        async def _get_state():
-            files = await self.indexer.scan_project(path)
-            return {f.path: f for f in files}
-
-        loop = asyncio.new_event_loop()
-        try:
-            state = loop.run_until_complete(_get_state())
-            ProjectState.save(state, path)
-            self._previous_state = state
-        finally:
-            loop.close()
 
     def _hide_progress(self) -> None:
         """Скрывает прогресс-бар индексации."""
@@ -1564,8 +1107,6 @@ class MainWindow(QMainWindow):
                 from core.config import save_config
 
                 save_config(self.config)
-
-                save_config(self.config)
             except Exception as e:
                 logger.error(f"Ошибка загрузки конфига после визарда: {e}")
         else:
@@ -1630,7 +1171,9 @@ class MainWindow(QMainWindow):
                 logger.debug("ChatPanel.shutdown failed", exc_info=True)
 
         # Останавливаем фоновый опрос git-статусов у делегата.
-        self._git_delegate.set_repo_path(None)
+        # План 2.4: делегат живёт в FileTreeController.
+        if hasattr(self, "file_tree_controller"):
+            self.file_tree_controller.set_project_root(None)
 
         event.accept()
 
@@ -1643,15 +1186,13 @@ class MainWindow(QMainWindow):
 
     def _stop_all_threads(self) -> None:
         """Останавливает все фоновые потоки."""
-        if self._indexing_thread and self._indexing_thread.isRunning():
-            self._indexing_thread.quit()
-            self._indexing_thread.wait(2000)
+        # План 2.4: индексация — через контроллер.
+        if hasattr(self, "indexing_controller"):
+            self.indexing_controller.stop()
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel._stop_generation()
         # Останавливаем клиент Ollama
         if hasattr(self, "ollama_client") and self.ollama_client:
-            import asyncio
-
             try:
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self.ollama_client.__aexit__(None, None, None))
@@ -1683,6 +1224,8 @@ class MainWindow(QMainWindow):
         if dlg.changed():
             try:
                 self.config = load_config()
+                # 2.4: после замены self.config — обновляем ссылку в меню.
+                self.menu_bar.set_config(self.config)
             except Exception as e:
                 logger.warning(f"Не удалось перезагрузить конфиг: {e}")
 
@@ -1807,106 +1350,3 @@ class MainWindow(QMainWindow):
 
         dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
         dlg.exec()
-
-    def _install_tree_shortcuts(self) -> None:
-        """F2/Del/Ctrl+C/X/V/Ctrl+N/Ctrl+Shift+N — только когда дерево в фокусе."""
-        ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
-
-        actions = [
-            ("F2", self._tree_rename),
-            ("Delete", self._tree_delete),
-            ("Ctrl+C", self._tree_copy),
-            ("Ctrl+X", self._tree_cut),
-            ("Ctrl+V", self._tree_paste),
-            ("Ctrl+N", self._tree_new_file),
-            ("Ctrl+Shift+N", self._tree_new_folder),
-            ("Ctrl+R", self._tree_refresh),
-        ]
-
-        for seq, slot in actions:
-            act = QAction(self.file_tree)
-            act.setShortcut(QKeySequence(seq))
-            act.setShortcutContext(ctx)
-            act.triggered.connect(slot)
-            self.file_tree.addAction(act)
-
-    @Slot(QModelIndex)
-    def _on_file_tree_double_clicked(self, index: QModelIndex) -> None:
-        if self.file_system_model is None:
-            return
-        path = self.file_system_model.filePath(index)
-        if Path(path).is_file():
-            self.open_file_in_editor(path)
-
-    @Slot(object)
-    def _on_file_tree_context_menu(self, pos) -> None:
-        """Контекстное меню дерева: открыть/переименовать/удалить/создать/…"""
-        if self.file_system_model is None:
-            return
-
-        index = self.file_tree.indexAt(pos)
-        # Правый клик по пустому месту — работаем с корнем проекта.
-        if index.isValid():
-            self.file_tree.setCurrentIndex(index)
-            target_path = Path(self.file_system_model.filePath(index))
-        else:
-            target_path = self.project_path if self.project_path else None
-
-        if target_path is None:
-            return
-
-        is_file = target_path.is_file()
-        is_dir = target_path.is_dir()
-
-        menu = QMenu(self)
-
-        if is_file:
-            act_open = menu.addAction("📂 Открыть")
-            act_open.triggered.connect(lambda: self.open_file_in_editor(str(target_path)))
-            act_reveal = menu.addAction("📁 Открыть расположение")
-            act_reveal.triggered.connect(lambda: self._reveal_in_explorer(target_path))
-            menu.addSeparator()
-
-        act_new_file = menu.addAction("📄 Новый файл")
-        act_new_file.setShortcut("Ctrl+N")
-        act_new_file.triggered.connect(self._tree_new_file)
-
-        act_new_folder = menu.addAction("📁 Новая папка")
-        act_new_folder.setShortcut("Ctrl+Shift+N")
-        act_new_folder.triggered.connect(self._tree_new_folder)
-
-        menu.addSeparator()
-
-        act_copy = menu.addAction("📋 Копировать")
-        act_copy.setShortcut("Ctrl+C")
-        act_copy.setEnabled(is_file or is_dir)
-        act_copy.triggered.connect(self._tree_copy)
-
-        act_cut = menu.addAction("✂ Вырезать")
-        act_cut.setShortcut("Ctrl+X")
-        act_cut.setEnabled(is_file or is_dir)
-        act_cut.triggered.connect(self._tree_cut)
-
-        act_paste = menu.addAction("📥 Вставить")
-        act_paste.setShortcut("Ctrl+V")
-        act_paste.setEnabled(bool(self._fs_clipboard["paths"]) and is_dir)
-        act_paste.triggered.connect(self._tree_paste)
-
-        if is_file or is_dir:
-            menu.addSeparator()
-
-            act_rename = menu.addAction("✏ Переименовать")
-            act_rename.setShortcut("F2")
-            act_rename.triggered.connect(self._tree_rename)
-
-            act_delete = menu.addAction("🗑 Удалить")
-            act_delete.setShortcut("Delete")
-            act_delete.triggered.connect(self._tree_delete)
-
-        menu.addSeparator()
-
-        act_refresh = menu.addAction("🔄 Обновить")
-        act_refresh.setShortcut("Ctrl+R")
-        act_refresh.triggered.connect(self._tree_refresh)
-
-        menu.exec(self.file_tree.viewport().mapToGlobal(pos))
