@@ -1,5 +1,14 @@
 /**
  * OlliDesk Editor — Monaco Editor с несколькими моделями (вкладками).
+ *
+ * Тема: `_pendingTheme` хранит желаемую тему (по умолчанию `'vs-dark'`),
+ * `setTheme(theme)` вызывается из Python (`EditorWidget.set_theme`).
+ * Если вызов приходит до того, как Monaco инициализирован
+ * (`monaco` ещё не глобальный), тема сохраняется в `_pendingTheme` и
+ * применяется в `initEditor` / `closeDiff` / `showDiff`.
+ * Это защищает от гонки: `MainWindow._create_center_panel` вызывает
+ * `set_theme(self.config.theme)` сразу после создания EditorWidget,
+ * а страница может ещё не завершить загрузку.
  */
 
 let monacoEditor = null;
@@ -10,6 +19,7 @@ let monacoReady = false;
 let pendingFiles = [];
 let requestCounter = 0;
 let pendingRequests = {};
+let _pendingTheme = 'vs-dark';
 
 // path -> { model, viewState, originalContent, isDirty }
 const fileModels = new Map();
@@ -22,7 +32,8 @@ async function initEditor() {
         monacoEditor = monaco.editor.create(document.getElementById('container'), {
             value: '',
             language: 'plaintext',
-            theme: 'vs-dark',
+            // theme не указываем здесь: применяем через setTheme(_pendingTheme),
+            // чтобы не было «вспышки» дефолтной темы до вызова из Python.
             automaticLayout: true,
             fontSize: 14,
             minimap: { enabled: true },
@@ -31,6 +42,10 @@ async function initEditor() {
             tabSize: 4,
             insertSpaces: true,
         });
+
+        // Применяем сохранённую тему. Если Python уже вызвал setTheme до
+        // инициализации Monaco — _pendingTheme уже содержит нужное значение.
+        monaco.editor.setTheme(_pendingTheme);
 
         monacoEditor.onDidChangeModelContent(function () {
             const entry = fileModels.get(currentFilePath);
@@ -46,11 +61,30 @@ async function initEditor() {
 
         setupKeybindings();
         monacoReady = true;
-        console.log('Monaco Editor initialized');
+        console.log('Monaco Editor initialized, theme=' + _pendingTheme);
 
         pendingFiles.forEach(item => _openFile(item.filePath, item.line));
         pendingFiles = [];
     });
+}
+
+/**
+ * Переключает тему Monaco.
+ *
+ * Вызывается из Python (`EditorWidget.set_theme`) через
+ * `runJavaScript("setTheme('vs')")` / `setTheme('vs-dark')`.
+ * Может быть вызван до загрузки Monaco — тогда только запоминает тему.
+ *
+ * @param {string} theme - 'vs' | 'vs-dark' | 'hc-black'
+ */
+function setTheme(theme) {
+    _pendingTheme = theme || 'vs-dark';
+    if (typeof monaco !== 'undefined' && monaco.editor) {
+        monaco.editor.setTheme(_pendingTheme);
+        if (diffEditor) {
+            diffEditor.updateOptions({ theme: _pendingTheme });
+        }
+    }
 }
 
 async function initPythonBridge() {
@@ -200,7 +234,7 @@ function showDiff(originalText, modifiedText, language) {
     if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
 
     diffEditor = monaco.editor.createDiffEditor(document.getElementById('container'), {
-        theme: 'vs-dark',
+        theme: _pendingTheme,
         automaticLayout: true,
         readOnly: false,
         renderSideBySide: true,
@@ -246,11 +280,12 @@ function closeDiff() {
     monacoEditor = monaco.editor.create(document.getElementById('container'), {
         value: '',
         language: 'plaintext',
-        theme: 'vs-dark',
+        // theme применяем через setTheme, чтобы избежать «вспышки» дефолта.
         automaticLayout: true,
         fontSize: 14,
         minimap: { enabled: true },
     });
+    monaco.editor.setTheme(_pendingTheme);
     setupKeybindings();
     if (currentFilePath) {
         const entry = fileModels.get(currentFilePath);

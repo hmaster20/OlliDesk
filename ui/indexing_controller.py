@@ -16,6 +16,11 @@
   * `start()` — запустить поток (no-op, если уже бежит);
   * `reindex()` — сбросить state и запустить;
   * `stop()` — graceful stop для `closeEvent`.
+
+Потокобезопасность: `_on_thread_finished` больше НЕ сканирует проект повторно
+через `new_event_loop().run_until_complete()` на GUI-потоке (раньше это фризило
+UI на сотнях файлов × sha256). `IndexingThread` сам собирает актуальное
+состояние и эмитит его через `state_ready` — сохранение в JSON дешёвое.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import json
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
@@ -36,8 +41,12 @@ class IndexingThread(QThread):
 
     progress_updated = Signal(int, int)  # current, total
     indexing_finished = Signal()
-    indexing_summary = Signal(list, list)
+    indexing_summary = Signal(list, list)  # added_paths, deleted_paths
     indexing_error = Signal(str)
+    # NEW: актуальное состояние {rel_path: FileMetadata} для ProjectState.save.
+    # Раньше контроллер после finish повторно вызывал scan_project — лишний
+    # sha256-скан всех файлов на GUI-потоке.
+    state_ready = Signal(object)
 
     def __init__(
         self,
@@ -73,6 +82,8 @@ class IndexingThread(QThread):
                     "Индексация не требуется: изменений нет, "
                     f"состояние проекта актуально ({len(self.previous_state)} файлов)"
                 )
+                # Состояние не менялось — отдаём previous_state как есть.
+                self.state_ready.emit(dict(self.previous_state))
                 self.indexing_summary.emit([], [])
                 self.indexing_finished.emit()
                 return
@@ -98,6 +109,16 @@ class IndexingThread(QThread):
 
                 self.progress_updated.emit(i + 1, total)
 
+            # Актуальное состояние БЕЗ повторного sha256-скана всех файлов:
+            # берём previous_state, вычитаем удалённые, добавляем изменённые.
+            # Эквивалентно scan_project(path), но без I/O по всему проекту.
+            new_state = dict(self.previous_state)
+            for p in deleted:
+                new_state.pop(p, None)
+            for m in new_or_modified:
+                new_state[m.path] = m
+
+            self.state_ready.emit(new_state)
             self.indexing_summary.emit(paths, list(deleted))
             self.indexing_finished.emit()
         except Exception as e:
@@ -203,6 +224,10 @@ class IndexingController(QObject):
         self._project_path: Path | None = None
         self._indexer: FileIndexer | None = None
         self._vector_store: VectorStore | None = None
+        # NEW: накопитель state между сигналом `state_ready` и `finished`.
+        # Заполняется в `_on_state_ready` (worker-поток → GUI-поток),
+        # сохраняется в `_on_thread_finished` и сразу очищается.
+        self._state_to_save: dict | None = None
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -238,6 +263,7 @@ class IndexingController(QObject):
         self._indexer = indexer
         self._vector_store = vector_store
         self._previous_state = ProjectState.load(project_path)
+        self._state_to_save = None
         logger.info(
             f"IndexingController.configure: {project_path.name}, "
             f"previous_state={len(self._previous_state)} файлов"
@@ -252,13 +278,17 @@ class IndexingController(QObject):
             logger.warning("IndexingController.start без configure() — пропускаем")
             return
 
+        self._state_to_save = None
         self._indexing_thread = IndexingThread(
             indexer=self._indexer,
             vector_store=self._vector_store,
             project_path=self._project_path,
             previous_state=self._previous_state,
         )
+        # NEW: state_ready подключается ДО finished, чтобы _state_to_save
+        # успел заполниться к моменту _on_thread_finished.
         self._indexing_thread.progress_updated.connect(self.progress)
+        self._indexing_thread.state_ready.connect(self._on_state_ready)
         self._indexing_thread.indexing_summary.connect(self.summary)
         self._indexing_thread.indexing_finished.connect(self._on_thread_finished)
         self._indexing_thread.indexing_error.connect(self.error)
@@ -282,33 +312,39 @@ class IndexingController(QObject):
     # Внутренние слоты
     # ------------------------------------------------------------------
 
+    @Slot(object)
+    def _on_state_ready(self, state: dict) -> None:
+        """Запоминает новое состояние до сигнала `finished`.
+
+        Вызывается на GUI-потоке (Qt::AutoConnection из worker-потока
+        через очередь событий). Само сохранение — в `_on_thread_finished`,
+        чтобы гарантированно записать JSON один раз (не дважды при
+        случайном двойном сигнале).
+        """
+        self._state_to_save = state
+
     def _on_thread_finished(self) -> None:
         """Сохраняет новое состояние после успешной индексации.
 
-        Раньше это делал `MainWindow._save_project_state` — теперь
-        контроллер сам сканирует `self._indexer` и пишет `ProjectState.save`.
+        Раньше здесь повторно вызывался `scan_project` на GUI-потоке через
+        `new_event_loop().run_until_complete()`. Это фризило UI на сотнях
+        файлов × sha256, причём полностью напрасно: `IndexingThread`
+        уже знает новое состояние. Теперь сохранение — дешёвый JSON-dump.
+
         `MainWindow._on_index_finished` остаётся UI-слотом (скрыть прогресс,
         показать сообщение).
         """
-        if self._project_path is None or self._indexer is None:
+        if self._project_path is None:
             self.finished.emit()
             return
 
-        path = self._project_path
-        indexer = self._indexer
-
-        async def _get_state():
-            files = await indexer.scan_project(path)
-            return {f.path: f for f in files}
-
-        loop = asyncio.new_event_loop()
-        try:
-            state = loop.run_until_complete(_get_state())
-            ProjectState.save(state, path)
-            self._previous_state = state
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить состояние проекта: {e}")
-        finally:
-            loop.close()
+        state = self._state_to_save
+        self._state_to_save = None
+        if state is not None:
+            try:
+                ProjectState.save(state, self._project_path)
+                self._previous_state = state
+            except Exception as e:
+                logger.warning(f"Не удалось сохранить состояние проекта: {e}")
 
         self.finished.emit()

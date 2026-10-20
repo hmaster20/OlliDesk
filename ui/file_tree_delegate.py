@@ -12,6 +12,13 @@
 * Корень репозитория определяется через `git rev-parse --show-toplevel`,
   поэтому подсветка работает и при открытии подкаталога репозитория.
 * Ветка умеет показывать тег (если HEAD ровно на теге).
+* **[2.3]** `git status --porcelain` выполняется в `QThreadPool`, а не на
+  GUI-потоке. Раньше `_do_refresh` синхронно вызывал `subprocess.run` с
+  `timeout=5.0` — на большом репозитории это блокировало UI на секунды.
+  Теперь worker считает статус в фоне, результат приходит через сигнал
+  `_status_ready` и применяется на GUI-потоке в `_apply_status`.
+  Generation-счётчик защищает от применения устаревшего результата, если
+  `set_repo_path` успел переключить репозиторий, пока worker ещё бежал.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ import subprocess
 import sys
 
 from loguru import logger
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QStyledItemDelegate,
@@ -55,10 +62,41 @@ _GIT_LETTERS: dict[str, str] = {
 }
 
 
+class _GitStatusWorker(QRunnable):
+    """Считает `git status` в пуле потоков.
+
+    Не трогает состояние делегата напрямую: собирает ``status_map`` и
+    ``branch`` локально и отправляет результат через
+    ``delegate._status_ready``. Перенос ``subprocess.run`` с GUI-потока —
+    исправление 2.3: раньше `_do_refresh` блокировал UI на всё время
+    ``git status`` (``timeout=5.0``), а на большом репозитории это
+    заметно даже на SSD.
+    """
+
+    def __init__(self, delegate: "GitStatusDelegate", generation: int) -> None:
+        super().__init__()
+        self._d = delegate
+        self._gen = generation
+
+    def run(self) -> None:
+        try:
+            status_map, branch = self._d._compute_status_sync()
+            self._d._status_ready.emit(status_map, branch, self._gen)
+        except Exception as e:
+            logger.debug(f"GitStatusWorker failed: {e}")
+            try:
+                self._d._status_ready.emit({}, "", self._gen)
+            except Exception:
+                pass
+
+
 class GitStatusDelegate(QStyledItemDelegate):
     """Делегат, окрашивающий имена файлов по Git-статусу."""
 
     branch_changed = Signal(str)
+    # (status_map, branch, generation) — generation позволяет отбрасывать
+    # устаревшие результаты worker'ов, если репозиторий успел смениться.
+    _status_ready = Signal(object, str, int)
 
     def __init__(self, parent: QTreeView | None = None) -> None:
         super().__init__(parent)
@@ -70,6 +108,11 @@ class GitStatusDelegate(QStyledItemDelegate):
         self._repo_root: str | None = None
         self._status_map: dict[str, str] = {}
         self._branch: str = ""
+        # 2.3: git status выполняется в фоне; _running не даёт накапливать
+        # однотипные проверки. _generation сбрасывает устаревшие результаты.
+        self._running: bool = False
+        self._generation: int = 0
+        self._pool = QThreadPool.globalInstance()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -78,6 +121,8 @@ class GitStatusDelegate(QStyledItemDelegate):
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(5000)
         self._poll_timer.timeout.connect(self._do_refresh)
+
+        self._status_ready.connect(self._apply_status)
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -93,6 +138,11 @@ class GitStatusDelegate(QStyledItemDelegate):
         Args:
             path: Путь к открытому проекту или ``None`` для отключения.
         """
+        # Инвалидируем все in-flight worker'ы: их результат относится к
+        # старому репозиторию и не должен примениться к новому.
+        self._generation += 1
+        self._running = False
+
         self._repo_path = path
         self._repo_root = None
         self._status_map.clear()
@@ -133,7 +183,7 @@ class GitStatusDelegate(QStyledItemDelegate):
         return self._branch
 
     # ------------------------------------------------------------------
-    # Git
+    # Git (общие утилиты; могут вызываться как с GUI, так и с worker-потока)
     # ------------------------------------------------------------------
 
     def _run_git(
@@ -142,7 +192,12 @@ class GitStatusDelegate(QStyledItemDelegate):
         cwd: str | None = None,
         timeout: float = 5.0,
     ) -> str | None:
-        """Запускает git с защитой от не-UTF8 и без окна на Windows."""
+        """Запускает git с защитой от не-UTF8 и без окна на Windows.
+
+        Если передан явный ``cwd`` — используется он. Иначе берётся
+        ``self._repo_path``. Worker всегда передаёт явный ``cwd`` — чтобы
+        не зависеть от гонки с ``set_repo_path`` на GUI-потоке.
+        """
         target = cwd or self._repo_path
         if not target:
             return None
@@ -165,8 +220,8 @@ class GitStatusDelegate(QStyledItemDelegate):
             return None
         return result.stdout
 
-    def _read_branch(self) -> str:
-        """Текущая ветка / тег / short-hash.
+    def _read_branch_at(self, cwd: str) -> str:
+        """Текущая ветка / тег / short-hash для явного ``cwd``.
 
         Приоритет:
           1. Если HEAD стоит ровно на теге — показываем тег (`v0.1.2`).
@@ -174,71 +229,112 @@ class GitStatusDelegate(QStyledItemDelegate):
           3. Detached HEAD — `describe --tags` (ближайший тег + hash),
              иначе короткий hash.
         """
-        tag = self._run_git("describe", "--tags", "--exact-match", "HEAD")
+        tag = self._run_git("describe", "--tags", "--exact-match", "HEAD", cwd=cwd)
         if tag and tag.strip():
             return tag.strip()
 
-        ref = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        ref = self._run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
         if ref:
             branch = ref.strip()
             if branch and branch != "HEAD":
                 return branch
 
-        described = self._run_git("describe", "--tags", "--always", "--abbrev=7")
+        described = self._run_git("describe", "--tags", "--always", "--abbrev=7", cwd=cwd)
         if described and described.strip():
             return described.strip()
 
-        short = self._run_git("rev-parse", "--short", "HEAD")
+        short = self._run_git("rev-parse", "--short", "HEAD", cwd=cwd)
         return f"({short.strip()})" if short else ""
 
+    # ------------------------------------------------------------------
+    # Фоновое обновление (2.3)
+    # ------------------------------------------------------------------
+
     def _do_refresh(self) -> None:
-        """Точка входа обоих таймеров. Любая ошибка — в лог, не наружу."""
+        """Запускает git status в пуле потоков (debounce уже сработал).
+
+        Раньше здесь синхронно вызывались `_read_branch` + `_run_git("status")`
+        с таймаутом 5 с — на GUI-потоке. Теперь:
+          * если репозиторий не задан — только перерисовка;
+          * если уже бежит предыдущий worker — пропускаем (не плодим
+            одинаковые subprocess'ы);
+          * иначе — `_GitStatusWorker` в `QThreadPool.globalInstance()`,
+            результат приходит в `_apply_status` через сигнал.
+        """
+        if not self._repo_path or not self._repo_root:
+            self._update_viewport()
+            return
+        if self._running:
+            # Предыдущий git status ещё не завершился — не плодим новые.
+            return
+        self._running = True
+        generation = self._generation
+        self._pool.start(_GitStatusWorker(self, generation))
+
+    def _compute_status_sync(self) -> tuple[dict[str, str], str]:
+        """Синхронная часть — выполняется в worker-потоке.
+
+        Возвращает ``(status_map, branch)``. ``status_map`` — словарь
+        ``{relative_path: xy}`` (как из `git status --porcelain`).
+        Чтение ``self._repo_root`` снапшотится в локальную переменную,
+        чтобы избежать гонки с ``set_repo_path`` на GUI-потоке.
+        """
+        repo_root = self._repo_root
+        if not repo_root:
+            return {}, ""
+
+        branch = ""
         try:
-            self._status_map.clear()
+            branch = self._read_branch_at(repo_root)
+        except Exception:
+            logger.debug("GitStatusDelegate: чтение ветки упало", exc_info=True)
 
-            if not self._repo_path or not self._repo_root:
-                self._update_viewport()
-                return
-
-            # --- Ветка ---
-            try:
-                branch = self._read_branch()
-            except Exception:
-                logger.debug("GitStatusDelegate: чтение ветки упало", exc_info=True)
-                branch = ""
-
-            if branch != self._branch:
-                self._branch = branch
+        status_map: dict[str, str] = {}
+        out = self._run_git(
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            cwd=repo_root,
+        )
+        if out is not None:
+            for raw_line in out.splitlines():
                 try:
-                    self.branch_changed.emit(branch)
+                    parsed = self._parse_porcelain_line(raw_line)
                 except Exception:
                     logger.debug(
-                        "GitStatusDelegate: branch_changed handler упал",
-                        exc_info=True,
+                        f"GitStatusDelegate: не разобрал строку: {raw_line!r}",
                     )
+                    continue
+                if parsed is not None:
+                    path, xy = parsed
+                    status_map[path] = xy
+        return status_map, branch
 
-            # --- Статусы ---
-            # Явно указываем cwd=_repo_root, чтобы git status --porcelain
-            # вернул пути относительно корня репозитория, а не произвольной
-            # cwd (если пользователь открыл подкаталог).
-            out = self._run_git(
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                cwd=self._repo_root,
-            )
-            if out is not None:
-                for raw_line in out.splitlines():
-                    try:
-                        self._parse_porcelain_line(raw_line)
-                    except Exception:
-                        logger.debug(
-                            f"GitStatusDelegate: не разобрал строку: {raw_line!r}",
-                        )
+    @Slot(object, str, int)
+    def _apply_status(self, status_map: dict, branch: str, generation: int) -> None:
+        """Применяет результат worker'а на GUI-потоке.
 
-            self._update_viewport()
-        except Exception:
-            logger.exception("GitStatusDelegate._do_refresh failed")
+        Если ``generation`` не совпадает с текущим — результат относится
+        к другому репозиторию и отбрасывается (см. ``set_repo_path``).
+        """
+        self._running = False
+        if generation != self._generation:
+            # Stale: репозиторий сменился, пока worker считал статус.
+            return
+
+        self._status_map = status_map
+
+        if branch != self._branch:
+            self._branch = branch
+            try:
+                self.branch_changed.emit(branch)
+            except Exception:
+                logger.debug(
+                    "GitStatusDelegate: branch_changed handler упал",
+                    exc_info=True,
+                )
+
+        self._update_viewport()
 
     def _update_viewport(self) -> None:
         """Безопасно перерисовывает viewport дерева.
@@ -258,10 +354,15 @@ class GitStatusDelegate(QStyledItemDelegate):
                 exc_info=True,
             )
 
-    def _parse_porcelain_line(self, line: str) -> None:
-        """Разбирает одну строку `git status --porcelain`."""
+    @staticmethod
+    def _parse_porcelain_line(line: str) -> tuple[str, str] | None:
+        """Разбирает одну строку `git status --porcelain` → ``(path, xy)``.
+
+        Возвращает ``None``, если строка слишком короткая. Невалидные
+        строки отбрасываются с debug-логом в ``_compute_status_sync``.
+        """
         if len(line) < 4:
-            return
+            return None
         xy = line[:2]
         path = line[3:]
 
@@ -277,7 +378,7 @@ class GitStatusDelegate(QStyledItemDelegate):
             except Exception:
                 path = inner
 
-        self._status_map[path.replace("\\", "/")] = xy
+        return path.replace("\\", "/"), xy
 
     # ------------------------------------------------------------------
     # Относительный путь

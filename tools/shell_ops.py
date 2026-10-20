@@ -9,8 +9,9 @@
 * чёрный список разрушительных команд — защита от ошибок 7B-модели,
   НЕ от злоумышленника (обходится через ``cmd /c``, base64,
   ``powershell -EncodedCommand``);
-* песочница cwd по образцу ``tools/file_ops._resolve_path`` — запрет
-  выхода за пределы проекта и записи в ``.git``/``.ollidesk``;
+* песочница cwd — через общий ``SandboxedPathResolver`` (тот же,
+  что у ``tools/file_ops``): запрет выхода за пределы проекта и
+  записи в ``.git``/``.ollidesk``;
 * лимит вывода: первые ``MAX_OUTPUT_CHARS`` символов, чтобы Observation
   не съел окно контекста.
 """
@@ -28,6 +29,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
+from core.sandbox import SandboxedPathResolver  # NEW
 
 # Лимит вывода одной команды. Промежуточные результаты (grep, ls) редко
 # превышают 5000 символов; более длинный вывод всё равно не влезет в
@@ -80,34 +82,6 @@ def _check_blacklist(command: str) -> str | None:
         if pattern.search(command):
             return pattern.pattern
     return None
-
-
-def _resolve_cwd(cwd: str, project_root: str) -> Path | None:
-    """Резолвит cwd с той же песочницей, что ``tools/file_ops._resolve_path``.
-
-    Возвращает:
-        Path — валидный каталог внутри проекта;
-        ``None`` — путь вне проекта или внутри ``.git``/``.ollidesk``.
-    """
-    if not project_root:
-        return None
-    root = Path(project_root).resolve()
-    if not cwd:
-        return root
-    target = Path(cwd)
-    if not target.is_absolute():
-        target = root / target
-    try:
-        target = target.resolve()
-    except OSError:
-        return None
-    try:
-        rel = target.relative_to(root)
-    except ValueError:
-        return None
-    if any(part in (".git", ".ollidesk") for part in rel.parts):
-        return None
-    return target
 
 
 async def _run_powershell(
@@ -191,12 +165,17 @@ async def run_shell_command(
 
     # 1. Песочница: без project_root выполнение бессмысленно и опасно
     #    (команда попадёт в произвольный каталог — например, домашний).
+    #    NEW: используется общий SandboxedPathResolver вместо локальной
+    #    копии `_resolve_cwd`. Отличие от file_ops — «пустой cwd == корень
+    #    проекта» и «пустой project_root == отказ»; обе семантики относятся
+    #    к shell-инструменту, а не к резолверу, поэтому инлайн здесь.
     if not project_root:
         return (
             "Ошибка: run_shell_command требует открытый проект "
             "(project_root не передан)."
         )
-    work_dir = _resolve_cwd(cwd, project_root)
+    resolver = SandboxedPathResolver(project_root)
+    work_dir = resolver.root if not cwd else resolver.resolve(cwd)
     if work_dir is None:
         return (
             "Ошибка: cwd вне проекта или внутри служебной директории "

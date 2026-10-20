@@ -8,6 +8,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
+from core.sandbox import SandboxedPathResolver  # NEW
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
@@ -102,7 +103,8 @@ def read_file(
     Returns:
         Заголовок с диапазоном и размером, фрагмент, hint о продолжении.
     """
-    file_path = _resolve_path(path, project_root)
+    # NEW: единый резолвер вместо дублированной `_resolve_path`.
+    file_path = SandboxedPathResolver(project_root).resolve(path)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
 
@@ -194,7 +196,8 @@ def read_file(
 )
 def list_directory(path: str, project_root: str = "") -> str:
     """Возвращает содержимое директории в виде дерева одного уровня."""
-    dir_path = _resolve_path(path, project_root)
+    # NEW: единый резолвер вместо дублированной `_resolve_path`.
+    dir_path = SandboxedPathResolver(project_root).resolve(path)
     if not dir_path:
         return "Ошибка: путь вне допустимой директории"
 
@@ -248,6 +251,7 @@ def list_directory(path: str, project_root: str = "") -> str:
     except Exception as e:
         return f"Ошибка чтения директории: {e}"
 
+
 def _verify_python_syntax(file_path: Path) -> str:
     """Проверяет синтаксис .py-файла через ``python -m py_compile``.
 
@@ -282,6 +286,7 @@ def _verify_python_syntax(file_path: Path) -> str:
         return (result.stderr or result.stdout or "unknown syntax error").strip()
     return ""
 
+
 @tool(
     name="write_file",
     description="Записывает содержимое в файл. Перед записью создаёт Git-снапшот для отката.",
@@ -295,7 +300,8 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
     ошибке её текст возвращается модели как Observation, чтобы она могла
     исправить файл (React.md 4.2 — внешний верификатор надёжнее LLM-критика).
     """
-    file_path = _resolve_path(path, project_root)
+    # NEW: единый резолвер вместо дублированной `_resolve_path`.
+    file_path = SandboxedPathResolver(project_root).resolve(path)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
     if file_path.is_dir():
@@ -340,24 +346,3 @@ def write_file(path: str, content: str, project_root: str = "") -> str:
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
-def _resolve_path(path: str, project_root: str) -> Path | None:
-    """Безопасно резолвит путь, не давая выйти за пределы project_root."""
-    p = Path(path)
-    if p.is_absolute():
-        resolved = p.resolve()
-    elif project_root:
-        resolved = (Path(project_root) / p).resolve()
-    else:
-        resolved = p.resolve()
-
-    if project_root:
-        root = Path(project_root).resolve()
-        try:
-            rel = resolved.relative_to(root)
-        except ValueError:
-            return None
-        parts = rel.parts
-        if any(part in (".git", ".ollidesk") for part in parts):
-            return None
-        return resolved
-    return resolved

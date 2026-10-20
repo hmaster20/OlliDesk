@@ -59,6 +59,7 @@ from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from ui.chat import ChatPanel
+from ui.chat.threads import _OllamaCheckThread  # 🆕
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_controller import FileTreeController
 from ui.indexing_controller import IndexingController
@@ -174,6 +175,8 @@ class MainWindow(QMainWindow):
         self.ollama_client = OllamaClient(base_url="http://localhost:11434")
         self._ollama_connected = False
         self._available_models: list[str] = []
+        # 🆕 Фоновый поток проверки Ollama вместо new_event_loop() на GUI-потоке.
+        self._ollama_check_thread: _OllamaCheckThread | None = None
 
         # Инициализация хранилища возможностей моделей
         self.model_registry = ModelRegistry()
@@ -211,6 +214,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
         self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
         self.chat_panel.source_activated.connect(self.open_file_in_editor)
+        # 🆕 Смена темы → Monaco.
+        self.theme_changed.connect(self._on_theme_changed_for_editor)
 
         logger.info("Главное окно создано")
 
@@ -305,8 +310,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.reindex_btn)
 
         # Дерево файлов — из FileTreeController (план 2.4).
-        # Контроллер уже создал QTreeView с git-делегатом и шорткатами;
-        # осталось вставить в layout и подключить branch_changed.
         self.file_tree_controller.branch_changed.connect(self._on_branch_changed)
         layout.addWidget(self.file_tree_controller.tree, stretch=1)
         layout.setStretchFactor(self.file_tree_controller.tree, 1)
@@ -361,11 +364,26 @@ class MainWindow(QMainWindow):
         self.editor_widget = EditorWidget()
         self.editor_widget.set_file_reader(self._read_file)
         self.editor_widget.set_file_writer(self._write_file)
+        # 🆕 Инициализация темы Monaco из текущего конфига.
+        self.editor_widget.set_theme(self.config.theme)
         self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
 
         layout.addWidget(self.tab_widget)
         return panel
 
+    # 🆕 Слот: смена темы → Monaco.
+    @Slot(str)
+    def _on_theme_changed_for_editor(self, theme: str) -> None:
+        """Прокидывает смену темы в Monaco Editor.
+
+        Вызывается из `MainWindow.theme_changed` (испускается
+        `_toggle_theme`), когда `OlliDeskApp._on_theme_changed` уже
+        применил QSS к приложению.
+        """
+        if hasattr(self, "editor_widget"):
+            self.editor_widget.set_theme(theme)
+
+    @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):
         self.config.last_model = settings.get("model", "")
         self.config.last_mode = settings.get("mode", "chat")
@@ -582,9 +600,7 @@ class MainWindow(QMainWindow):
         """Создаёт меню-бар и подключает его сигналы (план 2.4).
 
         Само построение меню живёт в `ui.menus.AppMenuBar`; здесь — только
-        связь сигналов с обработчиками MainWindow. Это убирает ~180 строк
-        из класса и разрывает зависимость «меню знает про chat_panel/
-        vector_store».
+        связь сигналов с обработчиками MainWindow.
         """
         self.menu_bar = AppMenuBar(self.config, self)
         self.setMenuBar(self.menu_bar)
@@ -638,9 +654,7 @@ class MainWindow(QMainWindow):
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
         if dlg.exec():
-            # После сохранения обновляем тултипы через публичный API (2.4)
             self.chat_panel.update_mode_tooltips()
-            # Можно перезагрузить роли в комбобоксе
             self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
@@ -679,27 +693,32 @@ class MainWindow(QMainWindow):
             return
         QTimer.singleShot(500, self._do_check_ollama)
 
+    # 🆕 Полностью переписано: фоновая проверка вместо new_event_loop().
     def _do_check_ollama(self) -> None:
-        """Выполняет проверку Ollama."""
+        """Проверка Ollama в фоновом потоке.
 
-        async def _check():
-            try:
-                async with self.ollama_client as client:
-                    models = await client.list_models()
-                self._available_models = [m.name for m in models]
-                self._ollama_connected = True
-                return True, self._available_models
-            except Exception:
-                self._ollama_connected = False
-                self._available_models = []
-                return False, []
+        Раньше здесь создавался `new_event_loop().run_until_complete(...)`
+        на GUI-потоке — это блокировало окно на всё время `is_available()`
+        (до 3 с таймаута при недоступном сервере) и на `list_models()`.
+        Теперь — `_OllamaCheckThread` (тот же, что использует ChatPanel
+        для `_on_ollama_check_result`), сигналы `result(bool)` и
+        `models_ready(bool, list)` обрабатываются на GUI-потоке.
 
-        loop = asyncio.new_event_loop()
-        try:
-            ok, models = loop.run_until_complete(_check())
-        finally:
-            loop.close()
+        `_OllamaCheckThread.result` уже подключён в ChatPanel — двойной
+        коннект не нужен: MainWindow слушает только `models_ready`.
+        """
+        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
+            return
+        self._ollama_check_thread = _OllamaCheckThread(self.ollama_client)
+        self._ollama_check_thread.models_ready.connect(self._on_ollama_checked)
+        self._ollama_check_thread.start()
 
+    # 🆕 Слот для фоновой проверки Ollama.
+    @Slot(bool, list)
+    def _on_ollama_checked(self, ok: bool, models: list) -> None:
+        """Обрабатывает результат фоновой проверки Ollama (GUI-поток)."""
+        self._available_models = list(models)
+        self._ollama_connected = ok and bool(models)
         self._update_ollama_status(ok, models)
 
     def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
@@ -714,8 +733,6 @@ class MainWindow(QMainWindow):
             # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
             current_model = self.chat_panel.get_current_model()
             if not current_model and models:
-                # Используем моржовый оператор (:=), чтобы сохранить объект
-                # и проверить его на None
                 first_local = next(
                     (m for m in models if (info := self.model_registry.get(m)) is not None and info.is_local),
                     models[0],
@@ -863,14 +880,12 @@ class MainWindow(QMainWindow):
             if self.config.last_model:
                 self.chat_panel.set_model(self.config.last_model)
             if self.config.last_mode:
-                # 2.4: публичный API вместо chat_panel.mode_combo
                 self.chat_panel.set_mode_by_name(self.config.last_mode)
 
         # Синхронизируем чекбокс с фактическим состоянием — apply_settings
         # мог применить show_reasoning=False из project_settings.yaml.
         if hasattr(self, "show_reasoning_check"):
             self.show_reasoning_check.blockSignals(True)
-            # 2.4: публичный API вместо chat_panel._show_reasoning
             self.show_reasoning_check.setChecked(self.chat_panel.get_show_reasoning())
             self.show_reasoning_check.blockSignals(False)
 
@@ -1002,7 +1017,8 @@ class MainWindow(QMainWindow):
         """Обрабатывает завершение индексации (UI).
 
         Сохранение `ProjectState` теперь делает `IndexingController`
-        в `_on_thread_finished` — здесь только UI: прогресс-бар и сообщение.
+        в `_on_thread_finished` (без `scan_project` — состояние приходит
+        из worker'а через `state_ready`) — здесь только UI.
         """
         if self.index_progress.isVisible():
             self.index_progress.setValue(self.index_progress.maximum())
@@ -1095,8 +1111,6 @@ class MainWindow(QMainWindow):
 
             try:
                 self.config = load_config()
-                # 2.4: после замены self.config — обновляем ссылку в меню,
-                # иначе confirm.web_search будет сохраняться в старый объект.
                 self.menu_bar.set_config(self.config)
                 if self.chat_panel:
                     models = [m.model for m in self.config.models]
@@ -1123,7 +1137,6 @@ class MainWindow(QMainWindow):
 
             try:
                 self.config = load_config(self.project_path)
-                # 2.4: после замены self.config — обновляем ссылку в меню.
                 self.menu_bar.set_config(self.config)
                 # Обновляем индексер с новым конфигом
                 self.indexer = FileIndexer(self.config, self.project_path)
@@ -1171,7 +1184,6 @@ class MainWindow(QMainWindow):
                 logger.debug("ChatPanel.shutdown failed", exc_info=True)
 
         # Останавливаем фоновый опрос git-статусов у делегата.
-        # План 2.4: делегат живёт в FileTreeController.
         if hasattr(self, "file_tree_controller"):
             self.file_tree_controller.set_project_root(None)
 
@@ -1184,21 +1196,26 @@ class MainWindow(QMainWindow):
         settings = self.chat_panel.get_settings()
         ProjectSettings(**settings).save(self.project_path)
 
+    # 🆕 Убран new_event_loop() — закрытие окна больше не блокируется.
     def _stop_all_threads(self) -> None:
-        """Останавливает все фоновые потоки."""
+        """Останавливает фоновые потоки.
+
+        Ollama-клиент больше не закрываем через
+        `new_event_loop().run_until_complete(self.ollama_client.__aexit__)`:
+        это блокировало закрытие окна (до 3 с) и потенциально висело на
+        Windows Proactor при незавершённых httpx-коннектах. `httpx.AsyncClient`
+        уберётся GC при выходе процесса — ресурс-утечки нет, а закрытие
+        мгновенное.
+        """
         # План 2.4: индексация — через контроллер.
         if hasattr(self, "indexing_controller"):
             self.indexing_controller.stop()
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel._stop_generation()
-        # Останавливаем клиент Ollama
-        if hasattr(self, "ollama_client") and self.ollama_client:
-            try:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self.ollama_client.__aexit__(None, None, None))
-                loop.close()
-            except Exception:
-                pass
+        # Ждём фоновый Ollama-check (максимум 1 с) — поток daemon, но лучше
+        # не оставлять его висеть на закрывающемся QApplication.
+        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
+            self._ollama_check_thread.wait(1000)
 
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
@@ -1224,7 +1241,6 @@ class MainWindow(QMainWindow):
         if dlg.changed():
             try:
                 self.config = load_config()
-                # 2.4: после замены self.config — обновляем ссылку в меню.
                 self.menu_bar.set_config(self.config)
             except Exception as e:
                 logger.warning(f"Не удалось перезагрузить конфиг: {e}")
@@ -1298,8 +1314,6 @@ class MainWindow(QMainWindow):
             return
 
         self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
-        # Меняем текст кнопки на "Стоп" (она остаётся активной).
-        # 2.4: публичный API вместо chat_panel.refresh_models_btn.
         self.chat_panel.set_refresh_button_text("⏹ Стоп")
         self._is_checking = True
 
@@ -1328,9 +1342,7 @@ class MainWindow(QMainWindow):
     @Slot(str, bool)
     def _on_model_checked(self, model_name: str, supports: bool):
         """Обновляет UI для проверенной модели."""
-        # Обновляем статус в комбобоксе и метке
         self.chat_panel.update_model_status(model_name)
-        # Если это текущая модель, обновляем статусную метку
         if self.chat_panel.model_combo.currentData() == model_name:
             self.chat_panel._update_model_status(model_name)
 
@@ -1338,10 +1350,8 @@ class MainWindow(QMainWindow):
     def _on_model_check_finished(self, results: dict):
         self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
         self.chat_panel.set_checking_state(False)
-        # 2.4: публичный API вместо chat_panel.refresh_models_btn
         self.chat_panel.set_refresh_button_text("🔄")
         self._is_checking = False
-        # Обновляем полный список через публичный API вместо _update_model_list
         self.chat_panel.update_model_list()
         self.chat_panel.update_models(self._available_models)
 

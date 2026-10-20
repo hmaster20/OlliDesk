@@ -342,6 +342,7 @@ class AgentChatThread(QThread):
     async def _on_tool_result(self, name: str, content: str, is_error: bool):
         self.tool_executed.emit(name, content, is_error)
 
+
 class RagSearchThread(QThread):
     """Поток для асинхронного RAG-поиска."""
 
@@ -398,9 +399,23 @@ class RagSearchThread(QThread):
 
 
 class _OllamaCheckThread(QThread):
-    """Проверяет доступность Ollama в фоне."""
+    """Проверяет доступность Ollama в фоне и возвращает список моделей.
+
+    Два сигнала:
+      * ``result(bool)`` — обратная совместимость для ``ChatPanel``
+        (ему нужна только доступность бэкенда);
+      * ``models_ready(bool, list)`` — расширение для ``MainWindow``,
+        которому нужен список моделей для combo-бокса и статус-бара.
+
+    Раньше ``MainWindow._do_check_ollama`` делал
+    ``new_event_loop().run_until_complete(...)`` прямо на GUI-потоке —
+    это блокировало окно на всё время ``is_available()`` (до 3 с таймаута
+    при недоступном сервере) и ``list_models()``. Теперь оба запроса
+    выполняются здесь, а ``MainWindow`` слушает ``models_ready``.
+    """
 
     result = Signal(bool)
+    models_ready = Signal(bool, list)
 
     def __init__(self, client: OllamaClient):
         super().__init__()
@@ -409,12 +424,23 @@ class _OllamaCheckThread(QThread):
     def run(self):
         try:
             loop = asyncio.new_event_loop()
-            ok = loop.run_until_complete(self.client.is_available())
-            loop.close()
-            self.result.emit(ok)
+            try:
+                ok = loop.run_until_complete(self.client.is_available())
+                models: list[str] = []
+                if ok:
+                    try:
+                        raw = loop.run_until_complete(self.client.list_models())
+                        models = [m.name for m in raw]
+                    except Exception as e:
+                        logger.debug(f"list_models failed: {e}")
+                self.result.emit(ok)
+                self.models_ready.emit(ok, models)
+            finally:
+                loop.close()
         except Exception as e:
             logger.debug(f"Ollama check failed: {e}")
             self.result.emit(False)
+            self.models_ready.emit(False, [])
 
 
 class _SLMLoadThread(QThread):

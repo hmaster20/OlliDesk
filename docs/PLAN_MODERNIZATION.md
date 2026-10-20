@@ -141,9 +141,15 @@
 - [x] **Исправить баг:** `search_cache` не инжектился в `web_search` — добавлен в
       `_INJECTED_PARAMS` (`agents/tool_registry.py`) и прокинут из `ChatPanel` через
       `AgentContext.search_cache`. Рядом добавлены `attached_files` и `hypotheses`.
-- [ ] Убрать `_resolve_path`-песочницу в пользу единого `SandboxedPathResolver`, если
-      добавятся новые файловые инструменты. (`tools/shell_ops.py::_resolve_cwd`
-      повторяет ту же логику для `cwd` — второй потребитель уже есть, стоит объединять.)
+- [x] Убрать `_resolve_path`-песочницу в пользу единого `SandboxedPathResolver`.
+      `core/sandbox.py::SandboxedPathResolver` — единый резолвер путей с проверкой
+      принадлежности проекту и запретом `.git`/`.ollidesk`. `tools/file_ops.py`
+      использует его в трёх call site (`read_file`/`list_directory`/`write_file`),
+      `tools/shell_ops.py::run_shell_command` — для резолва `cwd`. Функции
+      `_resolve_path` и `_resolve_cwd` удалены. Тесты песочницы переезжают в
+      `tests/core/test_sandbox.py`; кейсы публичного контракта shell-инструмента
+      (пустой `project_root` = отказ, пустой `cwd` = корень проекта) остаются в
+      `tests/tools/test_shell_ops.py` и проверяются через `run_shell_command`.
 - [x] Метаданные `is_mutating` / `category` в `@tool` — реализовано в **4.8.D**
       (словарь русских названий инструментов в UI пока остался: `_on_tool_started`
       и `_on_tool_call_detected` дублируют его для показа иконок; вынос в `ToolCallCard`
@@ -157,10 +163,22 @@
       и `PullThread` в `model_manager_dialog.py`.
 - [ ] Гарантированная отмена `asyncio`-задач (`asyncio.Task.cancel()`), а не только флага
       `cancel_request()`.
-- [ ] Убрать `new_event_loop()` + `run_until_complete` на GUI-потоке в
-      `MainWindow._do_check_ollama`, `_save_project_state`, `_stop_all_threads`
-      (все три места остались).
-- [ ] `GitStatusDelegate._do_refresh` и `PullThread` — убрать блокирующий `subprocess` с GUI-потока.
+- [x] Убрать `new_event_loop()` + `run_until_complete` на GUI-потоке в
+      `MainWindow._do_check_ollama`, `_save_project_state`, `_stop_all_threads`.
+      `_do_check_ollama` переведён на `_OllamaCheckThread` (сигналы `result(bool)` +
+      `models_ready(bool, list)`; `MainWindow` слушает `models_ready`, `ChatPanel` —
+      `result`); `_save_project_state` переехал в
+      `IndexingController._on_thread_finished` и больше не сканирует проект повторно
+      (`IndexingThread.state_ready` отдаёт готовое состояние после инкрементального
+      скана — без `sha256`-обхода всего проекта на GUI-потоке);
+      `_stop_all_threads` ждёт `_ollama_check_thread` без `new_event_loop`
+      (`httpx.AsyncClient` убирается GC при выходе процесса — утечки нет).
+- [~] `GitStatusDelegate._do_refresh` и `PullThread` — убрать блокирующий `subprocess`
+      с GUI-потока. `GitStatusDelegate._do_refresh` переведён на `QThreadPool` +
+      `_GitStatusWorker`: `git status --porcelain` и определение ветки/тега выполняются
+      в worker-потоке, `_running`-флаг защищает от накопления однотипных проверок.
+      `PullThread` в `model_manager_dialog.py` остался — объединить с
+      `_DownloadThread` (см. 4.6.D).
 - [ ] Корректно отменять/удалять потоки при закрытии окна (`closeEvent`).
 
 ### 2.4 Разделение `ui/main_window.py` и `ui/chat/panel.py`
@@ -206,9 +224,11 @@
     `_start_indexing` / `_reindex_project` в `MainWindow` — тонкие обёртки
     над `indexing_controller.start()` / `.reindex()`. `_save_project_state`
     и `_previous_state` переехали в контроллер (`_on_thread_finished` сам
-    сканирует и сохраняет `ProjectState`). `MainWindow._stop_all_threads`
-    вызывает `indexing_controller.stop()`; `closeEvent` сбрасывает делегат
-    через `file_tree_controller.set_project_root(None)`.
+    сохраняет `ProjectState`, состояние приходит из worker'а через
+    `state_ready` — без повторного `scan_project` на GUI-потоке).
+    `MainWindow._stop_all_threads` вызывает `indexing_controller.stop()`;
+    `closeEvent` сбрасывает делегат через
+    `file_tree_controller.set_project_root(None)`.
     Удалены ~30 методов/атрибутов из `MainWindow`.
   - `ModelCheckThread` **оставлен в `main_window.py`**: одноразовая
     операция, привязанная к жизненному циклу окна (`_start_model_check` /
@@ -746,8 +766,11 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 - [ ] Цвет заголовка окна при тёмной теме: на Windows нативный title bar не наследует
       stylesheet — варианты: frameless window + собственный title bar, либо
       `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`.
-- [ ] Monaco: тема должна следовать приложению (сейчас жёстко `vs-dark`), включить
-      `vs` для светлой темы.
+- [x] Monaco: тема следует за приложением (раньше была жёстко `vs-dark`).
+      `EditorWidget.set_theme(theme)` прокидывает `"light"` → `vs`, `"dark"` → `vs-dark`
+      в `editor.js::setTheme`; `MainWindow` вызывает при создании (`_create_center_panel`)
+      и на сигнал `theme_changed` (`_on_theme_changed_for_editor`). `diffEditor`
+      перекрашивается через `updateOptions({theme})`.
 - [ ] Иконки-индикаторы в чате: RAG, Tools (файловые), web_search — «что сейчас включено».
 - [x] Подсветка `@`-команд в поле ввода (`@web`, `@dir`, `@file`, `@path`) —
       `ui/chat/panel.py::_highlight_web_command`.

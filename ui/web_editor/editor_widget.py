@@ -1,4 +1,12 @@
-"""Виджет редактора на базе QWebEngineView с несколькими вкладками."""
+"""Виджет редактора на базе QWebEngineView с несколькими вкладками.
+
+Тема Monaco: Python хранит `_pending_theme` и `_web_loaded`. `set_theme`
+безопасно вызывается в любой момент — если страница ещё загружается,
+значение сохраняется и применяется в `_on_web_loaded` (сигнал
+`loadFinished`). Если страница загружена — сразу передаётся в JS через
+`setTheme(theme)`. Это устраняет гонку `_create_center_panel` →
+`set_theme` → (страница ещё грузится) → тема теряется.
+"""
 
 from __future__ import annotations
 
@@ -77,6 +85,11 @@ class EditorWidget(QWidget):
         self.current_file: str | None = None
         self._open_files: list[str] = []
         self._dirty: dict[str, bool] = {}
+        # Тема Monaco (см. `set_theme`): "light" | "dark". Значение
+        # по умолчанию совпадает с `editor.js::_pendingTheme`; MainWindow
+        # переопределяет его сразу после создания через `set_theme(config.theme)`.
+        self._pending_theme: str = "dark"
+        self._web_loaded: bool = False
 
         self._setup_ui()
         self._setup_bridge()
@@ -127,6 +140,10 @@ class EditorWidget(QWidget):
         layout.addWidget(self.web_view, stretch=1)
 
         if isinstance(self.web_view, QWebEngineView):
+            # 2.3 / D1: применяем сохранённую тему после загрузки HTML.
+            # `set_theme` может быть вызван раньше (из MainWindow) —
+            # значение уже лежит в `_pending_theme`.
+            self.web_view.loadFinished.connect(self._on_web_loaded)
             html_path = get_resource_path("ui/web_editor/editor.html")
             if not html_path.exists():
                 logger.error(f"editor.html не найден: {html_path}")
@@ -143,6 +160,47 @@ class EditorWidget(QWidget):
         self.bridge.file_content_ready.connect(self._on_file_content_ready)
         self.bridge.file_write_result.connect(self._on_file_write_result)
         self.bridge.file_dirty_changed.connect(self._on_dirty_changed)
+
+    # ------------------------------------------------------------------
+    # Тема Monaco (D1)
+    # ------------------------------------------------------------------
+
+    @Slot(bool)
+    def _on_web_loaded(self, ok: bool) -> None:
+        """Применяет сохранённую тему после загрузки страницы.
+
+        Если `set_theme("light")` был вызван до загрузки — `runJavaScript`
+        в тот момент игнорировался, но значение уже лежит в
+        `self._pending_theme`. Здесь оно наконец применяется.
+        """
+        self._web_loaded = bool(ok)
+        if ok and self._pending_theme:
+            self._apply_theme_to_js(self._pending_theme)
+
+    def set_theme(self, theme: str) -> None:
+        """Переключает тему Monaco вслед за темой приложения.
+
+        Args:
+            theme: ``"light"`` или ``"dark"`` (как в ``AppConfig.theme``).
+        """
+        self._pending_theme = theme or "dark"
+        if self._web_loaded:
+            self._apply_theme_to_js(self._pending_theme)
+
+    def _apply_theme_to_js(self, theme: str) -> None:
+        """Передаёт тему в Monaco через `setTheme(theme)`.
+
+        `theme: "light"` → `vs` (светлая), `"dark"` → `vs-dark` (тёмная).
+        """
+        if not isinstance(self.web_view, QWebEngineView):
+            return
+        monaco_theme = "vs" if theme == "light" else "vs-dark"
+        try:
+            self.web_view.page().runJavaScript(
+                f"setTheme({json.dumps(monaco_theme)})"
+            )
+        except Exception:
+            logger.debug("Не удалось отправить setTheme в JS", exc_info=True)
 
     # ------------------------------------------------------------------
     # Открытие / переключение / закрытие вкладок
