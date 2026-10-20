@@ -164,11 +164,35 @@
 - [ ] Корректно отменять/удалять потоки при закрытии окна (`closeEvent`).
 
 ### 2.4 Разделение `ui/main_window.py` и `ui/chat/panel.py`
-- [ ] Оба файла >1000 строк и активно используют приватные атрибуты друг друга
-      (`chat_panel._update_mode_tooltips()`, `chat_panel.mode_combo`,
-      `chat_panel._show_reasoning` — новое поле). Разделить на контроллеры/делегаты,
-      общение — только через сигналы.
-- [ ] Вынести меню в отдельный модуль (`ui/menus.py`) с командами (`QAction` + `QCommandLine`).
+- [x] **Меню вынесено в `ui/menus.py`** (`AppMenuBar(QMenuBar)`): построение
+      меню + обработчики checkable-пунктов (project structure, confirm
+      web_search) + подменю Recent Projects живут отдельно; `MainWindow`
+      подключает сигналы (`open_project_requested`, `settings_requested`,
+      `slm_models_requested`, `edit_prompts_requested`, …) к своим слотам.
+      `_setup_menu` из ~180 строк схлопнулся до ~20 строк связывания.
+      Удалены методы `_config_confirm_web_search`, `_on_confirm_web_search_toggled`,
+      `_update_recent_projects_menu` (логика переехала в `AppMenuBar`).
+      `AppMenuBar.set_config(...)` вызывается после `self.config = load_config(...)`
+      в `_run_wizard` / `_open_settings` — иначе `confirm.web_search`
+      сохранялся бы в устаревший объект конфига.
+- [x] **Публичный API `ChatPanel` вместо приватных полей**:
+      `update_mode_tooltips()` / `update_model_list()` / `set_mode_by_name(mode)` /
+      `get_show_reasoning()` / `set_refresh_button_text(text)`.
+      `MainWindow` больше не обращается к `chat_panel._update_mode_tooltips`,
+      `chat_panel.mode_combo`, `chat_panel._show_reasoning`,
+      `chat_panel._update_model_list`, `chat_panel.refresh_models_btn`.
+      `core/app.py` переведён на `set_mode_by_name` вместо
+      `mode_combo.setCurrentIndex`.
+- [ ] Оставшиеся >1000-строчные `main_window.py` и `panel.py` — разбить
+      на контроллеры/делегаты в отдельной итерации: `main_window.py` →
+      `ui/file_tree_controller.py` (операции над деревом: copy/cut/paste,
+      new/rename/delete, контекстное меню, `GitStatusDelegate` wiring),
+      `ui/indexing_controller.py` (`IndexingThread`, `ProjectState`,
+      `_start_indexing`/`_on_index_*`); `panel.py` → `ui/chat/backends.py`
+      (`_detect_and_load_slm`, `_load_slm_async`, `_download_and_load_slm`,
+      `_on_slm_*`), `ui/chat/research.py` (`_on_research_*`,
+      `_on_thought_chunk`, `_on_final_chunk`, `_show_research_passport`).
+      Меню из этого списка **исключено** — сделано.
 
 ---
 

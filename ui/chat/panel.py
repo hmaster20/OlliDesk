@@ -2236,6 +2236,63 @@ class ChatPanel(QWidget):
     def set_vector_store(self, vector_store):
         self.vector_store = vector_store
 
+    # ---------------------------------------------------------
+    # Публичный API для MainWindow (план 2.4)
+    #
+    # Раньше MainWindow обращался к приватным полям напрямую:
+    #   chat_panel._update_mode_tooltips()
+    #   chat_panel.mode_combo.setCurrentIndex(...)
+    #   chat_panel._show_reasoning
+    #   chat_panel._update_model_list()
+    #   chat_panel.refresh_models_btn.setText(...)
+    # Это связывало классы и делало невозможным вынести меню
+    # в отдельный модуль. Теперь — явные методы с понятным контрактом.
+    # ---------------------------------------------------------
+
+    def update_mode_tooltips(self) -> None:
+        """Пересчитывает тултипы селектора режимов (из актуальных промптов).
+
+        Публичная замена `_update_mode_tooltips()` для MainWindow
+        (после сохранения промптов в редакторе).
+        """
+        self._update_mode_tooltips()
+
+    def update_model_list(self) -> None:
+        """Перерисовывает список моделей (после синхронизации с Ollama).
+
+        Публичная замена `_update_model_list()` для MainWindow
+        (в `_on_model_check_finished`).
+        """
+        self._update_model_list()
+
+    def set_mode_by_name(self, mode: str) -> None:
+        """Переключает режим по имени: 'chat' | 'plan' | 'agent'.
+
+        Публичная замена прямому доступу к `mode_combo.setCurrentIndex(...)`
+        из MainWindow (после открытия проекта восстанавливаем сохранённый
+        режим из config / project_settings).
+        """
+        mode_map = {"chat": 0, "plan": 1, "agent": 2}
+        idx = mode_map.get(mode, 2)
+        if 0 <= idx < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(idx)
+
+    def get_show_reasoning(self) -> bool:
+        """Текущее состояние тумблера «Показывать размышления».
+
+        Публичная замена прямому чтению `_show_reasoning` из MainWindow
+        (синхронизация чекбокса в правой панели при `_do_open_project`).
+        """
+        return self._show_reasoning
+
+    def set_refresh_button_text(self, text: str) -> None:
+        """Меняет текст кнопки обновления моделей (⏹ Стоп / 🔄 / ⏳).
+
+        Публичная замена прямому `refresh_models_btn.setText(...)` из
+        MainWindow (индикация процесса проверки поддержки tools).
+        """
+        self.refresh_models_btn.setText(text)
+
     @property
     def router(self) -> ModelRouter:
         return self._router

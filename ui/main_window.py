@@ -58,6 +58,7 @@ from state.session_store import SessionStore
 from ui.chat import ChatPanel
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_delegate import GitStatusDelegate
+from ui.menus import AppMenuBar
 
 
 class IndexingThread(QThread):
@@ -711,145 +712,37 @@ class MainWindow(QMainWindow):
         return panel
 
     def _setup_menu(self) -> None:
-        """Настраивает меню."""
-        menubar = self.menuBar()
+        """Создаёт меню-бар и подключает его сигналы (план 2.4).
 
-        file_menu = menubar.addMenu("&File")
-
-        open_project_action = QAction("&Open Project...", self)
-        open_project_action.setShortcut("Ctrl+O")
-        open_project_action.triggered.connect(self._open_project)
-        file_menu.addAction(open_project_action)
-
-        # Недавние проекты
-        self._recent_projects_menu = file_menu.addMenu("Recent Projects")
-        self._recent_actions: list[QAction] = []
-        self._update_recent_projects_menu()
-
-        file_menu.addSeparator()
-
-        self.confirm_web_search_action = QAction("Подтверждать запросы в интернет", self)
-        self.confirm_web_search_action.setCheckable(True)
-        self.confirm_web_search_action.setChecked(self._config_confirm_web_search())
-        self.confirm_web_search_action.toggled.connect(self._on_confirm_web_search_toggled)
-        file_menu.addAction(self.confirm_web_search_action)
-
-        settings_action = QAction("&Settings...", self)
-        settings_action.triggered.connect(self._open_settings)
-        file_menu.addAction(settings_action)
-
-        file_menu.addSeparator()
-
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        view_menu = menubar.addMenu("&View")
-
-        self.show_chat_action = QAction("Show &Chat Tab", self)
-        self.show_chat_action.setShortcut("Ctrl+Shift+C")
-        self.show_chat_action.triggered.connect(self._show_chat_tab)
-        view_menu.addAction(self.show_chat_action)
-
-        self.show_editor_action = QAction("Show &Editor Tab", self)
-        self.show_editor_action.setShortcut("Ctrl+Shift+E")
-        self.show_editor_action.triggered.connect(self._show_editor_tab)
-        view_menu.addAction(self.show_editor_action)
-
-        self.project_structure_action = QAction("Показать/Скрыть &структуру проекта", self)
-        self.project_structure_action.setShortcut("F4")
-        self.project_structure_action.setCheckable(True)
-        self.project_structure_action.setChecked(False)
-        self.project_structure_action.toggled.connect(self._toggle_project_structure)
-        view_menu.addAction(self.project_structure_action)
-
-        view_menu.addSeparator()
-
-        self.theme_action = QAction("Toggle Dark/Light Theme", self)
-        self.theme_action.setShortcut("Ctrl+T")
-        self.theme_action.triggered.connect(self._toggle_theme)
-
-        view_menu.addSeparator()
-        manage_models_action = QAction("Manage Models...", self)
-        manage_models_action.triggered.connect(self._open_model_manager)
-        view_menu.addAction(manage_models_action)
-
-        view_menu.addSeparator()
-        slm_models_action = QAction("Локальные модели (SLM)...", self)
-        slm_models_action.triggered.connect(self._open_slm_manager)
-        view_menu.addAction(slm_models_action)
-
-        # NEW: предзагрузка двухмодельного пайплайна (planner + analyst)
-        self.preload_pipeline_action = QAction("Предзагрузить 2-model pipeline", self)
-        self.preload_pipeline_action.setToolTip(
-            "Загрузить planner (3B GPU) + analyst (7B CPU) в память сейчас, "
-            "не дожидаясь исследовательского вопроса. Требует открытый "
-            "проект и две разные установленные модели."
-        )
-        self.preload_pipeline_action.triggered.connect(self._preload_two_model_pipeline)
-        view_menu.addAction(self.preload_pipeline_action)
-
-        view_menu.addAction(self.theme_action)
-
-        view_menu.addSeparator()
-        edit_prompts_action = QAction("Edit Prompts & Roles...", self)
-        edit_prompts_action.triggered.connect(self._open_prompt_editor)
-        view_menu.addAction(edit_prompts_action)
-
-        view_menu.addSeparator()
-        manage_sessions_action = QAction("Manage Sessions...", self)
-        manage_sessions_action.triggered.connect(self._open_session_manager)
-        view_menu.addAction(manage_sessions_action)
-
-        view_menu.addSeparator()
-        self.agent_iterations_action = QAction("Лимит итераций агента...", self)
-        self.agent_iterations_action.triggered.connect(self._edit_agent_iterations)
-        view_menu.addAction(self.agent_iterations_action)
-
-        help_menu = menubar.addMenu("&Help")
-
-        wizard_action = QAction("Run Setup &Wizard...", self)
-        wizard_action.triggered.connect(self._run_wizard)
-        help_menu.addAction(wizard_action)
-
-        help_menu.addSeparator()
-
-        about_action = QAction("&About", self)
-        about_action.triggered.connect(self._show_about)
-        help_menu.addAction(about_action)
-
-    def _config_confirm_web_search(self) -> bool:
-        """Читает из конфига признак подтверждения web_search.
-
-        Returns:
-            True, если перед запросом в интернет нужно показывать диалог.
+        Само построение меню живёт в `ui.menus.AppMenuBar`; здесь — только
+        связь сигналов с обработчиками MainWindow. Это убирает ~180 строк
+        из класса и разрывает зависимость «меню знает про chat_panel/
+        vector_store».
         """
-        try:
-            from core.config import load_config
+        self.menu_bar = AppMenuBar(self.config, self)
+        self.setMenuBar(self.menu_bar)
 
-            cfg = load_config()
-            return cfg.confirm.enabled or cfg.confirm.web_search
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать настройку confirm: {e}")
-            return False
+        # File
+        self.menu_bar.open_project_requested.connect(self._open_project)
+        self.menu_bar.open_recent_requested.connect(self._open_recent_project)
+        self.menu_bar.settings_requested.connect(self._open_settings)
+        self.menu_bar.exit_requested.connect(self.close)
 
-    @Slot(bool)
-    def _on_confirm_web_search_toggled(self, checked: bool) -> None:
-        """Сохраняет в конфиг признак подтверждения web_search.
+        # View
+        self.menu_bar.show_chat_requested.connect(self._show_chat_tab)
+        self.menu_bar.show_editor_requested.connect(self._show_editor_tab)
+        self.menu_bar.project_structure_toggled.connect(self._toggle_project_structure)
+        self.menu_bar.theme_toggle_requested.connect(self._toggle_theme)
+        self.menu_bar.manage_models_requested.connect(self._open_model_manager)
+        self.menu_bar.slm_models_requested.connect(self._open_slm_manager)
+        self.menu_bar.preload_pipeline_requested.connect(self._preload_two_model_pipeline)
+        self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
+        self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
+        self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
 
-        Args:
-            checked: True — показывать диалог, False — выполнять сразу.
-        """
-        try:
-            from core.config import load_config, save_config
-
-            cfg = load_config()
-            cfg.confirm.web_search = checked
-            save_config(cfg)
-            logger.info(f"Подтверждение web_search: {'вкл' if checked else 'выкл'}")
-        except Exception as e:
-            logger.exception(f"Не удалось сохранить настройку confirm.web_search: {e}")
+        # Help
+        self.menu_bar.run_wizard_requested.connect(self._run_wizard)
+        self.menu_bar.about_requested.connect(self._show_about)
 
     def _edit_agent_iterations(self) -> None:
         """Позволяет изменить лимит итераций ReAct-цикла агента через меню."""
@@ -878,8 +771,8 @@ class MainWindow(QMainWindow):
     def _open_prompt_editor(self):
         dlg = PromptEditorDialog(self.prompt_manager, self.role_manager, self)
         if dlg.exec():
-            # После сохранения обновляем тултипы
-            self.chat_panel._update_mode_tooltips()
+            # После сохранения обновляем тултипы через публичный API (2.4)
+            self.chat_panel.update_mode_tooltips()
             # Можно перезагрузить роли в комбобоксе
             self.chat_panel.set_role_manager(self.role_manager)
 
@@ -996,7 +889,12 @@ class MainWindow(QMainWindow):
             self._do_open_project(Path(folder))
 
     def _add_recent_project(self, path: str) -> None:
-        """Добавляет проект в список недавних."""
+        """Добавляет проект в список недавних и перерисовывает меню.
+
+        Раньше вызывала `_update_recent_projects_menu` (удалён в 2.4).
+        Теперь — `self.menu_bar.set_recent_projects`, которая пересобирает
+        подменю Recent Projects в `AppMenuBar`.
+        """
         from core.config import save_config
 
         projects = self.config.recent_projects
@@ -1005,25 +903,16 @@ class MainWindow(QMainWindow):
         projects.insert(0, path)
         self.config.recent_projects = projects[:10]
         save_config(self.config)
-        self._update_recent_projects_menu()
-
-    def _update_recent_projects_menu(self) -> None:
-        """Обновляет подменю недавних проектов."""
-        self._recent_projects_menu.clear()
-        self._recent_actions.clear()
-        for path in self.config.recent_projects:
-            action = QAction(path, self)
-            action.triggered.connect(lambda checked, p=path: self._open_recent_project(p))
-            self._recent_projects_menu.addAction(action)
-            self._recent_actions.append(action)
-        if not self.config.recent_projects:
-            action = QAction("(no recent projects)", self)
-            action.setEnabled(False)
-            self._recent_projects_menu.addAction(action)
-            self._recent_actions.append(action)
+        self.menu_bar.set_recent_projects(self.config.recent_projects)
 
     def _open_recent_project(self, path: str) -> None:
-        """Открывает проект из списка недавних."""
+        """Открывает проект из списка недавних.
+
+        Сигнал `open_recent_requested(str)` от `AppMenuBar` вызывает этот
+        слот. Если путь исчез — удаляем запись и перерисовываем меню через
+        `self.menu_bar.set_recent_projects` (вместо удалённого
+        `_update_recent_projects_menu`).
+        """
         folder = Path(path)
         if folder.exists():
             self._do_open_project(folder)
@@ -1040,7 +929,7 @@ class MainWindow(QMainWindow):
                 from core.config import save_config
 
                 save_config(self.config)
-                self._update_recent_projects_menu()
+                self.menu_bar.set_recent_projects(self.config.recent_projects)
 
     def _do_open_project(self, project_path: Path) -> None:
         """Внутренняя логика открытия проекта (без диалога)."""
@@ -1106,15 +995,15 @@ class MainWindow(QMainWindow):
             if self.config.last_model:
                 self.chat_panel.set_model(self.config.last_model)
             if self.config.last_mode:
-                mode_map = {"chat": 0, "plan": 1, "agent": 2}
-                idx = mode_map.get(self.config.last_mode, 2)
-                self.chat_panel.mode_combo.setCurrentIndex(idx)
+                # 2.4: публичный API вместо chat_panel.mode_combo
+                self.chat_panel.set_mode_by_name(self.config.last_mode)
 
         # Синхронизируем чекбокс с фактическим состоянием — apply_settings
         # мог применить show_reasoning=False из project_settings.yaml.
         if hasattr(self, "show_reasoning_check"):
             self.show_reasoning_check.blockSignals(True)
-            self.show_reasoning_check.setChecked(self.chat_panel._show_reasoning)
+            # 2.4: публичный API вместо chat_panel._show_reasoning
+            self.show_reasoning_check.setChecked(self.chat_panel.get_show_reasoning())
             self.show_reasoning_check.blockSignals(False)
 
         self._start_indexing()
@@ -1663,6 +1552,9 @@ class MainWindow(QMainWindow):
 
             try:
                 self.config = load_config()
+                # 2.4: после замены self.config — обновляем ссылку в меню,
+                # иначе confirm.web_search будет сохраняться в старый объект.
+                self.menu_bar.set_config(self.config)
                 if self.chat_panel:
                     models = [m.model for m in self.config.models]
                     self.chat_panel.update_models(models)
@@ -1670,6 +1562,8 @@ class MainWindow(QMainWindow):
                     self.chat_panel.set_model(default)
                     self.chat_panel.set_project_open(self.project_path is not None)
                 from core.config import save_config
+
+                save_config(self.config)
 
                 save_config(self.config)
             except Exception as e:
@@ -1688,6 +1582,8 @@ class MainWindow(QMainWindow):
 
             try:
                 self.config = load_config(self.project_path)
+                # 2.4: после замены self.config — обновляем ссылку в меню.
+                self.menu_bar.set_config(self.config)
                 # Обновляем индексер с новым конфигом
                 self.indexer = FileIndexer(self.config, self.project_path)
                 logger.info("Настройки сохранены, конфиг перезагружен")
@@ -1859,8 +1755,9 @@ class MainWindow(QMainWindow):
             return
 
         self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
-        # Меняем текст кнопки на "Стоп" (она остаётся активной)
-        self.chat_panel.refresh_models_btn.setText("⏹ Стоп")
+        # Меняем текст кнопки на "Стоп" (она остаётся активной).
+        # 2.4: публичный API вместо chat_panel.refresh_models_btn.
+        self.chat_panel.set_refresh_button_text("⏹ Стоп")
         self._is_checking = True
 
         self._model_check_thread = ModelCheckThread(self.ollama_client.base_url, self.model_registry)
@@ -1878,7 +1775,7 @@ class MainWindow(QMainWindow):
                 self._model_check_thread.terminate()
                 self._model_check_thread.wait(1000)
         self._is_checking = False
-        self.chat_panel.refresh_models_btn.setText("🔄")
+        self.chat_panel.set_refresh_button_text("🔄")
         self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
 
     @Slot(str, int, int)
@@ -1898,10 +1795,11 @@ class MainWindow(QMainWindow):
     def _on_model_check_finished(self, results: dict):
         self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
         self.chat_panel.set_checking_state(False)
-        self.chat_panel.refresh_models_btn.setText("🔄")
+        # 2.4: публичный API вместо chat_panel.refresh_models_btn
+        self.chat_panel.set_refresh_button_text("🔄")
         self._is_checking = False
-        # Обновляем полный список, чтобы подтянуть все изменения
-        self.chat_panel._update_model_list()
+        # Обновляем полный список через публичный API вместо _update_model_list
+        self.chat_panel.update_model_list()
         self.chat_panel.update_models(self._available_models)
 
     def _open_session_manager(self):
