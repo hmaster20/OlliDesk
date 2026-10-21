@@ -9,7 +9,12 @@ from loguru import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.exceptions import ConfigError
-
+from core.profiles import (
+    ProfileConfig,
+    builtin_profile_ids,
+    default_profiles,
+    get_profile_by_id,
+)
 
 class ModelRole(StrEnum):
     """Роль модели в системе."""
@@ -714,6 +719,9 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "last_mode",
         "agent_max_iterations",
         "chat_max_iterations",
+        # [9.4] Профили — глобальные, не per-project.
+        "profiles",
+        "active_profile",
     }
 )
 
@@ -806,6 +814,7 @@ class AppConfig(BaseModel):
     last_model: str = ""
     last_mode: str = "agent"
     agent_max_iterations: int = 30
+    agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
     # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней
@@ -813,6 +822,9 @@ class AppConfig(BaseModel):
     show_project_tree: bool = False
     # [9.3] Показывать ли верхнюю панель со статусами Planner/Analyst.
     show_pipeline_selectors: bool = True
+    # [9.4] Профили использования.
+    profiles: list[ProfileConfig] = Field(default_factory=default_profiles)
+    active_profile: str = "development"
 
     @field_validator("recent_projects")
     @classmethod
@@ -832,6 +844,21 @@ class AppConfig(BaseModel):
         if v <= 0:
             raise ValueError(f"max_file_size_kb must be > 0, got {v}")
         return v
+
+    # [9.4] Синхронизация встроенных профилей с кодом.
+    @model_validator(mode="after")
+    def _sync_builtin_profiles(self) -> "AppConfig":
+        """Обновляет встроенные профили до актуального набора.
+
+        Пользовательские профили (`builtin=False`) сохраняются как есть.
+        `active_profile` приводится к существующему id.
+        """
+        builtin_ids = builtin_profile_ids()
+        custom = [p for p in self.profiles if p.id not in builtin_ids]
+        self.profiles = default_profiles() + custom
+        if get_profile_by_id(self.profiles, self.active_profile) is None:
+            self.active_profile = "development"
+        return self
 
 
 class ConfigLoader:

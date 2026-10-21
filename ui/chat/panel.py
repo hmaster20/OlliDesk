@@ -68,7 +68,8 @@ from ui.chat.threads import (
 )
 from ui.widgets.auto_scroll import AutoScrollArea
 from ui.widgets.pipeline_selectors import PipelineSelectors
-
+from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
+from ui.widgets.profiles_selector import ProfilesSelector
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -152,6 +153,8 @@ class ChatPanel(QWidget):
     project_tree_toggled = Signal(bool)
     # [9.3] Открыть SLMModelsDialog из кнопки «⋯» в PipelineSelectors.
     slm_models_requested = Signal()
+    # [9.4] Смена профиля использования (MainWindow синхронизирует чекбокс).
+    profile_changed = Signal(str)  # profile_id
 
     def __init__(
         self,
@@ -231,10 +234,21 @@ class ChatPanel(QWidget):
 
         # [9.3] Селекторы Planner/Analyst в верхней панели.
         self._pipeline_selectors: PipelineSelectors | None = None
+        # [9.4] Селектор профиля использования (Разработка / Исследование / Обучение).
+        self._profiles_selector: ProfilesSelector | None = None
+        # Активный профиль + его runtime-флаги.
+        self._profile: ProfileConfig | None = None
+        self._profile_rag_enabled: bool = True
+        self._profile_agent_max_iters: int = 30
+        self._profile_chat_max_iters: int = 7
         # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
         self._dashboard = None
 
         self._setup_ui()
+
+        # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
+        # чтобы _profiles_selector уже существовал).
+        self._apply_initial_profile()
         self._update_pipeline_status()
         QTimer.singleShot(100, self._detect_backends)
 
@@ -775,7 +789,12 @@ class ChatPanel(QWidget):
         }
 
     def _project_rules(self) -> str:
-        return read_project_rules(self.project_root)
+        """Правила проекта + системный промпт профиля (9.4)."""
+        base = read_project_rules(self.project_root)
+        profile_prompt = (self._profile.system_prompt or "").strip() if self._profile else ""
+        if profile_prompt:
+            return "\n\n".join(filter(None, [base, f"[Профиль: {self._profile.name}]\n{profile_prompt}"]))
+        return base
 
     def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
         self._ensure_project_scan()
@@ -884,6 +903,19 @@ class ChatPanel(QWidget):
         )
         self.project_tree_btn.toggled.connect(self.project_tree_toggled.emit)
         top_bar.addWidget(self.project_tree_btn)
+
+        # [9.4] Селектор профиля использования.
+        try:
+            from core.config import load_config as _load_cfg_for_profiles
+
+            _cfg_for_profiles = _load_cfg_for_profiles()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать конфиг для ProfilesSelector: {e}")
+            _cfg_for_profiles = None
+        if _cfg_for_profiles is not None:
+            self._profiles_selector = ProfilesSelector(_cfg_for_profiles)
+            self._profiles_selector.profile_changed.connect(self._on_profile_changed)
+            top_bar.addWidget(self._profiles_selector)
 
         role_label = QLabel("Роль:")
         role_label.setStyleSheet("font-size: 13px; padding: 4px;")
@@ -1352,7 +1384,8 @@ class ChatPanel(QWidget):
         self._rag_context = None
         self._rag_scope = self._query_scope(text)
 
-        if self.vector_store:
+        # [9.4] Профиль «Обучение» выключает RAG полностью.
+        if self.vector_store and self._profile_rag_enabled:
             self._show_activity("🔍 Сканирую проект…")
             if self._rag_scope:
                 self._show_activity(f"🎯 Фокус на каталоге: {self._rag_scope[0]}/")
@@ -1409,7 +1442,8 @@ class ChatPanel(QWidget):
         self.status_label.setText("🤖 Агент думает...")
         self._rag_scope = self._query_scope(text)
 
-        if self.vector_store:
+        # [9.4] Профиль «Обучение» выключает RAG полностью.
+        if self.vector_store and self._profile_rag_enabled:
             self._show_activity("🔍 Сканирую проект…")
             if self._rag_scope:
                 self._show_activity(f"🎯 Фокус на каталоге: {self._rag_scope[0]}/")
@@ -1486,6 +1520,13 @@ class ChatPanel(QWidget):
             file_count=file_count,
             total_bytes=total_bytes,
         )
+
+        # [9.4] Профиль ограничивает верхнюю границу итераций для
+        # не-research вопросов. Research-лимит не трогаем — там фазовая
+        # машина сама регулирует.
+        if override_limit is None and self._profile is not None and not plan["research"]:
+            plan["max_iters"] = min(plan["max_iters"], self._profile_chat_max_iters)
+
         is_research = plan["research"] and is_research_question(text)
         max_iters = override_limit if override_limit is not None else plan["max_iters"]
 
@@ -1611,6 +1652,8 @@ class ChatPanel(QWidget):
         if mode == AgentMode.AGENT:
             if override_limit is not None:
                 max_iters = override_limit
+            elif self._profile is not None:
+                max_iters = self._profile_agent_max_iters
             else:
                 try:
                     from core.config import load_config
@@ -1624,6 +1667,8 @@ class ChatPanel(QWidget):
         else:
             # Plan-режим: как Chat — размер проекта важен.
             max_iters = override_limit if override_limit is not None else plan["max_iters"]
+            if override_limit is None and self._profile is not None:
+                max_iters = min(max_iters, self._profile_agent_max_iters)
             if is_research:
                 logger.info(
                     f"Plan-режим, research-вопрос: лимит {max_iters} "
@@ -3021,6 +3066,107 @@ class ChatPanel(QWidget):
         logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reset_pipeline")
         self.reset_pipeline()
         self._update_pipeline_status()
+
+    # ------------------------------------------------------------------
+    # [9.4] Профили использования
+    # ------------------------------------------------------------------
+
+    def _apply_initial_profile(self) -> None:
+        """Применяет профиль из конфига при старте приложения."""
+        try:
+            from core.config import load_config as _load_cfg
+
+            cfg = _load_cfg()
+            profile = get_profile_by_id(cfg.profiles, cfg.active_profile)
+            if profile is None:
+                profile = get_default_profile(cfg.profiles)
+            self._apply_profile(profile, emit_signal=False)
+        except Exception as e:
+            logger.warning(f"Не удалось применить стартовый профиль: {e}")
+
+    def _apply_profile(
+        self,
+        profile: ProfileConfig,
+        *,
+        emit_signal: bool = True,
+    ) -> None:
+        """[9.4] Применяет профиль к ChatPanel.
+
+        Устанавливает режим, tool_policies, флаг RAG, show_reasoning,
+        лимиты итераций. НЕ трогает `_pipeline_selectors` — planner/analyst
+        выбираются отдельно. Системный промпт профиля подмешивается
+        в `extra_rules` при каждом запросе (см. `_project_rules`).
+        """
+        from core.config import ToolPolicy as _ToolPolicy
+
+        self._profile = profile
+        logger.info(
+            f"Профиль: {profile.id} ({profile.name}), "
+            f"mode={profile.agent_mode}, rag={profile.rag_enabled}, "
+            f"reasoning={profile.show_reasoning}"
+        )
+
+        # 1. Режим.
+        mode_map = {"chat": 0, "plan": 1, "agent": 2}
+        idx = mode_map.get(profile.agent_mode, 2)
+        if 0 <= idx < self.mode_combo.count() and self.mode_combo.currentIndex() != idx:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentIndex(idx)
+            self.mode_combo.blockSignals(False)
+
+        # 2. show_reasoning.
+        self._show_reasoning = bool(profile.show_reasoning)
+
+        # 3. Tool policies (высший приоритет в _build_registry).
+        for tool_name, policy_str in profile.tool_policies.model_dump().items():
+            try:
+                policy = _ToolPolicy(policy_str)
+            except ValueError:
+                logger.warning(
+                    f"Профиль {profile.id}: неизвестная политика "
+                    f"{policy_str!r} для {tool_name} — пропускаю"
+                )
+                continue
+            self.set_tool_policy(tool_name, policy)
+
+        # 4. RAG.
+        self._profile_rag_enabled = bool(profile.rag_enabled and self.vector_store is not None)
+
+        # 5. Лимиты итераций.
+        self._profile_agent_max_iters = int(profile.agent_max_iterations)
+        self._profile_chat_max_iters = int(profile.chat_max_iterations)
+
+        # 6. Синхронизация UI-индикаторов.
+        if emit_signal:
+            self.profile_changed.emit(profile.id)
+
+    @Slot(object)
+    def _on_profile_changed(self, profile) -> None:
+        """Пользователь выбрал другой профиль в селекторе."""
+        if not isinstance(profile, ProfileConfig):
+            return
+        self._apply_profile(profile, emit_signal=True)
+        # Профиль влияет на pipeline (какие модели), пересобираем.
+        self.reset_pipeline()
+        self.status_label.setText(
+            f"{profile.icon} Профиль: {profile.name}"
+        )
+        logger.info(f"Профиль сменён: {profile.id} → reset_pipeline")
+
+    def refresh_profiles_selector(self) -> None:
+        """Перечитывает список профилей (после редактирования в диалоге)."""
+        if self._profiles_selector is None:
+            return
+        try:
+            from core.config import load_config as _load_cfg
+
+            self._profiles_selector.set_config(_load_cfg())
+        except Exception as e:
+            logger.warning(f"Не удалось обновить ProfilesSelector: {e}")
+
+    def get_active_profile(self) -> ProfileConfig | None:
+        """Текущий активный профиль (для MainWindow)."""
+        return self._profile
 
     def refresh_pipeline_selectors(self) -> None:
         """Перечитывает список моделей в селекторах (после SLMModelsDialog)."""

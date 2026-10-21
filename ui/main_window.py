@@ -67,6 +67,7 @@ from ui.menus import AppMenuBar
 from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 from ui.widgets.status_dashboard import StatusDashboard
 from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
+from core.profiles import get_profile_by_id
 
 
 class ModelCheckThread(QThread):
@@ -222,6 +223,17 @@ class MainWindow(QMainWindow):
             self.chat_panel.project_tree_btn.setChecked(show_tree)
             self.chat_panel.project_tree_btn.blockSignals(False)
             self.left_panel.setVisible(show_tree)
+
+        # [9.4] Синхронизируем селектор профиля и реагируем на смену.
+        self.chat_panel.profile_changed.connect(self._on_profile_changed)
+        if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
+            try:
+                from core.config import load_config as _load_cfg_prof
+
+                _cfg_prof = _load_cfg_prof()
+                self.chat_panel._profiles_selector.set_profile(_cfg_prof.active_profile)
+            except Exception:
+                logger.debug("Не удалось синхронизировать профиль на старте", exc_info=True)
 
         self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
         self.chat_panel.source_activated.connect(self.open_file_in_editor)
@@ -915,6 +927,17 @@ class MainWindow(QMainWindow):
             self.chat_panel.project_tree_btn.setChecked(show_tree)
             self.chat_panel.project_tree_btn.blockSignals(False)
 
+        # [9.4] Применяем профиль из конфига (мог быть изменён в другом окне).
+        try:
+            from core.config import load_config as _load_cfg_prof
+
+            _cfg_prof = _load_cfg_prof()
+            active_profile = get_profile_by_id(_cfg_prof.profiles, _cfg_prof.active_profile)
+            if active_profile is not None and self.chat_panel is not None:
+                self.chat_panel._apply_profile(active_profile, emit_signal=False)
+        except Exception:
+            logger.debug("Не удалось применить профиль при открытии проекта", exc_info=True)
+
         persist_dir = self.project_path / ".ollidesk" / "vector_db"
         self.vector_store = VectorStore(
             persist_dir=persist_dir,
@@ -1275,6 +1298,36 @@ class MainWindow(QMainWindow):
             save_config(self.config)
         except Exception:
             logger.debug("Не удалось сохранить show_project_tree", exc_info=True)
+
+    @Slot(str)
+    def _on_profile_changed(self, profile_id: str) -> None:
+        """[9.4] Профиль сменился — синхронизируем UI MainWindow.
+
+        * чекбокс «Показывать размышления» (из ChatPanel);
+        * статус-бар — короткое сообщение;
+        * селектор профиля (на случай вызова из ChatPanel API).
+        """
+        # Синхронизируем чекбокс reasoning (он в AgentSettingsDialog).
+        if hasattr(self, "show_reasoning_check") and self.chat_panel:
+            value = self.chat_panel.get_show_reasoning()
+            self.show_reasoning_check.blockSignals(True)
+            self.show_reasoning_check.setChecked(value)
+            self.show_reasoning_check.blockSignals(False)
+
+        # Синхронизируем селектор профиля в ChatPanel (на случай API-вызова).
+        if (
+            hasattr(self.chat_panel, "_profiles_selector")
+            and self.chat_panel._profiles_selector
+        ):
+            self.chat_panel._profiles_selector.set_profile(profile_id)
+
+        # Показываем имя профиля в статус-баре.
+        profile = get_profile_by_id(self.config.profiles, profile_id)
+        if profile is not None:
+            self.status_bar.showMessage(
+                f"{profile.icon} Профиль: {profile.name}", 4000
+            )
+        logger.info(f"Профиль изменён: {profile_id}")
 
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""
