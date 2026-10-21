@@ -686,6 +686,14 @@ DEFAULT_INDEX_EXTENSIONS: list[str] = [
     ".tfvars",
     ".hcl",
     ".pkr.hcl",
+    # [9.4] Документы — для профиля «Исследование».
+    # Экстрактор `fs/document_extractors.py` читает их через ленивые
+    # библиотеки; без установленного `[docs]`-extra просто пропускаются.
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".rtf",
 ]
 
 # Файлы БЕЗ расширения, индексируемые по имени.
@@ -722,9 +730,12 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         # [9.4] Профили — глобальные, не per-project.
         "profiles",
         "active_profile",
+        # [9.4] Документы — общий индекс, не per-project.
+        "index_documents",
+        "max_document_size_mb",
+        "document_ocr",
     }
 )
-
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
@@ -805,6 +816,11 @@ class AppConfig(BaseModel):
     index_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_EXTENSIONS))
     index_filenames: list[str] = Field(default_factory=lambda: list(DEFAULT_INDEX_FILENAMES))
     max_file_size_kb: int = 100
+
+    # [9.4] Документы (PDF/DOCX/PPTX/XLSX/RTF) для профиля «Исследование».
+    index_documents: bool = True
+    max_document_size_mb: int = 50
+    document_ocr: bool = False  # OCR сканов — дорого, включается явно
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 50
     rules_file: str = ".ollidesk/rules.md"
@@ -843,6 +859,15 @@ class AppConfig(BaseModel):
     def validate_max_file_size(cls, v: int) -> int:
         if v <= 0:
             raise ValueError(f"max_file_size_kb must be > 0, got {v}")
+        return v
+
+    @field_validator("max_document_size_mb")
+    @classmethod
+    def validate_max_document_size(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"max_document_size_mb must be > 0, got {v}")
+        if v > 500:
+            raise ValueError(f"max_document_size_mb must be <= 500, got {v}")
         return v
 
     # [9.4] Синхронизация встроенных профилей с кодом.

@@ -96,7 +96,12 @@ class IndexingThread(QThread):
 
             # Обрабатываем новые и измененные файлы
             for i, file_meta in enumerate(new_or_modified):
-                content = file_meta.absolute_path.read_text(encoding="utf-8", errors="replace")
+                # [9.4] Единая точка чтения: текст или извлечённый из документа.
+                content = self.indexer.read_file_content(file_meta.absolute_path)
+                if not content:
+                    # Документ не распознан / пустой — пропускаем без падения.
+                    self.progress_updated.emit(i + 1, total)
+                    continue
                 chunks = self.indexer.chunk_file(content, file_meta.path, file_meta.mtime)
 
                 # Удаляем старые чанки файла (если он был изменен)

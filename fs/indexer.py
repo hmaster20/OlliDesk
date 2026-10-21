@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 
 from core.config import AppConfig
 
+from fs.document_extractors import (
+    SUPPORTED_EXTENSIONS as DOCUMENT_EXTENSIONS,
+    extract_document,
+    is_document,
+    language_for_document,
+)
 
 class FileMetadata(BaseModel):
     """Метаданные файла."""
@@ -120,6 +126,10 @@ ARCHIVE_EXTENSIONS: set[str] = {
     '.lzma',
 }
 
+# [9.4] Лимит на извлечённый текст документа (после OCR/парсинга). Защита
+# от 300-страничных PDF, которые забьют ChromaDB десятками тысяч чанков.
+_MAX_DOCUMENT_TEXT_CHARS = 2_000_000  # ~2 МБ текста ≈ 500 страниц
+
 _APP_DIR = ".ollidesk"
 
 
@@ -164,6 +174,13 @@ class FileIndexer:
         self.max_file_size = config.max_file_size_kb * 1024
         self.chunk_size_tokens = config.chunk_size_tokens
         self.chunk_overlap_tokens = config.chunk_overlap_tokens
+
+        # [9.4] Документы: включение + отдельный лимит + опция OCR.
+        self._documents_enabled = bool(getattr(config, "index_documents", True))
+        self.max_document_size = (
+            int(getattr(config, "max_document_size_mb", 50)) * 1024 * 1024
+        )
+        self._document_ocr = bool(getattr(config, "document_ocr", False))
 
     def _read_ignore_file(self, path: Path) -> list[str]:
         """Читает игнор-файл и возвращает значимые строки.
@@ -211,11 +228,15 @@ class FileIndexer:
             suffix = file_path.suffix.lower()
             by_name = file_path.name.lower() in self._index_filenames
             by_ext = suffix in self.allowed_extensions
-            if not (by_name or by_ext):
+            # [9.4] Документы (PDF/DOCX/…) индексируются, даже если
+            # расширения нет в `index_extensions`: это делает профиль
+            # «Исследование» рабочим.
+            by_document = is_document(file_path) and self._documents_enabled
+            if not (by_name or by_ext or by_document):
                 logger.debug(f"Неподдерживаемое расширение: {rel_path_str}")
                 continue
 
-            if not by_name and suffix in BINARY_EXTENSIONS:
+            if not (by_name or by_document) and suffix in BINARY_EXTENSIONS:
                 logger.debug(f"Бинарный файл: {rel_path_str}")
                 continue
 
@@ -224,8 +245,18 @@ class FileIndexer:
             except OSError as e:
                 logger.debug(f"Не удалось получить размер {rel_path_str}: {e}")
                 continue
-            if size > self.max_file_size:
-                logger.debug(f"Файл слишком большой: {rel_path_str} ({size} bytes)")
+
+            # [9.4] Для документов — отдельный лимит (PDF/DOCX обычно крупнее
+            # текстовых файлов). Для остальных — обычный.
+            limit = (
+                self.max_document_size
+                if (by_document or suffix in DOCUMENT_EXTENSIONS)
+                else self.max_file_size
+            )
+            if size > limit:
+                logger.debug(
+                    f"Файл слишком большой: {rel_path_str} ({size} bytes > {limit})"
+                )
                 continue
 
             yield file_path, rel_path_str
@@ -291,6 +322,37 @@ class FileIndexer:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
 
+    def read_file_content(self, path: Path, *, with_ocr: bool | None = None) -> str:
+        """[9.4] Читает содержимое файла: текст или извлечённый из документа.
+
+        Для документов (PDF/DOCX/PPTX/XLSX/RTF) вызывает `extract_document`,
+        для остальных — обычный `read_text(utf-8, errors='replace')`.
+        Извлечённый текст обрезается до `_MAX_DOCUMENT_TEXT_CHARS`.
+
+        Args:
+            path: Путь к файлу.
+            with_ocr: Переопределить настройку OCR из конфига (None = конфиг).
+
+        Returns:
+            Текст. Для документа с ошибкой извлечения — пустая строка
+            (индексация продолжается, но чанк пустой — пропускается выше).
+        """
+        if is_document(path):
+            use_ocr = self._document_ocr if with_ocr is None else bool(with_ocr)
+            result = extract_document(path, use_ocr=use_ocr)
+            if result.error and not result.text:
+                logger.info(f"Документ {path.name}: {result.error}")
+                return ""
+            text = result.text
+            if len(text) > _MAX_DOCUMENT_TEXT_CHARS:
+                logger.warning(
+                    f"Документ {path.name}: текст {len(text)} символов "
+                    f"> лимита {_MAX_DOCUMENT_TEXT_CHARS}, обрезаю"
+                )
+                text = text[:_MAX_DOCUMENT_TEXT_CHARS] + "\n… [документ обрезан]"
+            return text
+        return path.read_text(encoding="utf-8", errors="replace")
+
     def chunk_file(self, content: str, file_path: str, mtime: float | None = None) -> list[TextChunk]:
         """
         Разбивает файл на чанки.
@@ -351,6 +413,9 @@ class FileIndexer:
         Returns:
             str: Язык программирования
         """
+        # [9.4] Документы (PDF/DOCX/…) — отдельный «язык» для RAG-категории docs.
+        if is_document(file_path):
+            return language_for_document(file_path)
         ext_to_lang = {
             ".py": "python",
             ".pyi": "python",

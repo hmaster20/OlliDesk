@@ -13,6 +13,9 @@ $(VENV_NAME):
 install: $(VENV_NAME)
 	$(PIP) install -e .[dev]
 
+install-docs: $(VENV_NAME)
+	$(PIP) install -e .[docs]
+
 download-monaco:
 	$(PYTHON) -m ui.web_editor.download_monaco
 
