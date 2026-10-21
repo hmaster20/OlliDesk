@@ -808,6 +808,12 @@ class AppConfig(BaseModel):
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
+    # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней
+    # панели чата и F4). Дефолт — False, дерево скрыто.
+    show_project_tree: bool = False
+    # [9.3] Показывать ли верхнюю панель со статусами Planner/Analyst.
+    show_pipeline_selectors: bool = True
+
     @field_validator("recent_projects")
     @classmethod
     def validate_recent_projects(cls, v: list[str]) -> list[str]:

@@ -66,6 +66,8 @@ from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 from ui.widgets.status_dashboard import StatusDashboard
+from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
+
 
 class ModelCheckThread(QThread):
     """Поток для проверки поддержки инструментов моделями Ollama.
@@ -208,11 +210,19 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._check_ollama_connection()
 
-        # Правая панель скрыта по умолчанию
-        self.right_panel.setVisible(False)
+        # [9.2] Правая панель заменена на поповер-диалог AgentSettingsDialog.
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
         self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
+
+        # [9.2] Синхронизируем кнопку «📁» с сохранённым состоянием.
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            show_tree = bool(getattr(self.config, "show_project_tree", False))
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(show_tree)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+            self.left_panel.setVisible(show_tree)
+
         self.chat_panel.backend_status_changed.connect(self._on_backend_status_changed)
         self.chat_panel.source_activated.connect(self.open_file_in_editor)
         # 🆕 Смена темы → Monaco.
@@ -269,9 +279,13 @@ class MainWindow(QMainWindow):
         self.main_splitter.setSizes([320, 800])
         layout.addWidget(self.main_splitter, stretch=1)
 
-        # Правая панель (настройки агента)
-        self.right_panel = self._create_right_panel()
-        layout.addWidget(self.right_panel)
+        # [9.2] Правая панель настроек агента — теперь поповер-диалог
+        # AgentSettingsDialog, открывается по «⚙» из ChatPanel.
+
+        # [9.2] Кнопка «📁» в ChatPanel управляет видимостью дерева.
+        self.chat_panel.project_tree_toggled.connect(self._on_project_tree_toggled)
+        # [9.3] Кнопка «⋯» в PipelineSelectors открывает SLMModelsDialog.
+        self.chat_panel.slm_models_requested.connect(self._open_slm_manager)
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация).
@@ -679,6 +693,11 @@ class MainWindow(QMainWindow):
         self.dashboard.slm_models_requested.connect(self._open_slm_manager)
         self.status_bar.addPermanentWidget(self.dashboard)
 
+        # Инжектим панель в ChatPanel — она будет синхронизировать
+        # backend/pipeline/tok/s.
+        if hasattr(self, "chat_panel") and self.chat_panel is not None:
+            self.chat_panel.set_dashboard(self.dashboard)
+
         # Инжектим панель в ChatPanel для синхронизации бэкенда/pipeline/tok/s.
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel.set_dashboard(self.dashboard)
@@ -881,6 +900,20 @@ class MainWindow(QMainWindow):
         self.file_tree_controller.set_project_root(self.project_path)
         self.project_title_label.setText(self.project_path.name)
         self._update_window_title()
+
+        # [9.2] Восстанавливаем видимость дерева проекта.
+        try:
+            from core.config import load_config as _load_cfg
+
+            _cfg = _load_cfg()
+            show_tree = bool(getattr(_cfg, "show_project_tree", False))
+        except Exception:
+            show_tree = False
+        self.left_panel.setVisible(show_tree)
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(show_tree)
+            self.chat_panel.project_tree_btn.blockSignals(False)
 
         persist_dir = self.project_path / ".ollidesk" / "vector_db"
         self.vector_store = VectorStore(
@@ -1101,10 +1134,83 @@ class MainWindow(QMainWindow):
         self.index_status_label.setVisible(False)
 
     def _toggle_side_panel(self) -> None:
-        """Переключает видимость правой панели."""
-        if hasattr(self, "right_panel"):
-            visible = not self.right_panel.isVisible()
-            self.right_panel.setVisible(visible)
+        """[9.2] Открывает AgentSettingsDialog (замена правой панели)."""
+        if not self.chat_panel:
+            return
+        settings = self.chat_panel.get_settings()
+        dialog = AgentSettingsDialog(
+            temperature=float(settings.get("temperature", 0.7)),
+            max_tokens=int(settings.get("max_tokens", 4096)),
+            context_window=int(settings.get("context_window", 8192)),
+            max_iterations=int(self.config.agent_max_iterations),
+            show_reasoning=bool(settings.get("show_reasoning", True)),
+            rag_enabled=bool(settings.get("rag_enabled", True)),
+            tools_enabled={
+                name: policy != ToolPolicy.EXCLUDED
+                for name, policy in self.chat_panel.tool_policies.items()
+            },
+            parent=self,
+        )
+        dialog.settings_applied.connect(self._on_agent_settings_applied)
+        dialog.exec()
+
+    @Slot(dict)
+    def _on_agent_settings_applied(self, settings: dict) -> None:
+        """[9.2] Применяет настройки агента к ChatPanel и конфигу."""
+        from core.config import ToolPolicy as _TP
+
+        # Температура/max_tokens/context_window — в текущую модель.
+        # ChatPanel пока не хранит их per-model, но get_settings() возвращает
+        # только model/mode/show_reasoning. Расширяем постепенно:
+        model_name = self.chat_panel.get_current_model()
+        try:
+            for m in self.config.models:
+                if m.model == model_name:
+                    m.temperature = float(settings["temperature"])
+                    m.max_tokens = int(settings["max_tokens"])
+                    m.context_length = int(settings["context_window"])
+                    break
+        except Exception:
+            logger.debug("Не удалось применить temp/tokens к модели", exc_info=True)
+
+        # Max iterations.
+        self.config.agent_max_iterations = int(settings["max_iterations"])
+        self.config.chat_max_iterations = max(
+            1, min(int(settings["max_iterations"]), 15)
+        )
+
+        # Reasoning.
+        self.chat_panel.set_show_reasoning(bool(settings["show_reasoning"]))
+        if hasattr(self, "show_reasoning_check"):
+            self.show_reasoning_check.blockSignals(True)
+            self.show_reasoning_check.setChecked(bool(settings["show_reasoning"]))
+            self.show_reasoning_check.blockSignals(False)
+
+        # Tools: policy auto/excluded.
+        tools = settings.get("tools") or {}
+        for name, enabled in tools.items():
+            policy = _TP.AUTO if enabled else _TP.EXCLUDED
+            self.chat_panel.set_tool_policy(name, policy)
+            if hasattr(self, "_tool_checkboxes") and name in self._tool_checkboxes:
+                cb = self._tool_checkboxes[name]
+                cb.blockSignals(True)
+                cb.setChecked(enabled)
+                cb.blockSignals(False)
+
+        # RAG.
+        if hasattr(self, "rag_check"):
+            self.rag_check.blockSignals(True)
+            self.rag_check.setChecked(bool(settings.get("rag_enabled", True)))
+            self.rag_check.blockSignals(False)
+
+        try:
+            from core.config import save_config
+
+            save_config(self.config)
+        except Exception:
+            logger.debug("Не удалось сохранить настройки агента", exc_info=True)
+
+        self.status_bar.showMessage("Настройки агента применены", 3000)
 
     def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
         """Обрабатывает переключение инструмента."""
@@ -1133,13 +1239,42 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _toggle_project_structure(self, visible: bool) -> None:
-        """Показывает или скрывает левую панель со структурой проекта (F4).
+        """[9.2] Показывает/скрывает левую панель (F4, меню).
 
-        Args:
-            visible: True — показать панель, False — скрыть.
+        Синхронизирует кнопку «📁» в ChatPanel и сохраняет состояние в конфиг.
         """
         self.left_panel.setVisible(visible)
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(visible)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+        try:
+            from core.config import save_config
+
+            self.config.show_project_tree = visible
+            save_config(self.config)
+        except Exception:
+            logger.debug("Не удалось сохранить show_project_tree", exc_info=True)
         logger.debug(f"Панель структуры проекта: {'показана' if visible else 'скрыта'}")
+
+    @Slot(bool)
+    def _on_project_tree_toggled(self, visible: bool) -> None:
+        """[9.2] Пользователь кликнул «📁» в ChatPanel — переключаем дерево."""
+        self.left_panel.setVisible(visible)
+        # Синхронизируем галочку меню.
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+        # Персистим в конфиг (per-project).
+        try:
+            from core.config import save_config
+
+            self.config.show_project_tree = visible
+            save_config(self.config)
+        except Exception:
+            logger.debug("Не удалось сохранить show_project_tree", exc_info=True)
 
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""
@@ -1291,9 +1426,10 @@ class MainWindow(QMainWindow):
                 logger.warning(f"Не удалось перезагрузить конфиг: {e}")
 
             if hasattr(self, "chat_panel") and self.chat_panel:
-                # reload_slm внутри вызывает reset_pipeline — пайплайн
-                # пересоздастся при следующем запросе с новыми моделями.
                 self.chat_panel.reload_slm()
+                # [9.3] Селекторы Planner/Analyst могли измениться — обновляем.
+                self.chat_panel.refresh_pipeline_selectors()
+
                 self.status_bar.showMessage(
                     "SLM: конфигурация применена. Пайплайн будет пересоздан при следующем research-запросе.",
                     6000,

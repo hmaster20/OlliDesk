@@ -67,6 +67,8 @@ from ui.chat.threads import (
     _SLMLoadThread,
 )
 from ui.widgets.auto_scroll import AutoScrollArea
+from ui.widgets.pipeline_selectors import PipelineSelectors
+
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -146,6 +148,11 @@ class ChatPanel(QWidget):
     directory_attach_requested = Signal(str)
     source_activated = Signal(str, int)
 
+    # [9.2] Дерево проекта (кнопка «📁» в верхней панели → MainWindow).
+    project_tree_toggled = Signal(bool)
+    # [9.3] Открыть SLMModelsDialog из кнопки «⋯» в PipelineSelectors.
+    slm_models_requested = Signal()
+
     def __init__(
         self,
         session_store,
@@ -222,6 +229,11 @@ class ChatPanel(QWidget):
         self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
 
+        # [9.3] Селекторы Planner/Analyst в верхней панели.
+        self._pipeline_selectors: PipelineSelectors | None = None
+        # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
+        self._dashboard = None
+
         self._setup_ui()
         self._update_pipeline_status()
         QTimer.singleShot(100, self._detect_backends)
@@ -261,6 +273,7 @@ class ChatPanel(QWidget):
         # ИСПРАВЛЕНИЕ: запускаем двухмодельный пайплайн после ручной смены моделей
         if self.project_root:
             QTimer.singleShot(1500, self._ensure_orchestrator)
+        self.refresh_pipeline_selectors()
 
     def _detect_and_load_slm(self, skip_auto_select: bool = False):
         """Автовыбор модели + автооптимизация параметров, затем загрузка.
@@ -858,6 +871,20 @@ class ChatPanel(QWidget):
 
         top_bar = QHBoxLayout()
 
+        # [9.2] Кнопка «📁» — переключатель дерева проекта.
+        self.project_tree_btn = QPushButton("📁")
+        self.project_tree_btn.setToolTip("Показать/скрыть дерево проекта (F4)")
+        self.project_tree_btn.setCheckable(True)
+        self.project_tree_btn.setChecked(False)
+        self.project_tree_btn.setStyleSheet(
+            "QPushButton { font-size: 14px; padding: 2px 8px; border: none;"
+            " background: transparent; }"
+            " QPushButton:hover { background: rgba(128,128,128,0.2); border-radius: 4px; }"
+            " QPushButton:checked { background: rgba(212,163,115,0.3); border-radius: 4px; }"
+        )
+        self.project_tree_btn.toggled.connect(self.project_tree_toggled.emit)
+        top_bar.addWidget(self.project_tree_btn)
+
         role_label = QLabel("Роль:")
         role_label.setStyleSheet("font-size: 13px; padding: 4px;")
         top_bar.addWidget(role_label)
@@ -888,14 +915,24 @@ class ChatPanel(QWidget):
         self.model_status_label.setStyleSheet("font-size: 12px; padding: 4px 8px; color: gray;")
         top_bar.addWidget(self.model_status_label)
 
-        # Постоянный индикатор двухмодельного пайплайна (planner 3B + analyst 7B).
-        # Показывает: 💤 не активирован / ⏳ грузится / ⚡ готов / ⚠️ ошибка.
-        self.pipeline_status_label = QLabel("")
-        self.pipeline_status_label.setStyleSheet(
-            "font-size: 11px; padding: 2px 6px; color: #888;"
-            " background: rgba(128,128,128,0.08); border-radius: 3px;"
-        )
-        top_bar.addWidget(self.pipeline_status_label)
+        # [9.3] Селекторы Planner/Analyst (заменяют pipeline_status_label).
+        # ComboBox'ы заполняются из текущего конфига; кнопка «⋯» открывает
+        # SLMModelsDialog; выбор сохраняется в config.yaml.
+        try:
+            from core.config import load_config as _load_cfg_for_pipeline
+
+            _cfg_for_pipeline = _load_cfg_for_pipeline()
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать конфиг для PipelineSelectors: {e}")
+            _cfg_for_pipeline = None
+        if _cfg_for_pipeline is not None:
+            self._pipeline_selectors = PipelineSelectors(_cfg_for_pipeline)
+            self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
+            self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
+            self._pipeline_selectors.open_slm_dialog_requested.connect(
+                self.slm_models_requested.emit
+            )
+            top_bar.addWidget(self._pipeline_selectors)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         top_bar.addWidget(self.model_combo)
@@ -2095,8 +2132,17 @@ class ChatPanel(QWidget):
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
-        """[4.8.E] Конец стрима модели (end-event)."""
+        """[4.8.E] Конец стрима модели — обновляем tok/s в приборной панели."""
         logger.trace("stream_finished")
+        if self._dashboard is None:
+            return
+        client = self._router.active_client
+        stats = getattr(client, "last_stats", None) or {}
+        tps = stats.get("tokens_per_sec", 0.0)
+        try:
+            self._dashboard.set_tok_per_sec(float(tps))
+        except (TypeError, ValueError):
+            pass
 
     @Slot()
     def _on_finish(self):
@@ -2285,6 +2331,8 @@ class ChatPanel(QWidget):
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):
+        if self._dashboard is not None:
+            self._dashboard.set_tools_active(active)
         if hasattr(self, "_dashboard") and self._dashboard is not None:
             self._dashboard.set_tools_active(active)
         if active:
@@ -2734,12 +2782,15 @@ class ChatPanel(QWidget):
                 vector_store=self.vector_store,
                 counter=ApproxCounter(),
             )
+            if self._pipeline_selectors is not None:
+                self.refresh_pipeline_selectors()
             logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
             self.status_label.setText("✅ Двухмодельный пайплайн готов")
             self._update_pipeline_status()
         except Exception as e:
             logger.exception("Не удалось создать Orchestrator")
             self._on_pool_error(f"Orchestrator init: {e}")
+
 
     @Slot(str)
     def _on_pool_error(self, error_msg: str) -> None:
@@ -2888,26 +2939,59 @@ class ChatPanel(QWidget):
         return "⏸ 2-model: ожидание запуска"
 
     def _update_pipeline_status(self) -> None:
-        """Пересчитывает и применяет постоянный индикатор пайплайна."""
-        if not hasattr(self, "pipeline_status_label"):
-            return
+        """[9.3] Обновляет индикатор пайплайна.
+
+        Пишет в `_pipeline_selectors` (новый виджет) и в
+        `pipeline_status_label` (для обратной совместимости, если виджет
+        не создан). Эмитит `pipeline_status_changed` для приборной панели.
+        """
         text = self._pipeline_status_label()
-        self.pipeline_status_label.setText(text)
 
-        if self._model_pool is not None and self._orchestrator is not None:
-            color = "#4e9a06"  # зелёный — готов
-        elif self._pool_load_failed:
-            color = "#d97706"  # оранжевый — ошибка
-        elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
-            color = "#e5c07b"  # жёлтый — грузится
-        else:
-            color = "#888"  # серый — не активен
+        # Старый pipeline_status_label мог не создаться — в этом случае
+        # ничего не делаем (защита от гонки).
+        if hasattr(self, "pipeline_status_label") and self.pipeline_status_label is not None:
+            self.pipeline_status_label.setText(text)
 
-        self.pipeline_status_label.setStyleSheet(
-            f"font-size: 11px; padding: 2px 6px; color: {color};"
-            f" background: rgba(128,128,128,0.08); border-radius: 3px;"
-        )
+        # Новый виджет-селектор (9.3).
+        if self._pipeline_selectors is not None:
+            if self._model_pool is not None and self._orchestrator is not None:
+                icon, color = "⚡", "#98c379"
+                tooltip = self._pipeline_tooltip()
+            elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
+                icon, color = "⏳", "#e5c07b"
+                tooltip = "Загрузка planner + analyst…"
+            elif self._pool_load_failed:
+                icon, color = "⚠️", "#e06c75"
+                tooltip = "Пайплайн недоступен — fallback на одиночную модель"
+            elif not self.project_root:
+                icon, color = "💤", "#888"
+                tooltip = "Откройте проект, чтобы активировать пайплайн"
+            else:
+                icon, color = "⏸", "#888"
+                tooltip = "Ожидание запуска"
+            self._pipeline_selectors.set_state(icon, text, tooltip, color)
+
+        # [9.7] Приборная панель.
+        if self._dashboard is not None:
+            self._sync_dashboard()
+
         self.pipeline_status_changed.emit(text)
+
+    def _pipeline_tooltip(self) -> str:
+        """Подробности о загруженных planner/analyst для tooltip."""
+        if self._model_pool is None or self._orchestrator is None:
+            return ""
+        try:
+            ps = self._model_pool.spec(Role.PLANNER)
+            an = self._model_pool.spec(Role.ANALYST)
+            return (
+                f"planner={ps.model_id} (device={ps.device}, "
+                f"n_ctx={ps.n_ctx}, kv={ps.kv_cache}, layers={ps.n_gpu_layers})\n"
+                f"analyst={an.model_id} (device={an.device}, "
+                f"n_ctx={an.n_ctx}, kv={an.kv_cache}, layers={an.n_gpu_layers})"
+            )
+        except Exception:
+            return ""
 
     @Slot(str)
     def _on_pool_progress(self, message: str) -> None:
@@ -2920,5 +3004,82 @@ class ChatPanel(QWidget):
                 " background: rgba(128,128,128,0.08); border-radius: 3px;"
             )
 
+    # ------------------------------------------------------------------
+    # [9.3] Селекторы Planner/Analyst
+    # ------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_planner_changed(self, model_id: str) -> None:
+        """Пользователь сменил planner — пересоздаём пайплайн."""
+        logger.info(f"Pipeline: planner={model_id or '(авто)'} — reset_pipeline")
+        self.reset_pipeline()
+        self._update_pipeline_status()
+
+    @Slot(str)
+    def _on_analyst_changed(self, model_id: str) -> None:
+        """Пользователь сменил analyst — пересоздаём пайплайн."""
+        logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reset_pipeline")
+        self.reset_pipeline()
+        self._update_pipeline_status()
+
+    def refresh_pipeline_selectors(self) -> None:
+        """Перечитывает список моделей в селекторах (после SLMModelsDialog)."""
+        if self._pipeline_selectors is None:
+            return
+        try:
+            from core.config import load_config as _load_cfg_for_pipeline
+
+            self._pipeline_selectors._config = _load_cfg_for_pipeline()  # noqa: SLF001
+            self._pipeline_selectors.refresh_models()
+        except Exception as e:
+            logger.warning(f"Не удалось обновить PipelineSelectors: {e}")
+
+    # ------------------------------------------------------------------
+    # [9.7] Приборная панель — инжектится из MainWindow
+    # ------------------------------------------------------------------
+
+    def set_dashboard(self, dashboard) -> None:
+        """MainWindow передаёт StatusDashboard после создания статус-бара."""
+        self._dashboard = dashboard
+        self._sync_dashboard()
+
+    def _sync_dashboard(self) -> None:
+        """Синхронизирует бэкенд/pipeline/tok/s с приборной панелью."""
+        if self._dashboard is None:
+            return
+        # Бэкенд.
+        backend = self._router.active_backend
+        if backend == BackendType.OLLAMA:
+            self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
+        elif backend == BackendType.LOCAL_SLM:
+            self._dashboard.set_backend(
+                "slm", "SLM", self._slm_model_name or "локальная"
+            )
+        elif backend == BackendType.RULE_BASED:
+            self._dashboard.set_backend("rule", "Резерв", "без LLM")
+        else:
+            self._dashboard.set_backend("none", "Нет", "—")
+
+        # Pipeline.
+        if self._orchestrator is not None and self._model_pool is not None:
+            try:
+                ps = self._model_pool.spec(Role.PLANNER)
+                an = self._model_pool.spec(Role.ANALYST)
+                self._dashboard.set_pipeline(
+                    "⚡",
+                    f"{ps.model_id} + {an.model_id}",
+                    f"planner={ps.model_id} (GPU, n_ctx={ps.n_ctx})\n"
+                    f"analyst={an.model_id} (CPU, n_ctx={an.n_ctx})",
+                )
+            except Exception:
+                self._dashboard.set_pipeline("⚡", "готов")
+        elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
+            self._dashboard.set_pipeline_loading("загрузка…")
+        elif self._pool_load_failed:
+            self._dashboard.set_pipeline("⚠️", "недоступен (fallback)")
+        elif not self.project_root:
+            self._dashboard.set_pipeline("💤", "не активирован")
+        else:
+            self._dashboard.set_pipeline("⏸", "ожидание")
 
 # ---
