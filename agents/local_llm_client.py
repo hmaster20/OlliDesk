@@ -1,4 +1,13 @@
-"""Клиент встроенной SLM через llama.cpp (fallback для Ollama)."""
+"""Клиент встроенной SLM через llama.cpp (fallback для Ollama).
+
+[9.5] `_generate` теперь СТРИМИТ TextPart на каждый токен:
+  * `event_type="start"` — первый чанк, до первого delta;
+  * `event_type="delta"` — TextPart по мере генерации;
+  * `event_type="tool_call"` — ToolCallPart с распознанными вызовами
+    (эмитится ПОСЛЕ стрима текста, потому что парсинг возможен только
+    на полном тексте);
+  * `event_type="end"` — финальный маркер, `done=True`.
+"""
 
 import asyncio
 import contextlib
@@ -60,16 +69,11 @@ _FORMAT_INSTRUCTION = (
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
 
-    Используется как fallback, когда Ollama недоступен. Поддерживает
-    стриминг, «мягкий» tool-calling через JSON-парсинг и эмбеддинги
-    (если загружена embedding-модель).
-
-    Стрим отдаёт типизированные `ChatChunk`:
-      * `TextPart` — токены ответа (event_type="delta");
-      * `ToolCallPart` — распознанные вызовы инструментов (event_type="tool_call");
-      * `event_type="end"` — финальный маркер (done=True).
-    Reasoning-части (`ReasoningPart`) локальная модель не отдаёт отдельным
-    полем — llama.cpp не поддерживает stream reasoning, поэтому их здесь нет.
+    [9.5] Стримит TextPart на каждый токен. События:
+      * `start` — начало стрима;
+      * `delta` — TextPart по мере генерации;
+      * `tool_call` — ToolCallPart (после стрима, если распознаны вызовы);
+      * `end` — конец стрима, done=True.
     """
 
     def __init__(
@@ -97,7 +101,6 @@ class LocalLLMClient:
             flash_attn = params.flash_attn
             use_mmap = params.use_mmap
             use_mlock = params.use_mlock
-            # GGML_TYPE_F16 = 1, GGML_TYPE_Q8_0 = 8
             kv_type_int = 1 if params.kv_cache_type == "f16" else 8
             if not flash_attn and kv_type_int != 1:
                 logger.warning(
@@ -199,7 +202,7 @@ class LocalLLMClient:
         op_type: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
-        """Генерирует ответ через llama.cpp с поддержкой JSON-tool-calling."""
+        """Генерирует ответ через llama.cpp с построчным стримингом."""
         self.reset_cancel()
 
         chat_messages = self._prepare_messages(messages, tools)
@@ -222,7 +225,14 @@ class LocalLLMClient:
                 asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
 
         def _generate() -> None:
-            """Синхронная генерация в отдельном потоке."""
+            """Синхронная генерация в отдельном потоке.
+
+            [9.5] Стримит TextPart на каждый токен. Tool calls парсятся
+            на полном тексте после цикла и эмитятся одним ToolCallPart.
+            """
+            # [9.5] start-event — симметрично OllamaClient.
+            _safe_put(ChatChunk(event_type="start", done=False))
+
             cancelled = False
             full_text_parts: list[str] = []
             prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
@@ -247,10 +257,19 @@ class LocalLLMClient:
                             continue
                         delta = choices[0].get("delta") or {}
                         content = str(delta.get("content") or "")
-                        if content:
-                            if first_token_at is None:
-                                first_token_at = time.perf_counter()
-                            full_text_parts.append(content)
+                        if not content:
+                            continue
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                        full_text_parts.append(content)
+                        # [9.5] Стрим каждого токена сразу.
+                        _safe_put(
+                            ChatChunk(
+                                part=TextPart(text=content),
+                                event_type="delta",
+                                done=False,
+                            )
+                        )
 
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
@@ -271,10 +290,13 @@ class LocalLLMClient:
                     + f", промпт ~{prompt_chars} симв."
                 )
 
+                # [9.5] Tool calls парсятся на полном тексте после стрима.
+                # Текст уже ушёл в UI дельтами; tool_call-карточка появится
+                # сверху неё. Это приемлемая цена за живой стрим — на SLM
+                # модель либо отдаёт текст, либо JSON-вызов, не оба сразу.
                 tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
                     tool_calls = self._parse_tool_calls(full_text, tools)
-
                 if tool_calls:
                     for tc in tool_calls:
                         logger.info(f"SLM: распознан tool_call → {tc.name}({tc.arguments})")
@@ -285,17 +307,8 @@ class LocalLLMClient:
                             done=False,
                         )
                     )
-                    _safe_put(ChatChunk(done=True, event_type="end"))
-                else:
-                    if full_text:
-                        _safe_put(
-                            ChatChunk(
-                                part=TextPart(text=full_text),
-                                event_type="delta",
-                                done=False,
-                            )
-                        )
-                    _safe_put(ChatChunk(done=True, event_type="end"))
+
+                _safe_put(ChatChunk(done=True, event_type="end"))
 
             except Exception as e:
                 logger.error(f"SLM generation error: {e}")
@@ -498,13 +511,7 @@ class LocalLLMClient:
         return chat_messages
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
-        """Конвертирует ChatMessage в формат llama.cpp.
-
-        Использует read-only свойства `.content` / `.reasoning_content` /
-        `.tool_calls`, поэтому работает и со старыми, и с новыми сообщениями.
-        Reasoning подаётся обратно модели в обрамлении `<thought>…</thought>`,
-        чтобы SLM видела свою цепочку рассуждений при повторной итерации.
-        """
+        """Конвертирует ChatMessage в формат llama.cpp."""
         result: list[dict[str, Any]] = []
         for msg in messages:
             if msg.role == "tool":

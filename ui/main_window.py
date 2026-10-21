@@ -64,7 +64,8 @@ from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_controller import FileTreeController
 from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
-
+from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
+from ui.widgets.status_dashboard import StatusDashboard
 
 class ModelCheckThread(QThread):
     """Поток для проверки поддержки инструментов моделями Ollama.
@@ -658,26 +659,72 @@ class MainWindow(QMainWindow):
             self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
-        """Настраивает статус-бар."""
+        """[9.7] Статус-бар с единой приборной панелью.
+
+        Убраны отдельные `ollama_status_label` / `backend_status_label`
+        (заменены на StatusDashboard). `project_label` остаётся —
+        путь к проекту нужен, но не дублирует бэкенд-инфо.
+        """
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-        self.ollama_status_label = QLabel("● Ollama: Проверка...")
-        self.ollama_status_label.setStyleSheet("color: gray; padding: 5px;")
-        self.status_bar.addPermanentWidget(self.ollama_status_label)
-
-        self.backend_status_label = QLabel("● Активный бэкенд: определение...")
-        self.backend_status_label.setStyleSheet("color: gray; padding: 5px;")
-        self.status_bar.addPermanentWidget(self.backend_status_label)
-
+        # Слева — путь к проекту.
         self.project_label = QLabel("Проект: не открыт")
         self.project_label.setStyleSheet("padding: 5px;")
         self.status_bar.addWidget(self.project_label)
 
-    @Slot(str)
-    def _on_backend_status_changed(self, label: str) -> None:
-        """Показывает в статус-баре активный LLM-бэкенд и модель."""
-        self.backend_status_label.setText(f"● Модель: {label}")
+        # Справа — приборная панель.
+        self.dashboard = StatusDashboard()
+        self.dashboard.backend_toggle_requested.connect(self._toggle_backend)
+        self.dashboard.slm_models_requested.connect(self._open_slm_manager)
+        self.status_bar.addPermanentWidget(self.dashboard)
+
+        # Инжектим панель в ChatPanel для синхронизации бэкенда/pipeline/tok/s.
+        if hasattr(self, "chat_panel") and self.chat_panel:
+            self.chat_panel.set_dashboard(self.dashboard)
+
+    def _toggle_backend(self) -> None:
+        """[9.3] Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
+
+        Если Ollama не включён в `AppConfig.backends.enabled` — показываем
+        диалог с предложением включить в настройках.
+        """
+        try:
+            from core.config import load_config, save_config
+
+            cfg = load_config()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать конфиг: {e}")
+            return
+
+        current = cfg.backends.priority[0] if cfg.backends.priority else "local_slm"
+        target = "ollama" if current == "local_slm" else "local_slm"
+
+        if target == "ollama" and "ollama" not in cfg.backends.enabled:
+            reply = QMessageBox.question(
+                self,
+                "Включить Ollama?",
+                "Ollama — внешний локальный сервис, требует запущенного "
+                "`ollama serve`. Включить его в этой сессии?\n\n"
+                "SLM останется приоритетной, Ollama будет fallback.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            cfg.backends.enabled = list(cfg.backends.enabled) + ["ollama"]
+            save_config(cfg)
+
+        # Меняем приоритет и применяем на лету.
+        new_priority = ["ollama", "local_slm"] if target == "ollama" else ["local_slm", "ollama"]
+        cfg.backends.priority = new_priority
+        save_config(cfg)
+        if self.chat_panel:
+            self.chat_panel.router.set_priority(new_priority)
+            self.chat_panel._emit_backend_status()
+            self.chat_panel._sync_dashboard()
+        self.status_bar.showMessage(
+            f"Бэкенд переключён: {target.upper()}", 3000
+        )
 
     def _check_ollama_connection(self) -> None:
         """Проверяет подключение к Ollama только если он разрешён в конфиге."""
@@ -713,13 +760,11 @@ class MainWindow(QMainWindow):
         self._ollama_check_thread.models_ready.connect(self._on_ollama_checked)
         self._ollama_check_thread.start()
 
-    # 🆕 Слот для фоновой проверки Ollama.
-    @Slot(bool, list)
-    def _on_ollama_checked(self, ok: bool, models: list) -> None:
-        """Обрабатывает результат фоновой проверки Ollama (GUI-поток)."""
-        self._available_models = list(models)
-        self._ollama_connected = ok and bool(models)
-        self._update_ollama_status(ok, models)
+    @Slot(str)
+    def _on_backend_status_changed(self, label: str) -> None:
+        """[9.7] Проброс в приборную панель (совместимость)."""
+        if self.chat_panel:
+            self.chat_panel._sync_dashboard()
 
     def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
         if ok and models:

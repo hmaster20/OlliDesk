@@ -66,6 +66,7 @@ from ui.chat.threads import (
     _SLMDownloadThread,
     _SLMLoadThread,
 )
+from ui.widgets.auto_scroll import AutoScrollArea
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -594,7 +595,9 @@ class ChatPanel(QWidget):
         widget = ChatMessageItem(role, content, mode_name=mode_name)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
         return widget
 
     def _ensure_assistant_widget(self) -> ChatMessageItem:
@@ -621,7 +624,9 @@ class ChatPanel(QWidget):
             return
         item = ChatActivityItem(text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
 
     def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
         if not sources:
@@ -629,7 +634,9 @@ class ChatPanel(QWidget):
         item = ChatSourcesItem(sources)
         item.source_activated.connect(self._on_source_activated)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
 
     def _on_source_activated(self, file_path: str, line: int) -> None:
         if self.project_root and not Path(file_path).is_absolute():
@@ -823,21 +830,27 @@ class ChatPanel(QWidget):
     @Slot(str)
     def _on_thinking(self, token: str):
         if not self._show_reasoning:
-            # Токены reasoning не отображаем; они уже ушли в logger через
-            # OllamaClient / LocalLLMClient, для отладки доступны.
             return
         self._current_thinking_content += token
         widget = self._ensure_assistant_widget()
         widget.append_reasoning(token)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        self.scroll_area.scroll_to_bottom_if_sticky()
 
     @Slot(str)
     def _on_chunk(self, content: str):
-        """Стриминг текста в композитный пузырь (TextPart)."""
+        """[9.5] Стриминг TextPart-токенов (SLM теперь эмитит по одному).
+
+        AutoScrollArea сам решает, скроллить или нет: если пользователь
+        проскроллил вверх — не дёргаем, показываем «▼ Вниз».
+        """
+        if not content:
+            return
         self._current_assistant_content += content
         widget = self._ensure_assistant_widget()
         widget.append_text(content)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        # QTimer.singleShot(0, ...) НЕ нужен: AutoScrollArea.scroll_to_bottom_if_sticky
+        # уже использует QTimer(0) внутри, чтобы не дёргать layout в середине append.
+        self.scroll_area.scroll_to_bottom_if_sticky()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -929,10 +942,8 @@ class ChatPanel(QWidget):
         self.tool_status_label.setVisible(False)
         layout.addWidget(self.tool_status_label)
 
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # [9.5] AutoScrollArea — «прилипание к нижней кромке» + кнопка «▼ Вниз».
+        self.scroll_area = AutoScrollArea()
         self.scroll_area.setStyleSheet(
             "QScrollArea { border: 1px solid #ccc; border-radius: 4px; background: transparent; }"
         )
@@ -1096,8 +1107,12 @@ class ChatPanel(QWidget):
         self.agent_panel_toggle.emit(True)
 
     def _scroll_to_bottom(self):
-        sb = self.scroll_area.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        """[9.5] Скроллит к нижней кромке, только если пользователь там."""
+        self.scroll_area.scroll_to_bottom_if_sticky()
+
+    def _scroll_to_bottom_force(self):
+        """[9.5] Принудительный скролл к нижней кромке (для Cmd+End)."""
+        self.scroll_area.scroll_to_bottom_force()
 
     def _clear_chat(self, keep_session: bool = False):
         while self.scroll_layout.count() > 1:
@@ -1716,7 +1731,9 @@ class ChatPanel(QWidget):
                 "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
             )
 
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
 
     @Slot()
     def _on_final_answer_started(self) -> None:
@@ -1908,7 +1925,9 @@ class ChatPanel(QWidget):
                 evidence=str(h.get("evidence") or ""),
             )
 
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
         return True
 
     @Slot(str, str)
@@ -1993,6 +2012,76 @@ class ChatPanel(QWidget):
         `LOGURU_LEVEL=TRACE`, в проде — no-op.
         """
         logger.trace(f"text_delta: {token[:40]!r}")
+
+    # ------------------------------------------------------------------
+    # [9.5] Стриминговые границы + tok/s в приборную панель
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_stream_started_event(self) -> None:
+        """Начало нового стрима — «печатает»."""
+        logger.trace("stream_started")
+        if hasattr(self, "send_btn"):
+            # Меняем иконку кнопки Stop — уже ■, добавим tooltip.
+            self.send_btn.setToolTip("Остановить генерацию")
+        if hasattr(self, "_dashboard"):
+            self._dashboard.set_tools_active(False)
+
+    @Slot()
+    def _on_stream_finished_event(self) -> None:
+        """Конец стрима — показываем tok/s из last_stats."""
+        logger.trace("stream_finished")
+        client = self._router.active_client
+        stats = getattr(client, "last_stats", None) or {}
+        tps = stats.get("tokens_per_sec", 0.0)
+        if hasattr(self, "_dashboard"):
+            try:
+                self._dashboard.set_tok_per_sec(float(tps))
+            except (TypeError, ValueError):
+                pass
+
+    def set_dashboard(self, dashboard) -> None:
+        """Инжектится из MainWindow после создания приборной панели."""
+        self._dashboard = dashboard
+        # Сразу синхронизируем бэкенд и pipeline.
+        self._sync_dashboard()
+
+    def _sync_dashboard(self) -> None:
+        """Обновляет приборную панель по текущему состоянию ChatPanel."""
+        if not hasattr(self, "_dashboard") or self._dashboard is None:
+            return
+        # Бэкенд.
+        backend = self._router.active_backend
+        if backend == BackendType.OLLAMA:
+            self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
+        elif backend == BackendType.LOCAL_SLM:
+            self._dashboard.set_backend(
+                "slm", "SLM", self._slm_model_name or "локальная"
+            )
+        elif backend == BackendType.RULE_BASED:
+            self._dashboard.set_backend("rule", "Резерв", "без LLM")
+        else:
+            self._dashboard.set_backend("none", "Нет", "—")
+        # Pipeline.
+        if self._orchestrator is not None and self._model_pool is not None:
+            try:
+                planner_id = self._model_pool.spec(Role.PLANNER).model_id
+                analyst_id = self._model_pool.spec(Role.ANALYST).model_id
+                self._dashboard.set_pipeline(
+                    "⚡",
+                    f"{planner_id} + {analyst_id}",
+                    f"planner={planner_id} (GPU), analyst={analyst_id} (CPU)",
+                )
+            except Exception:
+                self._dashboard.set_pipeline("⚡", "готов")
+        elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
+            self._dashboard.set_pipeline_loading("загрузка…")
+        elif self._pool_load_failed:
+            self._dashboard.set_pipeline("⚠️", "недоступен (fallback)")
+        elif not self.project_root:
+            self._dashboard.set_pipeline("💤", "не активирован")
+        else:
+            self._dashboard.set_pipeline("⏸", "ожидание")
 
     @Slot(str)
     def _on_reasoning_delta_event(self, token: str) -> None:
@@ -2093,7 +2182,9 @@ class ChatPanel(QWidget):
             logger.warning(f"Не удалось построить паспорт исследования: {e}")
             return
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-        QTimer.singleShot(0, self._scroll_to_bottom)
+                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
 
     def _reset_send_button(self):
         self._generating = False
@@ -2194,6 +2285,8 @@ class ChatPanel(QWidget):
 
     @Slot(bool)
     def _on_tools_status_changed(self, active: bool):
+        if hasattr(self, "_dashboard") and self._dashboard is not None:
+            self._dashboard.set_tools_active(active)
         if active:
             self.tool_status_label.setText("🔧 Инструменты активны")
             self.tool_status_label.setStyleSheet(
@@ -2700,7 +2793,9 @@ class ChatPanel(QWidget):
                     summary += f" · без доказательств: {unsupported}"
                 self._add_message("system", summary)
 
-            QTimer.singleShot(0, self._scroll_to_bottom)
+                    # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
+        self._scroll_to_bottom()
         except Exception:
             logger.exception("_on_orchestrator_result failed")
         finally:

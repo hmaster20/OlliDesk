@@ -111,26 +111,27 @@ class OlliDeskApp:
         return self.app.exec()
 
     def _apply_theme(self, theme: str) -> None:
-        """Применяет тему к приложению.
-        Args:
-            theme: 'light' или 'dark'
+        """[9.1] Применяет тему из дизайн-системы (ui.theme).
+
+        Палитра и QSS приходят из одного источника — `get_colors` и
+        `get_stylesheet`. Дублирование цветов из QSS в палитре убрано.
         """
         if self.app is None:
             return
-        stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
-        self.app.setStyleSheet(stylesheet)
-        # Доработка темы для заголовка
+        from ui.theme import get_colors, get_stylesheet
+        from PySide6.QtGui import QColor
+
+        self.app.setStyleSheet(get_stylesheet(theme))
+        c = get_colors(theme)
         palette = self.app.palette()
-        if theme == "dark":
-            palette.setColor(palette.ColorRole.Window, QColor("#2d2d2d"))
-            palette.setColor(palette.ColorRole.WindowText, QColor("#d4d4d4"))
-            palette.setColor(palette.ColorRole.Base, QColor("#1e1e1e"))
-            palette.setColor(palette.ColorRole.Text, QColor("#d4d4d4"))
-        else:
-            palette.setColor(palette.ColorRole.Window, QColor("#f0f0f0"))
-            palette.setColor(palette.ColorRole.WindowText, QColor("#000000"))
-            palette.setColor(palette.ColorRole.Base, QColor("#ffffff"))
-            palette.setColor(palette.ColorRole.Text, QColor("#000000"))
+        palette.setColor(palette.ColorRole.Window, QColor(c.bg))
+        palette.setColor(palette.ColorRole.WindowText, QColor(c.text))
+        palette.setColor(palette.ColorRole.Base, QColor(c.surface))
+        palette.setColor(palette.ColorRole.Text, QColor(c.text))
+        palette.setColor(palette.ColorRole.Highlight, QColor(c.accent))
+        palette.setColor(palette.ColorRole.HighlightedText, QColor(c.accent_text))
+        palette.setColor(palette.ColorRole.Button, QColor(c.surface))
+        palette.setColor(palette.ColorRole.ButtonText, QColor(c.text))
         self.app.setPalette(palette)
 
     def _on_theme_changed(self, theme: str) -> None:
