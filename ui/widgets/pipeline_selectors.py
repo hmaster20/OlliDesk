@@ -91,6 +91,40 @@ class PipelineSelectors(QWidget):
 
         self.refresh_models()
 
+    def set_recommended_model(self, model_id: str, profile_name: str = "") -> None:
+        """[9.4] Подсвечивает рекомендованную профилем модель в обоих ComboBox.
+
+        Не меняет выбор — только визуальная подсказка. Если `model_id` пуст,
+        снимает все подсветки.
+
+        Args:
+            model_id: id модели (`SLMModelInfo.id`), рекомендованной профилем.
+            profile_name: имя профиля для tooltip'а.
+        """
+        # Снимаем прежние звёздочки во всех ComboBox.
+        for combo in (self.planner_combo, self.analyst_combo):
+            for i in range(combo.count()):
+                data = combo.itemData(i) or ""
+                text = combo.itemText(i)
+                # Снимаем ведущие "★ " если они были.
+                if text.startswith("★ "):
+                    combo.setItemText(i, text[2:])
+
+        if not model_id:
+            return
+
+        for combo in (self.planner_combo, self.analyst_combo):
+            for i in range(combo.count()):
+                if combo.itemData(i) == model_id:
+                    text = combo.itemText(i)
+                    combo.setItemText(i, f"★ {text}")
+                    tip = combo.itemData(i, Qt.ItemDataRole.ToolTipRole) or ""
+                    suffix = f" (рекомендовано профилем «{profile_name}»)" if profile_name else ""
+                    combo.setItemData(
+                        i, f"{tip}{suffix}".strip(), Qt.ItemDataRole.ToolTipRole
+                    )
+                    break
+
     # ------------------------------------------------------------------
     # Заполнение ComboBox'ов
     # ------------------------------------------------------------------

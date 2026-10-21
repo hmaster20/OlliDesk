@@ -17,16 +17,21 @@ from typing import Any, TypedDict, cast
 
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import IncludeEnum, Where
+from typing import NotRequired, TypedDict
 
+class ChunkMetadata(TypedDict, total=False):
+    """Метаданные чанка в том виде, в каком их кладёт `VectorStore`.
 
-class ChunkMetadata(TypedDict):
-    """Метаданные чанка в том виде, в каком их кладёт `VectorStore`."""
+    `total=False` — чтобы `category` (добавлена в 9.4) была опциональной:
+    старые индексы её не имеют, но `add_chunks` всегда пишет новую.
+    """
 
     file_path: str
     start_line: int
     end_line: int
     language: str
     mtime: float
+    category: NotRequired[str]  # [9.4] "code" | "docs"
 
 
 class QueryPage(TypedDict):

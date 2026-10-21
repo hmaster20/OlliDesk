@@ -315,6 +315,17 @@ class VectorStore:
                         "end_line": chunk.end_line,
                         "language": str(chunk.metadata.get("language", "unknown")),
                         "mtime": float(chunk.metadata.get("mtime", 0.0)),
+                        # [9.4] category — для будущей where-фильтрации.
+                        # Для чанков из старых индексов её нет: пост-фильтр
+                        # в `search(categories=...)` вычислит её по language.
+                        "category": str(
+                            chunk.metadata.get(
+                                "category",
+                                category_for_language(
+                                    str(chunk.metadata.get("language", "unknown"))
+                                ),
+                            )
+                        ),
                     }
                     for chunk in batch
                 ]
@@ -592,16 +603,22 @@ class VectorStore:
         score: float,
     ) -> SearchResult:
         """Собирает `SearchResult` из сырых полей чанка."""
+        chunk_metadata: dict = {
+            "language": metadata["language"],
+            "mtime": float(metadata.get("mtime", 0.0)),
+        }
+        # [9.4] category — если сохранена в Chroma; иначе посчитаем по language
+        # в пост-фильтре search(). Оставляем опциональной в metadata чанка.
+        if "category" in metadata:
+            chunk_metadata["category"] = metadata["category"]
+
         chunk = TextChunk(
             id=chunk_id,
             file_path=metadata["file_path"],
             content=document,
             start_line=metadata["start_line"],
             end_line=metadata["end_line"],
-            metadata={
-                "language": metadata["language"],
-                "mtime": float(metadata.get("mtime", 0.0)),
-            },
+            metadata=chunk_metadata,
         )
         return SearchResult(chunk=chunk, score=score, file_path=metadata["file_path"])
 

@@ -384,16 +384,26 @@ class FileIndexer:
             # Вычисление ID чанка
             chunk_id = hashlib.md5(f"{file_path}:{chunk_index}".encode()).hexdigest()
 
+            language = self._detect_language(file_path)
+            # [9.4] category (code/docs) в метаданных — для будущей
+            # where-фильтрации в Chroma. Сейчас работает пост-RRF фильтр
+            # в `VectorStore.search`, но новые чанки уже готовы к оптимизации.
+            from fs.vector_store import category_for_language
+
+            metadata: dict = {
+                "language": language,
+                "category": category_for_language(language),
+            }
+            if mtime is not None:
+                metadata["mtime"] = float(mtime)
+
             chunk = TextChunk(
                 id=chunk_id,
                 file_path=file_path,
                 content=chunk_content,
                 start_line=start_line + 1,
                 end_line=end_line,
-                metadata={
-                    "language": self._detect_language(file_path),
-                    **({"mtime": float(mtime)} if mtime is not None else {}),
-                },
+                metadata=metadata,
             )
             chunks.append(chunk)
 

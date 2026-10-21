@@ -697,6 +697,15 @@ class ChatPanel(QWidget):
         return None
 
     def _attach_file(self, path: Path) -> None:
+        """[9.4.8] Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
+        from fs.document_extractors import extract_document, is_document
+
+        # Документы (PDF/DOCX/PPTX/XLSX/RTF) — сначала извлечение,
+        # затем предпросмотр, только по «Прикрепить» — в store.
+        if is_document(path):
+            self._attach_document(path, extract_document)
+            return
+
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
@@ -710,6 +719,57 @@ class ChatPanel(QWidget):
             "system",
             f"📎 Прикреплён файл: {attached.name} "
             f"({attached.lines} строк, {attached.size_chars} символов). "
+            "В контекст попадёт только начало и конец, остальное — "
+            "через инструмент read_attached_file.",
+        )
+
+    def _attach_document(self, path: Path, extractor) -> None:
+        """[9.4.8] Извлекает документ, показывает предпросмотр, прикрепляет."""
+        from ui.dialogs.document_preview_dialog import DocumentPreviewDialog
+
+        # OCR из конфига — если пользователь включил в AppConfig.
+        try:
+            from core.config import load_config
+
+            use_ocr = bool(load_config().document_ocr)
+        except Exception:
+            use_ocr = False
+
+        self.status_label.setText(f"⏳ Извлечение текста из {path.name}…")
+        try:
+            result = extractor(path, use_ocr=use_ocr)
+        except Exception as e:
+            logger.exception(f"Документ {path.name}: ошибка извлечения")
+            self._add_message("system", f"❌ Не удалось извлечь текст: {e}")
+            self.status_label.setText("Готов к работе")
+            return
+
+        self.status_label.setText("Готов к работе")
+
+        dialog = DocumentPreviewDialog(
+            path,
+            result,
+            with_ocr_available=not use_ocr,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            logger.info(f"@file: прикрепление {path.name} отменено пользователем")
+            return
+
+        text = dialog.approved_text()
+        if not text:
+            return
+
+        attached = self._attached_files.add(path, text)
+        ocr_mark = " (OCR)" if result.ocr_used else ""
+        logger.info(
+            f"@file: прикреплён документ {path.name} "
+            f"({attached.size_chars} симв., {result.pages} стр., OCR={result.ocr_used})"
+        )
+        self._add_message(
+            "system",
+            f"📎 Прикреплён документ: {attached.name}{ocr_mark} "
+            f"({result.pages} стр., {attached.size_chars} символов). "
             "В контекст попадёт только начало и конец, остальное — "
             "через инструмент read_attached_file.",
         )
@@ -3157,6 +3217,12 @@ class ChatPanel(QWidget):
         # 5. Лимиты итераций.
         self._profile_agent_max_iters = int(profile.agent_max_iterations)
         self._profile_chat_max_iters = int(profile.chat_max_iterations)
+
+        # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.set_recommended_model(
+                profile.recommended_model, profile.name
+            )
 
         # 6. Кнопка «Возврат в Разработку» — видна только для не-development.
         if hasattr(self, "back_to_development_btn"):

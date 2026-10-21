@@ -275,6 +275,16 @@ class ProfileEditorDialog(QDialog):
         return 0
 
     def _on_profile_selected(self, current: QListWidgetItem | None, _previous) -> None:
+        """Загружает профиль в форму.
+
+        ВАЖНО: перед загрузкой нового профиля сохраняет правки предыдущего
+        в `self._profiles` (in-memory). Иначе при переключении без явного
+        Save пользователь теряет изменения.
+        """
+        # Сохраняем текущую форму (если был предыдущий профиль).
+        if self._current_profile_id is not None and not self._updating:
+            self._persist_current_from_form()
+
         if current is None:
             self._current_profile_id = None
             self._set_form_enabled(False)
