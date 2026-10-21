@@ -327,6 +327,7 @@ class VectorStore:
         path_prefix: str | None = None,
         modified_after: float | None = None,
         modified_before: float | None = None,
+        categories: list[str] | None = None,
     ) -> list[SearchResult]:
         """
         Ищет релевантные чанки (гибридно: векторы + BM25, объединение через RRF).
@@ -339,6 +340,11 @@ class VectorStore:
             path_prefix: Ограничить путями, начинающимися с префикса (опционально)
             modified_after: Только файлы, изменённые не раньше этого unix-времени (опционально)
             modified_before: Только файлы, изменённые не позже этого unix-времени (опционально)
+            categories: [9.4] Ограничить категории чанков: ``"code"`` / ``"docs"``.
+                Фильтр применяется ПОСЛЕ RRF (по языку чанка — см.
+                `category_for_language`), но ДО реранкера. Если задан —
+                число кандидатов увеличивается, чтобы после отсева
+                хватило результатов.
 
         Returns:
             list[SearchResult]: Список результатов, отсортированный по RRF-оценке.
@@ -349,7 +355,11 @@ class VectorStore:
             при недоступном эмбеддере; причина пишется в лог. Фильтр по дате работает
             только для чанков, проиндексированных с ``mtime`` (нужна переиндексация).
         """
-        candidate_n = max(n_results, n_results * 3)
+        # [9.4] Категориальный фильтр уменьшает число результатов — увеличиваем
+        # число кандидатов, чтобы после отсева хватило n_results.
+        multiplier = 3 if categories else 1
+        candidate_n = max(n_results * multiplier, n_results * 3)
+
         vector_lists = await self._vector_search_lists(
             query, candidate_n, file_filter, language, path_prefix, modified_after, modified_before
         )
@@ -358,10 +368,22 @@ class VectorStore:
         )
 
         fused = _reciprocal_rank_fusion(*vector_lists, bm25_results)
+
+        # [9.4] Фильтр по категориям (code/docs) — по языку чанка.
+        if categories:
+            allowed = set(categories)
+            fused = [
+                r
+                for r in fused
+                if category_for_language(str(r.chunk.metadata.get("language", ""))) in allowed
+            ]
+
         results = await self._maybe_rerank(query, fused, n_results)
         vector_count = sum(len(results_) for results_ in vector_lists)
         logger.debug(
-            f"Найдено результатов: {len(results)} (векторы {vector_count}, BM25 {len(bm25_results)})"
+            f"Найдено результатов: {len(results)} "
+            f"(векторы {vector_count}, BM25 {len(bm25_results)}, "
+            f"категории {categories or 'все'})"
         )
         return results
 

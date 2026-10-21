@@ -355,12 +355,15 @@ class RagSearchThread(QThread):
         query: str,
         n_results: int = 5,
         file_filter: list[str] | None = None,
+        categories: list[str] | None = None,
     ):
         super().__init__()
         self.vector_store = vector_store
         self.query = query
         self.n_results = n_results
         self.file_filter = file_filter
+        # [9.4] Категории RAG из профиля (code / docs / оба).
+        self.categories = categories
 
     def run(self):
         try:
@@ -377,6 +380,7 @@ class RagSearchThread(QThread):
                 self.query,
                 n_results=self.n_results,
                 file_filter=self.file_filter,
+                categories=self.categories,
             )
             results = _dedupe_by_file(results)[: self.n_results]
             if results:

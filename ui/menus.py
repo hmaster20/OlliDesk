@@ -59,6 +59,9 @@ class AppMenuBar(QMenuBar):
     edit_prompts_requested = Signal()
     manage_sessions_requested = Signal()
     edit_iterations_requested = Signal()
+    # [9.4] Профили использования.
+    profile_selected = Signal(str)          # profile_id
+    profile_editor_requested = Signal()
 
     # --- Help ---
     run_wizard_requested = Signal()
@@ -177,6 +180,18 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
+        # [9.4] Подменю «Профили»: встроенные + пользовательские (checkable),
+        # плюс «Редактор профилей…».
+        self._profiles_menu = view_menu.addMenu("Профили")
+        self._profile_actions: list[QAction] = []
+        self._refresh_profiles_menu()
+
+        edit_profiles = QAction("Редактор профилей…", self)
+        edit_profiles.triggered.connect(self.profile_editor_requested.emit)
+        view_menu.addAction(edit_profiles)
+
+        view_menu.addSeparator()
+
         edit_iterations = QAction("Лимит итераций агента...", self)
         edit_iterations.triggered.connect(self.edit_iterations_requested.emit)
         view_menu.addAction(edit_iterations)
@@ -212,6 +227,8 @@ class AppMenuBar(QMenuBar):
             self.confirm_web_search_action.setChecked(self._read_confirm_web_search())
             self.confirm_web_search_action.blockSignals(False)
         self._refresh_recent_menu()
+        # [9.4] Пересобираем подменю профилей (могли измениться).
+        self._refresh_profiles_menu()
 
     # ------------------------------------------------------------------
     # Recent Projects
@@ -264,3 +281,45 @@ class AppMenuBar(QMenuBar):
         except Exception as e:
             logger.exception(f"Не удалось сохранить настройку confirm.web_search: {e}")
         self.confirm_web_search_changed.emit(checked)
+
+    def _refresh_profiles_menu(self) -> None:
+        """[9.4] Пересобирает подменю «Профили» по текущему конфигу."""
+        if not hasattr(self, "_profiles_menu") or self._profiles_menu is None:
+            return
+        self._profiles_menu.clear()
+        self._profile_actions.clear()
+
+        try:
+            from core.profiles import get_profile_by_id as _get_by_id
+        except Exception:
+            _get_by_id = None  # type: ignore[assignment]
+
+        active_id = getattr(self._config, "active_profile", "development")
+        profiles = list(getattr(self._config, "profiles", []) or [])
+        if not profiles:
+            placeholder = QAction("(нет профилей)", self)
+            placeholder.setEnabled(False)
+            self._profiles_menu.addAction(placeholder)
+            return
+
+        for p in profiles:
+            act = QAction(f"{p.icon} {p.name}", self)
+            act.setCheckable(True)
+            act.setChecked(p.id == active_id)
+            if p.description:
+                act.setToolTip(p.description)
+            act.triggered.connect(
+                lambda _checked=False, pid=p.id: self.profile_selected.emit(pid)
+            )
+            self._profiles_menu.addAction(act)
+            self._profile_actions.append(act)
+
+    def set_active_profile(self, profile_id: str) -> None:
+        """[9.4] Обновляет галочку в подменю (MainWindow вызывает после смены)."""
+        for act in self._profile_actions:
+            text = act.text()
+            # Сопоставляем по tooltip-содержимому бесполезно, храним id в action.data().
+            # Проще: сохраняем id в data при построении — переделаем _refresh.
+            pass
+        # Надёжный путь — пересобрать.
+        self._refresh_profiles_menu()

@@ -917,6 +917,20 @@ class ChatPanel(QWidget):
             self._profiles_selector.profile_changed.connect(self._on_profile_changed)
             top_bar.addWidget(self._profiles_selector)
 
+        # [9.4] Кнопка «Возврат в Разработку» — видна только когда активен
+        # не-development профиль. Возврат одним кликом.
+        self.back_to_development_btn = QPushButton("➜ 🛠")
+        self.back_to_development_btn.setToolTip("Вернуться в профиль «Разработка»")
+        self.back_to_development_btn.setStyleSheet(
+            "QPushButton { font-size: 12px; padding: 2px 8px;"
+            " background: rgba(212,163,115,0.2); color: #d4a373;"
+            " border: 1px solid rgba(212,163,115,0.4); border-radius: 4px; }"
+            " QPushButton:hover { background: rgba(212,163,115,0.35); }"
+        )
+        self.back_to_development_btn.setVisible(False)  # показывается в _apply_profile
+        self.back_to_development_btn.clicked.connect(self._back_to_development)
+        top_bar.addWidget(self.back_to_development_btn)
+
         role_label = QLabel("Роль:")
         role_label.setStyleSheet("font-size: 13px; padding: 4px;")
         top_bar.addWidget(role_label)
@@ -1394,6 +1408,7 @@ class ChatPanel(QWidget):
                 text,
                 n_results=_RAG_N_RESULTS,
                 file_filter=self._rag_scope[1] if self._rag_scope else None,
+                categories=self._profile.rag_categories if self._profile else None,
             )
             self._rag_thread.results_ready.connect(lambda ctx, src: self._on_rag_results(ctx, src))
             self._rag_thread.search_error.connect(self._on_rag_error)
@@ -1452,6 +1467,7 @@ class ChatPanel(QWidget):
                 text,
                 n_results=_RAG_N_RESULTS,
                 file_filter=self._rag_scope[1] if self._rag_scope else None,
+                categories=self._profile.rag_categories if self._profile else None,
             )
             self._rag_thread.results_ready.connect(
                 lambda ctx, src: self._on_agent_rag_ready(ctx, src, text, mode)
@@ -2492,7 +2508,8 @@ class ChatPanel(QWidget):
         # полный сброс пайплайна вместо ручного обнуления
         self.reset_pipeline()
 
-        if project_root:
+        # [9.4] Профиль «Обучение» не использует пайплайн — не триггерим загрузку.
+        if project_root and (self._profile is None or self._profile.id != "learning"):
             QTimer.singleShot(1500, self._ensure_orchestrator)
         self._update_pipeline_status()
 
@@ -2768,6 +2785,11 @@ class ChatPanel(QWidget):
         ⏳ → ⚡ или ⚠️. Таймаут per-role (90 с) гарантирует, что UI не
         зависнет, даже если llama.cpp ушёл в бесконечный OOM-retry.
         """
+        # [9.4] Профиль «Обучение» не использует двухмодельный пайплайн —
+        # одна analyst-модель, tools off. Не грузим лишнюю память.
+        if self._profile is not None and self._profile.id == "learning":
+            logger.debug("Orchestrator: профиль «Обучение» — пайплайн не требуется")
+            return
         if self._orchestrator is not None:
             return
         if self._pool_load_failed:
@@ -3136,7 +3158,11 @@ class ChatPanel(QWidget):
         self._profile_agent_max_iters = int(profile.agent_max_iterations)
         self._profile_chat_max_iters = int(profile.chat_max_iterations)
 
-        # 6. Синхронизация UI-индикаторов.
+        # 6. Кнопка «Возврат в Разработку» — видна только для не-development.
+        if hasattr(self, "back_to_development_btn"):
+            self.back_to_development_btn.setVisible(profile.id != "development")
+
+        # 7. Синхронизация UI-индикаторов.
         if emit_signal:
             self.profile_changed.emit(profile.id)
 
@@ -3152,6 +3178,23 @@ class ChatPanel(QWidget):
             f"{profile.icon} Профиль: {profile.name}"
         )
         logger.info(f"Профиль сменён: {profile.id} → reset_pipeline")
+
+    @Slot()
+    def _back_to_development(self) -> None:
+        """[9.4] Возврат в профиль «Разработка» одним кликом."""
+        if self._profiles_selector is None:
+            return
+        try:
+            from core.config import load_config as _load_cfg
+
+            cfg = _load_cfg()
+            dev = get_profile_by_id(cfg.profiles, "development")
+            if dev is None:
+                return
+            self._profiles_selector.set_profile("development")
+            self._on_profile_changed(dev)
+        except Exception as e:
+            logger.warning(f"Не удалось вернуться в development: {e}")
 
     def refresh_profiles_selector(self) -> None:
         """Перечитывает список профилей (после редактирования в диалоге)."""

@@ -650,6 +650,10 @@ class MainWindow(QMainWindow):
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
 
+        # [9.4] Профили использования.
+        self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
+        self.menu_bar.profile_editor_requested.connect(self._open_profile_editor)
+
         # Help
         self.menu_bar.run_wizard_requested.connect(self._run_wizard)
         self.menu_bar.about_requested.connect(self._show_about)
@@ -1307,6 +1311,8 @@ class MainWindow(QMainWindow):
         * статус-бар — короткое сообщение;
         * селектор профиля (на случай вызова из ChatPanel API).
         """
+        # [9.4] Обновляем галочку в подменю View → Профили.
+        self.menu_bar.set_active_profile(profile_id)
         # Синхронизируем чекбокс reasoning (он в AgentSettingsDialog).
         if hasattr(self, "show_reasoning_check") and self.chat_panel:
             value = self.chat_panel.get_show_reasoning()
@@ -1328,6 +1334,67 @@ class MainWindow(QMainWindow):
                 f"{profile.icon} Профиль: {profile.name}", 4000
             )
         logger.info(f"Профиль изменён: {profile_id}")
+
+    @Slot(str)
+    def _on_menu_profile_selected(self, profile_id: str) -> None:
+        """[9.4] Пользователь выбрал профиль из меню View → Профили."""
+        if not self.chat_panel:
+            return
+        try:
+            from core.config import load_config as _load_cfg
+
+            cfg = _load_cfg()
+            profile = get_profile_by_id(cfg.profiles, profile_id)
+            if profile is None:
+                return
+            # Обновляем селектор и применяем профиль.
+            if (
+                hasattr(self.chat_panel, "_profiles_selector")
+                and self.chat_panel._profiles_selector
+            ):
+                self.chat_panel._profiles_selector.set_profile(profile_id)
+            self.chat_panel._on_profile_changed(profile)
+        except Exception as e:
+            logger.warning(f"Не удалось применить профиль из меню: {e}")
+
+    def _open_profile_editor(self) -> None:
+        """[9.4] Открывает ProfileEditorDialog. После сохранения перечитывает
+        конфиг, обновляет селектор профиля в ChatPanel и подменю в меню.
+        """
+        from ui.dialogs.profile_editor_dialog import ProfileEditorDialog
+
+        dlg = ProfileEditorDialog(self.config, self)
+        dlg.profiles_saved.connect(self._on_profiles_saved)
+        dlg.exec()
+
+    @Slot()
+    def _on_profiles_saved(self) -> None:
+        """[9.4] Профили сохранены: перечитываем конфиг и синхронизируем UI."""
+        try:
+            from core.config import load_config
+
+            self.config = load_config()
+            self.menu_bar.set_config(self.config)
+        except Exception as e:
+            logger.warning(f"Не удалось перечитать конфиг после редактора профилей: {e}")
+
+        # Обновляем селектор профиля в ChatPanel.
+        if self.chat_panel is not None:
+            self.chat_panel.refresh_profiles_selector()
+            # Применяем активный профиль (мог измениться/исчезнуть).
+            try:
+                profile = get_profile_by_id(self.config.profiles, self.config.active_profile)
+                if profile is not None:
+                    self.chat_panel._apply_profile(profile, emit_signal=False)
+                if (
+                    hasattr(self.chat_panel, "_profiles_selector")
+                    and self.chat_panel._profiles_selector
+                ):
+                    self.chat_panel._profiles_selector.set_profile(self.config.active_profile)
+            except Exception:
+                logger.debug("Не удалось применить профиль после сохранения", exc_info=True)
+
+        self.status_bar.showMessage("Профили сохранены", 3000)
 
     def _run_wizard(self) -> None:
         """Принудительно запускает визард настройки."""
