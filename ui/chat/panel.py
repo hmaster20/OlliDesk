@@ -249,6 +249,8 @@ class ChatPanel(QWidget):
         # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
         # последовательны (start→result), поэтому одной ссылки достаточно.
         self._active_tool_card = None
+        # [9.5.4] Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
+        self._activity_state: str = "idle"
 
         self._setup_ui()
 
@@ -943,6 +945,8 @@ class ChatPanel(QWidget):
         """
         if not content:
             return
+        if self._activity_state != "streaming":
+            self._set_activity_state("streaming")
         self._current_assistant_content += content
         widget = self._ensure_assistant_widget()
         widget.append_text(content)
@@ -1371,7 +1375,8 @@ class ChatPanel(QWidget):
         self._pending_final_answer = ""
 
         self._reset_send_button()
-        self.status_label.setText("⏹ Остановлено пользователем")
+        # [9.5.4] Явный статус «остановлено» после idle.
+        self._set_activity_state("cancelled")
         self._add_message(
             "system",
             "⏹ Генерация остановлена пользователем.\n"
@@ -1470,7 +1475,7 @@ class ChatPanel(QWidget):
     def _start_chat(self, text: str):
         self._generating = True
         self._set_button_stop()
-        self.status_label.setText("Поиск в кодовой базе...")
+        self._set_activity_state("thinking", "поиск по кодовой базе")
         self._rag_context = None
         self._rag_scope = self._query_scope(text)
 
@@ -1530,7 +1535,7 @@ class ChatPanel(QWidget):
     def _start_agent(self, text: str, mode: AgentMode):
         self._generating = True
         self._set_button_stop()
-        self.status_label.setText("🤖 Агент думает...")
+        self._set_activity_state("thinking", "агент запущен")
         self._rag_scope = self._query_scope(text)
 
         # [9.4] Профиль «Обучение» выключает RAG полностью.
@@ -1889,6 +1894,8 @@ class ChatPanel(QWidget):
         """
         from agents.tool_grammar import looks_like_ascii_junk
 
+        if self._activity_state != "thinking":
+            self._set_activity_state("thinking", "рассуждение")
         if self._current_thought_stream is None:
             self._current_thought_stream = ChatThoughtStream()
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, self._current_thought_stream)
@@ -1917,6 +1924,8 @@ class ChatPanel(QWidget):
     @Slot(str)
     def _on_final_chunk(self, token: str) -> None:
         """Токен финального ответа — в буфер паспорта, НЕ в ленту."""
+        if self._activity_state != "streaming":
+            self._set_activity_state("streaming", "финальный ответ")
         self._pending_final_answer += token
 
     @Slot(object)
@@ -2034,6 +2043,8 @@ class ChatPanel(QWidget):
         Если карточки нет (например, инструмент вызван до патча 9.5.7
         или из внешнего кода) — fallback на старое сообщение `_add_tool_message`.
         """
+        # [9.5.4] Возвращаемся в «думает» — модель обработает результат.
+        self._set_activity_state("thinking")
         card_was_present = self._active_tool_card is not None
 
         # 1. Обновляем активную карточку.
@@ -2143,14 +2154,17 @@ class ChatPanel(QWidget):
         }
         label = tool_labels.get(name, f"🛠️ {name}")
         activity = f"{label}: {arg_summary}" if arg_summary else label
-        self.status_label.setText(activity)
 
-        # Серый трейс — компактная хронология (research).
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.append_action(name, args)
+        # [9.5.3] Создаём трейс в Agent/Plan (не в Chat), пишем action.
+        stream = self._ensure_thought_stream()
+        if stream is not None:
+            stream.append_action(name, args)
 
-        # Activity-строка в ленте (не research, как и раньше).
-        if not self._research_mode_active:
+        # [9.5.4] Статус: выполняет инструмент (без дубля иконки).
+        self._set_activity_state("tool", name)
+
+        # Activity-строка только в Chat-режиме (где трейса нет).
+        if stream is None and not self._research_mode_active:
             self._show_activity(activity)
 
         # [9.5.7] Карточка tool-call ВСЕГДА (и в research, и в обычном).
@@ -2170,19 +2184,23 @@ class ChatPanel(QWidget):
 
     @Slot(str)
     def _on_status_event(self, text: str):
-        """Статус — в серый поток (как нудж/фаза) и в статус-бар.
-
-        В research-режиме в ленту не пишем (всё видно в сером потоке).
-        """
-        if self._current_thought_stream is not None and text:
-            # Нуджи приходят как «🔁 …», фазы — как «📌 …».
+        """[9.5.3] Статус — в серый трейс (Agent/Plan/research) или activity (Chat)."""
+        if not text:
+            return
+        stream = self._ensure_thought_stream()
+        if stream is not None:
             if text.startswith("🔁") or text.startswith("🪞"):
-                self._current_thought_stream.append_nudge(text)
+                stream.append_nudge(text)
             elif text.startswith("📌"):
-                self._current_thought_stream.append_phase(text)
-        if not self._research_mode_active:
+                stream.append_phase(text)
+            else:
+                stream.append_status(text)
+        # Activity-строка только в Chat-режиме (где трейса нет).
+        if stream is None and not self._research_mode_active:
             self._show_activity(text)
-        self.status_label.setText(text)
+        # В статус-строке — только если не перетёрто другим состоянием.
+        if self._activity_state == "idle":
+            self.status_label.setText(text)
 
     # ---------------------------------------------------------
     # [4.8.E] Низкоуровневые delta-события (диагностика)
@@ -2292,6 +2310,71 @@ class ChatPanel(QWidget):
         except (TypeError, ValueError):
             pass
 
+    # ------------------------------------------------------------------
+    # [9.5.3] Серый трейс в обычном Agent/Plan (не только research)
+    # ------------------------------------------------------------------
+
+    def _ensure_thought_stream(self) -> "ChatThoughtStream | None":
+        """Возвращает серый трейс для текущего прогона, создаёт при необходимости.
+
+        [9.5.3] В Agent/Plan (не research) трейс создаётся с первым
+        tool-call или статусом — до этого момента виджета нет.
+        В Chat-режиме (tools off, обычно одна итерация) трейс не нужен:
+        статусы идут плоскими `ChatActivityItem`.
+        В research `_current_thought_stream` уже создан в
+        `_on_thought_chunk` — просто возвращаем.
+        """
+        if self._current_thought_stream is not None:
+            return self._current_thought_stream
+        # Chat-режим: плоский activity, без трейса.
+        if self._current_mode() == AgentMode.CHAT and not self._research_mode_active:
+            return None
+        self._current_thought_stream = ChatThoughtStream()
+        self.scroll_layout.insertWidget(
+            self.scroll_layout.count() - 1, self._current_thought_stream
+        )
+        self.scroll_layout.setStretch(
+            self.scroll_layout.indexOf(self._current_thought_stream), 0
+        )
+        return self._current_thought_stream
+
+    # ------------------------------------------------------------------
+    # [9.5.4] Индикатор активности
+    # ------------------------------------------------------------------
+
+    _ACTIVITY_ICONS = {
+        "idle": "💤",
+        "thinking": "🤔",
+        "tool": "🔧",
+        "streaming": "✍️",
+        "error": "❌",
+        "cancelled": "⏹",
+    }
+    _ACTIVITY_LABELS = {
+        "idle": "Готов к работе",
+        "thinking": "Думает…",
+        "tool": "Выполняет инструмент…",
+        "streaming": "Печатает…",
+        "error": "Ошибка",
+        "cancelled": "Остановлено",
+    }
+
+    def _set_activity_state(self, state: str, detail: str = "") -> None:
+        """[9.5.4] Единый индикатор активности в статус-строке и tooltip Stop.
+
+        Не дублирует эмодзи в `detail` (detail — чистый текст без иконок).
+        Идемпотентно: если состояние не изменилось и detail пуст — no-op.
+        """
+        icon = self._ACTIVITY_ICONS.get(state, "●")
+        label = self._ACTIVITY_LABELS.get(state, state)
+        full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
+        self._activity_state = state
+        self.status_label.setText(full)
+        if self._generating:
+            self.send_btn.setToolTip(f"{full}\nНажмите, чтобы остановить")
+        else:
+            self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
+
     @Slot()
     def _on_finish(self):
         self._send_finished()
@@ -2343,12 +2426,17 @@ class ChatPanel(QWidget):
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
-            self._show_activity("✅ Готово")
+            # [9.5.3] В Chat-режиме (без трейса) — плоский activity.
+            # В Agent/Plan трейс уже показывает ход; финальный статус
+            # выставит `_reset_send_button` → idle.
+            if self._current_thought_stream is None:
+                self._show_activity("✅ Готово")
 
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
         self._last_assistant_widget = None
+        # [9.5.3] Ссылку сбрасываем, но виджет трейса остаётся в ленте.
         self._current_thought_stream = None
         self._pending_final_answer = ""
         self._last_research_summary = None
@@ -2388,10 +2476,10 @@ class ChatPanel(QWidget):
             "font-size: 14px; padding: 8px 20px; background: #1976d2;"
             " color: white; border: none; border-radius: 4px;"
         )
-        # [9.5.7] Сбрасываем ссылку на активную карточку — иначе следующий
-        # tool_executed (от «хвоста» отменённого прогона) обновит старую.
+        # [9.5.7] Сбрасываем ссылку на активную карточку.
         self._active_tool_card = None
-        self.status_label.setText("Готов к работе")
+        # [9.5.4] Индикатор: idle (учитывает _generating=False, tooltip меняется).
+        self._set_activity_state("idle")
 
     def _set_button_stop(self) -> None:
         self.send_btn.setText("■")
@@ -2420,6 +2508,8 @@ class ChatPanel(QWidget):
         # Помечаем серый поток как прерванный, если он был.
         if self._current_thought_stream is not None:
             self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
+        # [9.5.4] Индикатор: ошибка (короткий detail).
+        self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(
                 f"Ошибка: {error_msg[:200]}", is_error=True
@@ -2427,7 +2517,8 @@ class ChatPanel(QWidget):
             self._active_tool_card = None
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
-        self.status_label.setText("❌ Ошибка")
+        # _reset_send_button ставит idle — явно выставим error после.
+        self._set_activity_state("error", error_msg[:60])
         self._research_mode_active = False
         self._research_cancelled = False
         self._pending_final_answer = ""
@@ -2435,15 +2526,15 @@ class ChatPanel(QWidget):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
-        # Прерываем возможный research-прогон: паспорт не строим, флаги
-        # сбрасываем. Кнопка «Продолжить» даст пользователю шанс.
+        """Прерываем возможный research-прогон..."""
         self._reset_research_state()
         self._reset_send_button()
         self._show_activity(
             "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать "
             "агенту больше шагов."
         )
-        self.status_label.setText("Достигнут лимит итераций — можно продолжить")
+        # [9.5.4] Индикатор: «лимит итераций» вместо общего idle.
+        self._set_activity_state("cancelled", "лимит итераций")
         self.continue_btn.setVisible(True)
         self.continue_btn.setEnabled(True)
 

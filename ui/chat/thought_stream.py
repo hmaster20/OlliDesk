@@ -301,6 +301,21 @@ class ChatThoughtStream(QWidget):
         self._insert_html(f'<span style="color: {_C_NUDGE}; font-style: italic;">📌 {_escape(label)}</span>')
         self._insert_newline()
 
+    def append_status(self, label: str) -> None:
+        """Произвольный статус агента («🧠 Размышляю…», «⏳ Подготовка…»).
+
+        В отличие от `append_phase` (📌) и `append_nudge` (🔁) — без
+        собственной иконки, эмодзи приходит в тексте.
+        """
+        if not label:
+            return
+        self._close_thought_block()
+        self._insert_html(
+            f'<span style="color: {_C_NUDGE}; font-style: italic;">'
+            f"{_escape(label)}</span>"
+        )
+        self._insert_newline()
+
     def mark_interrupted(self, reason: str = "") -> None:
         """Помечает виджет как прерванный — курсивный комментарий в конце."""
         self._close_thought_block()
