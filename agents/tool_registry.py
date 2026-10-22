@@ -40,7 +40,12 @@ class ErrorCategory(StrEnum):
 
 
 class ToolResult:
-    """Результат выполнения инструмента."""
+    """Результат выполнения инструмента.
+
+    [9.6.1] Добавлено поле `metadata: dict | None` — для структурированных
+    результатов (например, diff от `write_file`). `content` остаётся
+    строкой для LLM; UI берёт `metadata` для богатой визуализации.
+    """
 
     def __init__(
         self,
@@ -49,12 +54,15 @@ class ToolResult:
         content: str,
         is_error: bool = False,
         error_category: ErrorCategory | None = None,
+        metadata: dict[str, Any] | None = None,
     ):
         self.tool_call_id = tool_call_id
         self.name = name
         self.content = content
         self.is_error = is_error
         self.error_category = error_category
+        # [9.6.1] Структурированные данные (diff, statistics, …) для UI.
+        self.metadata = metadata
 
 
 def _type_to_json_schema(tp: type) -> dict[str, Any]:
@@ -311,6 +319,27 @@ class ToolRegistry:
                 result_content = await func(**merged_args)
             else:
                 result_content = func(**merged_args)
+
+            # [9.6.1] Инструмент может вернуть dict — тогда `_llm_text`
+            # идёт в content (для LLM), остальные поля — в metadata (для UI).
+            # Строгий контракт: dict должен содержать `_llm_text` (str);
+            # если нет — JSON дампим в content, metadata = весь dict.
+            if isinstance(result_content, dict):
+                llm_text = result_content.get("_llm_text")
+                if not isinstance(llm_text, str):
+                    try:
+                        llm_text = json.dumps(result_content, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        llm_text = str(result_content)
+                metadata = {
+                    k: v for k, v in result_content.items() if k != "_llm_text"
+                }
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                    content=llm_text,
+                    metadata=metadata or None,
+                )
 
             return ToolResult(
                 tool_call_id=tool_call.id,

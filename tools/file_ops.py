@@ -286,63 +286,139 @@ def _verify_python_syntax(file_path: Path) -> str:
         return (result.stderr or result.stdout or "unknown syntax error").strip()
     return ""
 
-
 @tool(
     name="write_file",
     description="Записывает содержимое в файл. Перед записью создаёт Git-снапшот для отката.",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
 )
-def write_file(path: str, content: str, project_root: str = "") -> str:
+def write_file(
+    path: str, content: str, project_root: str = ""
+) -> str | dict[str, Any]:
     """Записывает содержимое в файл.
 
-    После записи для ``.py`` запускается ``py_compile``; при синтаксической
-    ошибке её текст возвращается модели как Observation, чтобы она могла
-    исправить файл (React.md 4.2 — внешний верификатор надёжнее LLM-критика).
+    [9.6.1] Возвращает `dict` со структурированным результатом для UI:
+      * `_llm_text` — человекочитаемая строка для LLM (идёт в `content`);
+      * `status` — "ok" | "no_change";
+      * `path` — абсолютный путь;
+      * `is_new_file` — файла не было до записи;
+      * `original_content` — содержимое до записи (для отката);
+      * `diff` — unified diff (для UI);
+      * `lines_added`, `lines_removed` — статистика;
+      * `syntax_error` — текст ошибки `py_compile` (пусто, если ок).
+
+    Вне `ToolRegistry.execute` (прямой вызов) возвращает строку для
+    обратной совместимости — но в проде всегда идёт через registry.
     """
-    # NEW: единый резолвер вместо дублированной `_resolve_path`.
     file_path = SandboxedPathResolver(project_root).resolve(path)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
     if file_path.is_dir():
         return f"Ошибка: {file_path} является директорией"
+
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # [9.6.1] Сохраняем оригинал ДО записи — для diff и отката.
+        is_new_file = not file_path.exists()
+        original_content = ""
+        if not is_new_file:
+            try:
+                original_content = file_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except Exception:
+                original_content = ""
+
+        # Идемпотентность: если содержимое не изменилось — не пишем,
+        # не создаём снапшот, возвращаем no_change.
+        if not is_new_file and original_content == content:
+            return {
+                "_llm_text": f"Файл не изменился: {file_path.name}",
+                "status": "no_change",
+                "path": str(file_path),
+                "is_new_file": False,
+                "original_content": original_content,
+                "diff": "",
+                "lines_added": 0,
+                "lines_removed": 0,
+                "syntax_error": "",
+            }
+
         snapshot_status = None
         if project_root:
             repo_path = Path(project_root)
             try:
-                if file_path.exists():
-                    try:
-                        existing = file_path.read_text(encoding="utf-8", errors="replace")
-                    except Exception:
-                        existing = None
-                    if existing == content:
-                        return f"Файл не изменился: {file_path.name}"
+                snapshot_status = create_snapshot(
+                    repo_path, message=f"Before agent write: {file_path.name}"
+                )
             except Exception:
-                pass
-            snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
+                snapshot_status = None
+
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
 
-        # Внешний верификатор: py_compile для .py. Ошибка не откатывает
-        # запись (пользователь вправе видеть состояние), но возвращается
-        # модели в Observation — она должна исправить файл следующим вызовом.
+        # Внешний верификатор: py_compile для .py.
         syntax_error = _verify_python_syntax(file_path)
 
+        # [9.6.1] Unified diff — для UI. difflib.unified_diff, без контекста
+        # в заголовках (относительный путь вместо абсолютного — чище).
+        import difflib
+
+        original_lines = original_content.splitlines(keepends=True)
+        new_lines = content.splitlines(keepends=True)
+        diff_chunks = list(
+            difflib.unified_diff(
+                original_lines,
+                new_lines,
+                fromfile=f"a/{file_path.name}" if not is_new_file else "/dev/null",
+                tofile=f"b/{file_path.name}",
+                n=3,
+            )
+        )
+        diff_text = "".join(diff_chunks)
+
+        # Статистика по строкам.
+        lines_added = sum(
+            1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++")
+        )
+        lines_removed = sum(
+            1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---")
+        )
+
+        # [9.6.1] `_llm_text` — что видит модель. Добавляем хвост с
+        # синтаксической ошибкой (если есть) — модель должна исправить.
+        status_line = (
+            "Файл создан" if is_new_file else "Файл успешно обновлён"
+        )
+        llm_text = f"{status_line}: {file_path.name}"
         if snapshot_status:
-            base = f"Файл успешно обновлён: {file_path.name}. Создан Git-снапшот для отката."
+            llm_text += ". Создан Git-снапшот для отката."
+        elif not project_root:
+            llm_text += " (project_root не задан — без Git-снапшота)."
         else:
-            base = (
-                f"Файл успешно обновлён: {file_path.name}. "
-                "(Git-снапшот не создан – проверьте наличие репозитория или наличие изменений.)"
+            llm_text += " (Git-снапшот не создан — репозиторий не найден или нет изменений)."
+        if syntax_error:
+            logger.warning(
+                f"py_compile {file_path} выявил синтаксическую ошибку"
+            )
+            llm_text += (
+                f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
             )
 
-        if syntax_error:
-            logger.warning(f"py_compile {file_path} выявил синтаксическую ошибку")
-            return f"{base}\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
-        return base
+        return {
+            "_llm_text": llm_text,
+            "status": "ok",
+            "path": str(file_path),
+            "is_new_file": is_new_file,
+            "original_content": original_content,
+            "diff": diff_text,
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+            "syntax_error": syntax_error,
+        }
     except PermissionError:
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
+

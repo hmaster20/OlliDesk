@@ -2036,20 +2036,27 @@ class ChatPanel(QWidget):
             if self._agent_thread:
                 self._agent_thread.respond_to_tool(False)
 
-    @Slot(str, str, bool)
-    def _on_tool_executed(self, name: str, content: str, is_error: bool):
+    @Slot(str, str, bool, object)
+    def _on_tool_executed(
+        self,
+        name: str,
+        content: str,
+        is_error: bool,
+        metadata: dict | None = None,
+    ):
         """[9.5.7] Обновляет tool-карточку результатом (✓/✗ + preview).
 
-        Если карточки нет (например, инструмент вызван до патча 9.5.7
-        или из внешнего кода) — fallback на старое сообщение `_add_tool_message`.
+        [9.6.1] `metadata` (dict | None) — структурированные данные от
+        инструмента. Для `write_file` запускает diff-режим карточки.
         """
+        card_was_present = self._active_tool_card is not None
+
         # [9.5.4] Возвращаемся в «думает» — модель обработает результат.
         self._set_activity_state("thinking")
-        card_was_present = self._active_tool_card is not None
 
         # 1. Обновляем активную карточку.
         if self._active_tool_card is not None:
-            self._active_tool_card.set_result(content or "", is_error)
+            self._active_tool_card.set_result(content or "", is_error, metadata)
             self._active_tool_card = None
 
         # 2. Серый трейс — компактная запись результата (research).
@@ -2071,6 +2078,73 @@ class ChatPanel(QWidget):
         # 4. Fallback: если карточки не было — отдельное сообщение.
         if not card_was_present and not self._research_mode_active:
             self._add_tool_message(name, content, is_error)
+
+    # ------------------------------------------------------------------
+    # [9.6.1] Diff-карточка write_file — слоты
+    # ------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_open_tool_result_in_editor(self, path: str) -> None:
+        """Открывает файл (после write_file) в редакторе через MainWindow."""
+        if path:
+            self.source_activated.emit(path, 0)
+
+    @Slot(dict)
+    def _on_revert_write_file(self, payload: dict) -> None:
+        """Откатывает запись write_file к original_content.
+
+        Args:
+            payload: {"path", "original_content", "is_new_file"} от карточки.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        path = str(payload.get("path") or "")
+        original = str(payload.get("original_content") or "")
+        is_new_file = bool(payload.get("is_new_file"))
+        if not path:
+            return
+
+        target = Path(path)
+        if is_new_file and target.exists():
+            reply = QMessageBox.question(
+                self,
+                "Откат создания файла",
+                f"Удалить созданный агентом файл?\n\n{path}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                target.unlink()
+                self.status_label.setText(f"↩ Удалён: {target.name}")
+                logger.info(f"revert write_file: удалён {path}")
+            except OSError as e:
+                QMessageBox.warning(
+                    self, "Ошибка", f"Не удалось удалить файл:\n{e}"
+                )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Откат изменений",
+            f"Восстановить предыдущее содержимое?\n\n{path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(original, encoding="utf-8")
+            self.status_label.setText(f"↩ Откат: {target.name}")
+            logger.info(f"revert write_file: восстановлен {path}")
+            # Обновляем git-статус.
+            if hasattr(self, "source_activated"):
+                # Файл мог быть открыт в редакторе — перечитать.
+                self.source_activated.emit(path, 0)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Ошибка", f"Не удалось восстановить файл:\n{e}"
+            )
 
     def _update_hypothesis_widget(self, content: str) -> bool:
         """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет."""
@@ -2168,11 +2242,14 @@ class ChatPanel(QWidget):
             self._show_activity(activity)
 
         # [9.5.7] Карточка tool-call ВСЕГДА (и в research, и в обычном).
-        # Используем существующий пузырь, если модель ещё не дала текст —
-        # так несколько tool_calls подряд (multi-tool-call) собираются
-        # в один пузырь, а не в кучу мелких.
         widget = self._ensure_assistant_widget()
-        self._active_tool_card = widget.append_tool_call(name, arguments_json)
+        card = widget.append_tool_call(name, arguments_json)
+        self._active_tool_card = card
+
+        # [9.6.1] Подключаем сигналы diff-режима (write_file).
+        if card is not None:
+            card.open_in_editor_requested.connect(self._on_open_tool_result_in_editor)
+            card.revert_requested.connect(self._on_revert_write_file)
 
         # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
         # следующий текст пойдёт в новый пузырь (это новый ответ модели).

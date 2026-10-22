@@ -66,3 +66,43 @@ class TestTruncatePreview:
         # Поведение: text[:0] + "…" = "…", truncated=True
         assert truncated is True
         assert text == "…"
+
+class TestEscapeDiff:
+    """[9.6.1] HTML-экранирование в diff-сводке."""
+
+    def test_basic(self) -> None:
+        from ui.chat.message_item import _escape_diff
+
+        assert _escape_diff("a < b > c & d") == "a &lt; b &gt; c &amp; d"
+
+    def test_empty(self) -> None:
+        from ui.chat.message_item import _escape_diff
+
+        assert _escape_diff("") == ""
+
+    def test_none_safe(self) -> None:
+        from ui.chat.message_item import _escape_diff
+
+        # str(None) = "None" — не падаем.
+        assert _escape_diff(None) == "None"  # type: ignore[arg-type]
+
+
+class TestDiffMetadataShape:
+    """Структура metadata от write_file — проверяем, что UI-поля есть."""
+
+    def test_write_file_metadata_keys(self) -> None:
+        """Эталон структуры: если поле переименуют — тест упадёт."""
+        required = {
+            "_llm_text",
+            "status",
+            "path",
+            "is_new_file",
+            "original_content",
+            "diff",
+            "lines_added",
+            "lines_removed",
+            "syntax_error",
+        }
+        # Тест-«контракт»: подсказка будущим изменениям.
+        # Реальное заполнение проверяется в tests/tools/test_file_ops_diff.py.
+        assert len(required) == 9

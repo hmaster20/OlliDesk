@@ -74,7 +74,8 @@ class AgentChatThread(QThread):
     chunk_received = Signal(str)
     thinking_received = Signal(str)
     tool_call_detected = Signal(str, str, str)
-    tool_executed = Signal(str, str, bool)
+    # [9.6.1] + object: metadata (dict | None) для diff-карточки write_file.
+    tool_executed = Signal(str, str, bool, object)
     tool_started = Signal(str, str)
     finish_received = Signal(str)
     error_occurred = Signal(str)
@@ -339,8 +340,14 @@ class AgentChatThread(QThread):
     async def _on_status(self, text: str):
         self.status_changed.emit(text)
 
-    async def _on_tool_result(self, name: str, content: str, is_error: bool):
-        self.tool_executed.emit(name, content, is_error)
+    async def _on_tool_result(
+        self,
+        name: str,
+        content: str,
+        is_error: bool,
+        metadata: dict | None = None,
+    ):
+        self.tool_executed.emit(name, content, is_error, metadata)
 
 
 class RagSearchThread(QThread):

@@ -23,7 +23,7 @@ import json
 import re
 
 from loguru import logger
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -669,6 +669,14 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
         return (clean, False)
     return (clean[: limit - 1] + "…", True)
 
+def _escape_diff(text: str) -> str:
+    """Экранирует HTML-спецсимволы для diff-сводки."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 # Лимит полного текста в раскрывающемся QTextBrowser. Больше не нужно:
 # полный observation может быть 100 КБ, а UI и так неудобно листать.
@@ -678,17 +686,17 @@ class ToolCallCard(QWidget):
     """Карточка вызова инструмента (ToolCallPart + результат).
 
     Жизненный цикл:
-      1. `__init__` — состояние pending (⏳), показывает `name(args)`.
-      2. `set_result(content, is_error)` — обновляет статус (✓/✗),
-         показывает preview первых 200 символов; если текст длиннее —
-         кнопку «▸ Показать полностью» с раскрывающимся QTextBrowser.
-
-    Вызывается из `ChatPanel._on_tool_started` (создание) и
-    `ChatPanel._on_tool_executed` (обновление). В research-режиме
-    карточки тоже создаются — серый трейс остаётся как компактная
-    хронология, карточка даёт «Показать полностью» для длинных
-    результатов (9.5.7).
+      1. `__init__` — pending (⏳), показывает `name(args)`.
+      2. `set_result(content, is_error, metadata)`:
+         * если `metadata` содержит `diff` и `path` (write_file) —
+           diff-сводка `+N −M` + кнопки «📂 Открыть» / «↩ Откатить»;
+         * иначе — preview первых 200 символов + «▸ Показать полностью»
+           (для длинных observation).
     """
+
+    # [9.6.1] Сигналы diff-режима `write_file`.
+    open_in_editor_requested = Signal(str)   # path
+    revert_requested = Signal(dict)          # {"path", "original_content", "is_new_file"}
 
     _ICONS: dict[str, str] = {
         "read_file": "📖",
@@ -738,6 +746,8 @@ class ToolCallCard(QWidget):
         self._result_content = ""
         self._result_is_error = False
         self._result_expanded = False
+        # [9.6.1] Структурированный результат (diff write_file).
+        self._metadata: dict | None = None
 
         # Внешний контейнер (для смены стиля без пересоздания).
         self._container = QFrame(self)
@@ -837,19 +847,39 @@ class ToolCallCard(QWidget):
         """Текущее состояние: pending | ok | error."""
         return self._state
 
-    def set_result(self, content: str, is_error: bool) -> None:
+    def set_result(
+        self,
+        content: str,
+        is_error: bool,
+        metadata: dict | None = None,
+    ) -> None:
         """Обновляет карточку результатом выполнения инструмента.
 
         Args:
             content: Текст результата (Observation) или "Отклонено пользователем".
             is_error: True — ошибка (красный статус), False — успех.
+            metadata: [9.6.1] Структурированные данные от инструмента.
+                Для `write_file` содержит `diff`, `path`, `lines_added`,
+                `lines_removed`, `original_content`, `is_new_file`,
+                `syntax_error`. Если задано — рендерим diff-режим.
         """
         self._result_content = content or ""
         self._result_is_error = bool(is_error)
+        self._metadata = metadata
         self._state = "error" if is_error else "ok"
 
         self._apply_state_style()
-        self._update_preview()
+
+        # [9.6.1] Diff-режим для write_file (только при успехе).
+        if (
+            not is_error
+            and isinstance(metadata, dict)
+            and "diff" in metadata
+            and "path" in metadata
+        ):
+            self._render_diff_mode()
+        else:
+            self._update_preview()
 
     # ------------------------------------------------------------------
     # Внутренние
@@ -940,6 +970,107 @@ class ToolCallCard(QWidget):
             self._toggle_btn.setText(
                 "▾ Свернуть" if self._result_expanded else "▸ Показать полностью"
             )
+
+    # ------------------------------------------------------------------
+    # [9.6.1] Diff-режим write_file
+    # ------------------------------------------------------------------
+
+    def _render_diff_mode(self) -> None:
+        """Рендерит diff-сводку + кнопки (только для write_file)."""
+        meta = self._metadata or {}
+        path = str(meta.get("path") or "")
+        lines_added = int(meta.get("lines_added") or 0)
+        lines_removed = int(meta.get("lines_removed") or 0)
+        is_new_file = bool(meta.get("is_new_file"))
+        syntax_error = str(meta.get("syntax_error") or "")
+
+        # Скрываем preview-элементы.
+        self._preview_label.setVisible(False)
+        self._full_browser.setVisible(False)
+        if self._toggle_btn is not None:
+            self._toggle_btn.setVisible(False)
+
+        # Сводка: «📄 file.py · +N −M (новый)».
+        parts: list[str] = []
+        parts.append(f"<b>📄 {_escape_diff(path)}</b>")
+        stat_bits: list[str] = []
+        if lines_added:
+            stat_bits.append(f'<span style="color:#98c379;">+{lines_added}</span>')
+        if lines_removed:
+            stat_bits.append(f'<span style="color:#e06c75;">−{lines_removed}</span>')
+        if stat_bits:
+            parts.append(" ".join(stat_bits))
+        if is_new_file:
+            parts.append('<span style="color:#6ba3d6;">(новый файл)</span>')
+        summary = " · ".join(parts)
+
+        self._preview_label.setText(summary)
+        self._preview_label.setTextFormat(Qt.TextFormat.RichText)
+        self._preview_label.setStyleSheet(
+            "color: #d4d4d4; font-family: 'Segoe UI', sans-serif;"
+            " font-size: 12px; padding: 4px 0 2px 20px;"
+        )
+        self._preview_label.setVisible(True)
+
+        # Синтаксическая ошибка (если есть) — предупреждение под сводкой.
+        if syntax_error:
+            err_label = QLabel(f"⚠️ {syntax_error[:200]}")
+            err_label.setWordWrap(True)
+            err_label.setStyleSheet(
+                "color: #e5c07b; font-family: 'Consolas', monospace;"
+                " font-size: 11px; padding: 2px 0 2px 20px;"
+            )
+            self._body_layout.addWidget(err_label)
+
+        # Кнопки: «📂 Открыть в редакторе» / «↩ Откатить».
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(20, 2, 0, 0)
+        btn_row.setSpacing(6)
+
+        open_btn = QPushButton("📂 Открыть в редакторе")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        open_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #444;"
+            " border-radius: 10px; color: #6ba3d6; font-size: 11px;"
+            " padding: 2px 10px; }"
+            " QPushButton:hover { background: rgba(107,163,214,0.15);"
+            " color: #8bc0f0; }"
+        )
+        open_btn.clicked.connect(
+            lambda _checked=False, p=path: self.open_in_editor_requested.emit(p)
+        )
+        btn_row.addWidget(open_btn)
+
+        revert_btn = QPushButton("↩ Откатить")
+        revert_btn.setToolTip(
+            "Восстановить исходное содержимое файла (запись была уже сделана)"
+        )
+        revert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        revert_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        revert_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #444;"
+            " border-radius: 10px; color: #e5c07b; font-size: 11px;"
+            " padding: 2px 10px; }"
+            " QPushButton:hover { background: rgba(229,192,123,0.15);"
+            " color: #f0d494; }"
+        )
+        revert_btn.clicked.connect(lambda _checked=False: self._on_revert_clicked())
+        btn_row.addWidget(revert_btn)
+
+        btn_row.addStretch()
+        self._body_layout.addLayout(btn_row)
+
+    def _on_revert_clicked(self) -> None:
+        """Эмитит сигнал отката с данными из metadata."""
+        if not self._metadata:
+            return
+        payload = {
+            "path": self._metadata.get("path", ""),
+            "original_content": self._metadata.get("original_content", ""),
+            "is_new_file": bool(self._metadata.get("is_new_file")),
+        }
+        self.revert_requested.emit(payload)
 
 def _format_args_short(args: dict, limit_per_value: int = 60) -> str:
     """Короткое представление аргументов для карточки tool_call."""

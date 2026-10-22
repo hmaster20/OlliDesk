@@ -752,7 +752,9 @@ class AgentLoop:
         on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
-        on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
+        on_tool_result: (
+            Callable[[str, str, bool, dict | None], Awaitable[None]] | None
+        ) = None,
         on_thought: Callable[[str], Awaitable[None]] | None = None,
         on_final_answer_started: Callable[[], Awaitable[None]] | None = None,
         # [4.8.E] Низкоуровневые delta-колбэки и границы стрима.
@@ -1089,7 +1091,13 @@ class AgentLoop:
                     state.note_call(tc.name, tc.arguments, result.content, result.is_error)
 
                     if on_tool_result:
-                        await on_tool_result(result.name, result.content, result.is_error)
+                        # [9.6.1] metadata — для UI (diff write_file).
+                        await on_tool_result(
+                            result.name,
+                            result.content,
+                            result.is_error,
+                            result.metadata,
+                        )
                     messages.append(
                         _create_tool_result_message(
                             tc.id,
