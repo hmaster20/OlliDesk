@@ -244,6 +244,12 @@ class ChatPanel(QWidget):
         # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
         self._dashboard = None
 
+        # [9.5.7] Активная tool-карточка: последняя созданная
+        # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
+        # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
+        # последовательны (start→result), поэтому одной ссылки достаточно.
+        self._active_tool_card = None
+
         self._setup_ui()
 
         # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
@@ -1279,6 +1285,9 @@ class ChatPanel(QWidget):
         self._research_cancelled = False
         if not keep_session:
             self._session_id = None
+        self._active_tool_card = None
+        self._last_assistant_widget = None
+        self._last_run_params = None
         self._last_assistant_widget = None
         self._last_run_params = None
         if hasattr(self, "continue_btn"):
@@ -1345,6 +1354,13 @@ class ChatPanel(QWidget):
         # Помечаем серый поток как прерванный.
         if self._current_thought_stream is not None:
             self._current_thought_stream.mark_interrupted("Рассуждение прервано пользователем.")
+
+        # [9.5.7] Активная карточка могла остаться «⏳» — прерываем.
+        if self._active_tool_card is not None:
+            self._active_tool_card.set_result(
+                "Прервано пользователем", is_error=True
+            )
+            self._active_tool_card = None
 
         # Очищаем активный store — в следующий запрос гипотезы не утекут.
         # Визуальные виджеты (`_hypothesis_widgets`) НЕ трогаем — это архив.
@@ -2013,22 +2029,27 @@ class ChatPanel(QWidget):
 
     @Slot(str, str, bool)
     def _on_tool_executed(self, name: str, content: str, is_error: bool):
-        """Обрабатывает завершение инструмента.
+        """[9.5.7] Обновляет tool-карточку результатом (✓/✗ + preview).
 
-        * В research-режиме — пишет в серый поток.
-        * Для тулов гипотез — обновляет/создаёт виджет `ChatHypothesisItem`
-          (вместо стандартного сообщения).
-        * В не-research режиме — как раньше.
+        Если карточки нет (например, инструмент вызван до патча 9.5.7
+        или из внешнего кода) — fallback на старое сообщение `_add_tool_message`.
         """
-        # Записываем в серый поток (кроме случая, когда он не создан —
-        # тогда это не research и поток не нужен).
-        if self._current_thought_stream is not None:
-            if name in ("record_hypothesis", "update_hypothesis"):
-                pass  # гипотезы обработаем отдельно ниже
-            else:
-                preview = (content or "").strip().replace("\n", " ")[:200]
-                self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
+        card_was_present = self._active_tool_card is not None
 
+        # 1. Обновляем активную карточку.
+        if self._active_tool_card is not None:
+            self._active_tool_card.set_result(content or "", is_error)
+            self._active_tool_card = None
+
+        # 2. Серый трейс — компактная запись результата (research).
+        if self._current_thought_stream is not None:
+            if name not in ("record_hypothesis", "update_hypothesis"):
+                preview = (content or "").strip().replace("\n", " ")[:200]
+                self._current_thought_stream.append_result(
+                    name, ok=not is_error, preview=preview
+                )
+
+        # 3. Гипотезы — отдельный виджет (как было).
         if (
             name in ("record_hypothesis", "update_hypothesis")
             and not is_error
@@ -2036,14 +2057,9 @@ class ChatPanel(QWidget):
         ):
             return
 
-        if self._current_thought_stream is not None:
-            # В research-режиме обычные tool-сообщения в ленту НЕ пишем —
-            # всё уже видно в сером потоке, не засоряем.
-            if not self._research_mode_active:
-                self._add_tool_message(name, content, is_error)
-            return
-
-        self._add_tool_message(name, content, is_error)
+        # 4. Fallback: если карточки не было — отдельное сообщение.
+        if not card_was_present and not self._research_mode_active:
+            self._add_tool_message(name, content, is_error)
 
     def _update_hypothesis_widget(self, content: str) -> bool:
         """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет."""
@@ -2090,6 +2106,17 @@ class ChatPanel(QWidget):
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
+        """[9.5.7] Карточка tool-call создаётся ДО выполнения инструмента.
+
+        В `AgentLoop` `on_tool_start` вызывается до `ask_first` (см. патч
+        `agents/agent_loop.py`), поэтому пользователь видит карточку с ⏳
+        одновременно с диалогом подтверждения. Результат придёт в ту же
+        карточку через `_on_tool_executed` → `set_result(...)`.
+
+        В research-режиме карточка тоже создаётся (в пузыре), а не только
+        в сером трейсе — это нужно для «▸ Показать полностью» на длинных
+        observation.
+        """
         try:
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
@@ -2118,28 +2145,28 @@ class ChatPanel(QWidget):
         activity = f"{label}: {arg_summary}" if arg_summary else label
         self.status_label.setText(activity)
 
-        # В серый поток пишем компактно; в research-режиме — это единственный
-        # способ увидеть действие в UI.
+        # Серый трейс — компактная хронология (research).
         if self._current_thought_stream is not None:
             self._current_thought_stream.append_action(name, args)
 
-        # Activity-строки в ленте показываем только в не-research.
+        # Activity-строка в ленте (не research, как и раньше).
         if not self._research_mode_active:
             self._show_activity(activity)
 
-        # 4.8.B: карточка tool_call — в ТЕКУЩИЙ пузырь ассистента.
-        # Если модель вызвала инструмент без предварительного текста —
-        # пузырь создастся здесь же (см. _ensure_assistant_widget).
-        if not self._research_mode_active:
-            widget = self._ensure_assistant_widget()
-            widget.append_tool_call(name, arguments_json)
+        # [9.5.7] Карточка tool-call ВСЕГДА (и в research, и в обычном).
+        # Используем существующий пузырь, если модель ещё не дала текст —
+        # так несколько tool_calls подряд (multi-tool-call) собираются
+        # в один пузырь, а не в кучу мелких.
+        widget = self._ensure_assistant_widget()
+        self._active_tool_card = widget.append_tool_call(name, arguments_json)
 
-        # Сброс для следующей итерации: следующий текст/рассуждение пойдут
-        # уже в новый пузырь. Reasoning сбрасывается тоже — это другая
-        # итерация модели.
-        self._last_assistant_widget = None
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
+        # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
+        # следующий текст пойдёт в новый пузырь (это новый ответ модели).
+        # Если текста не было (multi-tool-call) — продолжаем в тот же пузырь.
+        if self._current_assistant_content or self._current_thinking_content:
+            self._last_assistant_widget = None
+            self._current_assistant_content = ""
+            self._current_thinking_content = ""
 
     @Slot(str)
     def _on_status_event(self, text: str):
@@ -2361,6 +2388,9 @@ class ChatPanel(QWidget):
             "font-size: 14px; padding: 8px 20px; background: #1976d2;"
             " color: white; border: none; border-radius: 4px;"
         )
+        # [9.5.7] Сбрасываем ссылку на активную карточку — иначе следующий
+        # tool_executed (от «хвоста» отменённого прогона) обновит старую.
+        self._active_tool_card = None
         self.status_label.setText("Готов к работе")
 
     def _set_button_stop(self) -> None:
@@ -2390,6 +2420,11 @@ class ChatPanel(QWidget):
         # Помечаем серый поток как прерванный, если он был.
         if self._current_thought_stream is not None:
             self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
+        if self._active_tool_card is not None:
+            self._active_tool_card.set_result(
+                f"Ошибка: {error_msg[:200]}", is_error=True
+            )
+            self._active_tool_card = None
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
         self.status_label.setText("❌ Ошибка")

@@ -651,14 +651,43 @@ class TextWidget(QTextBrowser):
         super().resizeEvent(event)
         self._adjust_height()
 
+def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
+    """Обрезает текст для preview-строки в карточке tool-call.
+
+    Args:
+        text: Полный текст результата.
+        limit: Максимальная длина preview (символов).
+
+    Returns:
+        (preview, was_truncated). `was_truncated` = True, если текст
+        длиннее `limit` (нужно показать кнопку «Показать полностью»).
+    """
+    if not text:
+        return ("", False)
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return (clean, False)
+    return (clean[: limit - 1] + "…", True)
+
+
+# Лимит полного текста в раскрывающемся QTextBrowser. Больше не нужно:
+# полный observation может быть 100 КБ, а UI и так неудобно листать.
+_MAX_RESULT_VIEW_CHARS = 20_000
 
 class ToolCallCard(QWidget):
-    """Карточка вызова инструмента (ToolCallPart).
+    """Карточка вызова инструмента (ToolCallPart + результат).
 
-    Показывает иконку, имя и аргументы в компактном виде. Результат
-    инструмента приходит отдельным сообщением (role="tool"), чтобы не
-    разрастаться в один пузырь. Дифф-вьюер `write_file` — отдельная задача
-    (нужно пробрасывать сигнал до EditorWidget).
+    Жизненный цикл:
+      1. `__init__` — состояние pending (⏳), показывает `name(args)`.
+      2. `set_result(content, is_error)` — обновляет статус (✓/✗),
+         показывает preview первых 200 символов; если текст длиннее —
+         кнопку «▸ Показать полностью» с раскрывающимся QTextBrowser.
+
+    Вызывается из `ChatPanel._on_tool_started` (создание) и
+    `ChatPanel._on_tool_executed` (обновление). В research-режиме
+    карточки тоже создаются — серый трейс остаётся как компактная
+    хронология, карточка даёт «Показать полностью» для длинных
+    результатов (9.5.7).
     """
 
     _ICONS: dict[str, str] = {
@@ -681,6 +710,16 @@ class ToolCallCard(QWidget):
         "run_shell_command": "⚡",
     }
 
+    # Палитра состояний (фон/граница/иконка статуса).
+    _STATE_STYLES: dict[str, tuple[str, str, str]] = {
+        # pending: серый
+        "pending": ("rgba(120,120,140,0.06)", "#3a3a48", "⏳"),
+        # ok: зелёный
+        "ok": ("rgba(80,160,80,0.08)", "#4a6a4a", "✓"),
+        # error: красный
+        "error": ("rgba(200,80,80,0.10)", "#7a3a3a", "✗"),
+    }
+
     def __init__(
         self,
         name: str,
@@ -693,40 +732,214 @@ class ToolCallCard(QWidget):
         except json.JSONDecodeError:
             args = {}
 
-        container = QFrame(self)
-        container.setObjectName("_tool_card")
-        container.setStyleSheet(
-            "QFrame#_tool_card {"
-            " background: rgba(80, 120, 180, 0.08);"
-            " border: 1px solid #3a4a5a;"
-            " border-radius: 6px;"
-            " padding: 4px 10px; }"
-        )
+        self._name = name
+        self._arguments_json = arguments_json or "{}"
+        self._state = "pending"
+        self._result_content = ""
+        self._result_is_error = False
+        self._result_expanded = False
+
+        # Внешний контейнер (для смены стиля без пересоздания).
+        self._container = QFrame(self)
+        self._container.setObjectName("_tool_card")
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
-        outer.addWidget(container)
+        outer.addWidget(self._container)
 
-        body = QHBoxLayout(container)
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(6)
+        body = QVBoxLayout(self._container)
+        body.setContentsMargins(10, 6, 10, 6)
+        body.setSpacing(4)
+        self._body_layout = body
+
+        # --- Header: [icon] name(args) ... [status] ---
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
 
         icon = self._ICONS.get(name, "🔧")
         icon_label = QLabel(icon)
         icon_label.setStyleSheet("font-size: 14px;")
-        body.addWidget(icon_label)
+        header.addWidget(icon_label)
 
         args_summary = _format_args_short(args)
         text = f"{name}({args_summary})" if args_summary else f"{name}()"
-        label = QLabel(text)
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setStyleSheet(
+        self._name_label = QLabel(text)
+        self._name_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._name_label.setWordWrap(True)
+        self._name_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._name_label.setStyleSheet(
             "color: #8db1d6; font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 12px;"
         )
-        body.addWidget(label, stretch=1)
+        header.addWidget(self._name_label, stretch=1)
 
+        self._status_label = QLabel("⏳")
+        self._status_label.setStyleSheet(
+            "color: #7a7a8a; font-size: 13px; padding-left: 4px;"
+        )
+        self._status_label.setToolTip("Инструмент ещё не выполнен")
+        header.addWidget(self._status_label)
+
+        self._toggle_btn: QPushButton | None = None
+        body.addLayout(header)
+
+        # --- Preview результата (скрыт до set_result) ---
+        self._preview_label = QLabel("")
+        self._preview_label.setWordWrap(True)
+        self._preview_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._preview_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._preview_label.setStyleSheet(
+            "color: #a8a8b8; font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 11px; padding: 2px 0 0 20px;"
+        )
+        self._preview_label.setVisible(False)
+        body.addWidget(self._preview_label)
+
+        # --- Полный текст (скрыт, раскрывается кнопкой) ---
+        self._full_browser = QTextBrowser()
+        self._full_browser.setReadOnly(True)
+        self._full_browser.setFrameShape(QFrame.Shape.NoFrame)
+        self._full_browser.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._full_browser.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._full_browser.setStyleSheet(
+            "QTextBrowser {"
+            " background: rgba(0,0,0,0.15); border: none;"
+            " color: #b8b8c8;"
+            " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 11px; padding: 4px 6px;"
+            "}"
+        )
+        self._full_browser.setMaximumHeight(220)
+        self._full_browser.setVisible(False)
+        body.addWidget(self._full_browser)
+
+        self._apply_state_style()
+
+    # ------------------------------------------------------------------
+    # Публичный API
+    # ------------------------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def state(self) -> str:
+        """Текущее состояние: pending | ok | error."""
+        return self._state
+
+    def set_result(self, content: str, is_error: bool) -> None:
+        """Обновляет карточку результатом выполнения инструмента.
+
+        Args:
+            content: Текст результата (Observation) или "Отклонено пользователем".
+            is_error: True — ошибка (красный статус), False — успех.
+        """
+        self._result_content = content or ""
+        self._result_is_error = bool(is_error)
+        self._state = "error" if is_error else "ok"
+
+        self._apply_state_style()
+        self._update_preview()
+
+    # ------------------------------------------------------------------
+    # Внутренние
+    # ------------------------------------------------------------------
+
+    def _apply_state_style(self) -> None:
+        bg, border, icon = self._STATE_STYLES[self._state]
+        self._container.setStyleSheet(
+            "QFrame#_tool_card {"
+            f" background: {bg};"
+            f" border: 1px solid {border};"
+            " border-radius: 6px;"
+            " padding: 0;"
+            "}"
+        )
+        self._status_label.setText(icon)
+        if self._state == "pending":
+            self._status_label.setStyleSheet(
+                "color: #7a7a8a; font-size: 13px; padding-left: 4px;"
+            )
+            self._status_label.setToolTip("Инструмент ещё не выполнен")
+        elif self._state == "ok":
+            self._status_label.setStyleSheet(
+                "color: #98c379; font-size: 13px; padding-left: 4px; font-weight: 700;"
+            )
+            self._status_label.setToolTip("Успешно")
+        else:
+            self._status_label.setStyleSheet(
+                "color: #e06c75; font-size: 13px; padding-left: 4px; font-weight: 700;"
+            )
+            self._status_label.setToolTip("Ошибка")
+
+    def _update_preview(self) -> None:
+        """Собирает preview + опциональную кнопку раскрытия полного текста."""
+        content = self._result_content
+        if not content:
+            self._preview_label.setVisible(False)
+            return
+
+        preview, truncated = _truncate_preview(content, limit=200)
+        self._preview_label.setText(preview)
+        self._preview_label.setStyleSheet(
+            (
+                "color: #e8a8a8;"
+                if self._result_is_error
+                else "color: #a8a8b8;"
+            )
+            + " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 11px; padding: 2px 0 0 20px;"
+        )
+        self._preview_label.setVisible(True)
+
+        if truncated:
+            # Создаём/показываем кнопку один раз.
+            if self._toggle_btn is None:
+                btn = QPushButton("▸ Показать полностью")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                btn.setStyleSheet(
+                    "QPushButton { background: transparent; border: none;"
+                    " color: #6ba3d6; font-size: 11px;"
+                    " padding: 2px 0 0 20px; text-align: left; }"
+                    " QPushButton:hover { color: #8bc0f0; text-decoration: underline; }"
+                )
+                btn.clicked.connect(self._toggle_full_text)
+                self._body_layout.addWidget(btn)
+                self._toggle_btn = btn
+
+            # Заполняем полный текст один раз.
+            full = content
+            if len(full) > _MAX_RESULT_VIEW_CHARS:
+                full = (
+                    full[:_MAX_RESULT_VIEW_CHARS]
+                    + f"\n\n… [результат обрезан до {_MAX_RESULT_VIEW_CHARS} "
+                    f"из {len(content)} символов]"
+                )
+            self._full_browser.setPlainText(full)
+            self._toggle_btn.setVisible(True)
+        else:
+            if self._toggle_btn is not None:
+                self._toggle_btn.setVisible(False)
+            self._full_browser.setVisible(False)
+
+    def _toggle_full_text(self) -> None:
+        self._result_expanded = not self._result_expanded
+        self._full_browser.setVisible(self._result_expanded)
+        if self._toggle_btn is not None:
+            self._toggle_btn.setText(
+                "▾ Свернуть" if self._result_expanded else "▸ Показать полностью"
+            )
 
 def _format_args_short(args: dict, limit_per_value: int = 60) -> str:
     """Короткое представление аргументов для карточки tool_call."""
@@ -912,15 +1125,24 @@ class ChatMessageItem(QWidget):
         self.thinking += token
         self._ensure_reasoning_widget().append_text(token)
 
-    def append_tool_call(self, name: str, arguments_json: str) -> None:
+    def append_tool_call(
+        self, name: str, arguments_json: str
+    ) -> "ToolCallCard | None":
+        """[9.5.7] Добавляет карточку tool-call, возвращает её.
+
+        Возвращённая карточка используется в `ChatPanel._on_tool_started`
+        (сохраняется в `_active_tool_card`), а `_on_tool_executed`
+        вызывает у неё `set_result(...)`.
+        """
         if self.role != "assistant":
             logger.debug(
                 f"append_tool_call для role={self.role!r} — игнорирую"
             )
-            return
+            return None
         card = ToolCallCard(name, arguments_json)
         self._tool_cards.append(card)
         self._parts_layout.addWidget(card)
+        return card
 
     # ---------------------------------------------------------------
     # Старый API (обратная совместимость)

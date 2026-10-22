@@ -1046,6 +1046,13 @@ class AgentLoop:
                             state.nudges_fired.add("different_file")
                             continue
 
+                                       # [9.5.7] on_tool_start ВЫЗЫВАЕТСЯ ДО ask_first:
+                    # пользователь видит карточку-запрос (⏳ pending)
+                    # одновременно с диалогом подтверждения. При отказе
+                    # карточка краснеет через on_tool_result(...).
+                    if on_tool_start:
+                        await on_tool_start(tc.name, tc.arguments)
+
                     policy = self.registry.get_policy(tc.name)
 
                     if policy == ToolPolicy.ASK_FIRST:
@@ -1060,6 +1067,8 @@ class AgentLoop:
                                     is_error=True,
                                 )
                             )
+                            if on_tool_result:
+                                await on_tool_result(tc.name, "Отклонено пользователем", True)
                             continue
 
                     extra: dict[str, object] = {}
@@ -1073,8 +1082,6 @@ class AgentLoop:
                         extra["attached_files"] = context.attached_files
                     if context.hypotheses:
                         extra["hypotheses"] = context.hypotheses
-                    if on_tool_start:
-                        await on_tool_start(tc.name, tc.arguments)
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
