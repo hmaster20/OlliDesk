@@ -2358,21 +2358,50 @@ class ChatPanel(QWidget):
         "error": "Ошибка",
         "cancelled": "Остановлено",
     }
+    # [9.5.4] Цвет фона кнопки Stop по состоянию. Кнопка остаётся «■»
+    # (привычный Stop), но цвет фона подсказывает, что происходит.
+    _STOP_BUTTON_BG = {
+        "idle": "#d32f2f",       # обычный Stop
+        "thinking": "#d4a373",   # янтарный — «думает»
+        "tool": "#6ba3d6",       # синий — «выполняет»
+        "streaming": "#98c379",  # зелёный — «печатает»
+        "cancelled": "#7a7a8a",  # серый — «остановлено»
+        "error": "#c0392b",      # тёмно-красный — «ошибка»
+    }
 
     def _set_activity_state(self, state: str, detail: str = "") -> None:
-        """[9.5.4] Единый индикатор активности в статус-строке и tooltip Stop.
+        """[9.5.4] Единый индикатор активности.
+
+        Меняет:
+          * текст `status_label` (эмодзи + подпись + detail);
+          * tooltip кнопки Stop/Отправить;
+          * ЦВЕТ ФОНА кнопки Stop (текст остаётся «■» при генерации,
+            «▶ Отправить» — вне её).
 
         Не дублирует эмодзи в `detail` (detail — чистый текст без иконок).
-        Идемпотентно: если состояние не изменилось и detail пуст — no-op.
         """
         icon = self._ACTIVITY_ICONS.get(state, "●")
         label = self._ACTIVITY_LABELS.get(state, state)
         full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
         self._activity_state = state
         self.status_label.setText(full)
+
         if self._generating:
+            # Кнопка Stop: ■ + фон по состоянию.
+            self.send_btn.setText("■")
+            bg = self._STOP_BUTTON_BG.get(state, "#d32f2f")
+            self.send_btn.setStyleSheet(
+                f"font-size: 18px; padding: 8px 20px; background: {bg};"
+                " color: white; border: none; border-radius: 4px;"
+            )
             self.send_btn.setToolTip(f"{full}\nНажмите, чтобы остановить")
         else:
+            # Вне генерации кнопка — «Отправить», фон синий.
+            self.send_btn.setText("▶ Отправить")
+            self.send_btn.setStyleSheet(
+                "font-size: 14px; padding: 8px 20px; background: #1976d2;"
+                " color: white; border: none; border-radius: 4px;"
+            )
             self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
 
     @Slot()
@@ -2471,17 +2500,17 @@ class ChatPanel(QWidget):
     def _reset_send_button(self):
         self._generating = False
         self.input_edit.setEnabled(True)
-        self.send_btn.setText("▶ Отправить")
-        self.send_btn.setStyleSheet(
-            "font-size: 14px; padding: 8px 20px; background: #1976d2;"
-            " color: white; border: none; border-radius: 4px;"
-        )
         # [9.5.7] Сбрасываем ссылку на активную карточку.
         self._active_tool_card = None
-        # [9.5.4] Индикатор: idle (учитывает _generating=False, tooltip меняется).
+        # [9.5.4] Единая точка: idle ставит и текст, и фон, и tooltip.
         self._set_activity_state("idle")
 
     def _set_button_stop(self) -> None:
+        """Fallback: ■ и красный фон. `_set_activity_state` уточнит цвет.
+
+        Оставлен для совместимости (вызывается из `_start_chat`/`_start_agent`
+        до `_set_activity_state("thinking")`).
+        """
         self.send_btn.setText("■")
         self.send_btn.setStyleSheet(
             "font-size: 18px; padding: 8px 20px; background: #d32f2f;"

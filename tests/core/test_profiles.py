@@ -118,3 +118,23 @@ class TestAppConfigProfiles:
         assert cfg.document_ocr is False
         assert ".pdf" in cfg.index_extensions
         assert ".docx" in cfg.index_extensions
+
+    def test_development_recommended_model(self) -> None:
+        dev = get_profile_by_id(default_profiles(), "development")
+        assert dev is not None
+        assert dev.recommended_model == "qwen2.5-coder-7b-instruct-q6_k"
+
+    def test_research_recommended_model(self) -> None:
+        research = get_profile_by_id(default_profiles(), "research")
+        assert research is not None
+        assert research.recommended_model == "qwen2.5-7b-instruct-q6_k"
+
+    def test_learning_recommended_model(self) -> None:
+        """9.4.1: «Обучение» рекомендует крупную модель (14B q4_k_m)."""
+        learning = get_profile_by_id(default_profiles(), "learning")
+        assert learning is not None
+        assert learning.recommended_model == "qwen2.5-14b-instruct-q4_k_m"
+
+    def test_all_builtin_have_recommended_model(self) -> None:
+        for p in default_profiles():
+            assert p.recommended_model, f"{p.id}: recommended_model пустой"

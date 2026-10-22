@@ -426,6 +426,12 @@ class ProfileEditorDialog(QDialog):
     def _clone_profile(self) -> None:
         if self._current_profile_id is None:
             return
+
+        # 1. Сохраняем правки текущей формы ДО клонирования — иначе
+        # `_on_profile_selected`, вызванный из `_refresh_list`, сохранит
+        # не то, что видит пользователь.
+        self._persist_current_from_form()
+
         src = get_profile_by_id(self._profiles, self._current_profile_id)
         if src is None:
             return
@@ -446,6 +452,8 @@ class ProfileEditorDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", f"Профиль {new_id!r} уже существует.")
             return
 
+        # model_copy копирует ВСЕ поля, включая recommended_model и
+        # tool_policies — не только перечисленные в `update`.
         clone = src.model_copy(
             update={
                 "id": new_id,
@@ -454,6 +462,9 @@ class ProfileEditorDialog(QDialog):
             }
         )
         self._profiles.append(clone)
+        # Меняем _current_profile_id ДО _refresh_list, но _on_profile_selected
+        # уже не перезапишет клона: _persist_current_from_form найдёт старый
+        # профиль по _current_profile_id (мы только что его сохранили).
         self._current_profile_id = new_id
         self._refresh_list()
 

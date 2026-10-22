@@ -109,6 +109,9 @@ _DEFAULT_PROFILES: list[dict] = [
         "show_reasoning": True,
         "agent_max_iterations": 30,
         "chat_max_iterations": 7,
+        # Оптимум для кода (из _DEFAULT_SLM_MODELS). Подсвечивается ★ в
+        # селекторе analyst; выбор пользователя не блокируется.
+        "recommended_model": "qwen2.5-coder-7b-instruct-q6_k",
         "tool_policies": {
             "write_file": "ask_first",
             "create_snapshot": "ask_first",
@@ -139,6 +142,8 @@ _DEFAULT_PROFILES: list[dict] = [
             "Для каждого утверждения указывай источник [Ei] или цитату. "
             "Не выдумывай — если факт не подтверждён, так и скажи."
         ),
+        # Большой контекст под документы: q6_k 7B — баланс качества/памяти.
+        "recommended_model": "qwen2.5-7b-instruct-q6_k",
         "tool_policies": {
             "write_file": "excluded",
             "create_snapshot": "excluded",
@@ -172,6 +177,9 @@ _DEFAULT_PROFILES: list[dict] = [
             "и аналогиями. Проверяй понимание, задавай уточняющие вопросы. "
             "Не используй инструменты — отвечай из знаний."
         ),
+        # Рекомендация «крупная модель для обучения» (см. 9.4.1): 14B q4_k_m
+        # влезает в 32 ГБ RAM, качество заметно выше 7B.
+        "recommended_model": "qwen2.5-14b-instruct-q4_k_m",
         "tool_policies": {
             "read_file": "excluded",
             "list_directory": "excluded",

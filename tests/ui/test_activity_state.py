@@ -73,3 +73,33 @@ class TestActivityMessageFormat:
         # Никаких висячих пробелов.
         assert self._format("idle", "").endswith("работа")
         assert not self._format("idle", "").endswith(" ")
+
+# Копия словаря цветов из ChatPanel (без импорта Qt).
+_STOP_BUTTON_BG = {
+    "idle": "#d32f2f",
+    "thinking": "#d4a373",
+    "tool": "#6ba3d6",
+    "streaming": "#98c379",
+    "cancelled": "#7a7a8a",
+    "error": "#c0392b",
+}
+
+
+class TestStopButtonColors:
+    """[9.5.4] Цвета фона кнопки Stop по состоянию."""
+
+    def test_all_states_have_color(self) -> None:
+        assert set(_STOP_BUTTON_BG.keys()) == set(_ICONS.keys())
+        assert len(_STOP_BUTTON_BG) == 6
+
+    @pytest.mark.parametrize("state", list(_STOP_BUTTON_BG.keys()))
+    def test_color_is_hex(self, state: str) -> None:
+        color = _STOP_BUTTON_BG[state]
+        assert color.startswith("#")
+        assert len(color) == 7  # #rrggbb
+        # Проверяем, что это валидный hex.
+        int(color[1:], 16)
+
+    def test_colors_are_distinct(self) -> None:
+        """Все цвета разные — иначе состояния визуально неразличимы."""
+        assert len(set(_STOP_BUTTON_BG.values())) == len(_STOP_BUTTON_BG)
