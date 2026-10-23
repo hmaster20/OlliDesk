@@ -834,6 +834,104 @@ class MainWindow(QMainWindow):
         )
 
     def _check_ollama_connection(self) -> None:
+        """[9.7] Проверяет Ollama ТОЛЬКО если он разрешён в конфиге.
+
+        Приборная панель (StatusDashboard) сама покажет состояние
+        бэкенда; отдельный `ollama_status_label` больше не нужен.
+        Если Ollama выключен в конфиге — проверка не запускается
+        (никаких HTTP-запросов на localhost:11434).
+        """
+        try:
+            from core.config import load_config
+
+            cfg = load_config()
+            if "ollama" not in cfg.backends.enabled:
+                logger.info("Ollama не в enabled-списке — проверка подключения пропущена")
+                return
+        except Exception:
+            return
+        QTimer.singleShot(500, self._do_check_ollama)
+
+    def _do_check_ollama(self) -> None:
+        """[9.7] Проверка Ollama в фоновом потоке.
+
+        `_OllamaCheckThread` эмитит `models_ready(bool, list)` —
+        `MainWindow` слушает его и обновляет реестр моделей, ChatPanel
+        и (через `_sync_dashboard`) приборную панель.
+        """
+        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
+            return
+        self._ollama_check_thread = _OllamaCheckThread(self.ollama_client)
+        self._ollama_check_thread.models_ready.connect(self._on_ollama_checked)
+        self._ollama_check_thread.start()
+
+    @Slot(bool, list)
+    def _on_ollama_checked(self, ok: bool, models: list[str]) -> None:
+        """[9.7] Обрабатывает результат фоновой проверки Ollama (GUI-поток).
+
+        Заменяет удалённый `ollama_status_label`:
+          * при успехе — синхронизирует `ModelRegistry`, обновляет
+            список моделей в ChatPanel, ставит первую локальную модель
+            по умолчанию (только если пользователь ещё не выбирал);
+          * приборную панель обновляет `ChatPanel._sync_dashboard`
+            (вызывается из `_on_backend_status_changed`).
+        """
+        self._available_models = list(models or [])
+        self._ollama_connected = bool(ok) and bool(self._available_models)
+
+        if not self._ollama_connected:
+            logger.info(
+                f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})"
+            )
+            return
+
+        logger.info(f"Ollama: подключён, моделей={len(self._available_models)}")
+
+        # Синхронизируем реестр.
+        try:
+            self.model_registry.sync_with_ollama(self._available_models)
+        except Exception as e:
+            logger.warning(f"sync_with_ollama failed: {e}")
+
+        # Обновляем список в ChatPanel.
+        if self.chat_panel is not None:
+            try:
+                if getattr(self.chat_panel, "registry", None) is None:
+                    self.chat_panel.set_registry(self.model_registry)
+                else:
+                    self.chat_panel.update_models(self._available_models)
+            except Exception:
+                logger.debug(
+                    "Не удалось обновить модели в ChatPanel",
+                    exc_info=True,
+                )
+
+            # Первая локальная модель по умолчанию — только если пользователь
+            # ещё ничего не выбрал (не перетираем `last_model`).
+            current_model = self.chat_panel.get_current_model()
+            if not current_model and self._available_models:
+                first_local = next(
+                    (
+                        m
+                        for m in self._available_models
+                        if (info := self.model_registry.get(m)) is not None
+                        and info.is_local
+                    ),
+                    self._available_models[0],
+                )
+                self.chat_panel.set_model(first_local)
+
+            # Dashboard.
+            self.chat_panel._sync_dashboard()
+
+    def _update_window_title(self) -> None:
+        """Обновляет заголовок окна с именем проекта."""
+        base = "OlliDesk — Local AI Coding Assistant"
+        if self.project_path:
+            self.setWindowTitle(f"{base} ———> {self.project_path.name}")
+        else:
+            self.setWindowTitle(base)
+    def _check_ollama_connection(self) -> None:
         """Проверяет подключение к Ollama только если он разрешён в конфиге."""
         try:
             from core.config import load_config
@@ -1714,10 +1812,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str, bool)
     def _on_model_checked(self, model_name: str, supports: bool):
-        """Обновляет UI для проверенной модели."""
+        """[2.4] Обновляет UI для проверенной модели (публичный API ChatPanel)."""
         self.chat_panel.update_model_status(model_name)
-        if self.chat_panel.model_combo.currentData() == model_name:
-            self.chat_panel._update_model_status(model_name)
+        if self.chat_panel.get_current_model() == model_name:
+            self.chat_panel.update_model_status(model_name)
 
     @Slot(dict)
     def _on_model_check_finished(self, results: dict):
