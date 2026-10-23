@@ -808,3 +808,39 @@ class _ModelPoolLoadThread(QThread):
         except Exception as e:
             logger.exception("ModelPool load failed")
             self.error.emit(str(e))
+
+class _BenchmarkThread(QThread):
+    """Фоновый прогон замеров производительности (4.7.B).
+
+    Прогоняет модели последовательно через `agents.benchmark.run_benchmark`.
+    Каждая модель загружается → меряются `load_ms` × repeats + промпты ×
+    repeats → выгружается. GUI не блокируется.
+    """
+
+    progress = Signal(str)
+    finished = Signal(object)  # BenchmarkResult
+    error = Signal(str)
+
+    def __init__(self, models: list[dict], *, prompts=None, repeats: int = 2):
+        super().__init__()
+        self._models = models
+        self._prompts = prompts
+        self._repeats = repeats
+
+    def run(self):
+        from agents.benchmark import run_benchmark
+
+        async def _run():
+            return await run_benchmark(
+                self._models,
+                prompts=self._prompts,
+                repeats=self._repeats,
+                on_progress=self.progress.emit,
+            )
+
+        try:
+            result = asyncio.run(_run())
+            self.finished.emit(result)
+        except Exception as e:
+            logger.exception("Benchmark failed")
+            self.error.emit(str(e))

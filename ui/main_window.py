@@ -729,6 +729,8 @@ class MainWindow(QMainWindow):
         self.menu_bar.manage_models_requested.connect(self._open_model_manager)
         self.menu_bar.slm_models_requested.connect(self._open_slm_manager)
         self.menu_bar.preload_pipeline_requested.connect(self._preload_two_model_pipeline)
+        # [4.7.B] Замер производительности.
+        self.menu_bar.benchmark_requested.connect(self._open_benchmark)
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
@@ -742,6 +744,30 @@ class MainWindow(QMainWindow):
         # Help
         self.menu_bar.run_wizard_requested.connect(self._run_wizard)
         self.menu_bar.about_requested.connect(self._show_about)
+
+    def _open_benchmark(self) -> None:
+        """[4.7.B] Открывает диалог замеров производительности.
+
+        Перед прогоном предупреждает, что это займёт время (7B CPU на
+        длинных промптах — до минуты на строку).
+        """
+        from ui.dialogs.benchmark_dialog import BenchmarkDialog
+
+        reply = QMessageBox.question(
+            self,
+            "Замер производительности",
+            "Прогон займёт время: 7B на CPU при длинном промпте может "
+            "дать ответ за 30–60 секунд, а при повторах — пропорционально "
+            "больше.\n\n"
+            "Модели прогоняются последовательно (загрузка → промпты → "
+            "выгрузка). GUI не блокируется. Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        dlg = BenchmarkDialog(self.config, self)
+        dlg.exec()
 
     def _export_chat(self) -> None:
         """[9.6.3] Экспорт текущего чата в Markdown/HTML."""
@@ -991,6 +1017,13 @@ class MainWindow(QMainWindow):
                     hint="Ollama-модели: tools / только чат",
                     group="Модели",
                     callback=self._start_model_check,
+                ),
+                PaletteCommand(
+                    id="models.benchmark",
+                    label="Замер производительности…",
+                    hint="SLM/Ollama: TTFT, tok/s, время загрузки",
+                    group="Модели",
+                    callback=self._open_benchmark,
                 ),
             ]
         )

@@ -57,6 +57,8 @@ class AppMenuBar(QMenuBar):
     manage_models_requested = Signal()
     slm_models_requested = Signal()
     preload_pipeline_requested = Signal()
+    # [4.7.B] Замер производительности (TTFT, tok/s, время загрузки).
+    benchmark_requested = Signal()
     edit_prompts_requested = Signal()
     manage_sessions_requested = Signal()
     edit_iterations_requested = Signal()
@@ -165,6 +167,16 @@ class AppMenuBar(QMenuBar):
         slm_models = QAction("Локальные модели (SLM)...", self)
         slm_models.triggered.connect(self.slm_models_requested.emit)
         view_menu.addAction(slm_models)
+
+        # [4.7.B] Замер производительности.
+        benchmark_action = QAction("Замер производительности…", self)
+        benchmark_action.setToolTip(
+            "Прогнать выбранные модели на стандартных/своих промптах, "
+            "получить реальные TTFT, tok/s и время загрузки. "
+            "CSV / Markdown для docs/BENCHMARK.md."
+        )
+        benchmark_action.triggered.connect(self.benchmark_requested.emit)
+        view_menu.addAction(benchmark_action)
 
         preload_pipeline = QAction("Предзагрузить 2-model pipeline", self)
         preload_pipeline.setToolTip(
