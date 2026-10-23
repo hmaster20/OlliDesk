@@ -49,6 +49,8 @@ class FileTreeController(QObject):
     file_renamed = Signal(str, str)
     file_deleted = Signal(str)
     branch_changed = Signal(str)
+    # [9.8.3] Diff-запрос для редактора.
+    file_diff_requested = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -420,6 +422,12 @@ class FileTreeController(QObject):
             act_open.triggered.connect(lambda: self.file_open_requested.emit(str(target_path)))
             act_reveal = menu.addAction("📁 Открыть расположение")
             act_reveal.triggered.connect(lambda: self._reveal_in_explorer(target_path))
+
+            # [9.8.3] Diff с HEAD.
+            act_diff = menu.addAction("🔍 Показать diff с HEAD")
+            act_diff.triggered.connect(
+                lambda _checked=False, p=str(target_path): self.file_diff_requested.emit(p)
+            )
             menu.addSeparator()
 
         act_new_file = menu.addAction("📄 Новый файл")

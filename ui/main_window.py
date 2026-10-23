@@ -256,6 +256,7 @@ class MainWindow(QMainWindow):
         # --- Контроллеры ---
         self.file_tree_controller = FileTreeController(parent=self)
         self.file_tree_controller.file_open_requested.connect(self.open_file_in_editor)
+        self.file_tree_controller.file_diff_requested.connect(self._show_file_diff)
         self.file_tree_controller.file_renamed.connect(self._on_file_renamed)
         self.file_tree_controller.file_deleted.connect(self._on_file_deleted)
 
@@ -298,6 +299,15 @@ class MainWindow(QMainWindow):
         self.chat_panel.project_tree_toggled.connect(self._on_project_tree_toggled)
         # [9.3] Кнопка «⋯» в PipelineSelectors открывает SLMModelsDialog.
         self.chat_panel.slm_models_requested.connect(self._open_slm_manager)
+
+    @Slot(str)
+    def _show_file_diff(self, path: str) -> None:
+        """[9.8.3] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
+        if hasattr(self, "editor_widget"):
+            self.editor_widget.show_git_diff_for_file(path)
+            index = self.tab_widget.indexOf(self.editor_widget)
+            if index >= 0:
+                self.tab_widget.setCurrentWidget(self.editor_widget)
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация).

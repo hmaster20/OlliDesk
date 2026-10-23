@@ -507,3 +507,85 @@ class EditorWidget(QWidget):
     def get_content(self, callback):
         if isinstance(self.web_view, QWebEngineView):
             self.web_view.page().runJavaScript("getContent()", callback)
+
+    def show_git_diff_for_file(self, file_path: str) -> None:
+        """[9.8.3] Открывает diff-редактор: HEAD-версия ↔ рабочая копия.
+
+        Если файл не в git или не изменён — открывает его как обычно
+        (`open_file`). Ошибки git не пробрасываются: fallback на обычное
+        открытие, чтобы не блокировать пользователя.
+        """
+        import subprocess
+        from pathlib import Path
+
+        target = Path(file_path).resolve()
+        if not target.exists():
+            self.open_file(str(target))
+            return
+
+        # Ищем корень репозитория.
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=str(target.parent),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self.open_file(str(target))
+            return
+        if result.returncode != 0:
+            self.open_file(str(target))
+            return
+
+        repo_root = result.stdout.strip()
+        try:
+            rel = target.relative_to(Path(repo_root)).as_posix()
+        except ValueError:
+            self.open_file(str(target))
+            return
+
+        # HEAD-версия файла.
+        try:
+            head_result = subprocess.run(
+                ["git", "show", f"HEAD:{rel}"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self.open_file(str(target))
+            return
+
+        original = head_result.stdout if head_result.returncode == 0 else ""
+        try:
+            modified = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            self.open_file(str(target))
+            return
+
+        # Если изменений нет — обычное открытие (нечего показывать в diff).
+        if original == modified:
+            self.open_file(str(target))
+            return
+
+        # Открываем вкладку (чтобы file_path был выставлен) и показываем diff.
+        self.open_file(str(target))
+        self.current_file = str(target)
+        # Язык — из расширения.
+        from pathlib import Path as _P
+
+        ext = _P(file_path).suffix.lower().lstrip(".")
+        self.show_diff(original, modified, language=ext or "plaintext")
