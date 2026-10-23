@@ -750,6 +750,8 @@ class ToolCallCard(QWidget):
     # [9.6.1] Сигналы diff-режима `write_file`.
     open_in_editor_requested = Signal(str)   # path
     revert_requested = Signal(dict)          # {"path", "original_content", "is_new_file"}
+    # [9.8] Показать diff в Monaco DiffEditor (третья кнопка).
+    show_diff_requested = Signal(dict)       # {"path", "original", "modified", "language"}
 
     _ICONS: dict[str, str] = {
         "read_file": "📖",
@@ -1075,7 +1077,7 @@ class ToolCallCard(QWidget):
             )
             self._body_layout.addWidget(err_label)
 
-        # Кнопки: «📂 Открыть в редакторе» / «↩ Откатить».
+               # Кнопки: «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить».
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(20, 2, 0, 0)
         btn_row.setSpacing(6)
@@ -1094,6 +1096,21 @@ class ToolCallCard(QWidget):
             lambda _checked=False, p=path: self.open_in_editor_requested.emit(p)
         )
         btn_row.addWidget(open_btn)
+
+        # [9.8] «Показать diff» — откроет Monaco DiffEditor с original↔modified.
+        diff_btn = QPushButton("🔍 Показать diff")
+        diff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        diff_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        diff_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #444;"
+            " border-radius: 10px; color: #a8a8b8; font-size: 11px;"
+            " padding: 2px 10px; }"
+            " QPushButton:hover { background: rgba(168,168,184,0.15);"
+            " color: #d4d4d4; }"
+        )
+        diff_btn.setEnabled(bool(meta.get("original_content")) or is_new_file)
+        diff_btn.clicked.connect(lambda _checked=False: self._on_show_diff_clicked())
+        btn_row.addWidget(diff_btn)
 
         revert_btn = QPushButton("↩ Откатить")
         revert_btn.setToolTip(
@@ -1124,6 +1141,36 @@ class ToolCallCard(QWidget):
             "is_new_file": bool(self._metadata.get("is_new_file")),
         }
         self.revert_requested.emit(payload)
+
+    def _on_show_diff_clicked(self) -> None:
+        """[9.8] Эмитит show_diff_requested с original↔modified."""
+        if not self._metadata:
+            return
+        path = str(self._metadata.get("path") or "")
+        original = str(self._metadata.get("original_content") or "")
+        # modified — текущее содержимое файла (после записи). Берём из
+        # metadata, если инструмент его положил, иначе читаем с диска.
+        modified = str(self._metadata.get("written_content") or "")
+        if not modified and path:
+            try:
+                from pathlib import Path
+
+                modified = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                modified = ""
+        # Язык — по расширению.
+        ext = ""
+        if path:
+            from pathlib import Path as _P
+
+            ext = _P(path).suffix.lower().lstrip(".")
+        payload = {
+            "path": path,
+            "original": original,
+            "modified": modified,
+            "language": ext or "plaintext",
+        }
+        self.show_diff_requested.emit(payload)
 
 def _format_args_short(args: dict, limit_per_value: int = 60) -> str:
     """Короткое представление аргументов для карточки tool_call."""

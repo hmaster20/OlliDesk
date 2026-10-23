@@ -256,6 +256,8 @@ class MainWindow(QMainWindow):
         # --- Контроллеры ---
         self.file_tree_controller = FileTreeController(parent=self)
         self.file_tree_controller.file_open_requested.connect(self.open_file_in_editor)
+        # [9.8] Diff из карточки write_file → Monaco DiffEditor.
+        self.chat_panel.diff_requested.connect(self._on_show_diff)
         self.file_tree_controller.file_diff_requested.connect(self._show_file_diff)
         self.file_tree_controller.file_renamed.connect(self._on_file_renamed)
         self.file_tree_controller.file_deleted.connect(self._on_file_deleted)
@@ -299,6 +301,34 @@ class MainWindow(QMainWindow):
         self.chat_panel.project_tree_toggled.connect(self._on_project_tree_toggled)
         # [9.3] Кнопка «⋯» в PipelineSelectors открывает SLMModelsDialog.
         self.chat_panel.slm_models_requested.connect(self._open_slm_manager)
+
+    @Slot(object)
+    def _on_show_diff(self, payload: dict) -> None:
+        """[9.8] Открывает Monaco DiffEditor с original↔modified.
+
+        Вызывается из карточки `write_file` («🔍 Показать diff»).
+        В редактор передаётся и `file_path`, чтобы после accept/reject
+        пользователь мог сохранить — Monaco уже умеет.
+        """
+        if not payload or not hasattr(self, "editor_widget"):
+            return
+        original = str(payload.get("original") or "")
+        modified = str(payload.get("modified") or "")
+        language = str(payload.get("language") or "plaintext")
+        file_path = str(payload.get("path") or "")
+
+        self.editor_widget.show_diff_from_texts(
+            original,
+            modified,
+            language=language,
+            file_path=file_path or None,
+        )
+        # Переключаемся на вкладку редактора.
+        index = self.tab_widget.indexOf(self.editor_widget)
+        if index < 0:
+            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+        else:
+            self.tab_widget.setCurrentWidget(self.editor_widget)
 
     @Slot(str)
     def _show_file_diff(self, path: str) -> None:
@@ -405,8 +435,33 @@ class MainWindow(QMainWindow):
         self.editor_widget.set_theme(self.config.theme)
         self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
 
+        # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
+        try:
+            from PySide6.QtGui import QAction, QKeySequence
+            from PySide6.QtCore import Qt
+
+            diff_action = QAction(self.editor_widget)
+            diff_action.setShortcut(QKeySequence("Ctrl+D"))
+            diff_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            diff_action.triggered.connect(self._diff_current_editor_file)
+            self.editor_widget.addAction(diff_action)
+        except Exception:
+            logger.debug("Не удалось установить Ctrl+D для diff", exc_info=True)
+
         layout.addWidget(self.tab_widget)
         return panel
+
+    @Slot()
+    def _diff_current_editor_file(self) -> None:
+        """[9.8] Ctrl+D: diff текущего файла редактора с HEAD."""
+        if not hasattr(self, "editor_widget"):
+            return
+        file_path = self.editor_widget.current_file
+        if not file_path:
+            self.status_bar.showMessage("Diff: файл не открыт", 3000)
+            return
+        self.editor_widget.show_git_diff_for_file(file_path)
+        self.status_bar.showMessage(f"Diff с HEAD: {Path(file_path).name}", 3000)
 
     # 🆕 Слот: смена темы → Monaco.
     @Slot(str)

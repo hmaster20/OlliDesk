@@ -509,83 +509,69 @@ class EditorWidget(QWidget):
             self.web_view.page().runJavaScript("getContent()", callback)
 
     def show_git_diff_for_file(self, file_path: str) -> None:
-        """[9.8.3] Открывает diff-редактор: HEAD-версия ↔ рабочая копия.
+        """[9.8] Открывает diff-редактор: HEAD-версия ↔ рабочая копия.
 
-        Если файл не в git или не изменён — открывает его как обычно
-        (`open_file`). Ошибки git не пробрасываются: fallback на обычное
-        открытие, чтобы не блокировать пользователя.
+        git-логика вынесена в `tools/git_ops.py::read_file_at_head`.
+        Если diff пустой (файл не изменён, новый или не в git) —
+        открывает файл как обычно, чтобы пользователь не остался
+        с пустым редактором.
         """
-        import subprocess
         from pathlib import Path
+
+        from tools.git_ops import read_file_at_head
 
         target = Path(file_path).resolve()
         if not target.exists():
             self.open_file(str(target))
             return
 
-        # Ищем корень репозитория.
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=str(target.parent),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                ),
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            self.open_file(str(target))
-            return
-        if result.returncode != 0:
+        original = read_file_at_head(target.parent, target)
+        if original is None:
+            # Файл не в git (новый или не отслеживается) — обычное открытие.
+            logger.debug(f"diff {target.name}: нет HEAD-версии — открываю файл")
             self.open_file(str(target))
             return
 
-        repo_root = result.stdout.strip()
-        try:
-            rel = target.relative_to(Path(repo_root)).as_posix()
-        except ValueError:
-            self.open_file(str(target))
-            return
-
-        # HEAD-версия файла.
-        try:
-            head_result = subprocess.run(
-                ["git", "show", f"HEAD:{rel}"],
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                ),
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            self.open_file(str(target))
-            return
-
-        original = head_result.stdout if head_result.returncode == 0 else ""
         try:
             modified = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             self.open_file(str(target))
             return
 
-        # Если изменений нет — обычное открытие (нечего показывать в diff).
         if original == modified:
+            logger.debug(f"diff {target.name}: HEAD == рабочая копия")
             self.open_file(str(target))
             return
 
-        # Открываем вкладку (чтобы file_path был выставлен) и показываем diff.
+        # Открываем вкладку (чтобы current_file выставился), затем diff.
         self.open_file(str(target))
         self.current_file = str(target)
-        # Язык — из расширения.
-        from pathlib import Path as _P
-
-        ext = _P(file_path).suffix.lower().lstrip(".")
+        ext = target.suffix.lower().lstrip(".")
         self.show_diff(original, modified, language=ext or "plaintext")
+
+    def show_diff_from_texts(
+        self,
+        original: str,
+        modified: str,
+        language: str = "plaintext",
+        *,
+        file_path: str | None = None,
+    ) -> None:
+        """[9.8] Diff для произвольных текстов (без чтения из git).
+
+        Используется карточкой tool-call `write_file`: пользователь видит
+        Monaco DiffEditor с `original_content` из `metadata` (то, что было
+        до записи) ↔ `content` (что записано). Это ТРЕТЬЯ кнопка
+        («🔍 Показать diff»), помимо «📂 Открыть» и «↩ Откатить».
+
+        Args:
+            original: Исходное содержимое (до записи).
+            modified: Новое содержимое (после записи).
+            language: Язык Monaco (``python``, ``csharp``, …).
+            file_path: Опционально — путь, чтобы выставить `current_file`
+                и дать пользователю возможность сохранить/отменить.
+        """
+        if file_path:
+            self.current_file = file_path
+        # Monaco DiffEditor создаётся в `show_diff` (см. editor.js).
+        self.show_diff(original, modified, language or "plaintext")

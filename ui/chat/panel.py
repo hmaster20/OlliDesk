@@ -165,6 +165,9 @@ class ChatPanel(QWidget):
     slm_models_requested = Signal()
     # [9.4] Смена профиля использования (MainWindow синхронизирует чекбокс).
     profile_changed = Signal(str)  # profile_id
+    # [9.8] Показать diff в Monaco DiffEditor (из карточки write_file).
+    # payload: {"path", "original", "modified", "language"}.
+    diff_requested = Signal(object)
 
     def __init__(
         self,
@@ -2218,6 +2221,17 @@ class ChatPanel(QWidget):
             self.source_activated.emit(path, 0)
 
     @Slot(dict)
+    def _on_show_tool_diff(self, payload: dict) -> None:
+        """[9.8] Карточка write_file запросила diff — пробрасываем в MainWindow.
+
+        MainWindow подписан на `ChatPanel.diff_requested` и открывает
+        Monaco DiffEditor с original↔modified.
+        """
+        if not payload:
+            return
+        self.diff_requested.emit(payload)
+
+    @Slot(dict)
     def _on_revert_write_file(self, payload: dict) -> None:
         """Откатывает запись write_file к original_content.
 
@@ -2378,6 +2392,8 @@ class ChatPanel(QWidget):
         if card is not None:
             card.open_in_editor_requested.connect(self._on_open_tool_result_in_editor)
             card.revert_requested.connect(self._on_revert_write_file)
+            # [9.8] «Показать diff» — Monaco DiffEditor.
+            card.show_diff_requested.connect(self._on_show_tool_diff)
 
         # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
         # следующий текст пойдёт в новый пузырь (это новый ответ модели).

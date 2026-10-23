@@ -734,6 +734,8 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "index_documents",
         "max_document_size_mb",
         "document_ocr",
+        # [9.8] Поведение редактора — глобальное, не per-project.
+        "open_modified_as_diff",
     }
 )
 
@@ -836,6 +838,11 @@ class AppConfig(BaseModel):
     # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней
     # панели чата и F4). Дефолт — False, дерево скрыто.
     show_project_tree: bool = False
+    # [9.8] Открывать diff (HEAD ↔ рабочая копия) вместо самого файла,
+    # когда пользователь кликает по ИЗМЕНЁННОМУ файлу в дереве проекта.
+    # По умолчанию False — обычное открытие; diff доступен через
+    # контекстное меню и Ctrl+D в редакторе.
+    open_modified_as_diff: bool = False
     # [9.3] Показывать ли верхнюю панель со статусами Planner/Analyst.
     show_pipeline_selectors: bool = True
     # [9.4] Профили использования.

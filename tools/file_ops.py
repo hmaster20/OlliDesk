@@ -339,6 +339,7 @@ def write_file(
                 "path": str(file_path),
                 "is_new_file": False,
                 "original_content": original_content,
+                "written_content": content,
                 "diff": "",
                 "lines_added": 0,
                 "lines_removed": 0,
@@ -412,6 +413,10 @@ def write_file(
             "path": str(file_path),
             "is_new_file": is_new_file,
             "original_content": original_content,
+            # [9.8] Полное записанное содержимое — для Monaco DiffEditor
+            # без повторного чтения с диска (файл мог измениться
+            # параллельно, а diff должен показать ровно то, что записал агент).
+            "written_content": content,
             "diff": diff_text,
             "lines_added": lines_added,
             "lines_removed": lines_removed,

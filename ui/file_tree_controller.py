@@ -137,11 +137,49 @@ class FileTreeController(QObject):
 
     @Slot(QModelIndex)
     def _on_clicked(self, index: QModelIndex) -> None:
+        """[9.8] Клик по файлу: обычное открытие ИЛИ diff с HEAD.
+
+        Если `AppConfig.open_modified_as_diff=True` И файл изменён (git-
+        статус M/A/R) — эмитим `file_diff_requested`. Иначе — обычное
+        открытие. Двойной клик всегда открывает файл (см. `_on_double_clicked`),
+        это «явное» действие пользователя.
+        """
         if self._file_system_model is None:
             return
         file_path = self._file_system_model.filePath(index)
-        if Path(file_path).is_file():
+        if not Path(file_path).is_file():
+            return
+
+        if self._config_open_modified_as_diff() and self._is_file_modified(file_path):
+            self.file_diff_requested.emit(file_path)
+        else:
             self.file_open_requested.emit(file_path)
+
+    def _config_open_modified_as_diff(self) -> bool:
+        """[9.8] Читает `AppConfig.open_modified_as_diff` (с fallback False)."""
+        try:
+            from core.config import load_config
+
+            return bool(getattr(load_config(), "open_modified_as_diff", False))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_file_modified(file_path: str) -> bool:
+        """[9.8] True, если у файла есть git-статус M/A/R (не ??, не clean)."""
+        try:
+            from pathlib import Path as _P
+
+            from tools.git_ops import get_git_status_for_file
+
+            target = _P(file_path).resolve()
+            status = get_git_status_for_file(target.parent, target)
+        except Exception:
+            return False
+        if not status or len(status) < 2:
+            return False
+        # M=m, A=a, R=r, C=c (не ??, не !!).
+        return status[0] in "MARC" or status[1] in "MARC"
 
     @Slot(QModelIndex)
     def _on_double_clicked(self, index: QModelIndex) -> None:

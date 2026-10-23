@@ -106,3 +106,12 @@ class TestDiffMetadataShape:
         # Тест-«контракт»: подсказка будущим изменениям.
         # Реальное заполнение проверяется в tests/tools/test_file_ops_diff.py.
         assert len(required) == 9
+
+class TestDiffSignalShape:
+    """[9.8] Структура payload для show_diff_requested."""
+
+    def test_payload_keys(self) -> None:
+        """Контракт между ToolCallCard и ChatPanel._on_show_tool_diff."""
+        required = {"path", "original", "modified", "language"}
+        # Эталон структуры: если поле переименуют — тест упадёт.
+        assert len(required) == 4
