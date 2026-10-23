@@ -112,16 +112,19 @@ LIGHT_COLORS = ColorTokens(
     header_text="#2b2b2b",
     border="#d0d0d0",
     border_strong="#b0b0b0",
-    accent="#b8651f",           # тёмный янтарный для контраста
-    accent_hover="#c97a2e",
-    accent_pressed="#9e5318",
+    # [9.11] accent 4.5:1 с белым текстом (WCAG AA).
+    # Было #b8651f → 4.24:1 (не проходило). Теперь #9e5318 → 5.57:1.
+    accent="#9e5318",
+    accent_hover="#b8651f",
+    accent_pressed="#7a3f12",   # 8.3:1 с белым
     accent_text="#ffffff",
     accent_muted="#d4a373",
     success="#4e9a06",
     warning="#b8860b",
     danger="#c0392b",
     info="#1976d2",
-    selection_bg="#b8651f",
+    # [9.11] Тот же контраст с белым текстом (5.57:1).
+    selection_bg="#9e5318",
     selection_text="#ffffff",
     scrollbar="#c0c0c0",
     scrollbar_hover="#a8a8a8",
