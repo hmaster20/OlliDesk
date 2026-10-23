@@ -79,7 +79,7 @@ from core.chat_commands import (
     get_command,
 )
 from ui.widgets.command_completer import CommandCompleter
-
+from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -109,6 +109,20 @@ _MIN_ATTACHED_BUDGET = 600
 
 # Сколько чанков запрашивать у векторного поиска перед дедупликацией по файлам.
 _RAG_N_RESULTS = 8
+
+# [9.10] Виртуализация: при каком числе «месседж-виджетов» в layout
+# старые начинают сворачиваться в placeholder. Значение подобрано так,
+# чтобы QScrollArea оставался отзывчивым при прокрутке (обычно —
+# порог, после которого начинаются просадки FPS).
+_MAX_VISIBLE_MESSAGE_WIDGETS = 80
+
+# [9.10] Сколько «самых свежих» свёрнутых разворачивать за один клик.
+_RESTORE_BATCH = 40
+
+# [9.10] Сколько старых свернуть за раз, когда порог превышен.
+# Сворачиваем с запасом: следующий раз — только когда снова наберётся
+# _MAX_VISIBLE_MESSAGE_WIDGETS + _COLLAPSE_BUFFER.
+_COLLAPSE_BUFFER = 20
 
 # Явное описание режимов для тултипов селектора: что включено и почему.
 _MODE_DESCRIPTIONS: dict[int, str] = {
@@ -648,9 +662,13 @@ class ChatPanel(QWidget):
         widget = ChatMessageItem(role, content, mode_name=mode_name)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        # [9.10] Свернуть старые сообщения, если порог превышен.
+        # При массовой загрузке (`load_history`) сворачивание вызывается
+        # один раз в конце — флаг `_suppress_collapse` отключает
+        # промежуточные проходы O(n²).
+        if not getattr(self, "_suppress_collapse", False):
+            self._maybe_collapse_old_messages()
         return widget
 
     def _ensure_assistant_widget(self) -> ChatMessageItem:
@@ -670,6 +688,8 @@ class ChatPanel(QWidget):
                 self.scroll_layout.count() - 1, widget
             )
             self._update_bubble_width(widget)
+            # [9.10] Свернуть старые, если порог превышен.
+            self._maybe_collapse_old_messages()
         return self._last_assistant_widget
 
     def _show_activity(self, text: str) -> None:
@@ -677,9 +697,9 @@ class ChatPanel(QWidget):
             return
         item = ChatActivityItem(text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        # [9.10]
+        self._maybe_collapse_old_messages()
 
     def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
         if not sources:
@@ -687,9 +707,9 @@ class ChatPanel(QWidget):
         item = ChatSourcesItem(sources)
         item.source_activated.connect(self._on_source_activated)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        # [9.10]
+        self._maybe_collapse_old_messages()
 
     def _on_source_activated(self, file_path: str, line: int) -> None:
         if self.project_root and not Path(file_path).is_absolute():
@@ -1398,6 +1418,28 @@ class ChatPanel(QWidget):
         self.scroll_area.scroll_to_bottom_force()
 
     def _clear_chat(self, keep_session: bool = False):
+        # [9.10] Сначала удаляем свёрнутые виджеты внутри placeholder'ов,
+        # потом сами placeholder'ы (они тоже в layout — цикл ниже их
+        # обработает, но скрытые виджеты остались бы «сиротами» в памяти).
+        for placeholder in self._collapsed_placeholders:
+            try:
+                # Скроем и удалим содержимое placeholder'а.
+                for w in getattr(placeholder, "_collapsed", []):
+                    try:
+                        w.deleteLater()
+                    except Exception:
+                        pass
+                placeholder.deleteLater()
+            except Exception:
+                logger.debug(
+                    "Ошибка удаления placeholder'а при _clear_chat",
+                    exc_info=True,
+                )
+        self._collapsed_placeholders.clear()
+
+        # Удаляем всё, что осталось в layout (включая placeholder'ы,
+        # которые не попали в self._collapsed_placeholders, — например,
+        # placeholder'ы из предыдущего прогона, если clear вызван повторно).
         while self.scroll_layout.count() > 1:
             item = self.scroll_layout.takeAt(0)
             if item is None:
@@ -2557,7 +2599,163 @@ class ChatPanel(QWidget):
         self.scroll_layout.setStretch(
             self.scroll_layout.indexOf(self._current_thought_stream), 0
         )
+        # [9.10]
+        self._maybe_collapse_old_messages()
         return self._current_thought_stream
+
+    # ------------------------------------------------------------------
+    # [9.10] Виртуализация длинных чатов
+    # ------------------------------------------------------------------
+
+    def _is_message_widget(self, widget: QWidget | None) -> bool:
+        """True, если виджет — «сообщение» (можно сворачивать в placeholder).
+
+        Включает: ChatMessageItem, ChatActivityItem, ChatSourcesItem,
+        ChatThoughtStream, ChatResearchPassport, ChatDiagramItem,
+        ChatHypothesisItem. Stretch-элементы (layout-распорки) и
+        CollapsedPlaceholder — не считаются.
+        """
+        if widget is None:
+            return False
+        if isinstance(widget, CollapsedPlaceholder):
+            return False
+        return isinstance(
+            widget,
+            (
+                ChatMessageItem,
+                ChatActivityItem,
+                ChatSourcesItem,
+                ChatThoughtStream,
+                ChatResearchPassport,
+                ChatDiagramItem,
+                ChatHypothesisItem,
+            ),
+        )
+
+    def _message_widgets(self) -> list[tuple[int, QWidget]]:
+        """Список (layout_index, widget) для всех «сообщений» в layout."""
+        out: list[tuple[int, QWidget]] = []
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item is None:
+                continue
+            widget = item.widget()
+            if self._is_message_widget(widget):
+                out.append((i, widget))
+        return out
+
+    def _maybe_collapse_old_messages(self) -> None:
+        """[9.10] Сворачивает самые старые сообщения при превышении порога.
+
+        Вызывается после добавления нового виджета. Порог —
+        `_MAX_VISIBLE_MESSAGE_WIDGETS`; сверху добавляется
+        `_COLLAPSE_BUFFER`, чтобы не сворачивать на каждом следующем
+        сообщении.
+        """
+        messages = self._message_widgets()
+        if len(messages) <= _MAX_VISIBLE_MESSAGE_WIDGETS:
+            return
+
+        # Сколько свернуть: всё, что превышает порог, + буфер.
+        over = len(messages) - _MAX_VISIBLE_MESSAGE_WIDGETS
+        to_collapse_count = over + _COLLAPSE_BUFFER
+
+        # Берём самые старые (в начале layout).
+        to_collapse = messages[:to_collapse_count]
+        if not to_collapse:
+            return
+
+        # Индекс в layout, с которого начинается группа (первый из to_collapse).
+        start_idx = to_collapse[0][0]
+
+        # Отсоединяем виджеты из layout и скрываем.
+        collapsed_widgets: list[QWidget] = []
+        for _idx, widget in to_collapse:
+            self.scroll_layout.removeWidget(widget)
+            widget.setVisible(False)
+            collapsed_widgets.append(widget)
+
+        # Вставляем placeholder на место первого свёрнутого виджета.
+        placeholder = CollapsedPlaceholder(collapsed_widgets, parent=self.scroll_content)
+        placeholder.restore_requested.connect(self._on_restore_collapsed)
+        self.scroll_layout.insertWidget(start_idx, placeholder)
+        self._collapsed_placeholders.append(placeholder)
+
+        logger.debug(
+            f"[9.10] Свёрнуто {len(collapsed_widgets)} сообщений в placeholder "
+            f"(всего сообщений было {len(messages)})"
+        )
+
+    @Slot(object)
+    def _on_restore_collapsed(self, placeholder) -> None:
+        """[9.10] Пользователь кликнул по placeholder — разворачиваем порцию."""
+        if not isinstance(placeholder, CollapsedPlaceholder):
+            return
+        self._restore_placeholder_batch(placeholder)
+
+    def _restore_placeholder_batch(self, placeholder: CollapsedPlaceholder) -> None:
+        """Разворачивает `_RESTORE_BATCH` последних свёрнутых виджетов.
+
+        Вставляет их в layout СРАЗУ ПОСЛЕ placeholder'а — так хронология
+        сохраняется: placeholder (более старые) → следующие за ним
+        (более свежие, которые только что развернули).
+
+        Если `placeholder.collapsed_count == 0` — placeholder удаляется.
+        """
+        # Позиция placeholder'а в layout.
+        try:
+            idx = self.scroll_layout.indexOf(placeholder)
+        except Exception:
+            idx = -1
+        if idx < 0:
+            logger.debug("[9.10] Placeholder не найден в layout — пропускаем")
+            return
+
+        widgets = placeholder.pop_restore_batch(_RESTORE_BATCH)
+        if not widgets:
+            # Нечего разворачивать — удаляем placeholder.
+            self.scroll_layout.removeWidget(placeholder)
+            placeholder.deleteLater()
+            if placeholder in self._collapsed_placeholders:
+                self._collapsed_placeholders.remove(placeholder)
+            return
+
+        # Вставляем виджеты после placeholder'а, сохраняя их хронологический
+        # порядок: widgets[0] — самый старый из порции, widgets[-1] — самый свежий.
+        insert_at = idx + 1
+        for offset, widget in enumerate(widgets):
+            self.scroll_layout.insertWidget(insert_at + offset, widget)
+            widget.setVisible(True)
+            # Обновляем максимальную ширину пузыря (на случай ресайза окна,
+            # пока виджет был скрыт).
+            if isinstance(widget, ChatMessageItem):
+                self._update_bubble_width(widget)
+
+        # Если всё развернули — placeholder не нужен.
+        if placeholder.collapsed_count == 0:
+            self.scroll_layout.removeWidget(placeholder)
+            placeholder.deleteLater()
+            if placeholder in self._collapsed_placeholders:
+                self._collapsed_placeholders.remove(placeholder)
+
+        self.scroll_area.scroll_to_bottom_if_sticky()
+        logger.debug(
+            f"[9.10] Развёрнуто {len(widgets)} сообщений, "
+            f"осталось свёрнутых: {placeholder.collapsed_count}"
+        )
+
+    def _expand_all_collapsed(self) -> None:
+        """[9.10] Разворачивает все placeholder'ы (для «Показать всё»).
+
+        Не используется в UI напрямую, но полезно для палитры команд /
+        отладки. Проходит по списку placeholder'ов и разворачивает
+        каждый до конца.
+        """
+        # Копируем список — `_restore_placeholder_batch` может удалять
+        # элементы из `_collapsed_placeholders` при полном развороте.
+        for placeholder in list(self._collapsed_placeholders):
+            while placeholder.collapsed_count > 0:
+                self._restore_placeholder_batch(placeholder)
 
     # ------------------------------------------------------------------
     # [9.5.4] Индикатор активности
@@ -3181,10 +3379,17 @@ class ChatPanel(QWidget):
         self._session_id = session_id
 
     def load_history(self, messages: list[ChatMessage]):
+        """[9.10] Загрузка истории с одним проходом сворачивания в конце."""
         self._clear_chat(keep_session=True)
-        for msg in messages:
-            self._add_message(msg.role, msg.content)
-            self._messages.append(msg)
+        self._suppress_collapse = True
+        try:
+            for msg in messages:
+                self._add_message(msg.role, msg.content)
+                self._messages.append(msg)
+        finally:
+            self._suppress_collapse = False
+        # Один проход после загрузки всей истории.
+        self._maybe_collapse_old_messages()
 
     def keyPressEvent(self, event):
         if self.input_edit.hasFocus():

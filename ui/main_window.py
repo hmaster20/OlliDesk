@@ -212,6 +212,15 @@ class MainWindow(QMainWindow):
         self._palette_registry = CommandRegistry()
         self._palette_dialog: CommandPalette | None = None
 
+        # [9.10] Свёрнутые виджеты (плейсхолдеры) в layout.
+        # Храним ссылки на placeholder'ы, чтобы при `_clear_chat` удалить
+        # и сами placeholder'ы, и скрытые внутри них виджеты.
+        self._collapsed_placeholders: list[CollapsedPlaceholder] = []
+
+        # [9.10] Флаг: подавляет `_maybe_collapse_old_messages` на время
+        # массовой загрузки (`load_history`), чтобы не делать O(n²).
+        self._suppress_collapse: bool = False
+
         self._setup_ui()
         self._setup_menu()
         self._setup_status_bar()
