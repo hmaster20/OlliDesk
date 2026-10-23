@@ -29,17 +29,17 @@ from PySide6.QtWidgets import (
 
 from agents.agent_loop import AgentContext
 from agents.context_loader import load_agents_context
-from agents.download_slm import get_model_paths
+
 from agents.hypotheses import HypothesisStore
 from agents.investigation import is_research_question
-from agents.local_llm_client import LocalLLMClient
-from agents.model_pool import ModelPool, Role
+
+
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
-from agents.orchestrator import Orchestrator, RunResult
+
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
-from core.budget import ApproxCounter
+
 from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
 from core.model_registry import ModelRegistry
@@ -80,6 +80,8 @@ from core.chat_commands import (
 )
 from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
+from ui.chat.backends import BackendsMixin
+from ui.chat.research import ResearchMixin
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -160,8 +162,18 @@ def read_project_rules(project_root: str | None) -> str:
     return ""
 
 
-class ChatPanel(QWidget):
-    """Панель чата с сообщениями, вводом и управлением."""
+class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
+    """Панель чата с сообщениями, вводом и управлением.
+
+    [2.4] Логика управления SLM/Ollama вынесена в `BackendsMixin`
+    (`ui/chat/backends.py`), research-режим и двухмодельный пайплайн —
+    в `ResearchMixin` (`ui/chat/research.py`). Все поля для миксинов
+    по-прежнему инициализируются здесь в `__init__`; миксины обращаются
+    к ним через `self`.
+
+    MRO: `ChatPanel → QWidget → BackendsMixin → ResearchMixin`.
+    Qt-класс должен идти первым — PySide6 этого требует.
+    """
 
     mode_changed = Signal(str)
     agent_panel_toggle = Signal(bool)
@@ -296,114 +308,10 @@ class ChatPanel(QWidget):
     # Детект и загрузка бэкендов
     # ---------------------------------------------------------
 
-    def reload_slm(self):
-        """Перезагружает SLM с сохранённой конфигурацией — без автовыбора.
 
-        Вызывается после явного выбора модели пользователем в диалоге SLM.
-        Автовыбор должен быть пропущен, иначе он затрёт выбор (см. баг:
-        3B q4_k_m принудительно возвращался вместо выбранной 7B/1.5B/q6_k).
 
-        Также сбрасывает двухмодельный пайплайн — если пользователь
-        изменил planner/analyst в SLMModelsDialog, при следующем
-        исследовательском вопросе пайплайн соберётся уже с новыми моделями.
-        """
-        self._slm_load_generation += 1
-        self._slm_model_name = ""
 
-        self._router.set_local_slm(None)
-        self._router.set_slm_available(False)
-        self._slm_client = None
-        self._slm_loading = False
 
-        logger.info(
-            f"reload_slm: generation → {self._slm_load_generation}, "
-            f"модель будет перечитана из конфига (автовыбор пропущен)"
-        )
-        self.reset_pipeline()
-
-        self.status_label.setText("⏳ Перезагрузка локальной модели...")
-        QTimer.singleShot(50, lambda: self._detect_and_load_slm(skip_auto_select=True))
-
-        # ИСПРАВЛЕНИЕ: запускаем двухмодельный пайплайн после ручной смены моделей
-        if self.project_root:
-            QTimer.singleShot(1500, self._ensure_orchestrator)
-        self.refresh_pipeline_selectors()
-
-    def _detect_and_load_slm(self, skip_auto_select: bool = False):
-        """Автовыбор модели + автооптимизация параметров, затем загрузка.
-
-        Args:
-            skip_auto_select: True — не запускать автовыбор модели, использовать
-                уже записанный в конфиге ``slm.selected_model``. Нужно после
-                явного выбора модели пользователем в ``SLMModelsDialog``.
-        """
-        from agents.slm_optimizer import optimize
-        from agents.slm_selector import select_best_model
-
-        try:
-            cfg = load_config()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
-            cfg = None
-
-        if skip_auto_select:
-            logger.info(
-                "SLM: автовыбор пропущен (после ручного переключения модели). "
-                "Загружается selected_model из конфига."
-            )
-        elif cfg is not None and cfg.slm.auto_select_model:
-            chosen = select_best_model(prefer_vram=cfg.slm.prefer_vram_fit)
-            if chosen is not None and chosen.id != cfg.slm.selected_model:
-                logger.info(f"Автовыбор SLM: '{cfg.slm.selected_model}' → '{chosen.id}'")
-                cfg.slm.selected_model = chosen.id
-                try:
-                    from core.config import save_config
-
-                    save_config(cfg)
-                except Exception as e:
-                    logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
-            else:
-                logger.info(
-                    f"SLM: автовыбор подтвердил сохранённый выбор (selected_model='{cfg.slm.selected_model}')"
-                )
-        elif cfg is not None:
-            logger.info(
-                f"SLM: используется сохранённый выбор "
-                f"(selected_model='{cfg.slm.selected_model}', "
-                f"auto_select_model=false)"
-            )
-        else:
-            logger.info(
-                "SLM: конфиг недоступен, автовыбор не выполнялся "
-                "(будет использована модель из get_model_paths)"
-            )
-
-        # 2. Загрузка (при auto_tune — с оптимизацией).
-        chat_path, embed_path = get_model_paths()
-        if not chat_path:
-            if self._config_slm_enabled():
-                self._download_and_load_slm()
-            return
-
-        params = None
-        try:
-            if cfg is not None and cfg.slm.auto_tune:
-                params = optimize(chat_path, target_n_ctx=cfg.slm.target_n_ctx)
-                logger.info(f"Автопараметры SLM:\n{params.to_json()}")
-        except Exception as e:
-            logger.warning(f"SLM-оптимизатор упал, загружаю с параметрами из конфига: {e}")
-            params = None
-
-        self._load_slm_async(chat_path, embed_path, params=params)
-
-    def _config_slm_enabled(self) -> bool:
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-            return cfg.slm.enabled
-        except Exception:
-            return True
 
     def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
         """Лимит итераций для текущего режима и типа задачи.
@@ -447,212 +355,27 @@ class ChatPanel(QWidget):
 
         return cfg.chat_max_iterations
 
-    def _apply_backend_config(self) -> None:
-        try:
-            from core.config import load_config
 
-            cfg = load_config()
-            self._router.set_enabled_backends(list(cfg.backends.enabled))
-            self._router.set_priority(list(cfg.backends.priority))
-            self._router.set_embed_backend(cfg.backends.embed_backend)
-        except Exception as e:
-            logger.warning(f"Не удалось применить настройки бэкендов: {e}")
-        self._emit_backend_status()
 
-    def _detect_backends(self):
-        """Определяет доступность бэкендов, уважая whitelist.
 
-        Ollama проверяется только если пользователь его явно включил в
-        настройках. Иначе приложение не отправляет ни одного HTTP-запроса
-        на localhost:11434.
-        """
-        ollama_enabled = False
-        try:
-            from core.config import load_config
 
-            cfg = load_config()
-            ollama_enabled = "ollama" in cfg.backends.enabled
-        except Exception:
-            pass
 
-        if ollama_enabled:
-            self._check_ollama_async()
-        else:
-            logger.info("Ollama не в enabled-списке — пропускаю проверку и автоактивацию")
-            self._router.set_ollama_available(False)
 
-        self._detect_and_load_slm()
 
-    def _active_backend_label(self) -> str:
-        backend = self._router.active_backend
-        if backend == BackendType.OLLAMA:
-            return f"🌐 Ollama · {self.get_current_model()}"
-        if backend == BackendType.LOCAL_SLM:
-            name = self._slm_model_name or "локальная модель"
-            return f"🖥 Локально · {name}"
-        if backend == BackendType.RULE_BASED:
-            return "⚠️ Резерв (без LLM)"
-        return "⛔ Нет доступного бэкенда"
 
-    def _emit_backend_status(self) -> None:
-        self.backend_status_changed.emit(self._active_backend_label())
 
-    def _check_ollama_async(self):
-        self._ollama_check_thread = _OllamaCheckThread(self._ollama_client)
-        self._ollama_check_thread.result.connect(self._on_ollama_check_result)
-        self._ollama_check_thread.start()
 
-    @Slot(bool)
-    def _on_ollama_check_result(self, available: bool):
-        if not available:
-            self._router.set_ollama_available(False)
-            return
-        # Ollama ответил, но это не значит, что он разрешён — router сам решит.
-        self._router.set_ollama_available(True)
-        self._emit_backend_status()
 
-    def _on_slm_loaded(self, client, generation: int | None = None):
-        if generation is not None and generation != self._slm_load_generation:
-            logger.info(
-                f"Отбрасываю устаревшую загрузку SLM "
-                f"(gen={generation}, актуальная={self._slm_load_generation}): "
-                f"{Path(client.model_path).name}"
-            )
-            return
 
-        self._slm_client = client
-        if not self._slm_model_name:
-            self._slm_model_name = Path(client.model_path).stem
-        self._router.set_local_slm(client)
-        self._router.set_slm_available(True)
-        self._slm_loading = False
-        logger.info(f"Локальная SLM загружена и доступна как fallback: {self._slm_model_name}")
-        if self._router.active_backend == BackendType.LOCAL_SLM:
-            self.status_label.setText(f"✅ Локальная модель загружена: {self._slm_model_name}")
-        self._emit_backend_status()
-        self._update_pipeline_status()
 
-    def _load_slm_async(self, chat_path: Path, embed_path: Path | None, params=None):
-        if self._slm_loading or self._slm_client is not None:
-            return
 
-        generation = self._slm_load_generation
 
-        # Параметры: params (авто) → конфиг (ручной режим) → дефолты.
-        n_ctx, n_threads, n_batch, n_gpu_layers, max_tokens = 4096, 0, 512, 0, 1024
-        try:
-            from core.config import load_config
 
-            slm = load_config().slm
-            max_tokens = slm.max_tokens
-            if params is None:
-                n_ctx = slm.n_ctx
-                n_threads = slm.n_threads
-                n_batch = slm.n_batch
-                if slm.auto_gpu_layers:
-                    from agents.gpu_utils import detect_optimal_gpu_layers
 
-                    n_gpu_layers = detect_optimal_gpu_layers(
-                        model_path=chat_path,
-                        preferred=slm.n_gpu_layers,
-                        auto=True,
-                    )
-                else:
-                    n_gpu_layers = slm.n_gpu_layers
-            info = slm.get_selected_info()
-            if info is not None:
-                self._slm_model_name = info.display_name
-        except Exception as e:
-            logger.debug(f"Не удалось прочитать SLM-параметры из конфига: {e}")
 
-        self._slm_loading = True
-        self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
 
-        self._slm_load_thread = _SLMLoadThread(
-            chat_path,
-            embed_path,
-            n_ctx=n_ctx,
-            n_threads=n_threads,
-            n_batch=n_batch,
-            n_gpu_layers=n_gpu_layers,
-            max_tokens=max_tokens,
-            params=params,
-        )
-        self._slm_load_thread.finished.connect(
-            lambda client, gen=generation: self._on_slm_loaded(client, gen)
-        )
-        self._slm_load_thread.error.connect(lambda err, gen=generation: self._on_slm_error(err, gen))
-        self._slm_load_thread.start()
 
-    def _download_and_load_slm(self):
-        if self._slm_loading or self._slm_client is not None:
-            return
 
-        try:
-            from core.config import load_config
-
-            slm = load_config().slm
-        except Exception as e:
-            logger.warning(f"Не удалось загрузить конфиг SLM: {e}")
-            return
-
-        if not slm.enabled:
-            return
-
-        info = slm.get_selected_info()
-        if not info:
-            logger.warning("Не найдена активная SLM-модель в конфиге")
-            return
-
-        if info.kind != "chat":
-            logger.error(
-                f"Активная SLM-модель '{info.id}' имеет kind='{info.kind}', "
-                f"а для чата нужна kind='chat'. Загрузка отменена."
-            )
-            self.status_label.setText(f"⚠️ Модель '{info.display_name}' не подходит для чата.")
-            return
-
-        generation = self._slm_load_generation
-        self._slm_loading = True
-        self.status_label.setText(f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)...")
-
-        self._slm_download_thread = _SLMDownloadThread(
-            model_repo=info.repo,
-            model_file=info.file,
-            embed_repo=slm.embed_model_repo,
-            embed_file=slm.embed_model_file,
-        )
-        self._slm_download_thread.progress.connect(
-            lambda msg, gen=generation: self._on_slm_progress(msg, gen)
-        )
-        self._slm_download_thread.finished.connect(
-            lambda chat, embed, gen=generation: self._on_slm_downloaded(chat, embed, gen)
-        )
-        self._slm_download_thread.error.connect(lambda err, gen=generation: self._on_slm_error(err, gen))
-        self._slm_download_thread.start()
-
-    def _on_slm_progress(self, message: str, generation: int | None = None):
-        if generation is not None and generation != self._slm_load_generation:
-            return
-        self.status_label.setText(f"⏳ {message}")
-
-    def _on_slm_error(self, error_msg: str, generation: int | None = None):
-        if generation is not None and generation != self._slm_load_generation:
-            logger.info(f"Отбрасываю ошибку устаревшей загрузки SLM (gen={generation}): {error_msg}")
-            return
-        self._slm_loading = False
-        logger.error(f"Ошибка загрузки SLM: {error_msg}")
-        self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
-
-    def _on_slm_downloaded(self, chat_path: str, embed_path: str, generation: int | None = None):
-        if generation is not None and generation != self._slm_load_generation:
-            logger.info(f"Отбрасываю устаревшее скачивание SLM (gen={generation})")
-            return
-        self._slm_loading = False
-        self._load_slm_async(
-            Path(chat_path),
-            Path(embed_path) if embed_path else None,
-        )
 
     # ---------------------------------------------------------
     # UI
@@ -1746,13 +1469,7 @@ class ChatPanel(QWidget):
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
 
-    def _reset_research_state(self) -> None:
-        """Сбрасывает state текущего research-прогона перед новым запросом."""
-        self._research_mode_active = False
-        self._research_cancelled = False
-        self._pending_final_answer = ""
-        self._last_research_summary = None
-        self._current_thought_stream = None
+
 
     def _do_chat(self, text: str, override_limit: int | None = None):
         """Запускает ReAct-цикл в режиме Chat.
@@ -2040,76 +1757,7 @@ class ChatPanel(QWidget):
 
         self._agent_thread.start()
 
-    # ---------------------------------------------------------
-    # Слоты research-режима
-    # ---------------------------------------------------------
 
-    @Slot(bool)
-    def _on_research_mode_detected(self, is_research: bool) -> None:
-        """Запоминает, research-ли этот прогон.
-
-        Если да — `chunk_received` для отображения не используется;
-        серый поток идёт через `thought_chunk`, а финал — через
-        `final_chunk` (в буфер паспорта).
-        """
-        self._research_mode_active = is_research
-        if is_research:
-            logger.info("Research-режим активен: серый поток мыслей включён")
-
-    @Slot(str)
-    def _on_thought_chunk(self, token: str) -> None:
-        """Токен мысли — в серый поток.
-
-        [M4] looks_like_ascii_junk рассчитан на блоки ≥20 символов, поэтому
-        на каждом отдельном токене не срабатывает. Проверяем накопленный
-        буфер (до 500 символов): если в нём уже накопилось ≥3 «каракулей» —
-        показываем вместо мыслей строку «резервный сбор данных».
-        """
-        from agents.tool_grammar import looks_like_ascii_junk
-
-        if self._activity_state != "thinking":
-            self._set_activity_state("thinking", "рассуждение")
-        if self._current_thought_stream is None:
-            self._current_thought_stream = ChatThoughtStream()
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, self._current_thought_stream)
-
-        self._current_thought_stream.append_thought_token(token)
-
-        # Периодически проверяем накопленный буфер (после ~5 токенов
-        # по 4+ символа он станет ≥20 и детектор начнёт работать).
-        buf = self._current_thought_stream._current_thought_buffer
-        if len(buf) >= 40 and looks_like_ascii_junk(buf):
-            # Сворачиваем «мысли» и оставляем только пометку.
-            self._current_thought_stream._current_thought_buffer = ""
-            self._current_thought_stream.append_nudge(
-                "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
-            )
-
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
-
-    @Slot()
-    def _on_final_answer_started(self) -> None:
-        """Начался финальный ответ — сбрасываем буфер паспорта."""
-        self._pending_final_answer = ""
-
-    @Slot(str)
-    def _on_final_chunk(self, token: str) -> None:
-        """Токен финального ответа — в буфер паспорта, НЕ в ленту."""
-        if self._activity_state != "streaming":
-            self._set_activity_state("streaming", "финальный ответ")
-        self._pending_final_answer += token
-
-    @Slot(object)
-    def _on_research_summary_ready(self, summary: dict) -> None:
-        """Запоминает сводку research-прогона (до finish_received)."""
-        self._last_research_summary = summary
-        logger.debug(
-            "Research-сводка: файлов прочитано "
-            f"{len(summary.get('files_read') or [])}, "
-            f"гипотез {len(summary.get('hypotheses') or [])}"
-        )
 
     # ---------------------------------------------------------
     # Существующие слоты
@@ -2890,31 +2538,9 @@ class ChatPanel(QWidget):
         self._last_research_summary = None
         self._research_mode_active = False
 
-    @staticmethod
-    def _should_show_passport(summary: dict | None) -> bool:
-        """Показывать ли паспорт по этой сводке.
 
-        Правило: показываем, если прочитано ≥2 файла или есть хотя бы одна
-        гипотеза. Пустой паспорт (0 файлов, 0 гипотез, без выводов) — шум.
-        """
-        if not summary:
-            return False
-        files = summary.get("files_read") or []
-        hypotheses = summary.get("hypotheses") or []
-        final_answer = (summary.get("final_answer") or "").strip()
-        return bool(len(files) >= 2 or hypotheses or final_answer)
 
-    def _show_research_passport(self, summary: dict) -> None:
-        """Вставляет виджет «Паспорт исследования» под финальным ответом."""
-        try:
-            widget = ChatResearchPassport(summary)
-        except Exception as e:
-            logger.warning(f"Не удалось построить паспорт исследования: {e}")
-            return
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
+
 
     def _reset_send_button(self):
         self._generating = False
@@ -3439,187 +3065,9 @@ class ChatPanel(QWidget):
     # P3: Orchestrator lifecycle
     # ------------------------------------------------------------------
 
-    def _ensure_orchestrator(self) -> None:
-        """Ленивая загрузка двух моделей + Orchestrator (в фоне).
-
-        Вызывается при открытии проекта (с задержкой), из меню
-        «View → Предзагрузить 2-model pipeline» и при research-вопросе.
-        Если уже загружен/грузится — no-op. Ошибка →
-        ``_pool_load_failed=True``, orchestrator остаётся None.
-
-        Индикатор `pipeline_status_label` показывает состояние в UI:
-        ⏳ → ⚡ или ⚠️. Таймаут per-role (90 с) гарантирует, что UI не
-        зависнет, даже если llama.cpp ушёл в бесконечный OOM-retry.
-        """
-        # [9.4] Профиль «Обучение» не использует двухмодельный пайплайн —
-        # одна analyst-модель, tools off. Не грузим лишнюю память.
-        if self._profile is not None and self._profile.id == "learning":
-            logger.debug("Orchestrator: профиль «Обучение» — пайплайн не требуется")
-            return
-        if self._orchestrator is not None:
-            return
-        if self._pool_load_failed:
-            return
-        if self._pool_load_thread is not None and self._pool_load_thread.isRunning():
-            return
-
-        self._pool_load_thread = _ModelPoolLoadThread()
-        self._pool_load_thread.progress.connect(self._on_pool_progress)
-        self._pool_load_thread.finished.connect(self._on_pool_loaded)
-        self._pool_load_thread.error.connect(self._on_pool_error)
-        self._pool_load_thread.start()
-        self.status_label.setText("⏳ Загрузка двух моделей (3B GPU + 7B CPU)…")
-        self._update_pipeline_status()
-
-    def reset_pipeline(self) -> None:
-        """Сбрасывает двухмодельный пайплайн (после смены моделей в UI).
-
-        Вызывается из `reload_slm()` и из MainWindow после закрытия
-        SLMModelsDialog с изменениями. Следующий `_ensure_orchestrator()`
-        пересоздаст пайплайн с новыми моделями из конфига.
-
-        Также сбрасывает `_pool_load_failed`, чтобы «⚠️ недоступен» не
-        блокировал повторную попытку после исправления конфига
-        (например, скачивания недостающей модели).
-        """
-        if self._model_pool is not None:
-            try:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._model_pool.aclose())
-                loop.close()
-            except Exception:
-                logger.debug("ModelPool.aclose failed", exc_info=True)
-
-        self._model_pool = None
-        self._orchestrator = None
-        self._pool_load_failed = False
-        self._update_pipeline_status()
-        logger.info("SLM pipeline сброшен — будет пересоздан при следующем запросе")
-
-    @Slot(object)
-    def _on_pool_loaded(self, pool: ModelPool | None) -> None:
-        if pool is None:
-            self._on_pool_error("ModelPool вернул None")
-            return
-
-        intel_cache_dir: Path | None = None
-        if self.project_root:
-            intel_cache_dir = Path(self.project_root) / ".ollidesk" / "graph"
-            intel_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            self._model_pool = pool
-            self._orchestrator = Orchestrator(
-                pool=pool,
-                intel_cache_dir=intel_cache_dir,
-                vector_store=self.vector_store,
-                counter=ApproxCounter(),
-            )
-            if self._pipeline_selectors is not None:
-                self.refresh_pipeline_selectors()
-            logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
-            self.status_label.setText("✅ Двухмодельный пайплайн готов")
-            self._update_pipeline_status()
-        except Exception as e:
-            logger.exception("Не удалось создать Orchestrator")
-            self._on_pool_error(f"Orchestrator init: {e}")
 
 
-    @Slot(str)
-    def _on_pool_error(self, error_msg: str) -> None:
-        logger.warning(f"ModelPool/Orchestrator недоступен: {error_msg}")
-        self._pool_load_failed = True
-        self._orchestrator = None
-        self._model_pool = None
-        self.status_label.setText(f"⚠️ Оркестратор недоступен (ReAct продолжит работу): {error_msg[:100]}")
-        self._update_pipeline_status()
 
-    @Slot(object)
-    def _on_orchestrator_result(self, result: RunResult) -> None:
-        """Обрабатывает полный RunResult: ответ + схема + evidence.
-
-        Вызывается из AgentChatThread после `chunk_received` с полным
-        текстом ответа (там уже создан виджет сообщения через _on_chunk).
-        Здесь добавляем диаграмму и краткую сводку evidence, затем cleanup.
-        """
-        try:
-            # 4.8.B: свернуть reasoning перед фиксацией ответа.
-            if self._last_assistant_widget is not None:
-                self._last_assistant_widget.finalize()
-
-            # Сохраняем assistant-сообщение в историю (иначе следующая
-            # итерация не увидит ответ в messages_history).
-            if result.answer:
-                assistant_message = ChatMessage(role="assistant", content=result.answer)
-                self._messages.append(assistant_message)
-                if self._session_id:
-                    self.session_store.save_message(self._session_id, assistant_message)
-
-            # Диаграмма компонентов (ASCII + Mermaid toggle).
-            if result.ascii_diagram or result.mermaid_diagram:
-                diagram_item = ChatDiagramItem(
-                    result.ascii_diagram or "",
-                    result.mermaid_diagram or "",
-                )
-                self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, diagram_item)
-
-            # Evidence pack — короткая строка, не мешает чтению.
-            if result.evidence_ids:
-                verify_mark = "✅" if result.verify_ok else "⚠️"
-                critique_mark = "✅" if result.critique_ok else "⚠️"
-                unsupported = result.unsupported_claims
-                summary = (
-                    f"📚 Источников: {len(result.evidence_ids)} · "
-                    f"покрытие {result.coverage:.0%} · "
-                    f"verify {verify_mark} · critique {critique_mark}"
-                )
-                if unsupported:
-                    summary += f" · без доказательств: {unsupported}"
-                self._add_message("system", summary)
-
-                    # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
-        self._scroll_to_bottom()
-        except Exception:
-            logger.exception("_on_orchestrator_result failed")
-        finally:
-            # Cleanup как в _on_agent_finish.
-            self._reset_send_button()
-            self._current_assistant_content = ""
-            self._current_thinking_content = ""
-            self._last_assistant_widget = None
-            self._current_thought_stream = None
-            self._pending_final_answer = ""
-            self._last_research_summary = None
-            self._research_mode_active = False
-            self.status_label.setText("Готов к работе")
-
-    @Slot(str, dict)
-    def _on_orchestrator_event(self, kind: str, data: dict) -> None:
-        """Пробрасывает событие Orchestrator'а в UI (статус + thought)."""
-        if kind == "classify":
-            self.status_label.setText("🧠 Классификация…")
-        elif kind == "plan":
-            task = data.get("task", "?")
-            files = data.get("files", 0)
-            deep = data.get("deep", False)
-            self.status_label.setText(f"📋 План: {task}, файлов={files}" + (" (deep)" if deep else ""))
-        elif kind == "coverage":
-            val = float(data.get("value", 0.0))
-            self.status_label.setText(f"📊 Покрытие: {val:.0%}")
-        elif kind == "synthesize":
-            self.status_label.setText("✍️ Синтез (7B CPU)…")
-        elif kind == "regen":
-            self.status_label.setText(f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}")
-        elif kind == "fallback":
-            self._add_message(
-                "system",
-                f"⚠️ Оркестратор упал, использую старый ReAct: {data.get('reason', '')[:120]}",
-            )
-        elif kind == "done":
-            elapsed = data.get("elapsed_s")
-            if elapsed is not None:
-                logger.info(f"Orchestrator done за {elapsed} с")
 
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
@@ -3639,103 +3087,6 @@ class ChatPanel(QWidget):
                 pass
             self._model_pool = None
 
-    def _pipeline_status_label(self) -> str:
-        """Короткое описание состояния двухмодельного пайплайна.
-
-        Отвечает на вопрос «загружены ли обе модели 3B + 7B»:
-          • 💤 — не активирован (нет открытого проекта);
-          • ⏸ — модели загружены/ждут, но не в работе;
-          • ⏳ — идёт загрузка planner/analyst;
-          • ⚡ — готов, обе модели в памяти, Orchestrator создан;
-          • ⚠️ — ошибка, работает fallback (одна модель).
-        """
-        if self._model_pool is not None and self._orchestrator is not None:
-            try:
-                planner_id = self._model_pool.spec(Role.PLANNER).model_id
-                analyst_id = self._model_pool.spec(Role.ANALYST).model_id
-                return f"⚡ 2-model: {planner_id} (GPU) + {analyst_id} (CPU)"
-            except Exception:
-                return "⚡ 2-model: загружен"
-
-        if self._pool_load_thread is not None and self._pool_load_thread.isRunning():
-            return "⏳ 2-model: загрузка planner+analyst…"
-
-        if self._pool_load_failed:
-            return "⚠️ 2-model: недоступен (fallback → 1 модель)"
-
-        if self._model_pool is not None:
-            return "⏸ 2-model: модели загружены, ждут проект"
-
-        if not self.project_root:
-            return "💤 2-model: не активирован (нет проекта)"
-
-        return "⏸ 2-model: ожидание запуска"
-
-    def _update_pipeline_status(self) -> None:
-        """[9.3] Обновляет индикатор пайплайна.
-
-        Пишет в `_pipeline_selectors` (новый виджет) и в
-        `pipeline_status_label` (для обратной совместимости, если виджет
-        не создан). Эмитит `pipeline_status_changed` для приборной панели.
-        """
-        text = self._pipeline_status_label()
-
-        # Старый pipeline_status_label мог не создаться — в этом случае
-        # ничего не делаем (защита от гонки).
-        if hasattr(self, "pipeline_status_label") and self.pipeline_status_label is not None:
-            self.pipeline_status_label.setText(text)
-
-        # Новый виджет-селектор (9.3).
-        if self._pipeline_selectors is not None:
-            if self._model_pool is not None and self._orchestrator is not None:
-                icon, color = "⚡", "#98c379"
-                tooltip = self._pipeline_tooltip()
-            elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
-                icon, color = "⏳", "#e5c07b"
-                tooltip = "Загрузка planner + analyst…"
-            elif self._pool_load_failed:
-                icon, color = "⚠️", "#e06c75"
-                tooltip = "Пайплайн недоступен — fallback на одиночную модель"
-            elif not self.project_root:
-                icon, color = "💤", "#888"
-                tooltip = "Откройте проект, чтобы активировать пайплайн"
-            else:
-                icon, color = "⏸", "#888"
-                tooltip = "Ожидание запуска"
-            self._pipeline_selectors.set_state(icon, text, tooltip, color)
-
-        # [9.7] Приборная панель.
-        if self._dashboard is not None:
-            self._sync_dashboard()
-
-        self.pipeline_status_changed.emit(text)
-
-    def _pipeline_tooltip(self) -> str:
-        """Подробности о загруженных planner/analyst для tooltip."""
-        if self._model_pool is None or self._orchestrator is None:
-            return ""
-        try:
-            ps = self._model_pool.spec(Role.PLANNER)
-            an = self._model_pool.spec(Role.ANALYST)
-            return (
-                f"planner={ps.model_id} (device={ps.device}, "
-                f"n_ctx={ps.n_ctx}, kv={ps.kv_cache}, layers={ps.n_gpu_layers})\n"
-                f"analyst={an.model_id} (device={an.device}, "
-                f"n_ctx={an.n_ctx}, kv={an.kv_cache}, layers={an.n_gpu_layers})"
-            )
-        except Exception:
-            return ""
-
-    @Slot(str)
-    def _on_pool_progress(self, message: str) -> None:
-        """Прогресс загрузки двух моделей — в transient status и pipeline label."""
-        self.status_label.setText(f"⚙️ {message}")
-        if hasattr(self, "pipeline_status_label"):
-            self.pipeline_status_label.setText(f"⏳ {message}")
-            self.pipeline_status_label.setStyleSheet(
-                "font-size: 11px; padding: 2px 6px; color: #e5c07b;"
-                " background: rgba(128,128,128,0.08); border-radius: 3px;"
-            )
 
     # ------------------------------------------------------------------
     # [9.3] Селекторы Planner/Analyst
