@@ -68,6 +68,8 @@ from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 from ui.widgets.status_dashboard import StatusDashboard
 from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
 from core.profiles import get_profile_by_id
+from ui.command_registry import CommandRegistry, PaletteCommand
+from ui.widgets.command_palette import CommandPalette
 
 
 class ModelCheckThread(QThread):
@@ -206,9 +208,15 @@ class MainWindow(QMainWindow):
         self._model_check_thread: ModelCheckThread | None = None
         self._is_checking = False
 
+        # [9.9] Палитра команд.
+        self._palette_registry = CommandRegistry()
+        self._palette_dialog: CommandPalette | None = None
+
         self._setup_ui()
         self._setup_menu()
         self._setup_status_bar()
+        self._register_palette_commands()
+        self._install_global_shortcuts()
         self._check_ollama_connection()
 
         # [9.2] Правая панель заменена на поповер-диалог AgentSettingsDialog.
@@ -715,6 +723,8 @@ class MainWindow(QMainWindow):
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
+        # [9.9] Палитра команд.
+        self.menu_bar.command_palette_requested.connect(self._open_command_palette)
 
         # [9.4] Профили использования.
         self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
@@ -789,6 +799,297 @@ class MainWindow(QMainWindow):
         # Инжектим панель в ChatPanel для синхронизации бэкенда/pipeline/tok/s.
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel.set_dashboard(self.dashboard)
+
+    # ------------------------------------------------------------------
+    # [9.9] Палитра команд
+    # ------------------------------------------------------------------
+
+    def _install_global_shortcuts(self) -> None:
+        """[9.9] Ctrl+Shift+P — глобальный shortcut на всё окно.
+
+        Меню `View → Палитра команд…` уже имеет такой же shortcut —
+        при фокусе в меню QAction сработает. Глобальный QShortcut нужен,
+        когда фокус в поле ввода чата, в дереве, в редакторе — где
+        QAction меню не получает key event.
+        """
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        try:
+            shortcut = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(self._open_command_palette)
+        except Exception:
+            logger.debug(
+                "Не удалось установить Ctrl+Shift+P на окно", exc_info=True
+            )
+
+    def _register_palette_commands(self) -> None:
+        """[9.9] Регистрирует команды палитры.
+
+        Каждая команда — `PaletteCommand` с callback на существующий слот.
+        Профили и бэкенд добавляются динамически (зависят от конфига).
+        """
+        reg = self._palette_registry
+        reg.clear()
+
+        # --- File ---
+        reg.register_many(
+            [
+                PaletteCommand(
+                    id="file.open_project",
+                    label="Открыть проект…",
+                    hint="Выбрать папку проекта",
+                    shortcut="Ctrl+O",
+                    group="File",
+                    callback=self._open_project,
+                ),
+                PaletteCommand(
+                    id="file.export_chat",
+                    label="Экспорт чата…",
+                    hint="Markdown / HTML",
+                    shortcut="Ctrl+Shift+X",
+                    group="File",
+                    callback=self._export_chat,
+                ),
+                PaletteCommand(
+                    id="file.settings",
+                    label="Настройки…",
+                    hint="Глобальные и проектные",
+                    group="File",
+                    callback=self._open_settings,
+                ),
+                PaletteCommand(
+                    id="file.exit",
+                    label="Выход",
+                    hint="Закрыть OlliDesk",
+                    shortcut="Ctrl+Q",
+                    group="File",
+                    callback=self.close,
+                ),
+            ]
+        )
+
+        # --- View ---
+        reg.register_many(
+            [
+                PaletteCommand(
+                    id="view.show_chat",
+                    label="Показать Чат",
+                    shortcut="Ctrl+Shift+C",
+                    group="View",
+                    callback=self._show_chat_tab,
+                ),
+                PaletteCommand(
+                    id="view.show_editor",
+                    label="Показать Редактор",
+                    shortcut="Ctrl+Shift+E",
+                    group="View",
+                    callback=self._show_editor_tab,
+                ),
+                PaletteCommand(
+                    id="view.toggle_tree",
+                    label="Показать/скрыть дерево проекта",
+                    shortcut="F4",
+                    group="View",
+                    callback=self._toggle_project_tree_from_palette,
+                ),
+                PaletteCommand(
+                    id="view.toggle_theme",
+                    label="Переключить тему (тёмная / светлая)",
+                    shortcut="Ctrl+T",
+                    group="View",
+                    callback=self._toggle_theme,
+                ),
+                PaletteCommand(
+                    id="view.agent_settings",
+                    label="Настройки агента…",
+                    hint="Temperature, max tokens, инструменты, RAG",
+                    group="View",
+                    callback=self._toggle_side_panel,
+                ),
+                PaletteCommand(
+                    id="view.prompt_editor",
+                    label="Редактор промптов и ролей…",
+                    group="View",
+                    callback=self._open_prompt_editor,
+                ),
+                PaletteCommand(
+                    id="view.session_manager",
+                    label="Менеджер сессий…",
+                    group="View",
+                    callback=self._open_session_manager,
+                ),
+                PaletteCommand(
+                    id="view.edit_iterations",
+                    label="Лимит итераций агента…",
+                    group="View",
+                    callback=self._edit_agent_iterations,
+                ),
+            ]
+        )
+
+        # --- Профили (динамически из конфига) ---
+        try:
+            from core.config import load_config
+
+            cfg = load_config()
+            for p in cfg.profiles:
+                reg.register(
+                    PaletteCommand(
+                        id=f"profile.{p.id}",
+                        label=f"Профиль: {p.icon} {p.name}",
+                        hint=p.description[:80] if p.description else "",
+                        group="Профиль",
+                        callback=lambda _pid=p.id, _p=p: self._apply_profile_from_palette(_p),
+                    )
+                )
+        except Exception:
+            logger.debug(
+                "Не удалось зарегистрировать профили в палитре", exc_info=True
+            )
+
+        # --- Бэкенд ---
+        reg.register(
+            PaletteCommand(
+                id="backend.toggle",
+                label="Переключить бэкенд (SLM ⇄ Ollama)",
+                hint="Если Ollama выключен — предложит включить",
+                group="Бэкенд",
+                callback=self._toggle_backend,
+            )
+        )
+
+        # --- Модели / пайплайн ---
+        reg.register_many(
+            [
+                PaletteCommand(
+                    id="models.slm_models",
+                    label="Локальные модели (SLM)…",
+                    hint="Скачать / удалить / активировать",
+                    group="Модели",
+                    callback=self._open_slm_manager,
+                ),
+                PaletteCommand(
+                    id="models.preload_pipeline",
+                    label="Предзагрузить 2-model pipeline",
+                    hint="planner + analyst в память",
+                    group="Модели",
+                    callback=self._preload_two_model_pipeline,
+                ),
+                PaletteCommand(
+                    id="models.check_tools",
+                    label="Проверить поддержку инструментов",
+                    hint="Ollama-модели: tools / только чат",
+                    group="Модели",
+                    callback=self._start_model_check,
+                ),
+            ]
+        )
+
+        # --- Chat ---
+        reg.register_many(
+            [
+                PaletteCommand(
+                    id="chat.new",
+                    label="Новый чат (очистить)",
+                    hint="Очищает текущую сессию",
+                    group="Чат",
+                    callback=self._new_chat_from_palette,
+                ),
+                PaletteCommand(
+                    id="chat.stop",
+                    label="Остановить генерацию",
+                    hint="Если идёт ответ модели",
+                    group="Чат",
+                    callback=self._stop_generation_from_palette,
+                ),
+            ]
+        )
+
+        # --- Help ---
+        reg.register_many(
+            [
+                PaletteCommand(
+                    id="help.wizard",
+                    label="Мастер настройки…",
+                    group="Помощь",
+                    callback=self._run_wizard,
+                ),
+                PaletteCommand(
+                    id="help.about",
+                    label="О программе",
+                    group="Помощь",
+                    callback=self._show_about,
+                ),
+            ]
+        )
+
+        logger.info(
+            f"Палитра команд: зарегистрировано {len(self._palette_registry)} команд"
+        )
+
+    @Slot()
+    def _open_command_palette(self) -> None:
+        """[9.9] Открывает палитру команд (Ctrl+Shift+P).
+
+        Диалог создаётся один раз, повторный Ctrl+Shift+P переиспользует
+        его (`open_fresh` сбрасывает поиск).
+        """
+        if self._palette_dialog is None:
+            self._palette_dialog = CommandPalette(self._palette_registry, self)
+        self._palette_dialog.open_fresh()
+
+    def _toggle_project_tree_from_palette(self) -> None:
+        """Хелпер для палитры: переключает видимость дерева проекта."""
+        visible = not self.left_panel.isVisible()
+        self._toggle_project_structure(visible)
+        # Синхронизируем кнопку «📁» в ChatPanel (см. 9.2).
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(visible)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+        # Синхронизируем action в меню.
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+
+    def _apply_profile_from_palette(self, profile) -> None:
+        """Хелпер для палитры: применяет профиль из `PaletteCommand`."""
+        if not self.chat_panel:
+            return
+        try:
+            # Обновляем селектор и применяем — как из меню View → Профили.
+            if (
+                hasattr(self.chat_panel, "_profiles_selector")
+                and self.chat_panel._profiles_selector
+            ):
+                self.chat_panel._profiles_selector.set_profile(profile.id)
+            self.chat_panel._on_profile_changed(profile)
+            self.menu_bar.set_active_profile(profile.id)
+        except Exception:
+            logger.exception("Не удалось применить профиль из палитры")
+
+    def _new_chat_from_palette(self) -> None:
+        """Хелпер для палитры: очищает текущую сессию чата."""
+        if not self.chat_panel:
+            return
+        try:
+            self.chat_panel._clear_chat(keep_session=False)
+            self.chat_panel.set_session_id("")
+        except Exception:
+            logger.exception("Не удалось очистить чат из палитры")
+
+    def _stop_generation_from_palette(self) -> None:
+        """Хелпер для палитры: останавливает генерацию (no-op если idle)."""
+        if not self.chat_panel:
+            return
+        try:
+            if getattr(self.chat_panel, "_generating", False):
+                self.chat_panel._stop_generation()
+        except Exception:
+            logger.exception("Не удалось остановить генерацию из палитры")
 
     def _toggle_backend(self) -> None:
         """[9.3] Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
@@ -1630,6 +1931,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         logger.info("Закрытие главного окна")
+        # [9.9] Закрываем палитру команд, если была открыта.
+        if self._palette_dialog is not None:
+            try:
+                self._palette_dialog.close()
+            except Exception:
+                pass
+            self._palette_dialog = None
         self._save_project_settings()
         if self.chat_panel:
             self.config.last_model = self.chat_panel.get_current_model()

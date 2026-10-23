@@ -60,6 +60,8 @@ class AppMenuBar(QMenuBar):
     edit_prompts_requested = Signal()
     manage_sessions_requested = Signal()
     edit_iterations_requested = Signal()
+    # [9.9] Палитра команд (Ctrl+Shift+P).
+    command_palette_requested = Signal()
     # [9.4] Профили использования.
     profile_selected = Signal(str)          # profile_id
     profile_editor_requested = Signal()
@@ -202,6 +204,14 @@ class AppMenuBar(QMenuBar):
         edit_iterations = QAction("Лимит итераций агента...", self)
         edit_iterations.triggered.connect(self.edit_iterations_requested.emit)
         view_menu.addAction(edit_iterations)
+
+        view_menu.addSeparator()
+
+        # [9.9] Палитра команд (Ctrl+Shift+P).
+        palette_action = QAction("Палитра команд…", self)
+        palette_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        palette_action.triggered.connect(self.command_palette_requested.emit)
+        view_menu.addAction(palette_action)
 
     def _build_help_menu(self) -> None:
         help_menu = self.addMenu("&Help")
