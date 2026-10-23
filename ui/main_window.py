@@ -635,6 +635,7 @@ class MainWindow(QMainWindow):
         # File
         self.menu_bar.open_project_requested.connect(self._open_project)
         self.menu_bar.open_recent_requested.connect(self._open_recent_project)
+        self.menu_bar.export_chat_requested.connect(self._export_chat)
         self.menu_bar.settings_requested.connect(self._open_settings)
         self.menu_bar.exit_requested.connect(self.close)
 
@@ -657,6 +658,12 @@ class MainWindow(QMainWindow):
         # Help
         self.menu_bar.run_wizard_requested.connect(self._run_wizard)
         self.menu_bar.about_requested.connect(self._show_about)
+
+    def _export_chat(self) -> None:
+        """[9.6.3] Экспорт текущего чата в Markdown/HTML."""
+        if not self.chat_panel:
+            return
+        self.chat_panel.export_chat(parent=self)
 
     def _edit_agent_iterations(self) -> None:
         """Позволяет изменить лимит итераций ReAct-цикла агента через меню."""

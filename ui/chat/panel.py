@@ -2952,6 +2952,31 @@ class ChatPanel(QWidget):
             self.mode_combo.setCurrentIndex(idx)
         self._show_reasoning = bool(settings.get("show_reasoning", True))
 
+    def export_chat(self, parent: QWidget | None = None) -> None:
+        """[9.6.3] Открывает диалог экспорта текущего чата."""
+        from ui.dialogs.export_chat_dialog import ExportChatDialog
+
+        if not self._messages:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self, "Экспорт чата", "Чат пуст — нечего экспортировать."
+            )
+            return
+
+        profile_name = self._profile.name if self._profile else ""
+        dialog = ExportChatDialog(
+            messages=list(self._messages),
+            title="OlliDesk — чат",
+            model=self.get_current_model(),
+            mode=self._current_mode().value,
+            profile=profile_name,
+            project=self._project_name(),
+            default_filename=f"chat_{self._project_name() or 'ollidesk'}.md",
+            parent=parent or self,
+        )
+        dialog.exec()
+
     def set_project_open(self, is_open: bool):
         """[9.6.2] Placeholder обновляется через `_update_command_placeholder`,
         но при отсутствии проекта — стандартный.

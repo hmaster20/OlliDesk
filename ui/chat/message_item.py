@@ -240,24 +240,48 @@ def _is_table_start(lines: list[str], i: int) -> bool:
     )
 
 
-def _render_table(header: list[str], rows: list[list[str]]) -> str:
+def _render_table(
+    header: list[str], rows: list[list[str]], *, dark: bool = True
+) -> str:
+    """[9.6.6] Рендерит таблицу с учётом темы.
+
+    Тёмная: заголовок #2f2f3c / текст #e0e0e0 (monokai-стиль).
+    Светлая: заголовок #e8e8e8 / текст #1e1e1e.
+    """
+    if dark:
+        head_bg = "#2f2f3c"
+        head_color = "#e0e0e0"
+        border_color = "#4a4a55"
+        cell_bg = "transparent"
+        cell_color = "inherit"
+    else:
+        head_bg = "#e8e8e8"
+        head_color = "#1e1e1e"
+        border_color = "#c0c0c0"
+        cell_bg = "transparent"
+        cell_color = "inherit"
+
     width = len(header)
     parts = [
-        '<table border="1" cellspacing="0" cellpadding="5"'
-        ' style="border-collapse:collapse; margin:10px 0; border-color:#4a4a55;">'
+        f'<table border="1" cellspacing="0" cellpadding="5"'
+        f' style="border-collapse:collapse; margin:10px 0;'
+        f' border-color:{border_color};">'
     ]
     parts.append("<tr>")
     for cell in header:
         parts.append(
-            '<th style="background:#2f2f3c; color:#e0e0e0; padding:5px 8px;'
-            f' text-align:left;">{_inline(cell)}</th>'
+            f'<th style="background:{head_bg}; color:{head_color};'
+            f' padding:5px 8px; text-align:left;">{_inline(cell)}</th>'
         )
     parts.append("</tr>")
     for row in rows:
         padded = (row + [""] * width)[:width]
         parts.append("<tr>")
         for cell in padded:
-            parts.append(f'<td style="padding:5px 8px;">{_inline(cell)}</td>')
+            parts.append(
+                f'<td style="background:{cell_bg}; color:{cell_color};'
+                f' padding:5px 8px;">{_inline(cell)}</td>'
+            )
         parts.append("</tr>")
     parts.append("</table>")
     return "".join(parts)
@@ -279,7 +303,7 @@ def _is_block_start(lines: list[str], i: int) -> bool:
     )
 
 
-def _render_blocks(text: str, code_blocks: list[str]) -> str:
+def _render_blocks(text: str, code_blocks: list[str], *, dark: bool = True) -> str:
     lines = text.split("\n")
     out: list[str] = []
     i = 0
@@ -336,7 +360,7 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
             while i < n and lines[i].strip() and "|" in lines[i]:
                 rows.append(_split_table_row(lines[i]))
                 i += 1
-            out.append(_render_table(header, rows))
+            out.append(_render_table(header, rows, dark=dark))
             continue
 
         para: list[str] = []
@@ -348,8 +372,14 @@ def _render_blocks(text: str, code_blocks: list[str]) -> str:
     return "\n".join(out)
 
 
-def render_markdown(text: str) -> str:
-    """Преобразует markdown-ответ модели в HTML для QTextBrowser."""
+def render_markdown(text: str, *, dark: bool = True) -> str:
+    """Преобразует markdown-ответ модели в HTML для QTextBrowser.
+
+    Args:
+        text: Markdown.
+        dark: [9.6.6] Тёмная тема (по умолчанию True — как раньше).
+            Влияет только на таблицы.
+    """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if text.count("```") % 2 == 1:
         text += "\n```"
@@ -361,7 +391,7 @@ def render_markdown(text: str) -> str:
         return f"\x00CB{len(code_blocks) - 1}\x00"
 
     stashed = _CODE_FENCE_RE.sub(_stash, text)
-    body = _render_blocks(stashed, code_blocks)
+    body = _render_blocks(stashed, code_blocks, dark=dark)
     body = re.sub(r"\x00CB(\d+)\x00", lambda m: code_blocks[int(m.group(1))], body)
     return f'<div style="line-height:1.5;">{body}</div>'
 
@@ -608,6 +638,8 @@ class TextWidget(QTextBrowser):
     def __init__(self, initial_text: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self._raw_text = ""
+        # [9.6.6] Тёмная тема (для таблиц в markdown).
+        self._dark: bool = True
         self.setOpenExternalLinks(True)
         self.setReadOnly(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -625,16 +657,37 @@ class TextWidget(QTextBrowser):
         if initial_text:
             self.set_text(initial_text)
 
+    def set_dark(self, dark: bool) -> None:
+        """[9.6.6] Переключает цвет таблиц в markdown."""
+        if dark == self._dark:
+            return
+        self._dark = dark
+        if self._raw_text:
+            self.set_text(self._raw_text)
+
+    @staticmethod
+    def _detect_dark_from_palette(widget: QWidget) -> bool:
+        """Определяет тёмная ли тема по текущей палитре окна."""
+        try:
+            color = widget.palette().color(widget.palette().ColorRole.Window)
+            return color.lightness() < 128
+        except Exception:
+            return True
+
     def set_text(self, text: str) -> None:
         self._raw_text = text or ""
-        self.setHtml(render_markdown(self._raw_text))
+        # [9.6.6] Авто-детект темы при первом рендере (если не задана явно).
+        if self._raw_text and not hasattr(self, "_theme_pinned"):
+            self._dark = self._detect_dark_from_palette(self)
+            self._theme_pinned = True
+        self.setHtml(render_markdown(self._raw_text, dark=self._dark))
         self._adjust_height()
 
     def append_text(self, token: str) -> None:
         if not token:
             return
         self._raw_text += token
-        self.setHtml(render_markdown(self._raw_text))
+        self.setHtml(render_markdown(self._raw_text, dark=self._dark))
         self._adjust_height()
 
     def _adjust_height(self) -> None:

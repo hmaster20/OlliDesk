@@ -43,7 +43,8 @@ class AppMenuBar(QMenuBar):
 
     # --- File ---
     open_project_requested = Signal()
-    open_recent_requested = Signal(str)  # путь к проекту
+    open_recent_requested = Signal(str)
+    export_chat_requested = Signal()      # [9.6.3]
     confirm_web_search_changed = Signal(bool)
     settings_requested = Signal()
     exit_requested = Signal()
@@ -98,6 +99,12 @@ class AppMenuBar(QMenuBar):
 
         self._recent_menu = file_menu.addMenu("Recent Projects")
         self._refresh_recent_menu()
+
+        # [9.6.3] Экспорт текущего чата.
+        export_chat = QAction("Экспорт чата…", self)
+        export_chat.setShortcut(QKeySequence("Ctrl+Shift+X"))
+        export_chat.triggered.connect(self.export_chat_requested.emit)
+        file_menu.addAction(export_chat)
 
         file_menu.addSeparator()
 
