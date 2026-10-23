@@ -1233,9 +1233,20 @@ class ChatMessageItem(QWidget):
     def _ensure_text_widget(self) -> TextWidget:
         if self._text_widget is None:
             self._text_widget = TextWidget()
-            # Текст всегда ПОСЛЕ reasoning и tool_call-карточек — иначе при
-            # стриминге «думаю → отвечаю» reasoning окажется под ответом.
-            # Поэтому вставляем в конец контейнера.
+            # [9.6.5] Убираем лишние вертикальные отступы `<p style="margin:8px 0">`
+            # (первый/последний абзац в пузыре). Для assistant это не нужно
+            # (там воздух между блоками уместен), а для user/коротких
+            # системных сообщений — заметный разрыв до кнопки «Копировать».
+            if self.role in ("user", "system"):
+                self._text_widget.document().setDefaultStyleSheet(
+                    "p { margin: 0; }"
+                    " ul, ol { margin: 2px 0; }"
+                    " pre { margin: 4px 0; }"
+                )
+                # Пересобираем HTML — defaultStyleSheet применяется только
+                # к новому setHtml.
+                if self.content:
+                    self._text_widget.set_text(self.content)
             self._parts_layout.addWidget(self._text_widget)
         return self._text_widget
 

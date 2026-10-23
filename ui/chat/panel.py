@@ -70,6 +70,16 @@ from ui.widgets.auto_scroll import AutoScrollArea
 from ui.widgets.pipeline_selectors import PipelineSelectors
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from ui.widgets.profiles_selector import ProfilesSelector
+from core.chat_commands import (
+    ALL_COMMANDS,
+    COMMAND_TAGS,
+    DEFAULT_PLACEHOLDER,
+    detect_active_command,
+    find_first_word,
+    get_command,
+)
+from ui.widgets.command_completer import CommandCompleter
+
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -251,6 +261,11 @@ class ChatPanel(QWidget):
         self._active_tool_card = None
         # [9.5.4] Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
+
+        # [9.6.2] QCompleter для `@`-команд.
+        self._command_completer: CommandCompleter | None = None
+        # Есть ли сейчас активное автодополнение (для перехвата Tab/Enter).
+        self._command_popup_active: bool = False
 
         self._setup_ui()
 
@@ -1121,10 +1136,7 @@ class ChatPanel(QWidget):
         input_layout = QHBoxLayout()
 
         self.input_edit = QTextEdit()
-        self.input_edit.setPlaceholderText(
-            "Введите сообщение... (CTRL+Enter — отправить, @web — поиск, "
-            "@file — прикрепить файл, @dir — прикрепить папку)"
-        )
+        self.input_edit.setPlaceholderText(DEFAULT_PLACEHOLDER)
         self.input_edit.setFixedHeight(100)
         self.input_edit.setStyleSheet(
             "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
@@ -1132,6 +1144,14 @@ class ChatPanel(QWidget):
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
         input_layout.addWidget(self.input_edit, stretch=1)
+
+        # [9.6.2] Автодополнение `@`-команд.
+        self._command_completer = CommandCompleter(self)
+        self._command_completer.setWidget(self.input_edit)
+        self._command_completer.command_activated.connect(self._on_command_completed)
+        self.input_edit.textChanged.connect(self._on_input_text_changed)
+        # При скролле/фокусе — обновляем позицию popup.
+        self.input_edit.cursorPositionChanged.connect(self._update_command_placeholder)
 
         # Кнопка «Продолжить» показывается только при исчерпании лимита
         # итераций (см. _on_iteration_limit_exceeded / _continue_after_limit).
@@ -1174,7 +1194,9 @@ class ChatPanel(QWidget):
                 cursor.setCharFormat(QTextCharFormat())
                 cursor.clearSelection()
 
-                pattern = r"^(@web|@dir|@file|@path)(?=\s|$)"
+                # [9.6.2] Паттерн из реестра команд — единый источник.
+                tags_alt = "|".join(re.escape(t) for t in sorted(COMMAND_TAGS))
+                pattern = rf"^({tags_alt})(?=\s|$)"
                 for m in re.finditer(pattern, text, re.MULTILINE):
                     start, end = m.start(), m.end()
                     cursor.setPosition(start)
@@ -1191,7 +1213,112 @@ class ChatPanel(QWidget):
         except Exception as e:
             logger.warning(f"Ошибка в _highlight_web_command: {e}")
 
+    # ------------------------------------------------------------------
+    # [9.6.2] Автодополнение `@`-команд
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_input_text_changed(self) -> None:
+        """Обновляет popup и placeholder при вводе в поле.
+
+        Popup показывается только если `@` в начале первой строки
+        и курсор внутри первого слова (см. `detect_active_command`).
+        """
+        if self._command_completer is None:
+            return
+        text = self.input_edit.toPlainText()
+        cursor_pos = self.input_edit.textCursor().position()
+        prefix = detect_active_command(text, cursor_pos)
+
+        if prefix is not None:
+            self._command_completer.show_for_prefix(prefix)
+            self._command_popup_active = self._command_completer.is_popup_visible()
+        else:
+            self._command_completer.hide_popup()
+            self._command_popup_active = False
+
+        self._update_command_placeholder()
+
+    @Slot(str)
+    def _on_command_completed(self, tag: str) -> None:
+        """Пользователь выбрал команду — вставляем tag + пробел."""
+        if not tag:
+            return
+        text = self.input_edit.toPlainText()
+        first = find_first_word(text)
+        rest = text[len(first):]
+
+        # Если пользователь набрал частичный префикс — заменяем на полный tag.
+        new_text = f"{tag} {rest.lstrip()}" if rest.strip() else f"{tag} "
+        self.input_edit.blockSignals(True)
+        try:
+            self.input_edit.setPlainText(new_text)
+            cursor = self.input_edit.textCursor()
+            cursor.movePosition(Qt.TextCursor.MoveOperation.End)
+            self.input_edit.setTextCursor(cursor)
+        finally:
+            self.input_edit.blockSignals(False)
+
+        self._command_popup_active = False
+        if self._command_completer is not None:
+            self._command_completer.hide_popup()
+        self._update_command_placeholder()
+        self.input_edit.setFocus()
+
+    @Slot()
+    def _update_command_placeholder(self) -> None:
+        """[9.6.2] Показывает подсказку команды в placeholder.
+
+        Если пользователь набрал `@tag ` (с пробелом) и курсор стоит
+        после него — placeholder становится подсказкой этой команды.
+        Иначе — стандартный placeholder.
+        """
+        text = self.input_edit.toPlainText()
+        first = find_first_word(text)
+
+        # Случай 1: `@tag` (без пробела) — общая подсказка по команде.
+        if first in COMMAND_TAGS and not text[len(first):].strip():
+            cmd = get_command(first)
+            if cmd is not None:
+                self.input_edit.setPlaceholderText(cmd.placeholder)
+                return
+        # Случай 2: пользователь набрал `@tag args...` — не перетираем placeholder
+        # (аргументы уже видны, подсказка не нужна).
+        if first in COMMAND_TAGS:
+            self.input_edit.setPlaceholderText("")
+            return
+        # Случай 3: пусто — стандартный.
+        self.input_edit.setPlaceholderText(DEFAULT_PLACEHOLDER)
+
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        # [9.6.2] Tab / Enter при видимом popup — навигация и выбор в completer.
+        if (
+            obj is self.input_edit
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and self._command_popup_active
+            and self._command_completer is not None
+            and self._command_completer.is_popup_visible()
+        ):
+            popup = self._command_completer.popup()
+            key = event.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                # Навигация по popup.
+                popup.keyPressEvent(event)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+                # Выбор текущего элемента.
+                index = popup.currentIndex()
+                if index.isValid():
+                    tag = index.data(Qt.ItemDataRole.DisplayRole)
+                    self._on_command_completed(str(tag))
+                    return True
+                # Если ничего не выделено — Tab/Enter ведут себя как обычно.
+            if key == Qt.Key.Key_Escape:
+                self._command_completer.hide_popup()
+                self._command_popup_active = False
+                return True
+
         if (
             obj is self.input_edit
             and event.type() == QEvent.Type.KeyPress
@@ -1290,8 +1417,9 @@ class ChatPanel(QWidget):
         if not keep_session:
             self._session_id = None
         self._active_tool_card = None
-        self._last_assistant_widget = None
-        self._last_run_params = None
+        if self._command_completer is not None:
+            self._command_completer.hide_popup()
+            self._command_popup_active = False
         self._last_assistant_widget = None
         self._last_run_params = None
         if hasattr(self, "continue_btn"):
@@ -2825,17 +2953,17 @@ class ChatPanel(QWidget):
         self._show_reasoning = bool(settings.get("show_reasoning", True))
 
     def set_project_open(self, is_open: bool):
+        """[9.6.2] Placeholder обновляется через `_update_command_placeholder`,
+        но при отсутствии проекта — стандартный.
+        """
         if not is_open:
             self.input_edit.setPlaceholderText(
                 "Введите сообщение... (@web — поиск, @file/@dir/@path — прикрепить)"
             )
             self.status_label.setText("Проект не открыт (RAG недоступен)")
         else:
-            self.input_edit.setPlaceholderText(
-                "Введите сообщение... (CTRL+Enter — отправить, @web — поиск, "
-                "@file — прикрепить файл, @dir — прикрепить папку)"
-            )
             self.status_label.setText("Готов к работе")
+            self._update_command_placeholder()
         self.send_btn.setVisible(True)
 
     def set_registry(self, registry):
