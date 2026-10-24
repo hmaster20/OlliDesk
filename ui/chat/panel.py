@@ -290,8 +290,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # Есть ли сейчас активное автодополнение (для перехвата Tab/Enter).
         self._command_popup_active: bool = False
 
-        self._setup_ui()
+        # [9.10] Свёрнутые виджеты (placeholder'ы) в layout.
+        # Заполняется в `_maybe_collapse_old_messages`, очищается в `_clear_chat`.
+        # Раньше объявлялось только в MainWindow — из-за этого первый же
+        # `load_history` падал с AttributeError (ChatPanel — владелец layout,
+        # именно он должен хранить placeholder'ы).
+        self._collapsed_placeholders: list[CollapsedPlaceholder] = []
 
+        # [9.10] Флаг: подавляет `_maybe_collapse_old_messages` на время
+        # массовой загрузки (`load_history`), чтобы не делать O(n²).
+        self._suppress_collapse: bool = False
+
+        self._setup_ui()
         # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
         # чтобы _profiles_selector уже существовал).
         self._apply_initial_profile()
