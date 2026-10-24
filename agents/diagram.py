@@ -62,13 +62,12 @@ def _prune(graph, edges, max_nodes, roots=()):
         keep_ids.add(e.target)
     # Отбрасываем листья-методы/поля: они не архитектурные узлы,
     # но при `belongs_to`-BFS забивают top-N и создают «мусорные» строки
-    # (m LocalMessenger::GetConta…, m LocalMessenger.Forms::bt…).
     keep_ids = {
         iid for iid in keep_ids
         if iid in graph.nodes
         and graph.nodes[iid].kind not in {"method", "function", "var", "task", "provisioner"}
     }
-    nodes = [graph.nodes[i] for iid in keep_ids if iid in graph.nodes]
+    nodes = [graph.nodes[iid] for iid in keep_ids if iid in graph.nodes]
     nodes.sort(key=lambda n: -n.score)
     nodes = nodes[:max_nodes]
     nids = {n.id for n in nodes}

@@ -94,14 +94,14 @@ class AppMenuBar(QMenuBar):
         self._build_help_menu()
 
     def _build_file_menu(self) -> None:
-        file_menu = self.addMenu("&File")
+        file_menu = self.addMenu("&Файл")
 
-        open_project = QAction("&Open Project...", self)
+        open_project = QAction("&Открыть проект…", self)
         open_project.setShortcut(QKeySequence("Ctrl+O"))
         open_project.triggered.connect(self.open_project_requested.emit)
         file_menu.addAction(open_project)
 
-        self._recent_menu = file_menu.addMenu("Recent Projects")
+        self._recent_menu = file_menu.addMenu("Недавние проекты")
         self._refresh_recent_menu()
 
         # [9.6.3] Экспорт текущего чата.
@@ -118,31 +118,31 @@ class AppMenuBar(QMenuBar):
         self.confirm_web_search_action.toggled.connect(self._on_confirm_web_search_toggled)
         file_menu.addAction(self.confirm_web_search_action)
 
-        settings = QAction("&Settings...", self)
+        settings = QAction("&Настройки…", self)
         settings.triggered.connect(self.settings_requested.emit)
         file_menu.addAction(settings)
 
         file_menu.addSeparator()
 
-        exit_action = QAction("E&xit", self)
+        exit_action = QAction("В&ыход", self)
         exit_action.setShortcut(QKeySequence("Ctrl+Q"))
         exit_action.triggered.connect(self.exit_requested.emit)
         file_menu.addAction(exit_action)
 
     def _build_view_menu(self) -> None:
-        view_menu = self.addMenu("&View")
+        view_menu = self.addMenu("&Вид")
 
-        show_chat = QAction("Show &Chat Tab", self)
+        show_chat = QAction("Показать вкладку &Чат", self)
         show_chat.setShortcut(QKeySequence("Ctrl+Shift+C"))
         show_chat.triggered.connect(self.show_chat_requested.emit)
         view_menu.addAction(show_chat)
 
-        show_editor = QAction("Show &Editor Tab", self)
+        show_editor = QAction("Показать вкладку &Редактор", self)
         show_editor.setShortcut(QKeySequence("Ctrl+Shift+E"))
         show_editor.triggered.connect(self.show_editor_requested.emit)
         view_menu.addAction(show_editor)
 
-        self.project_structure_action = QAction("Показать/Скрыть &структуру проекта", self)
+        self.project_structure_action = QAction("Показать/скрыть &структуру проекта", self)
         self.project_structure_action.setShortcut(QKeySequence("F4"))
         self.project_structure_action.setCheckable(True)
         self.project_structure_action.setChecked(False)
@@ -151,20 +151,18 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        theme = QAction("Toggle Dark/Light Theme", self)
+        theme = QAction("Переключить тему (тёмная / светлая)", self)
         theme.setShortcut(QKeySequence("Ctrl+T"))
         theme.triggered.connect(self.theme_toggle_requested.emit)
         view_menu.addAction(theme)
 
         view_menu.addSeparator()
 
-        manage_models = QAction("Manage Models...", self)
+        manage_models = QAction("Управление моделями Ollama…", self)
         manage_models.triggered.connect(self.manage_models_requested.emit)
         view_menu.addAction(manage_models)
 
-        view_menu.addSeparator()
-
-        slm_models = QAction("Локальные модели (SLM)...", self)
+        slm_models = QAction("Локальные модели (SLM)…", self)
         slm_models.triggered.connect(self.slm_models_requested.emit)
         view_menu.addAction(slm_models)
 
@@ -189,13 +187,13 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        edit_prompts = QAction("Edit Prompts & Roles...", self)
+        edit_prompts = QAction("Редактор промптов и ролей…", self)
         edit_prompts.triggered.connect(self.edit_prompts_requested.emit)
         view_menu.addAction(edit_prompts)
 
         view_menu.addSeparator()
 
-        manage_sessions = QAction("Manage Sessions...", self)
+        manage_sessions = QAction("Менеджер сессий…", self)
         manage_sessions.triggered.connect(self.manage_sessions_requested.emit)
         view_menu.addAction(manage_sessions)
 
@@ -213,7 +211,7 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        edit_iterations = QAction("Лимит итераций агента...", self)
+        edit_iterations = QAction("Лимит итераций агента…", self)
         edit_iterations.triggered.connect(self.edit_iterations_requested.emit)
         view_menu.addAction(edit_iterations)
 
@@ -226,15 +224,15 @@ class AppMenuBar(QMenuBar):
         view_menu.addAction(palette_action)
 
     def _build_help_menu(self) -> None:
-        help_menu = self.addMenu("&Help")
+        help_menu = self.addMenu("&Справка")
 
-        wizard = QAction("Run Setup &Wizard...", self)
+        wizard = QAction("Запустить &мастер настройки…", self)
         wizard.triggered.connect(self.run_wizard_requested.emit)
         help_menu.addAction(wizard)
 
         help_menu.addSeparator()
 
-        about = QAction("&About", self)
+        about = QAction("&О программе", self)
         about.triggered.connect(self.about_requested.emit)
         help_menu.addAction(about)
 

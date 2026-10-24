@@ -1395,8 +1395,8 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(
                 self,
-                "Project not found",
-                f"Project path does not exist:\n{path}",
+                "Проект не найден",
+                f"Папка проекта не существует:\n{path}",
             )
             projects = self.config.recent_projects
             if path in projects:
@@ -1942,11 +1942,16 @@ class MainWindow(QMainWindow):
         self.theme_changed.emit(new_theme)
 
     def _show_about(self) -> None:
-        """Показывает окно About."""
+        """Показывает окно «О программе»."""
+        from core._version import __version__
+
         QMessageBox.about(
             self,
-            "About OlliDesk",
-            "OlliDesk v1.0.0\n\nЛокальный AI-ассистент для написания кода.\n\nPowered by Ollama + PySide6",
+            "О программе OlliDesk",
+            f"OlliDesk v{__version__}\n\n"
+            "Локальный AI-ассистент для написания кода.\n\n"
+            "Работает на llama.cpp (SLM) и Ollama.\n"
+            "UI — PySide6, редактор — Monaco.",
         )
 
     def closeEvent(self, event):
