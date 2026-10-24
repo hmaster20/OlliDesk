@@ -30,6 +30,7 @@ from agents.agent_loop import AgentContext
 from agents.context_loader import load_agents_context
 from agents.hypotheses import HypothesisStore
 from agents.investigation import is_research_question
+from agents.model_pool import Role
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
 from agents.rule_based_fallback import RuleBasedFallback

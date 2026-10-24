@@ -99,6 +99,7 @@ class ModelCheckThread(QThread):
 
     async def _check(self):
         from agents.ollama_client import OllamaClient
+        from core.exceptions import OllamaConnectionError
 
         client = OllamaClient(base_url=self.base_url)
 
@@ -126,6 +127,15 @@ class ModelCheckThread(QThread):
                     results[model] = supports
                     self.registry.update_tool_support(model, supports)
                     self.model_checked.emit(model, supports)
+                except OllamaConnectionError as e:
+                    # [FIX] Сервис недоступен. Перебирать остальные N моделей
+                    # бессмысленно — все упадут с тем же таймаутом. Логируем
+                    # ОДНУ строку вместо 39.
+                    logger.warning(
+                        f"Ollama недоступна, проверка моделей прервана на "
+                        f"{i + 1}/{total} ({model}): {e}"
+                    )
+                    break
                 except Exception as e:
                     logger.error(f"Ошибка проверки модели {model}: {e}")
                     results[model] = False
@@ -273,7 +283,8 @@ class MainWindow(QMainWindow):
         self.file_tree_controller = FileTreeController(parent=self)
         self.file_tree_controller.file_open_requested.connect(self.open_file_in_editor)
         # [9.8] Diff из карточки write_file → Monaco DiffEditor.
-        self.chat_panel.diff_requested.connect(self._on_show_diff)
+        # ВАЖНО: chat_panel создаётся позже (в _create_center_panel). Подключение
+        # сигнала diff_requested перенесено туда — здесь chat_panel ещё нет.
         self.file_tree_controller.file_diff_requested.connect(self._show_file_diff)
         self.file_tree_controller.file_renamed.connect(self._on_file_renamed)
         self.file_tree_controller.file_deleted.connect(self._on_file_deleted)
@@ -441,6 +452,10 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_role_manager(self.role_manager)
         self.chat_panel.set_prompt_manager(self.prompt_manager)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
+        # [9.8] Diff из карточки write_file → Monaco DiffEditor.
+        # Подключаем ЗДЕСЬ: chat_panel уже создан (перенесено из _setup_ui,
+        # где обращение к атрибуту падало с AttributeError).
+        self.chat_panel.diff_requested.connect(self._on_show_diff)
 
         self.tab_widget.addTab(self.chat_panel, "💬 Чат")
 
@@ -2106,6 +2121,34 @@ class MainWindow(QMainWindow):
         ):
             return
 
+        # [FIX] Проверка идёт через Ollama API. Без включённого/запущенного
+        # Ollama перебор N моделей даёт N × 5 сек таймаутов и N строк ERROR.
+        try:
+            from core.config import load_config
+
+            cfg = load_config()
+            if "ollama" not in cfg.backends.enabled:
+                QMessageBox.information(
+                    self,
+                    "Ollama выключена",
+                    "Проверка поддержки инструментов выполняется через Ollama API.\n\n"
+                    "Ollama сейчас выключена в списке активных бэкендов: "
+                    "Файл → Настройки → Бэкенды LLM.",
+                )
+                return
+        except Exception:
+            logger.debug("Не удалось прочитать конфиг для проверки Ollama", exc_info=True)
+
+        if not self._ollama_connected:
+            QMessageBox.information(
+                self,
+                "Ollama недоступна",
+                "Ollama не отвечает на localhost:11434, поэтому проверка "
+                "поддержки инструментов невозможна.\n\n"
+                "Запустите сервис в терминале: `ollama serve`.",
+            )
+            return
+
         self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
         self.chat_panel.set_refresh_button_text("⏹ Стоп")
         self._is_checking = True
@@ -2117,16 +2160,37 @@ class MainWindow(QMainWindow):
         self._model_check_thread.start()
 
     def _stop_model_check(self):
-        """Останавливает проверку моделей."""
+        """Останавливает проверку моделей.
+
+        [FIX] Не используем terminate(): Python-поток с asyncio.run внутри
+        через PyThreadState_SetAsyncExc не убивается — только портится
+        состояние (в логе видно, что после «прервана» проверки продолжались).
+        Вместо этого шлём cancel() и ждём штатного завершения: текущий
+        check_tools_support выйдет по httpx-таймауту (~5-10 сек), затем
+        цикл увидит self._cancel и завершится.
+        """
         if self._model_check_thread and self._model_check_thread.isRunning():
             self._model_check_thread.cancel()
-            self._model_check_thread.wait(2000)
-            if self._model_check_thread.isRunning():
-                self._model_check_thread.terminate()
-                self._model_check_thread.wait(1000)
+            self.status_bar.showMessage("⏹ Останавливаю проверку (до 10 сек)...")
+            self.chat_panel.set_refresh_button_text("⏹ Останавливаю…")
+            # Даём потоку время корректно выйти. UI не блокируется надолго:
+            # 10 сек — потолок на один httpx-таймаут.
+            if self._model_check_thread.wait(10000):
+                self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
+            else:
+                # Поток всё ещё живёт (например, соединение висит дольше).
+                # НЕ убиваем — выйдет сам по cancel(). Сообщаем пользователю.
+                logger.warning(
+                    "ModelCheckThread не завершился за 10 сек; "
+                    "продолжает работу в фоне и выйдет по cancel()"
+                )
+                self.status_bar.showMessage(
+                    "⏹ Останавливаю проверку в фоне (завершится при следующем ответе Ollama)",
+                    5000,
+                )
+                return
         self._is_checking = False
         self.chat_panel.set_refresh_button_text("🔄")
-        self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
 
     @Slot(str, int, int)
     def _on_model_check_progress(self, model_name: str, current: int, total: int):

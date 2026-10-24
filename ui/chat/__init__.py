@@ -19,6 +19,7 @@ from ui.chat.threads import (
 __all__ = [
     "AgentChatThread",
     "ChatActivityItem",
+    "ChatDiagramItem",
     "ChatHypothesisItem",
     "ChatMessageItem",
     "ChatPanel",

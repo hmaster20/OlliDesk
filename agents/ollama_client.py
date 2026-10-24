@@ -539,6 +539,12 @@ class OllamaClient:
             response = await client.post(f"{self.base_url}/api/chat", json=request_data)
             response.raise_for_status()
             return True
+        except httpx.ConnectError as e:
+            # [FIX] Сервис недоступен — это НЕ «модель не поддерживает tools»,
+            # а «нет соединения». Пробрасываем отдельным исключением, чтобы
+            # ModelCheckThread мог прервать перебор 39 моделей после первой
+            # же сетевой ошибки, а не ждать 39 × 5 сек.
+            raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 400 and "does not support tools" in e.response.text:
                 logger.info(f"Модель {model} не поддерживает инструменты.")

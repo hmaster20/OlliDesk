@@ -1369,3 +1369,250 @@ class ChatMessageItem(QWidget):
 
     def _render_markdown_to_html(self, text: str) -> str:
         return render_markdown(text)
+
+
+# ============================================================================
+# ChatDiagramItem: диаграмма компонентов (ASCII + опциональный Mermaid)
+# ============================================================================
+
+
+class ChatDiagramItem(QWidget):
+    """Виджет диаграммы архитектуры: ASCII-схема, опционально Mermaid.
+
+    ASCII генерируется кодом `agents.diagram.render_architecture` — имена
+    блоков и связи гарантированно согласованы с графом проекта. Mermaid
+    доступен как альтернативный вид (требует QWebEngine + локальный
+    vendor/mermaid.min.js; при отсутствии — кнопка отключается).
+    """
+
+    def __init__(
+        self,
+        ascii_diagram: str = "",
+        mermaid_diagram: str = "",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._ascii = ascii_diagram or ""
+        self._mermaid = mermaid_diagram or ""
+        self._mermaid_enabled = False
+
+        container = QFrame(self)
+        container.setObjectName("_diagram_item")
+        container.setStyleSheet(
+            "QFrame#_diagram_item {"
+            " background: #1b1b22; border: 1px solid #2f2f3c;"
+            " border-radius: 8px; padding: 8px 10px; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.addWidget(container)
+
+        body = QVBoxLayout(container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(4)
+
+        header = QHBoxLayout()
+        title = QLabel("📊 Схема компонентов")
+        title.setStyleSheet("color: #d4d4d4; font-size: 12px; font-weight: 600;")
+        header.addWidget(title)
+        header.addStretch()
+
+        btn_style = (
+            "QPushButton { background: transparent; border: 1px solid #444;"
+            " border-radius: 10px; color: #888; font-size: 11px;"
+            " padding: 2px 10px; }"
+            " QPushButton:hover { color: #d4d4d4; }"
+            " QPushButton:checked { background: #4a6741; color: #fff;"
+            " border-color: #4a6741; }"
+            " QPushButton:disabled { color: #555; border-color: #333; }"
+        )
+
+        self._ascii_btn = QPushButton("ASCII")
+        self._ascii_btn.setCheckable(True)
+        self._ascii_btn.setChecked(True)
+        self._ascii_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ascii_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._ascii_btn.setStyleSheet(btn_style)
+        self._ascii_btn.clicked.connect(lambda: self._switch_view("ascii"))
+        header.addWidget(self._ascii_btn)
+
+        self._mermaid_btn = QPushButton("Mermaid")
+        self._mermaid_btn.setCheckable(True)
+        self._mermaid_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mermaid_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mermaid_btn.setStyleSheet(btn_style)
+        self._mermaid_btn.clicked.connect(lambda: self._switch_view("mermaid"))
+        header.addWidget(self._mermaid_btn)
+
+        body.addLayout(header)
+
+        # Просмотрщик: DiagramView из ui/mermaid_view.py.
+        # show_ascii работает всегда; show_mermaid — только после
+        # enable_mermaid() == True.
+        from ui.mermaid_view import DiagramView
+
+        self._view = DiagramView()
+        self._view.show_ascii(self._ascii)
+        body.addWidget(self._view)
+
+        if self._mermaid:
+            try:
+                self._mermaid_enabled = bool(self._view.enable_mermaid())
+            except Exception as e:
+                logger.debug(f"ChatDiagramItem: mermaid недоступен: {e}")
+                self._mermaid_enabled = False
+
+        if not self._mermaid_enabled:
+            self._mermaid_btn.setEnabled(False)
+            self._mermaid_btn.setToolTip(
+                "Mermaid недоступен: нужен QWebEngine и "
+                "ui/web_editor/vendor/mermaid.min.js."
+            )
+
+    def _switch_view(self, kind: str) -> None:
+        if kind == "mermaid":
+            if not self._mermaid_enabled:
+                self._ascii_btn.setChecked(True)
+                self._mermaid_btn.setChecked(False)
+                return
+            self._ascii_btn.setChecked(False)
+            self._mermaid_btn.setChecked(True)
+            try:
+                self._view.show_mermaid(self._mermaid)
+            except Exception as e:
+                logger.warning(f"ChatDiagramItem: mermaid render failed: {e}")
+                self._ascii_btn.setChecked(True)
+                self._mermaid_btn.setChecked(False)
+                self._view.show_ascii(self._ascii)
+        else:
+            self._mermaid_btn.setChecked(False)
+            self._ascii_btn.setChecked(True)
+            self._view.show_ascii(self._ascii)
+
+
+# ============================================================================
+# ChatHypothesisItem: гипотеза исследования (id, statement, статус)
+# ============================================================================
+
+
+_HYPOTHESIS_STATUS_STYLES: dict[str, tuple[str, str]] = {
+    "open": ("#4a90e2", "🟦"),
+    "verified": ("#4caf50", "✅"),
+    "refuted": ("#e57373", "❌"),
+    "partial": ("#ffb74d", "🟨"),
+    "inconclusive": ("#888888", "⚪"),
+}
+
+
+class ChatHypothesisItem(QWidget):
+    """Виджет одной гипотезы исследования.
+
+    Используется в research-режиме: агент записывает гипотезу через
+    `record_hypothesis` → в ленте чата появляется виджет; после проверки
+    `update_hypothesis` обновляет цвет/иконку/доказательство.
+    """
+
+    def __init__(
+        self,
+        hypothesis_id: str,
+        statement: str,
+        status: str = "open",
+        evidence: str = "",
+        verification_method: str = "",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._id = hypothesis_id or "?"
+        self._statement = statement or ""
+        self._status = status or "open"
+        self._evidence = evidence or ""
+        self._verification = verification_method or ""
+
+        container = QFrame(self)
+        container.setObjectName("_hypothesis_item")
+        self._container = container
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.addWidget(container)
+
+        body = QVBoxLayout(container)
+        body.setContentsMargins(10, 6, 10, 6)
+        body.setSpacing(3)
+
+        self._header = QLabel()
+        self._header.setTextFormat(Qt.TextFormat.RichText)
+        self._header.setWordWrap(True)
+        self._header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.addWidget(self._header)
+
+        self._detail = QLabel()
+        self._detail.setTextFormat(Qt.TextFormat.RichText)
+        self._detail.setWordWrap(True)
+        self._detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.addWidget(self._detail)
+
+        self._refresh()
+
+    def update_state(
+        self,
+        status: str,
+        evidence: str = "",
+        verification_method: str = "",
+    ) -> None:
+        """Обновляет статус/доказательство гипотезы (из `update_hypothesis`)."""
+        self._status = status or "open"
+        if evidence:
+            self._evidence = evidence
+        if verification_method:
+            self._verification = verification_method
+        self._refresh()
+
+    @staticmethod
+    def _escape(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _refresh(self) -> None:
+        color, icon = _HYPOTHESIS_STATUS_STYLES.get(self._status, ("#888888", "•"))
+
+        stmt = self._statement
+        if len(stmt) > 300:
+            stmt = stmt[:297] + "…"
+
+        self._header.setText(
+            f'<span style="color: {color}; font-weight: 700;">{icon}</span> '
+            f'<span style="color: #888; font-size: 11px;">[{self._escape(self._id)}]</span> '
+            f'<span style="color: #d4d4d4; font-weight: 600;">{self._escape(stmt)}</span>'
+        )
+
+        if self._status == "open" and self._verification:
+            verification = self._verification
+            if len(verification) > 220:
+                verification = verification[:217] + "…"
+            self._detail.setText(
+                f'<span style="color: #7a7a8a;">Проверить: {self._escape(verification)}</span>'
+            )
+            self._detail.setVisible(True)
+        elif self._evidence:
+            evidence = self._evidence
+            if len(evidence) > 220:
+                evidence = evidence[:217] + "…"
+            self._detail.setText(
+                f'<span style="color: #9a9a9a;">Доказательство: {self._escape(evidence)}</span>'
+            )
+            self._detail.setVisible(True)
+        else:
+            self._detail.setVisible(False)
+
+        self._detail.setStyleSheet(
+            "font-size: 11px;"
+            " font-family: 'Consolas','Cascadia Mono',monospace; padding: 0;"
+        )
+        self._container.setStyleSheet(
+            "QFrame#_hypothesis_item {"
+            " background: rgba(120, 120, 140, 0.06);"
+            f" border-left: 3px solid {color};"
+            " border-radius: 6px;"
+            " padding: 0;"
+            "}"
+        )
