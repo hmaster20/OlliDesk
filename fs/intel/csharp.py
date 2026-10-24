@@ -39,6 +39,107 @@ _CSPROJ_START = re.compile(r"<StartupObject>([^<]+)</StartupObject>", re.I)
 _CSPROJ_REF = re.compile(r"<(?:Project)?Reference\s+(?:Include|Update)=\"([^\"]+)\"", re.I)
 _PARTIAL_RE = re.compile(r"\bpartial\s+(?:class|struct)\s+(\w+)")
 
+# ---------------------------------------------------------------
+# Извлечение тела метода и вызовов (call-graph без type-checker)
+# ---------------------------------------------------------------
+
+# `new ClassName(` — создание объекта. Самая надёжная эвристика.
+_CALL_NEW_RE = re.compile(r"\bnew\s+([A-Z]\w+)\s*[({]")
+# `X.MethodName(` — вызов метода у произвольного объекта.
+_CALL_METHOD_RE = re.compile(r"\.([A-Za-z_]\w*)\s*\(")
+# `MethodName(` — вызов статического метода без префикса (редко, шумно).
+_CALL_BARE_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,})\s*\(")
+
+# Имена из BCL/фреймворка и коллекционных методов — не архитектурные вызовы.
+_BUILTIN_METHODS = frozenset({
+    "ToString", "Equals", "GetHashCode", "GetType", "ReferenceEquals",
+    "Add", "AddRange", "Remove", "RemoveAt", "RemoveAll", "Contains",
+    "ContainsKey", "ContainsValue", "Clear", "Count", "Any", "All",
+    "First", "FirstOrDefault", "Last", "LastOrDefault", "Where", "Select",
+    "SelectMany", "ToArray", "ToList", "ToDictionary", "ForEach",
+    "Trim", "TrimStart", "TrimEnd", "Split", "Replace", "Substring",
+    "StartsWith", "EndsWith", "IndexOf", "LastIndexOf", "ToLower", "ToUpper",
+    "Write", "WriteLine", "Read", "ReadLine", "Flush", "Dispose", "Close",
+    "Show", "ShowDialog", "Hide", "Invoke", "BeginInvoke", "EndInvoke",
+    "Format", "Parse", "TryParse", "Concat", "Join",
+    "GetString", "GetBytes", "GetBuffer", "GetLength",
+})
+
+
+def _extract_method_body(text: str, from_pos: int, max_len: int = 4000) -> str:
+    """Возвращает тело `{ ... }`, начиная с первой `{` после from_pos.
+
+    Небольшой баланс-парсер: учитывает вложенные скобки и строковые
+    литералы. Ограничен max_len символов, чтобы не читать многострочный
+    файл в память повторно.
+
+    Args:
+        text: Содержимое файла.
+        from_pos: Позиция, с которой ищем открывающую скобку.
+        max_len: Максимальная длина тела.
+
+    Returns:
+        Тело метода (включая скобки) или пустая строка.
+    """
+    open_brace = text.find("{", from_pos)
+    if open_brace < 0:
+        return ""
+    end_limit = min(len(text), open_brace + max_len)
+    depth = 0
+    i = open_brace
+    in_str: str | None = None
+    while i < end_limit:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in ('"', "'"):
+            in_str = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace : i + 1]
+        i += 1
+    return text[open_brace:end_limit]
+
+
+def _extract_calls(body: str) -> list[str]:
+    """Извлекает имена вызываемых сущностей из тела метода.
+
+    Возвращает **короткие имена** (без namespace) — сопоставление
+    с символами делает `DependencyGraph._link_calls`. Приоритет:
+      * `new X(...)` — конструктор (надёжно);
+      * `X.Method(...)` — метод у объекта;
+      * `Method(...)` — статический вызов (эвристика, фильтруется).
+
+    Args:
+        body: Тело метода (результат `_extract_method_body`).
+
+    Returns:
+        Уникальные имена, отсортированные по алфавиту.
+    """
+    calls: set[str] = set()
+    for m in _CALL_NEW_RE.finditer(body):
+        calls.add(m.group(1))
+    for m in _CALL_METHOD_RE.finditer(body):
+        name = m.group(1)
+        if name in _BUILTIN_METHODS or len(name) < 3:
+            continue
+        calls.add(name)
+    for m in _CALL_BARE_RE.finditer(body):
+        name = m.group(1)
+        if name in _BUILTIN_METHODS or len(name) < 4:
+            continue
+        # Исключаем ключевые слова/типы.
+        if name in {"String", "Object", "Exception", "Task", "List", "Dictionary"}:
+            continue
+        calls.add(name)
+    return sorted(calls)
 
 def parse_csharp_file(p: Path, rec: FileRecord):
     """-> (symbols, domain_piece). Домен-пьеc для .csproj/AGENTS.md."""
@@ -73,6 +174,18 @@ def parse_csharp_file(p: Path, rec: FileRecord):
             )
         )
     # Методы верхнего уровня класса (по индентации внутри class-блока — эвристика).
+    # Позиции классов — нужны, чтобы каждому методу приписать владельца.
+    class_positions = [(cm.start(), cm.group(2)) for cm in _CLASS_RE.finditer(text)]
+
+    def _owner_class_at(pos: int) -> str | None:
+        owner: str | None = None
+        for cstart, cname in class_positions:
+            if cstart < pos:
+                owner = cname
+            else:
+                break
+        return owner
+
     for m in re.finditer(
         r"^\s*(?:(?:public|internal|private|protected|static|async|virtual|override|sealed)\s+)+"
         r"[\w<>\[\],.\s?]+?\s+(\w+)\s*\([^)]*\)\s*(?:=>|\{)",
@@ -81,6 +194,16 @@ def parse_csharp_file(p: Path, rec: FileRecord):
     ):
         name = m.group(1)
         line = text.count("\n", 0, m.start()) + 1
+
+        # NEW: тело метода → список вызываемых имён (call-graph).
+        body = _extract_method_body(text, m.end())
+        calls = _extract_calls(body) if body else []
+
+        owner_class = _owner_class_at(m.start())
+        metadata: dict = {"calls": calls}
+        if owner_class:
+            metadata["owner_class"] = owner_class
+
         syms.append(
             Symbol(
                 qualified_name=f"{namespace}::{name}" if namespace else name,
@@ -88,6 +211,7 @@ def parse_csharp_file(p: Path, rec: FileRecord):
                 file=rec.path,
                 line=line,
                 signature=m.group(0).strip()[:160],
+                metadata=metadata,
             )
         )
     # Entry-point сигнатуры.

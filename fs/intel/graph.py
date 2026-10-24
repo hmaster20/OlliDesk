@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from loguru import logger
 
 if TYPE_CHECKING:
     from fs.intel import FileRecord, Symbol
@@ -118,6 +119,8 @@ class DependencyGraph:
             g.add_edge(GraphEdge(source=nid, target=f"file:{s.file}", kind="belongs_to"))
         # Ребра imports/references из usings/imports.
         g._link_imports(files, symbols, domain)
+        # NEW: рёбра calls/creates между КЛАССАМИ (call-graph без LSP).
+        g._link_calls()
         # Доменные рёбра (Ansible role->role, TF module->module, Vagrant provision chain).
         g._link_domain(domain)
         g._compute_degrees()
@@ -168,6 +171,100 @@ class DependencyGraph:
                     self.add_edge(
                         GraphEdge(source=f"file:{s.file}", target=tgt, kind="imports", confidence=0.8)
                     )
+
+    def _link_calls(self) -> None:
+        """Рёбра calls между КЛАССАМИ по телам методов.
+
+        Зачем именно между классами: `render_architecture._prune` отбрасывает
+        листья-методы (они не архитектурные узлы). Если бы рёбра `calls`
+        вели метод→метод, они бы все отфильтровались вместе с узлами, и
+        схема осталась бы «файлы без связей».
+
+        Агрегация метода → его owner_class даёт архитектурно осмысленные
+        рёбра: `MainForm → TcpConnectionManager`, `CryptoService → KeyManager`,
+        `MessageBufferManager → HistoryManager` и т. п.
+
+        Точность: confidence=0.6 (эвристика по имени, без type-checker).
+        Ограничение: MAX_EDGES=500, чтобы `_to_layers` BFS не разрастался.
+        """
+        class_nodes: dict[str, str] = {}
+        method_nodes: dict[str, str] = {}
+        method_owner: dict[str, str] = {}
+        # Коллизии коротких имён: `LocalMessenger.Program` и
+        # `LocalMessenger.Tests.Program` дадут одинаковый `short="Program"`.
+        # Храним список — при выборе предпочитаем тот, что ближе по
+        # namespace к вызывающему (в `_link_calls` ниже).
+        class_nodes_multi: dict[str, list[str]] = {}
+        class_node_names: dict[str, str] = {}  # nid -> полное имя
+
+        for nid, n in self.nodes.items():
+            if n.kind == "class":
+                short = n.name.rsplit(".", 1)[-1]
+                class_nodes.setdefault(short, nid)
+                class_nodes_multi.setdefault(short, []).append(nid)
+                class_node_names[nid] = n.name
+            elif n.kind == "method":
+                short = n.name.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
+                method_nodes.setdefault(short, nid)
+                owner = n.metadata.get("owner_class")
+                if isinstance(owner, str) and owner in class_nodes:
+                    method_owner[nid] = class_nodes[owner]
+
+        if not class_nodes:
+            return
+
+        seen: set[tuple[str, str]] = set()
+        added = 0
+        MAX_EDGES = 500
+
+        for nid, n in self.nodes.items():
+            if n.kind != "method":
+                continue
+            owner_nid = method_owner.get(nid)
+            if owner_nid is None:
+                continue
+            calls = n.metadata.get("calls") or []
+            owner_name = class_node_names.get(owner_nid, "")
+            owner_ns = owner_name.rsplit(".", 1)[0] if "." in owner_name else ""
+
+            for called in calls:
+                # Приоритет 1: прямой вызов класса (`new X(`) — если есть коллизия,
+                # выбираем класс из того же namespace.
+                candidates = class_nodes_multi.get(called) or []
+                target_class = None
+                if candidates:
+                    same_ns = [
+                        c for c in candidates
+                        if class_node_names.get(c, "").rsplit(".", 1)[0] == owner_ns
+                    ]
+                    target_class = same_ns[0] if same_ns else candidates[0]
+                # Приоритет 2: вызов метода — через method_owner.
+                if target_class is None:
+                    target_method = method_nodes.get(called)
+                    if target_method and target_method in method_owner:
+                        target_class = method_owner[target_method]
+                if target_class is None or target_class == owner_nid:
+                    continue
+                key = (owner_nid, target_class)
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.add_edge(
+                    GraphEdge(
+                        source=owner_nid,
+                        target=target_class,
+                        kind="calls",
+                        confidence=0.6,
+                    )
+                )
+                added += 1
+                if added >= MAX_EDGES:
+                    break
+            if added >= MAX_EDGES:
+                break
+
+        if added:
+            logger.debug(f"Граф: добавлено {added} рёбер calls между классами")
 
     def _link_domain(self, domain: dict) -> None:
         ans = domain.get("ansible") or {}

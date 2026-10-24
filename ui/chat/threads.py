@@ -694,6 +694,14 @@ class _ModelPoolLoadThread(QThread):
                 self.error.emit(f"analyst optimize failed: {e}")
                 return
 
+            # Если planner и analyst указывают на один файл — грузим ОДИН клиент.
+            # Второй роль получит тот же клиент из кэша `ModelPool.add_role`.
+            same_file = planner_path == analyst_path
+            if same_file:
+                self.progress.emit(
+                    f"⚠️ planner и analyst используют один файл "
+                    f"({planner_path.name}), грузим один раз"
+                )
             specs: dict[Role, RoleSpec] = {
                 Role.PLANNER: RoleSpec(
                     role=Role.PLANNER,

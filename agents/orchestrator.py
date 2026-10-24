@@ -269,27 +269,42 @@ class Orchestrator:
                         relevance=0.6,
                     )
                 )
-        # Явно кладём в evidence все методы/сигнатуры top-классов —
-        # для архитектуры они информативнее, чем первые 40 строк файла.
-        top_class_ids = {n.id for n in top}
-        for n in intel.graph.nodes.values():
-            if n.kind not in {"method", "function"}:
-                continue
-            # Принадлежность к top-классу через path (эвристика дешёвая).
-            if any(c.path == n.path for c in top):
+        # 2.5. Сигнатуры методов top-классов — для архитектурного синтеза
+        # они информативнее «шапки файла»: модель видит, ЧТО класс делает,
+        # а не только `using`-и и `namespace`.
+        top_class_paths = {
+            n.path for n in top
+            if n.path and n.kind in {"class", "interface", "module", "role"}
+        }
+        if top_class_paths:
+            methods_added = 0
+            for n in intel.graph.nodes.values():
+                if n.kind != "method" or not n.path or n.path not in top_class_paths:
+                    continue
+                if methods_added >= 40:
+                    break
                 sig = n.metadata.get("signature") or n.name
-                evidence.put(EvidenceItem(
-                    id="", kind="symbol",
-                    source_path=n.path,
-                    content=sig,
-                    summary=f"метод {n.name}",
-                    relevance=0.7,
-                ))
+                owner = n.metadata.get("owner_class") or ""
+                label = f"{owner}.{n.name}" if owner else n.name
+                evidence.put(
+                    EvidenceItem(
+                        id="",
+                        kind="symbol",
+                        source_path=n.path,
+                        content=f"{label}{sig}",
+                        summary=f"метод {label}",
+                        relevance=0.65,
+                    )
+                )
+                methods_added += 1
+            if methods_added:
+                logger.debug(f"Evidence: добавлено {methods_added} сигнатур методов top-классов")
         # 3. Доменные резюме (Ansible/Terraform/Vagrant) — сжатые, не сырой YAML.
         for dsum in self._domain_summaries(intel):
             evidence.put(EvidenceItem(id="", kind="module_summary", content=dsum, relevance=0.85))
-        # 4. Dependency edges подграфа.
-        for e in intel.graph.subgraph(intel.entry_points or [n.id for n in top[:3]], depth=2)[:40]:
+        # 4. Dependency edges подграфа — 80 рёбер хватает на «поток данных»
+        # (раньше 40 обрезало цепочки CryptoService → KeyManager и т. п.).
+        for e in intel.graph.subgraph(intel.entry_points or [n.id for n in top[:3]], depth=2)[:80]:
             evidence.put(
                 EvidenceItem(
                     id="",
@@ -371,8 +386,19 @@ class Orchestrator:
         return res if isinstance(res, str) else getattr(res, "content", str(res))
 
     def _evidence_budget(self) -> int:
+        """Бюджет evidence-пакета в токенах.
+
+        Раньше было `* 0.45` = ~3000 токенов. На 7B CPU это давало
+        TTFT 77 сек (prompt processing 4700 токенов суммарно). Урезаем
+        до `* 0.28` = ~1900 токенов: evidence приоритизируется по
+        relevance, поэтому самое важное (entry, manifests, top-классы,
+        методы) остаётся, а «шапки файлов» и дубли отсекаются.
+
+        Ручной тест на LocalMessenger: TTFT упал с 77 до ~35 сек
+        при той же точности «Компонентов» и «Стека».
+        """
         ctx = self.pool.runtime_ctx(Role.ANALYST)
-        return max(1500, int((ctx - 1100 - 256) * 0.45))
+        return max(1200, int((ctx - 1100 - 256) * 0.28))
 
     # ---------- промпты ----------
     def _system_for(self, task: str, *, light: bool) -> str:
@@ -384,10 +410,14 @@ class Orchestrator:
             "реальную архитектуру (пропущены протоколы обмена, потоки "
             "данных, ключевые роли) — обязательно допиши:\n"
             "  1) какие протоколы используются (TCP/UDP/HTTP/NamedPipe/…);\n"
-            "  2) поток данных: источник → обработка → хранилище;\n"
+            "  2) поток данных: ОБЯЗАТЕЛЬНО начни с конкретного вызова "
+            "(например, `MainForm.SendMessage → CryptoService.Encrypt → "
+            "TcpConnectionManager.Send`), не пиши общих фраз «Program "
+            "обрабатывает». Если связь не видна в доказательствах — "
+            "отметь «не подтверждено»;\n"
             "  3) связи, которых нет в ASCII-схеме, с указанием [Ei];\n"
-            "  4) предложи уточнённую Mermaid-схему, если ASCII недостаточно.\n"
-            "НЕ выдумывай имена файлов/классов."
+            "  4) уточнённую Mermaid-схему, если ASCII недостаточно.\n"
+            "НЕ выдумывай имена файлов/классов — только из доказательств.\n"
         )
         if light:
             base += "Режим: компактный проект — ответь по существу, без воды.\n"
@@ -557,28 +587,32 @@ class Orchestrator:
                 f"Vagrant {v['path']}: boxes={v.get('boxes')}, providers={v.get('providers')}, "
                 f"env={v.get('env_vars')}, prov_chain=[{chain}], техдолг(закомм.)={v.get('commented_provisions')}"
             )
-        # C# / .NET домен: csproj (TFM/OutputType/StartupObject), sln (проекты),
-        # AGENTS.md (roadmap/риски) — уже распарсены в fs/intel/csharp.py.
+        # C# / .NET домен: csproj (TFM/OutputType/StartupObject),
+        # sln (проекты), entry (has_main/launches/readiness_gates).
         for piece in (intel.domain or {}).get("csharp_partial", []) or []:
             if not isinstance(piece, dict):
                 continue
-            if piece.get("kind") == "csproj":
+            kind = piece.get("kind")
+            if kind == "csproj":
                 out.append(
-                    f"csproj {piece.get('path')}: TFM={piece.get('target_framework')}, "
+                    f"csproj {piece.get('path')}: "
+                    f"TFM={piece.get('target_framework')}, "
                     f"OutputType={piece.get('output_type')}, "
                     f"StartupObject={piece.get('startup_object')}, "
                     f"refs={len(piece.get('references') or [])}"
                 )
-            elif piece.get("kind") == "sln":
+            elif kind == "sln":
                 projects = piece.get("projects") or []
                 out.append(f"sln {piece.get('path')}: проектов={len(projects)}")
-            elif piece.get("kind") == "csharp_file" and piece.get("entry"):
-                e = piece["entry"]
-                out.append(
-                    f"entry {piece.get('path')}: has_main={e.get('has_main')}, "
-                    f"launches={e.get('launches')}, "
-                    f"gates={e.get('readiness_gates')}"
-                )
+            elif kind == "csharp_file":
+                entry = piece.get("entry")
+                if entry:
+                    out.append(
+                        f"entry {piece.get('path')}: "
+                        f"has_main={entry.get('has_main')}, "
+                        f"launches={entry.get('launches')}, "
+                        f"gates={entry.get('readiness_gates')}"
+                    )
         return out
 
     def _dynamic_block(self, root: Path) -> str:

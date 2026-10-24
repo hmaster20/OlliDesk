@@ -84,6 +84,7 @@ class ModelPool:
 
     def __init__(self) -> None:
         self._clients: dict[Role, ClientLike] = {}
+        self._clients_by_file: dict[str, ClientLike] = {}
         self._specs: dict[Role, RoleSpec] = {}
         self._lock = asyncio.Lock()
 
@@ -101,28 +102,37 @@ class ModelPool:
             self._specs[role] = specs[role]
 
     async def add_role(self, spec: RoleSpec, factory) -> ClientLike:
-        """Загружает ОДНУ роль (для последовательной загрузки с per-role timeout).
+        """Загружает роль, переиспользуя клиент по файлу модели.
 
-        В отличие от `load()`, не запускает параллельную загрузку — caller
-        сам решает, в каком порядке и с каким таймаутом загружать роли.
-        Нужно для двухмодельного пайплайна: planner (GPU) и analyst (CPU)
-        не должны конкурировать за VRAM, а если загрузка одной роли
-        зависнет в нативном коде llama.cpp (OOM на CUDA), timeout на
-        стороне caller'а всё равно вернёт управление.
+        Если предыдущая роль уже загрузила модель из ТОГО ЖЕ файла —
+        возвращаем существующий клиент, а не создаём вторую копию.
+        Типичный сценарий: planner и analyst указывают на одну 3B
+        (`qwen2.5-3b-instruct-q4_k_m.gguf`). Без кэша загружаются две
+        копии: planner на GPU (n_gpu_layers=-1), analyst на CPU
+        (n_gpu_layers=0) — это лишние 5 ГБ RAM и «шизофрения» скорости.
 
         Args:
             spec: Спецификация роли (device, n_ctx, kv_cache, ...).
-            factory: ``factory(spec) -> ClientLike`` — блокирующая загрузка
-                llama.cpp (выполняется через ``asyncio.to_thread``).
+            factory: ``factory(spec) -> ClientLike`` — блокирующая загрузка.
 
         Returns:
             Загруженный клиент (также сохранён в ``self._clients[spec.role]``).
         """
+        # Кэш по файлу: если файл уже загружен под другой ролью —
+        # переиспользуем его (даже если device/params отличаются —
+        # модель уже в памяти, перезагрузка бессмысленна).
+        key = spec.file or spec.model_id
+        cached = self._clients_by_file.get(key)
+        if cached is not None:
+            self._clients[spec.role] = cached
+            self._specs[spec.role] = spec
+            return cached
+
         client = await asyncio.to_thread(factory, spec)
+        self._clients_by_file[key] = client
         self._clients[spec.role] = client
         self._specs[spec.role] = spec
         return client
-
     def client(self, role: Role) -> ClientLike:
         if role not in self._clients:
             raise RuntimeError(f"Модель роли {role.value} не загружена")
@@ -155,3 +165,4 @@ class ModelPool:
                 if asyncio.iscoroutine(res):
                     await res
         self._clients.clear()
+        self._clients_by_file.clear()
