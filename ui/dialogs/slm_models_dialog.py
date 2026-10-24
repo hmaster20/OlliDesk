@@ -6,10 +6,7 @@ from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
-    QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -145,8 +142,7 @@ class SLMModelsDialog(QDialog):
         # [9.3] Планировщик/аналитик выбираются в верхней панели чата.
         # Здесь оставляем только информационную строку.
         info_row = QLabel(
-            "Пайплайн (planner + analyst) настраивается в верхней панели "
-            "чата — селекторы «P:» и «A:»."
+            "Пайплайн (planner + analyst) настраивается в верхней панели чата — селекторы «P:» и «A:»."
         )
         info_row.setWordWrap(True)
         info_row.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 8px 0;")

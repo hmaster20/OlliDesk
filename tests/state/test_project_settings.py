@@ -71,9 +71,7 @@ class TestBackwardCompatibility:
         """Битый YAML → пустой ProjectSettings (не падаем)."""
         proj = tmp_path / "proj"
         (proj / ".ollidesk").mkdir(parents=True)
-        (proj / ".ollidesk" / "project_settings.yaml").write_text(
-            "{[ broken yaml : :", encoding="utf-8"
-        )
+        (proj / ".ollidesk" / "project_settings.yaml").write_text("{[ broken yaml : :", encoding="utf-8")
         loaded = ProjectSettings.load(proj)
         assert loaded.show_reasoning is True
         assert loaded.model == ""

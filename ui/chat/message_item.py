@@ -131,9 +131,7 @@ def _indent_width(raw: str) -> int:
     return len(expanded) - len(expanded.lstrip(" "))
 
 
-def _collect_list_items(
-    lines: list[str], start: int
-) -> tuple[list[tuple[int, bool, str]], int]:
+def _collect_list_items(lines: list[str], start: int) -> tuple[list[tuple[int, bool, str]], int]:
     items: list[tuple[int, bool, str]] = []
     i = start
     n = len(lines)
@@ -233,16 +231,11 @@ def _is_table_separator(line: str) -> bool:
 
 def _is_table_start(lines: list[str], i: int) -> bool:
     return (
-        "|" in lines[i]
-        and i + 1 < len(lines)
-        and "|" in lines[i + 1]
-        and _is_table_separator(lines[i + 1])
+        "|" in lines[i] and i + 1 < len(lines) and "|" in lines[i + 1] and _is_table_separator(lines[i + 1])
     )
 
 
-def _render_table(
-    header: list[str], rows: list[list[str]], *, dark: bool = True
-) -> str:
+def _render_table(header: list[str], rows: list[list[str]], *, dark: bool = True) -> str:
     """[9.6.6] Рендерит таблицу с учётом темы.
 
     Тёмная: заголовок #2f2f3c / текст #e0e0e0 (monokai-стиль).
@@ -279,8 +272,7 @@ def _render_table(
         parts.append("<tr>")
         for cell in padded:
             parts.append(
-                f'<td style="background:{cell_bg}; color:{cell_color};'
-                f' padding:5px 8px;">{_inline(cell)}</td>'
+                f'<td style="background:{cell_bg}; color:{cell_color}; padding:5px 8px;">{_inline(cell)}</td>'
             )
         parts.append("</tr>")
     parts.append("</table>")
@@ -413,9 +405,7 @@ class ChatActivityItem(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setStyleSheet(
-            "color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;"
-        )
+        label.setStyleSheet("color: #8f8f8f; font-size: 12px; font-style: italic; background: transparent;")
         layout.addWidget(label, 1)
         self.label = label
 
@@ -470,9 +460,7 @@ class ChatSourcesItem(QWidget):
                 "QPushButton:hover { text-decoration: underline;"
                 " color: #8bc0f0; }"
             )
-            btn.clicked.connect(
-                lambda _=False, p=path, s=start: self.source_activated.emit(p, s)
-            )
+            btn.clicked.connect(lambda _=False, p=path, s=start: self.source_activated.emit(p, s))
             body_layout.addWidget(btn)
 
         self._body.setVisible(False)
@@ -482,9 +470,7 @@ class ChatSourcesItem(QWidget):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         arrow = "▲ свернуть" if self._expanded else "▼ развернуть"
-        self._header_btn.setText(
-            f"📚 Источники проекта ({len(self._sources)}) · {arrow}"
-        )
+        self._header_btn.setText(f"📚 Источники проекта ({len(self._sources)}) · {arrow}")
 
 
 def format_source_label(file_path: str, start: int, end: int) -> str:
@@ -571,14 +557,9 @@ class ReasoningWidget(QWidget):
     def _refresh_browser(self) -> None:
         """Пересобирает HTML из `_text` (курсив, серый)."""
         safe = (
-            self._text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br>")
+            self._text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         )
-        self._browser.setHtml(
-            f'<div style="color:#a8a8b8; font-style:italic;">{safe}</div>'
-        )
+        self._browser.setHtml(f'<div style="color:#a8a8b8; font-style:italic;">{safe}</div>')
         # Авто-высота: ~16px на строку, потолок 240.
         line_count = self._text.count("\n") + 1
         h = min(max(40, line_count * 16 + 8), 240)
@@ -587,8 +568,10 @@ class ReasoningWidget(QWidget):
 
     def _refresh_header(self) -> None:
         n = len(self._text)
-        unit = "символ" if n % 10 == 1 and n % 100 != 11 else (
-            "символа" if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14) else "символов"
+        unit = (
+            "символ"
+            if n % 10 == 1 and n % 100 != 11
+            else ("символа" if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14) else "символов")
         )
         self._header_label.setText(
             f'<span style="color: #7a7a8a; font-size: 11px; font-weight: 600;">'
@@ -704,6 +687,7 @@ class TextWidget(QTextBrowser):
         super().resizeEvent(event)
         self._adjust_height()
 
+
 def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
     """Обрезает текст для preview-строки в карточке tool-call.
 
@@ -722,18 +706,16 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
         return (clean, False)
     return (clean[: limit - 1] + "…", True)
 
+
 def _escape_diff(text: str) -> str:
     """Экранирует HTML-спецсимволы для diff-сводки."""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 # Лимит полного текста в раскрывающемся QTextBrowser. Больше не нужно:
 # полный observation может быть 100 КБ, а UI и так неудобно листать.
 _MAX_RESULT_VIEW_CHARS = 20_000
+
 
 class ToolCallCard(QWidget):
     """Карточка вызова инструмента (ToolCallPart + результат).
@@ -748,10 +730,10 @@ class ToolCallCard(QWidget):
     """
 
     # [9.6.1] Сигналы diff-режима `write_file`.
-    open_in_editor_requested = Signal(str)   # path
-    revert_requested = Signal(dict)          # {"path", "original_content", "is_new_file"}
+    open_in_editor_requested = Signal(str)  # path
+    revert_requested = Signal(dict)  # {"path", "original_content", "is_new_file"}
     # [9.8] Показать diff в Monaco DiffEditor (третья кнопка).
-    show_diff_requested = Signal(dict)       # {"path", "original", "modified", "language"}
+    show_diff_requested = Signal(dict)  # {"path", "original", "modified", "language"}
 
     _ICONS: dict[str, str] = {
         "read_file": "📖",
@@ -832,19 +814,14 @@ class ToolCallCard(QWidget):
         self._name_label = QLabel(text)
         self._name_label.setTextFormat(Qt.TextFormat.PlainText)
         self._name_label.setWordWrap(True)
-        self._name_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._name_label.setStyleSheet(
-            "color: #8db1d6; font-family: 'Consolas','Cascadia Mono',monospace;"
-            " font-size: 12px;"
+            "color: #8db1d6; font-family: 'Consolas','Cascadia Mono',monospace; font-size: 12px;"
         )
         header.addWidget(self._name_label, stretch=1)
 
         self._status_label = QLabel("⏳")
-        self._status_label.setStyleSheet(
-            "color: #7a7a8a; font-size: 13px; padding-left: 4px;"
-        )
+        self._status_label.setStyleSheet("color: #7a7a8a; font-size: 13px; padding-left: 4px;")
         self._status_label.setToolTip("Инструмент ещё не выполнен")
         header.addWidget(self._status_label)
 
@@ -855,9 +832,7 @@ class ToolCallCard(QWidget):
         self._preview_label = QLabel("")
         self._preview_label.setWordWrap(True)
         self._preview_label.setTextFormat(Qt.TextFormat.PlainText)
-        self._preview_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self._preview_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._preview_label.setStyleSheet(
             "color: #a8a8b8; font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 11px; padding: 2px 0 0 20px;"
@@ -869,12 +844,8 @@ class ToolCallCard(QWidget):
         self._full_browser = QTextBrowser()
         self._full_browser.setReadOnly(True)
         self._full_browser.setFrameShape(QFrame.Shape.NoFrame)
-        self._full_browser.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self._full_browser.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self._full_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._full_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._full_browser.setStyleSheet(
             "QTextBrowser {"
             " background: rgba(0,0,0,0.15); border: none;"
@@ -926,12 +897,7 @@ class ToolCallCard(QWidget):
         self._apply_state_style()
 
         # [9.6.1] Diff-режим для write_file (только при успехе).
-        if (
-            not is_error
-            and isinstance(metadata, dict)
-            and "diff" in metadata
-            and "path" in metadata
-        ):
+        if not is_error and isinstance(metadata, dict) and "diff" in metadata and "path" in metadata:
             self._render_diff_mode()
         else:
             self._update_preview()
@@ -952,9 +918,7 @@ class ToolCallCard(QWidget):
         )
         self._status_label.setText(icon)
         if self._state == "pending":
-            self._status_label.setStyleSheet(
-                "color: #7a7a8a; font-size: 13px; padding-left: 4px;"
-            )
+            self._status_label.setStyleSheet("color: #7a7a8a; font-size: 13px; padding-left: 4px;")
             self._status_label.setToolTip("Инструмент ещё не выполнен")
         elif self._state == "ok":
             self._status_label.setStyleSheet(
@@ -977,11 +941,7 @@ class ToolCallCard(QWidget):
         preview, truncated = _truncate_preview(content, limit=200)
         self._preview_label.setText(preview)
         self._preview_label.setStyleSheet(
-            (
-                "color: #e8a8a8;"
-                if self._result_is_error
-                else "color: #a8a8b8;"
-            )
+            ("color: #e8a8a8;" if self._result_is_error else "color: #a8a8b8;")
             + " font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 11px; padding: 2px 0 0 20px;"
         )
@@ -1007,8 +967,7 @@ class ToolCallCard(QWidget):
             full = content
             if len(full) > _MAX_RESULT_VIEW_CHARS:
                 full = (
-                    full[:_MAX_RESULT_VIEW_CHARS]
-                    + f"\n\n… [результат обрезан до {_MAX_RESULT_VIEW_CHARS} "
+                    full[:_MAX_RESULT_VIEW_CHARS] + f"\n\n… [результат обрезан до {_MAX_RESULT_VIEW_CHARS} "
                     f"из {len(content)} символов]"
                 )
             self._full_browser.setPlainText(full)
@@ -1022,9 +981,7 @@ class ToolCallCard(QWidget):
         self._result_expanded = not self._result_expanded
         self._full_browser.setVisible(self._result_expanded)
         if self._toggle_btn is not None:
-            self._toggle_btn.setText(
-                "▾ Свернуть" if self._result_expanded else "▸ Показать полностью"
-            )
+            self._toggle_btn.setText("▾ Свернуть" if self._result_expanded else "▸ Показать полностью")
 
     # ------------------------------------------------------------------
     # [9.6.1] Diff-режим write_file
@@ -1062,8 +1019,7 @@ class ToolCallCard(QWidget):
         self._preview_label.setText(summary)
         self._preview_label.setTextFormat(Qt.TextFormat.RichText)
         self._preview_label.setStyleSheet(
-            "color: #d4d4d4; font-family: 'Segoe UI', sans-serif;"
-            " font-size: 12px; padding: 4px 0 2px 20px;"
+            "color: #d4d4d4; font-family: 'Segoe UI', sans-serif; font-size: 12px; padding: 4px 0 2px 20px;"
         )
         self._preview_label.setVisible(True)
 
@@ -1077,7 +1033,7 @@ class ToolCallCard(QWidget):
             )
             self._body_layout.addWidget(err_label)
 
-               # Кнопки: «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить».
+            # Кнопки: «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить».
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(20, 2, 0, 0)
         btn_row.setSpacing(6)
@@ -1092,9 +1048,7 @@ class ToolCallCard(QWidget):
             " QPushButton:hover { background: rgba(107,163,214,0.15);"
             " color: #8bc0f0; }"
         )
-        open_btn.clicked.connect(
-            lambda _checked=False, p=path: self.open_in_editor_requested.emit(p)
-        )
+        open_btn.clicked.connect(lambda _checked=False, p=path: self.open_in_editor_requested.emit(p))
         btn_row.addWidget(open_btn)
 
         # [9.8] «Показать diff» — откроет Monaco DiffEditor с original↔modified.
@@ -1113,9 +1067,7 @@ class ToolCallCard(QWidget):
         btn_row.addWidget(diff_btn)
 
         revert_btn = QPushButton("↩ Откатить")
-        revert_btn.setToolTip(
-            "Восстановить исходное содержимое файла (запись была уже сделана)"
-        )
+        revert_btn.setToolTip("Восстановить исходное содержимое файла (запись была уже сделана)")
         revert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         revert_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         revert_btn.setStyleSheet(
@@ -1171,6 +1123,7 @@ class ToolCallCard(QWidget):
             "language": ext or "plaintext",
         }
         self.show_diff_requested.emit(payload)
+
 
 def _format_args_short(args: dict, limit_per_value: int = 60) -> str:
     """Короткое представление аргументов для карточки tool_call."""
@@ -1339,9 +1292,7 @@ class ChatMessageItem(QWidget):
             # системных сообщений — заметный разрыв до кнопки «Копировать».
             if self.role in ("user", "system"):
                 self._text_widget.document().setDefaultStyleSheet(
-                    "p { margin: 0; }"
-                    " ul, ol { margin: 2px 0; }"
-                    " pre { margin: 4px 0; }"
+                    "p { margin: 0; } ul, ol { margin: 2px 0; } pre { margin: 4px 0; }"
                 )
                 # Пересобираем HTML — defaultStyleSheet применяется только
                 # к новому setHtml.
@@ -1360,16 +1311,12 @@ class ChatMessageItem(QWidget):
 
     def append_reasoning(self, token: str) -> None:
         if self.role != "assistant":
-            logger.debug(
-                f"append_reasoning для role={self.role!r} — игнорирую"
-            )
+            logger.debug(f"append_reasoning для role={self.role!r} — игнорирую")
             return
         self.thinking += token
         self._ensure_reasoning_widget().append_text(token)
 
-    def append_tool_call(
-        self, name: str, arguments_json: str
-    ) -> "ToolCallCard | None":
+    def append_tool_call(self, name: str, arguments_json: str) -> ToolCallCard | None:
         """[9.5.7] Добавляет карточку tool-call, возвращает её.
 
         Возвращённая карточка используется в `ChatPanel._on_tool_started`
@@ -1377,9 +1324,7 @@ class ChatMessageItem(QWidget):
         вызывает у неё `set_result(...)`.
         """
         if self.role != "assistant":
-            logger.debug(
-                f"append_tool_call для role={self.role!r} — игнорирую"
-            )
+            logger.debug(f"append_tool_call для role={self.role!r} — игнорирую")
             return None
         card = ToolCallCard(name, arguments_json)
         self._tool_cards.append(card)

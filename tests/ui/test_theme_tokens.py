@@ -23,7 +23,6 @@ from ui.theme import (
     get_stylesheet,
 )
 
-
 # ============================================================================
 # Утилиты: цвет + контраст (WCAG 2.1)
 # ============================================================================
@@ -39,6 +38,7 @@ def _parse_hex(value: str) -> tuple[int, int, int]:
 
 def _relative_luminance(rgb: tuple[int, int, int]) -> float:
     """Относительная яркость по WCAG 2.1."""
+
     def _channel(c: int) -> float:
         c_norm = c / 255.0
         return c_norm / 12.92 if c_norm <= 0.03928 else ((c_norm + 0.055) / 1.055) ** 2.4
@@ -63,16 +63,17 @@ def _contrast_ratio(fg: str, bg: str) -> float:
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
-@pytest.mark.parametrize("colors,name", [
-    (DARK_COLORS, "DARK"),
-    (LIGHT_COLORS, "LIGHT"),
-])
+@pytest.mark.parametrize(
+    "colors,name",
+    [
+        (DARK_COLORS, "DARK"),
+        (LIGHT_COLORS, "LIGHT"),
+    ],
+)
 def test_all_tokens_are_valid_hex(colors: ColorTokens, name: str) -> None:
     """Все цветовые поля — валидный '#rrggbb'."""
     for field_name, value in colors.__dict__.items():
-        assert _HEX_RE.match(value), (
-            f"{name}.{field_name}={value!r} не #rrggbb"
-        )
+        assert _HEX_RE.match(value), f"{name}.{field_name}={value!r} не #rrggbb"
 
 
 # ============================================================================
@@ -102,10 +103,13 @@ _CONTRAST_PAIRS = [
 ]
 
 
-@pytest.mark.parametrize("colors,name", [
-    (DARK_COLORS, "DARK"),
-    (LIGHT_COLORS, "LIGHT"),
-])
+@pytest.mark.parametrize(
+    "colors,name",
+    [
+        (DARK_COLORS, "DARK"),
+        (LIGHT_COLORS, "LIGHT"),
+    ],
+)
 @pytest.mark.parametrize("fg_key,bg_key,threshold,description", _CONTRAST_PAIRS)
 def test_wcag_contrast(
     colors: ColorTokens,
@@ -120,8 +124,7 @@ def test_wcag_contrast(
     bg = getattr(colors, bg_key)
     ratio = _contrast_ratio(fg, bg)
     assert ratio >= threshold, (
-        f"[{name}] {description}: {fg_key}={fg} on {bg_key}={bg} "
-        f"даёт {ratio:.2f}:1 < {threshold}:1"
+        f"[{name}] {description}: {fg_key}={fg} on {bg_key}={bg} даёт {ratio:.2f}:1 < {threshold}:1"
     )
 
 
@@ -213,16 +216,18 @@ _REQUIRED_SELECTORS = [
 ]
 
 
-@pytest.mark.parametrize("theme,qss", [
-    ("dark", DARK_STYLESHEET),
-    ("light", LIGHT_STYLESHEET),
-])
+@pytest.mark.parametrize(
+    "theme,qss",
+    [
+        ("dark", DARK_STYLESHEET),
+        ("light", LIGHT_STYLESHEET),
+    ],
+)
 @pytest.mark.parametrize("selector", _REQUIRED_SELECTORS)
 def test_qss_has_selector(theme: str, qss: str, selector: str) -> None:
     """QSS содержит правило для селектора (9.1 — полное покрытие)."""
     assert selector in qss, (
-        f"[{theme}] QSS не содержит селектор {selector!r}. "
-        f"Элемент будет выглядеть «без стиля»."
+        f"[{theme}] QSS не содержит селектор {selector!r}. Элемент будет выглядеть «без стиля»."
     )
 
 

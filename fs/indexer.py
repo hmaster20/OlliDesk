@@ -10,13 +10,15 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from core.config import AppConfig
-
 from fs.document_extractors import (
     SUPPORTED_EXTENSIONS as DOCUMENT_EXTENSIONS,
+)
+from fs.document_extractors import (
     extract_document,
     is_document,
     language_for_document,
 )
+
 
 class FileMetadata(BaseModel):
     """Метаданные файла."""
@@ -177,9 +179,7 @@ class FileIndexer:
 
         # [9.4] Документы: включение + отдельный лимит + опция OCR.
         self._documents_enabled = bool(getattr(config, "index_documents", True))
-        self.max_document_size = (
-            int(getattr(config, "max_document_size_mb", 50)) * 1024 * 1024
-        )
+        self.max_document_size = int(getattr(config, "max_document_size_mb", 50)) * 1024 * 1024
         self._document_ocr = bool(getattr(config, "document_ocr", False))
 
     def _read_ignore_file(self, path: Path) -> list[str]:
@@ -254,9 +254,7 @@ class FileIndexer:
                 else self.max_file_size
             )
             if size > limit:
-                logger.debug(
-                    f"Файл слишком большой: {rel_path_str} ({size} bytes > {limit})"
-                )
+                logger.debug(f"Файл слишком большой: {rel_path_str} ({size} bytes > {limit})")
                 continue
 
             yield file_path, rel_path_str

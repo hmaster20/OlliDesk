@@ -809,6 +809,7 @@ class _ModelPoolLoadThread(QThread):
             logger.exception("ModelPool load failed")
             self.error.emit(str(e))
 
+
 class _BenchmarkThread(QThread):
     """Фоновый прогон замеров производительности (4.7.B).
 

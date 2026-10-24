@@ -81,8 +81,7 @@ class ToolConfirmationDialog(QDialog):
             diff_edit = QTextEdit()
             diff_edit.setReadOnly(True)
             diff_edit.setStyleSheet(
-                "font-family: Consolas, monospace; font-size: 12px;"
-                " background: #1e1e1e; color: #d4d4d4;"
+                "font-family: Consolas, monospace; font-size: 12px; background: #1e1e1e; color: #d4d4d4;"
             )
             preview = self._format_write_preview(self._arguments)
             diff_edit.setPlainText(preview)
@@ -105,8 +104,7 @@ class ToolConfirmationDialog(QDialog):
 
         approve_btn = QPushButton("✅ Выполнить")
         approve_btn.setStyleSheet(
-            "padding: 6px 16px; background: #1976d2; color: white;"
-            " border: none; border-radius: 4px;"
+            "padding: 6px 16px; background: #1976d2; color: white; border: none; border-radius: 4px;"
         )
         approve_btn.clicked.connect(self._approve)
         btn_layout.addWidget(approve_btn)

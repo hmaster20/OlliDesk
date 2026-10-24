@@ -127,8 +127,7 @@ class BenchmarkDialog(QDialog):
         self.repeats_spin.setRange(1, 5)
         self.repeats_spin.setValue(2)
         self.repeats_spin.setToolTip(
-            "Повтор замеров для усреднения. Каждый повтор — новая "
-            "генерация (не кэшируется)."
+            "Повтор замеров для усреднения. Каждый повтор — новая генерация (не кэшируется)."
         )
         settings_row.addWidget(self.repeats_spin)
         settings_row.addStretch()
@@ -148,8 +147,7 @@ class BenchmarkDialog(QDialog):
         self.summary_label = QLabel("")
         self.summary_label.setTextFormat(Qt.TextFormat.RichText)
         self.summary_label.setStyleSheet(
-            "color: #d4d4d4; padding: 6px 8px;"
-            " background: rgba(128,128,128,0.05); border-radius: 4px;"
+            "color: #d4d4d4; padding: 6px 8px; background: rgba(128,128,128,0.05); border-radius: 4px;"
         )
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
@@ -159,17 +157,20 @@ class BenchmarkDialog(QDialog):
         self.results_table.setColumnCount(10)
         self.results_table.setHorizontalHeaderLabels(
             [
-                "Модель", "Provider", "Device", "Промпт",
-                "TTFT (ms)", "tok/s", "Всего (ms)", "tok",
-                "n_threads", "OK",
+                "Модель",
+                "Provider",
+                "Device",
+                "Промпт",
+                "TTFT (ms)",
+                "tok/s",
+                "Всего (ms)",
+                "tok",
+                "n_threads",
+                "OK",
             ]
         )
-        self.results_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
-        self.results_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.results_table, stretch=1)
 
         # --- Кнопки ---
@@ -302,15 +303,9 @@ class BenchmarkDialog(QDialog):
         if self._thread is not None and self._thread.isRunning():
             return
 
-        selected_ids = [
-            mid
-            for mid, cb in self._model_checkboxes.items()
-            if cb.isChecked()
-        ]
+        selected_ids = [mid for mid, cb in self._model_checkboxes.items() if cb.isChecked()]
         if not selected_ids:
-            QMessageBox.warning(
-                self, "Ошибка", "Выберите хотя бы одну модель для замера."
-            )
+            QMessageBox.warning(self, "Ошибка", "Выберите хотя бы одну модель для замера.")
             return
 
         models = [self._model_specs[mid] for mid in selected_ids]
@@ -340,9 +335,7 @@ class BenchmarkDialog(QDialog):
 
         from ui.chat.threads import _BenchmarkThread
 
-        self._thread = _BenchmarkThread(
-            models, prompts=prompts, repeats=repeats
-        )
+        self._thread = _BenchmarkThread(models, prompts=prompts, repeats=repeats)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished.connect(self._on_finished)
         self._thread.error.connect(self._on_error)
@@ -384,19 +377,11 @@ class BenchmarkDialog(QDialog):
             self.results_table.setItem(i, 2, QTableWidgetItem(r.device))
             self.results_table.setItem(i, 3, QTableWidgetItem(r.prompt_name))
             self.results_table.setItem(i, 4, QTableWidgetItem(ttft))
-            self.results_table.setItem(
-                i, 5, QTableWidgetItem(f"{r.tokens_per_sec:.1f}")
-            )
-            self.results_table.setItem(
-                i, 6, QTableWidgetItem(f"{r.total_ms:.0f}")
-            )
+            self.results_table.setItem(i, 5, QTableWidgetItem(f"{r.tokens_per_sec:.1f}"))
+            self.results_table.setItem(i, 6, QTableWidgetItem(f"{r.total_ms:.0f}"))
             self.results_table.setItem(i, 7, QTableWidgetItem(str(r.tokens)))
-            self.results_table.setItem(
-                i, 8, QTableWidgetItem(str(r.n_threads))
-            )
-            self.results_table.setItem(
-                i, 9, QTableWidgetItem("✅" if r.ok else "❌")
-            )
+            self.results_table.setItem(i, 8, QTableWidgetItem(str(r.n_threads)))
+            self.results_table.setItem(i, 9, QTableWidgetItem("✅" if r.ok else "❌"))
 
     def _update_summary(self, result: BenchmarkResult) -> None:
         """Средние tok/s и TTFT по каждой модели + стоимость загрузки."""
@@ -436,10 +421,7 @@ class BenchmarkDialog(QDialog):
                     first = loads[model_id][0]
                     others = loads[model_id][1:]
                     avg_reload = sum(others) / len(others)
-                    line += (
-                        f"; загрузка: {first:.0f} ms (первая), "
-                        f"~{avg_reload:.0f} ms (повторная)"
-                    )
+                    line += f"; загрузка: {first:.0f} ms (первая), ~{avg_reload:.0f} ms (повторная)"
                 else:
                     line += f"; загрузка: {loads[model_id][0]:.0f} ms"
             lines.append(line)
@@ -454,9 +436,7 @@ class BenchmarkDialog(QDialog):
         if self._last_result is None or not self._last_result.rows:
             return
         default = f"benchmark_{self._last_result.started_at[:10]}.csv"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить CSV", default, "CSV (*.csv)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить CSV", default, "CSV (*.csv)")
         if not path:
             return
         from pathlib import Path
@@ -474,17 +454,13 @@ class BenchmarkDialog(QDialog):
             )
         except Exception as e:
             logger.exception("save_csv failed")
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось сохранить CSV:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить CSV:\n{e}")
 
     def _save_markdown(self) -> None:
         if self._last_result is None or not self._last_result.rows:
             return
         default = f"benchmark_{self._last_result.started_at[:10]}.md"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить Markdown", default, "Markdown (*.md)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить Markdown", default, "Markdown (*.md)")
         if not path:
             return
         from pathlib import Path
@@ -495,14 +471,11 @@ class BenchmarkDialog(QDialog):
             QMessageBox.information(
                 self,
                 "Готово",
-                f"Markdown сохранён:\n{path}\n\n"
-                "Скопируйте содержимое в docs/BENCHMARK.md или в PR-описание.",
+                f"Markdown сохранён:\n{path}\n\nСкопируйте содержимое в docs/BENCHMARK.md или в PR-описание.",
             )
         except Exception as e:
             logger.exception("save_markdown failed")
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось сохранить Markdown:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить Markdown:\n{e}")
 
 
 __all__ = ["BenchmarkDialog"]

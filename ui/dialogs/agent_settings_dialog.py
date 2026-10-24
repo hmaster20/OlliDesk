@@ -79,9 +79,7 @@ class AgentSettingsDialog(QDialog):
         self.temp_slider.setRange(0, 100)
         self.temp_slider.setValue(int(temperature * 100))
         self.temp_value = QLabel(f"{temperature:.2f}")
-        self.temp_slider.valueChanged.connect(
-            lambda v: self.temp_value.setText(f"{v / 100:.2f}")
-        )
+        self.temp_slider.valueChanged.connect(lambda v: self.temp_value.setText(f"{v / 100:.2f}"))
         temp_row = QHBoxLayout()
         temp_row.addWidget(self.temp_slider)
         temp_row.addWidget(self.temp_value)

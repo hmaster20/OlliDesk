@@ -163,7 +163,7 @@ class TestToMarkdown:
         md = to_markdown(_sample_result())
         assert "## Загрузка модели" in md
         assert "1500" in md  # первая загрузка
-        assert "350" in md   # вторая загрузка
+        assert "350" in md  # вторая загрузка
 
     def test_empty_result(self) -> None:
         md = to_markdown(BenchmarkResult())

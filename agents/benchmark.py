@@ -36,7 +36,6 @@ from pathlib import Path
 
 from loguru import logger
 
-
 # ============================================================================
 # Промпты и структуры данных
 # ============================================================================
@@ -156,9 +155,7 @@ def _resolve_slm_params(model_path: Path) -> tuple[int, int, int, int]:
             params.n_gpu_layers,
         )
     except Exception as e:
-        logger.warning(
-            f"Не удалось оптимизировать параметры для {model_path.name}: {e}"
-        )
+        logger.warning(f"Не удалось оптимизировать параметры для {model_path.name}: {e}")
         return 4096, 0, 512, 0
 
 
@@ -194,9 +191,7 @@ async def _measure_slm_model(
 
     for attempt in range(1, repeats + 1):
         if on_progress:
-            on_progress(
-                f"⏳ Загрузка {model_name} (попытка {attempt}/{repeats})…"
-            )
+            on_progress(f"⏳ Загрузка {model_name} (попытка {attempt}/{repeats})…")
         t0 = time.perf_counter()
         client = None
         try:
@@ -296,10 +291,7 @@ async def _run_prompts_on_client(
         for repeat in range(1, repeats + 1):
             counter += 1
             if on_progress:
-                on_progress(
-                    f"🧪 {model_name}: {prompt.name} "
-                    f"(повтор {repeat}/{repeats}) [{counter}/{total}]"
-                )
+                on_progress(f"🧪 {model_name}: {prompt.name} (повтор {repeat}/{repeats}) [{counter}/{total}]")
 
             messages = [ChatMessage(role="user", content=prompt.text)]
             t0 = time.perf_counter()
@@ -329,15 +321,11 @@ async def _run_prompts_on_client(
 
                 if not stats:
                     # Fallback: считаем сами (Ollama или другой клиент).
-                    ttft_ms = (
-                        first_token_time * 1000 if first_token_time else None
-                    )
+                    ttft_ms = first_token_time * 1000 if first_token_time else None
                     # Грубая оценка токенов по символам (4 символа ≈ 1 токен).
                     tokens = max(1, len(collected_text) // 4)
                     gen_seconds = (total_ms - (ttft_ms or 0)) / 1000
-                    tokens_per_sec = (
-                        tokens / gen_seconds if gen_seconds > 0 else 0.0
-                    )
+                    tokens_per_sec = tokens / gen_seconds if gen_seconds > 0 else 0.0
                     gen_ms = total_ms
 
                 result.rows.append(
@@ -362,9 +350,7 @@ async def _run_prompts_on_client(
                     )
                 )
             except Exception as e:
-                logger.exception(
-                    f"Промпт {prompt.name} на {model_name} упал"
-                )
+                logger.exception(f"Промпт {prompt.name} на {model_name} упал")
                 result.rows.append(
                     BenchmarkRow(
                         model_id=model_id,
@@ -515,19 +501,39 @@ def save_csv(result: BenchmarkResult, path: Path) -> None:
         writer = csv.writer(f)
         writer.writerow(
             [
-                "model_id", "model_name", "provider", "device",
-                "n_ctx", "n_threads", "n_gpu_layers",
-                "prompt_name", "prompt_chars", "max_tokens", "repeat",
-                "ttft_ms", "tokens", "gen_ms", "tokens_per_sec", "total_ms",
-                "ok", "error",
+                "model_id",
+                "model_name",
+                "provider",
+                "device",
+                "n_ctx",
+                "n_threads",
+                "n_gpu_layers",
+                "prompt_name",
+                "prompt_chars",
+                "max_tokens",
+                "repeat",
+                "ttft_ms",
+                "tokens",
+                "gen_ms",
+                "tokens_per_sec",
+                "total_ms",
+                "ok",
+                "error",
             ]
         )
         for row in result.rows:
             writer.writerow(
                 [
-                    row.model_id, row.model_name, row.provider, row.device,
-                    row.n_ctx, row.n_threads, row.n_gpu_layers,
-                    row.prompt_name, row.prompt_chars, row.max_tokens,
+                    row.model_id,
+                    row.model_name,
+                    row.provider,
+                    row.device,
+                    row.n_ctx,
+                    row.n_threads,
+                    row.n_gpu_layers,
+                    row.prompt_name,
+                    row.prompt_chars,
+                    row.max_tokens,
                     row.repeat,
                     f"{row.ttft_ms:.1f}" if row.ttft_ms is not None else "",
                     row.tokens,
@@ -545,16 +551,29 @@ def save_csv(result: BenchmarkResult, path: Path) -> None:
         writer = csv.writer(f)
         writer.writerow(
             [
-                "model_id", "model_name", "n_ctx", "n_threads",
-                "n_gpu_layers", "attempt", "load_ms", "ok", "error",
+                "model_id",
+                "model_name",
+                "n_ctx",
+                "n_threads",
+                "n_gpu_layers",
+                "attempt",
+                "load_ms",
+                "ok",
+                "error",
             ]
         )
         for row in result.load_rows:
             writer.writerow(
                 [
-                    row.model_id, row.model_name, row.n_ctx, row.n_threads,
-                    row.n_gpu_layers, row.attempt, f"{row.load_ms:.1f}",
-                    "ok" if row.ok else "error", row.error,
+                    row.model_id,
+                    row.model_name,
+                    row.n_ctx,
+                    row.n_threads,
+                    row.n_gpu_layers,
+                    row.attempt,
+                    f"{row.load_ms:.1f}",
+                    "ok" if row.ok else "error",
+                    row.error,
                 ]
             )
 
@@ -564,9 +583,7 @@ def to_markdown(result: BenchmarkResult) -> str:
     lines = ["# Замеры производительности", ""]
     lines.append(f"- Начало: {result.started_at}")
     lines.append(f"- Конец: {result.finished_at}")
-    lines.append(
-        f"- Строк генерации: {len(result.rows)} (ok: {len(result.ok_rows)})"
-    )
+    lines.append(f"- Строк генерации: {len(result.rows)} (ok: {len(result.ok_rows)})")
     lines.append(f"- Строк загрузки: {len(result.load_rows)}")
     lines.append("")
 
@@ -591,10 +608,7 @@ def to_markdown(result: BenchmarkResult) -> str:
     if result.load_rows:
         lines.append("## Загрузка модели")
         lines.append("")
-        lines.append(
-            "| Модель | n_ctx | n_threads | n_gpu_layers | Попытка | "
-            "Загрузка (ms) | OK |"
-        )
+        lines.append("| Модель | n_ctx | n_threads | n_gpu_layers | Попытка | Загрузка (ms) | OK |")
         lines.append("|---|---|---|---|---|---|---|")
         for r in result.load_rows:
             lines.append(

@@ -59,9 +59,7 @@ class CommandPalette(QDialog):
         layout.setSpacing(8)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText(
-            "Введите команду: «открыть», «профиль», «бэкенд», «дерево», «slm»…"
-        )
+        self.search.setPlaceholderText("Введите команду: «открыть», «профиль», «бэкенд», «дерево», «slm»…")
         self.search.textChanged.connect(self._refresh)
         self.search.returnPressed.connect(self._execute_current)
         font = QFont()
@@ -123,10 +121,7 @@ class CommandPalette(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, cmd.id)
             # Вторая строка — hint/shortcut/group (используем тот же text,
             # т.к. QListWidget не поддерживает многострочность без delegate).
-            item.setToolTip(
-                (cmd.hint or cmd.group)
-                + (f"  ({cmd.shortcut})" if cmd.shortcut else "")
-            )
+            item.setToolTip((cmd.hint or cmd.group) + (f"  ({cmd.shortcut})" if cmd.shortcut else ""))
             self.list.addItem(item)
 
         if self._visible_commands:

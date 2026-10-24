@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from loguru import logger
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -25,7 +26,6 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
 )
-from loguru import logger
 
 from core.config import AppConfig, save_config
 
@@ -33,8 +33,8 @@ from core.config import AppConfig, save_config
 class PipelineSelectors(QWidget):
     """Пара ComboBox (planner + analyst) + кнопка «⋯» + индикатор состояния."""
 
-    planner_changed = Signal(str)   # model_id или ""
-    analyst_changed = Signal(str)   # model_id или ""
+    planner_changed = Signal(str)  # model_id или ""
+    analyst_changed = Signal(str)  # model_id или ""
     open_slm_dialog_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
@@ -120,9 +120,7 @@ class PipelineSelectors(QWidget):
                     combo.setItemText(i, f"★ {text}")
                     tip = combo.itemData(i, Qt.ItemDataRole.ToolTipRole) or ""
                     suffix = f" (рекомендовано профилем «{profile_name}»)" if profile_name else ""
-                    combo.setItemData(
-                        i, f"{tip}{suffix}".strip(), Qt.ItemDataRole.ToolTipRole
-                    )
+                    combo.setItemData(i, f"{tip}{suffix}".strip(), Qt.ItemDataRole.ToolTipRole)
                     break
 
     # ------------------------------------------------------------------

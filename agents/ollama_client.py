@@ -1,16 +1,15 @@
 """Асинхронный клиент Ollama API."""
 
-import json
 from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import Annotated, Any, Literal, Union, cast
+from typing import Annotated, Any, Literal, cast
 
 import httpx
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
 from core.context_budget import DEFAULT_NUM_CTX
-from core.exceptions import ModelNotFoundError, OllamaConnectionError, ToolsNotSupportedError
+from core.exceptions import ModelNotFoundError, OllamaConnectionError
 
 
 class OllamaModelInfo(BaseModel):
@@ -77,7 +76,7 @@ class ToolResultPart(BaseModel):
 
 # Discriminated union: pydantic выбирает конкретный тип по полю ``kind``.
 MessagePart = Annotated[
-    Union[TextPart, ReasoningPart, ToolCallPart, ToolResultPart],
+    TextPart | ReasoningPart | ToolCallPart | ToolResultPart,
     Field(discriminator="kind"),
 ]
 
@@ -97,7 +96,7 @@ class ChatMessage(BaseModel):
     parts: list[MessagePart] = Field(default_factory=list)
     images: list[str] | None = None
     tool_call_id: str | None = None  # для role="tool": id исходного tool_call
-    name: str | None = None          # для role="tool": имя инструмента
+    name: str | None = None  # для role="tool": имя инструмента
 
     @model_validator(mode="before")
     @classmethod

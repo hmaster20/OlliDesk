@@ -73,7 +73,7 @@ class _GitStatusWorker(QRunnable):
     заметно даже на SSD.
     """
 
-    def __init__(self, delegate: "GitStatusDelegate", generation: int) -> None:
+    def __init__(self, delegate: GitStatusDelegate, generation: int) -> None:
         super().__init__()
         self._d = delegate
         self._gen = generation

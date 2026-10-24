@@ -11,7 +11,7 @@ ChatPanel вызывает `show_for_prefix(prefix)` вручную из `textCh
 
 from __future__ import annotations
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QCompleter, QWidget
 

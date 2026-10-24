@@ -77,9 +77,8 @@ def get_git_status(repo_path: Path | str) -> str:
     except Exception as e:
         return f"Ошибка получения статуса Git: {e}"
 
-def read_file_at_head(
-    repo_path: Path | str, file_path: Path | str
-) -> str | None:
+
+def read_file_at_head(repo_path: Path | str, file_path: Path | str) -> str | None:
     """[9.8] Читает содержимое файла из HEAD (последний коммит).
 
     Используется для diff-режима редактора: HEAD-версия ↔ рабочая копия.
@@ -104,9 +103,7 @@ def read_file_at_head(
     target = Path(file_path)
     try:
         if target.is_absolute():
-            rel = target.resolve().relative_to(
-                Path(repo.working_dir).resolve()
-            ).as_posix()
+            rel = target.resolve().relative_to(Path(repo.working_dir).resolve()).as_posix()
         else:
             rel = target.as_posix()
     except ValueError:
@@ -119,9 +116,7 @@ def read_file_at_head(
         return None
 
 
-def get_git_status_for_file(
-    repo_path: Path | str, file_path: Path | str
-) -> str | None:
+def get_git_status_for_file(repo_path: Path | str, file_path: Path | str) -> str | None:
     """[9.8] Возвращает двухбуквенный git-статус файла (XY из porcelain).
 
     Args:
@@ -140,9 +135,7 @@ def get_git_status_for_file(
     target = Path(file_path)
     try:
         if target.is_absolute():
-            rel = target.resolve().relative_to(
-                Path(repo.working_dir).resolve()
-            ).as_posix()
+            rel = target.resolve().relative_to(Path(repo.working_dir).resolve()).as_posix()
         else:
             rel = target.as_posix()
     except ValueError:

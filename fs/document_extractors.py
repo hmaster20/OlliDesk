@@ -27,9 +27,7 @@ from pathlib import Path
 from loguru import logger
 
 # Расширения, которые обрабатывает этот модуль.
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
-    {".pdf", ".docx", ".pptx", ".xlsx", ".rtf"}
-)
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".pptx", ".xlsx", ".rtf"})
 
 # Соответствие расширение → язык (для метаданных чанка).
 DOCUMENT_LANGUAGES: dict[str, str] = {
@@ -83,9 +81,7 @@ def extract_document(path: Path, *, use_ocr: bool = False) -> ExtractResult:
     except Exception as e:
         logger.warning(f"Документ {path.name}: ошибка извлечения — {e}")
         return ExtractResult(text="", kind=ext.lstrip("."), error=str(e))
-    return ExtractResult(
-        text="", kind=ext.lstrip("."), error=f"unsupported extension: {ext}"
-    )
+    return ExtractResult(text="", kind=ext.lstrip("."), error=f"unsupported extension: {ext}")
 
 
 # ---------------------------------------------------------------------------
@@ -139,15 +135,15 @@ def _extract_pdf(path: Path, *, use_ocr: bool) -> ExtractResult:
     if use_ocr and not text:
         ocr_text = _ocr_pdf(path)
         if ocr_text:
-            return ExtractResult(
-                text=ocr_text, pages=pages, kind=kind, ocr_used=True
-            )
+            return ExtractResult(text=ocr_text, pages=pages, kind=kind, ocr_used=True)
 
     if not text:
         return ExtractResult(
-            text="", pages=pages, kind=kind,
+            text="",
+            pages=pages,
+            kind=kind,
             error="PDF не содержит текстового слоя (возможно, скан). "
-                  "Включите OCR в настройках профиля «Исследование».",
+            "Включите OCR в настройках профиля «Исследование».",
         )
     return ExtractResult(text=text, pages=pages, kind=kind)
 
@@ -200,7 +196,8 @@ def _extract_docx(path: Path) -> ExtractResult:
         from docx import Document  # type: ignore[import-not-found]
     except ImportError:
         return ExtractResult(
-            text="", kind="docx",
+            text="",
+            kind="docx",
             error="python-docx не установлен. `pip install python-docx`.",
         )
 
@@ -228,7 +225,8 @@ def _extract_pptx(path: Path) -> ExtractResult:
         from pptx import Presentation  # type: ignore[import-not-found]
     except ImportError:
         return ExtractResult(
-            text="", kind="pptx",
+            text="",
+            kind="pptx",
             error="python-pptx не установлен. `pip install python-pptx`.",
         )
 
@@ -254,7 +252,8 @@ def _extract_xlsx(path: Path) -> ExtractResult:
         from openpyxl import load_workbook  # type: ignore[import-not-found]
     except ImportError:
         return ExtractResult(
-            text="", kind="xlsx",
+            text="",
+            kind="xlsx",
             error="openpyxl не установлен. `pip install openpyxl`.",
         )
 

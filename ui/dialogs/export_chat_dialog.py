@@ -91,8 +91,7 @@ class ExportChatDialog(QDialog):
         layout.addStretch()
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
         if save_btn is not None:
@@ -122,9 +121,7 @@ class ExportChatDialog(QDialog):
         else:
             filter_str = "HTML (*.html)"
             default = self.path_edit.text() or "ollidesk_chat.html"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Экспорт чата", default, filter_str
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт чата", default, filter_str)
         if path:
             self.path_edit.setText(path)
 
@@ -156,22 +153,16 @@ class ExportChatDialog(QDialog):
                 )
         except Exception as e:
             logger.exception("export failed")
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось собрать экспорт:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось собрать экспорт:\n{e}")
             return
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             logger.info(f"Экспорт чата: {path} ({len(content)} символов)")
-            QMessageBox.information(
-                self, "Готово", f"Чат экспортирован:\n{path}"
-            )
+            QMessageBox.information(self, "Готово", f"Чат экспортирован:\n{path}")
         except OSError as e:
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось записать файл:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось записать файл:\n{e}")
             return
 
         self.accept()

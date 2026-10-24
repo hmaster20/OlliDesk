@@ -100,8 +100,10 @@ async def _run_powershell(
         ps_exe,
         "-NoProfile",
         "-NonInteractive",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", command,
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -109,7 +111,7 @@ async def _run_powershell(
     )
     try:
         out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
             await proc.wait()
@@ -170,10 +172,7 @@ async def run_shell_command(
     #    проекта» и «пустой project_root == отказ»; обе семантики относятся
     #    к shell-инструменту, а не к резолверу, поэтому инлайн здесь.
     if not project_root:
-        return (
-            "Ошибка: run_shell_command требует открытый проект "
-            "(project_root не передан)."
-        )
+        return "Ошибка: run_shell_command требует открытый проект (project_root не передан)."
     resolver = SandboxedPathResolver(project_root)
     work_dir = resolver.root if not cwd else resolver.resolve(cwd)
     if work_dir is None:
@@ -195,9 +194,7 @@ async def run_shell_command(
     # 3. Чёрный список разрушительных команд (защита от ошибок модели).
     hit = _check_blacklist(command)
     if hit is not None:
-        logger.warning(
-            f"run_shell_command: blacklist hit ({hit}): {command[:120]}"
-        )
+        logger.warning(f"run_shell_command: blacklist hit ({hit}): {command[:120]}")
         return (
             "Ошибка: команда отклонена чёрным списком разрушительных "
             "операций. Переформулируй задачу без удаления/recurse-force/"
@@ -211,10 +208,7 @@ async def run_shell_command(
         t = 30
     t = max(1, min(t, MAX_TIMEOUT_S))
 
-    logger.info(
-        f"run_shell_command: cwd={work_dir}, timeout={t}s, "
-        f"cmd={command[:200]}"
-    )
+    logger.info(f"run_shell_command: cwd={work_dir}, timeout={t}s, cmd={command[:200]}")
 
     # 5. Запуск.
     try:

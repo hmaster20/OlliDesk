@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 from agents.ollama_client import OllamaClient
 from core.config import AppConfig
 from core.model_registry import ModelRegistry
+from core.profiles import get_profile_by_id
 from core.prompt_watcher import PromptWatcher
 from core.search_cache import SearchCache
 from core.system_prompts import SystemPromptManager
@@ -60,16 +61,14 @@ from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from ui.chat import ChatPanel
 from ui.chat.threads import _OllamaCheckThread  # 🆕
+from ui.command_registry import CommandRegistry, PaletteCommand
+from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_controller import FileTreeController
 from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
-from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
-from ui.widgets.status_dashboard import StatusDashboard
-from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
-from core.profiles import get_profile_by_id
-from ui.command_registry import CommandRegistry, PaletteCommand
 from ui.widgets.command_palette import CommandPalette
+from ui.widgets.status_dashboard import StatusDashboard
 
 
 class ModelCheckThread(QThread):
@@ -454,8 +453,8 @@ class MainWindow(QMainWindow):
 
         # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
         try:
-            from PySide6.QtGui import QAction, QKeySequence
             from PySide6.QtCore import Qt
+            from PySide6.QtGui import QAction, QKeySequence
 
             diff_action = QAction(self.editor_widget)
             diff_action.setShortcut(QKeySequence("Ctrl+D"))
@@ -854,9 +853,7 @@ class MainWindow(QMainWindow):
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(self._open_command_palette)
         except Exception:
-            logger.debug(
-                "Не удалось установить Ctrl+Shift+P на окно", exc_info=True
-            )
+            logger.debug("Не удалось установить Ctrl+Shift+P на окно", exc_info=True)
 
     def _register_palette_commands(self) -> None:
         """[9.9] Регистрирует команды палитры.
@@ -979,9 +976,7 @@ class MainWindow(QMainWindow):
                     )
                 )
         except Exception:
-            logger.debug(
-                "Не удалось зарегистрировать профили в палитре", exc_info=True
-            )
+            logger.debug("Не удалось зарегистрировать профили в палитре", exc_info=True)
 
         # --- Бэкенд ---
         reg.register(
@@ -1066,9 +1061,7 @@ class MainWindow(QMainWindow):
             ]
         )
 
-        logger.info(
-            f"Палитра команд: зарегистрировано {len(self._palette_registry)} команд"
-        )
+        logger.info(f"Палитра команд: зарегистрировано {len(self._palette_registry)} команд")
 
     @Slot()
     def _open_command_palette(self) -> None:
@@ -1103,10 +1096,7 @@ class MainWindow(QMainWindow):
             return
         try:
             # Обновляем селектор и применяем — как из меню View → Профили.
-            if (
-                hasattr(self.chat_panel, "_profiles_selector")
-                and self.chat_panel._profiles_selector
-            ):
+            if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
                 self.chat_panel._profiles_selector.set_profile(profile.id)
             self.chat_panel._on_profile_changed(profile)
             self.menu_bar.set_active_profile(profile.id)
@@ -1172,9 +1162,7 @@ class MainWindow(QMainWindow):
             self.chat_panel.router.set_priority(new_priority)
             self.chat_panel._emit_backend_status()
             self.chat_panel._sync_dashboard()
-        self.status_bar.showMessage(
-            f"Бэкенд переключён: {target.upper()}", 3000
-        )
+        self.status_bar.showMessage(f"Бэкенд переключён: {target.upper()}", 3000)
 
     def _check_ollama_connection(self) -> None:
         """[9.7] Проверяет Ollama ТОЛЬКО если он разрешён в конфиге.
@@ -1223,9 +1211,7 @@ class MainWindow(QMainWindow):
         self._ollama_connected = bool(ok) and bool(self._available_models)
 
         if not self._ollama_connected:
-            logger.info(
-                f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})"
-            )
+            logger.info(f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})")
             return
 
         logger.info(f"Ollama: подключён, моделей={len(self._available_models)}")
@@ -1257,8 +1243,7 @@ class MainWindow(QMainWindow):
                     (
                         m
                         for m in self._available_models
-                        if (info := self.model_registry.get(m)) is not None
-                        and info.is_local
+                        if (info := self.model_registry.get(m)) is not None and info.is_local
                     ),
                     self._available_models[0],
                 )
@@ -1274,6 +1259,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{base} ———> {self.project_path.name}")
         else:
             self.setWindowTitle(base)
+
     def _check_ollama_connection(self) -> None:
         """Проверяет подключение к Ollama только если он разрешён в конфиге."""
         try:
@@ -1686,8 +1672,7 @@ class MainWindow(QMainWindow):
             show_reasoning=bool(settings.get("show_reasoning", True)),
             rag_enabled=bool(settings.get("rag_enabled", True)),
             tools_enabled={
-                name: policy != ToolPolicy.EXCLUDED
-                for name, policy in self.chat_panel.tool_policies.items()
+                name: policy != ToolPolicy.EXCLUDED for name, policy in self.chat_panel.tool_policies.items()
             },
             parent=self,
         )
@@ -1715,9 +1700,7 @@ class MainWindow(QMainWindow):
 
         # Max iterations.
         self.config.agent_max_iterations = int(settings["max_iterations"])
-        self.config.chat_max_iterations = max(
-            1, min(int(settings["max_iterations"]), 15)
-        )
+        self.config.chat_max_iterations = max(1, min(int(settings["max_iterations"]), 15))
 
         # Reasoning.
         self.chat_panel.set_show_reasoning(bool(settings["show_reasoning"]))
@@ -1834,18 +1817,13 @@ class MainWindow(QMainWindow):
             self.show_reasoning_check.blockSignals(False)
 
         # Синхронизируем селектор профиля в ChatPanel (на случай API-вызова).
-        if (
-            hasattr(self.chat_panel, "_profiles_selector")
-            and self.chat_panel._profiles_selector
-        ):
+        if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
             self.chat_panel._profiles_selector.set_profile(profile_id)
 
         # Показываем имя профиля в статус-баре.
         profile = get_profile_by_id(self.config.profiles, profile_id)
         if profile is not None:
-            self.status_bar.showMessage(
-                f"{profile.icon} Профиль: {profile.name}", 4000
-            )
+            self.status_bar.showMessage(f"{profile.icon} Профиль: {profile.name}", 4000)
         logger.info(f"Профиль изменён: {profile_id}")
 
     @Slot(str)
@@ -1861,10 +1839,7 @@ class MainWindow(QMainWindow):
             if profile is None:
                 return
             # Обновляем селектор и применяем профиль.
-            if (
-                hasattr(self.chat_panel, "_profiles_selector")
-                and self.chat_panel._profiles_selector
-            ):
+            if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
                 self.chat_panel._profiles_selector.set_profile(profile_id)
             self.chat_panel._on_profile_changed(profile)
         except Exception as e:
@@ -1899,10 +1874,7 @@ class MainWindow(QMainWindow):
                 profile = get_profile_by_id(self.config.profiles, self.config.active_profile)
                 if profile is not None:
                     self.chat_panel._apply_profile(profile, emit_signal=False)
-                if (
-                    hasattr(self.chat_panel, "_profiles_selector")
-                    and self.chat_panel._profiles_selector
-                ):
+                if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
                     self.chat_panel._profiles_selector.set_profile(self.config.active_profile)
             except Exception:
                 logger.debug("Не удалось применить профиль после сохранения", exc_info=True)

@@ -31,8 +31,7 @@ from agents.investigation import (
     phase_for,
     pick_nudge,
 )
-from agents.ollama_client import ChatMessage, ToolCall
-from agents.ollama_client import ReasoningPart, TextPart, ToolCallPart
+from agents.ollama_client import ChatMessage, ReasoningPart, TextPart, ToolCall, ToolCallPart
 from agents.protocols import AttachedFilesLike, SearchCacheLike, VectorStoreLike
 from agents.tool_call_parser import extract_tool_calls
 from agents.tool_registry import ErrorCategory, ToolRegistry
@@ -280,6 +279,7 @@ _OBSERVATION_NUDGE = (
     "именно не удалось получить, и почему."
 )
 
+
 def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента."""
     return bool(_REACT_SCAFFOLD_RE.search(text))
@@ -429,6 +429,7 @@ def _build_system_prompt(
 
     return _assemble_prompt(pre, variable)
 
+
 # Подсказки модели при ошибке инструмента: дописываются в конец tool-сообщения,
 # чтобы модель не повторяла тот же вызов «в лоб», а скорректировала стратегию.
 # Категория выставляется в ToolRegistry.execute по типу исключения.
@@ -446,10 +447,10 @@ _RETRY_HINTS: dict[ErrorCategory, str] = {
         "паузу, либо продолжить с тем, что уже есть."
     ),
     ErrorCategory.REPORT_TO_USER: (
-        "\n\n💡 Инструмент упал. Сообщи пользователю причину честно, "
-        "не подменяй выдумкой."
+        "\n\n💡 Инструмент упал. Сообщи пользователю причину честно, не подменяй выдумкой."
     ),
 }
+
 
 def _create_tool_result_message(
     tool_call_id: str,
@@ -487,6 +488,7 @@ def _create_tool_result_message(
         tool_call_id=tool_call_id,
         name=name,
     )
+
 
 class AgentLoop:
     """Цикл ReAct агента (CHAT / PLAN / AGENT)."""
@@ -752,9 +754,7 @@ class AgentLoop:
         on_tools_disabled: Callable[[], Awaitable[None]] | None = None,
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
-        on_tool_result: (
-            Callable[[str, str, bool, dict | None], Awaitable[None]] | None
-        ) = None,
+        on_tool_result: (Callable[[str, str, bool, dict | None], Awaitable[None]] | None) = None,
         on_thought: Callable[[str], Awaitable[None]] | None = None,
         on_final_answer_started: Callable[[], Awaitable[None]] | None = None,
         # [4.8.E] Низкоуровневые delta-колбэки и границы стрима.
@@ -1048,7 +1048,7 @@ class AgentLoop:
                             state.nudges_fired.add("different_file")
                             continue
 
-                                       # [9.5.7] on_tool_start ВЫЗЫВАЕТСЯ ДО ask_first:
+                            # [9.5.7] on_tool_start ВЫЗЫВАЕТСЯ ДО ask_first:
                     # пользователь видит карточку-запрос (⏳ pending)
                     # одновременно с диалогом подтверждения. При отказе
                     # карточка краснеет через on_tool_result(...).

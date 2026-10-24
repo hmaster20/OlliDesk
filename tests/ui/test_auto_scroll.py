@@ -24,7 +24,6 @@ from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget  # noqa
 
 from ui.widgets.auto_scroll import STICK_THRESHOLD_PX, AutoScrollArea  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Фикстуры
 # ---------------------------------------------------------------------------
@@ -41,7 +40,7 @@ def qt_app():
     yield app
 
 
-@pytest.fixture()
+@pytest.fixture
 def scroll_area(qt_app):
     """AutoScrollArea с content-виджетом, достаточно высоким для скролла."""
     area = AutoScrollArea()
@@ -136,7 +135,7 @@ class TestScrollBehavior:
         scroll_area.stick_changed.connect(collected.append)
         sb = scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum() - 200)  # → False
-        sb.setValue(sb.maximum())        # → True
+        sb.setValue(sb.maximum())  # → True
         assert collected == [False, True]
 
 
@@ -155,9 +154,7 @@ class TestScrollIfSticky:
         scroll_area.scroll_to_bottom_if_sticky()
         assert scroll_area.stick_to_bottom is True
 
-    def test_does_not_scroll_when_not_sticky(
-        self, scroll_area: AutoScrollArea, qt_app
-    ) -> None:
+    def test_does_not_scroll_when_not_sticky(self, scroll_area: AutoScrollArea, qt_app) -> None:
         """Если пользователь пролистал вверх — метод не двигает scrollbar."""
         sb = scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum() - 200)
@@ -197,9 +194,7 @@ class TestScrollForce:
         assert scroll_area.stick_to_bottom is True
         assert sb.value() == sb.maximum()
 
-    def test_hides_down_button_if_visible(
-        self, scroll_area: AutoScrollArea, qt_app
-    ) -> None:
+    def test_hides_down_button_if_visible(self, scroll_area: AutoScrollArea, qt_app) -> None:
         """Если кнопка «▼ Вниз» была — она скрывается после force."""
         sb = scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum() - 300)
@@ -215,9 +210,7 @@ class TestScrollForce:
 
 
 class TestAutoScrollToggle:
-    def test_disable_hides_down_button(
-        self, scroll_area: AutoScrollArea, qt_app
-    ) -> None:
+    def test_disable_hides_down_button(self, scroll_area: AutoScrollArea, qt_app) -> None:
         """Отключение авто-скролла скрывает кнопку «▼ Вниз»."""
         sb = scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum() - 300)  # кнопка появляется
@@ -227,9 +220,7 @@ class TestAutoScrollToggle:
         assert not scroll_area._down_button.isVisible()
         assert scroll_area.auto_scroll_enabled is False
 
-    def test_disabled_does_not_scroll(
-        self, scroll_area: AutoScrollArea, qt_app
-    ) -> None:
+    def test_disabled_does_not_scroll(self, scroll_area: AutoScrollArea, qt_app) -> None:
         """При выключенном авто-скролле `scroll_to_bottom_if_sticky` — no-op."""
         scroll_area.set_auto_scroll_enabled(False)
         sb = scroll_area.verticalScrollBar()

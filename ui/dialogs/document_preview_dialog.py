@@ -22,7 +22,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -94,8 +93,7 @@ class DocumentPreviewDialog(QDialog):
             err = QLabel(f"⚠️ {result.error}")
             err.setWordWrap(True)
             err.setStyleSheet(
-                "color: #e5c07b; background: rgba(229,192,123,0.1);"
-                " padding: 6px 10px; border-radius: 4px;"
+                "color: #e5c07b; background: rgba(229,192,123,0.1); padding: 6px 10px; border-radius: 4px;"
             )
             layout.addWidget(err)
 
@@ -110,8 +108,7 @@ class DocumentPreviewDialog(QDialog):
         preview = result.text
         if len(preview) > _PREVIEW_CHARS:
             preview = (
-                preview[:_PREVIEW_CHARS]
-                + f"\n\n… [предпросмотр обрезан, всего {len(result.text)} символов]"
+                preview[:_PREVIEW_CHARS] + f"\n\n… [предпросмотр обрезан, всего {len(result.text)} символов]"
             )
         self.text_edit.setPlainText(preview or "(пусто — распознать не удалось)")
         layout.addWidget(self.text_edit, stretch=1)
@@ -166,9 +163,9 @@ class DocumentPreviewDialog(QDialog):
         except Exception as e:
             logger.exception("OCR failed")
             QMessageBox.critical(
-                self, "Ошибка OCR",
-                f"Не удалось запустить OCR:\n{e}\n\n"
-                "Проверьте, что установлены `pdf2image` + Poppler."
+                self,
+                "Ошибка OCR",
+                f"Не удалось запустить OCR:\n{e}\n\nПроверьте, что установлены `pdf2image` + Poppler.",
             )
             self._ocr_btn.setEnabled(True)
             self._ocr_btn.setText("🔍 Запустить OCR")
@@ -181,10 +178,7 @@ class DocumentPreviewDialog(QDialog):
         self._build_ui(self._result)
 
         if not self._result.text:
-            QMessageBox.information(
-                self, "OCR",
-                "OCR не смог распознать текст. Проверьте качество скана."
-            )
+            QMessageBox.information(self, "OCR", "OCR не смог распознать текст. Проверьте качество скана.")
 
     def _on_attach(self) -> None:
         if not self._result.text:

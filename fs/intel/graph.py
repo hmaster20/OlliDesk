@@ -6,14 +6,14 @@ mtime/sha256 из FileRecord. Call-graph через LSP — ОПЦИОНАЛЬН
 рёбер kind='calls'; по умолчанию не гоняем на весь проект (дорого, не нужен
 для схемы компонентов).
 """
+
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
-
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fs.intel import FileRecord, Symbol
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 @dataclass
 class GraphNode:
     id: str
-    kind: str            # file|module|class|interface|function|method|role|task|resource|module_tf|box|provisioner|var
+    kind: str  # file|module|class|interface|function|method|role|task|resource|module_tf|box|provisioner|var
     name: str
     path: str | None = None
     language: str | None = None
@@ -36,12 +36,12 @@ class GraphNode:
 class GraphEdge:
     source: str
     target: str
-    kind: str            # imports|references|uses|depends_on|includes|module_call|notifies|provisions|calls
+    kind: str  # imports|references|uses|depends_on|includes|module_call|notifies|provisions|calls
     confidence: float = 1.0
     line: int | None = None
 
 
-def _symbol_node_id(s: "Symbol") -> str:
+def _symbol_node_id(s: Symbol) -> str:
     """Единая формула ID узла-символа.
 
     Используется и в `DependencyGraph.build` (при создании узлов), и в
@@ -80,21 +80,40 @@ class DependencyGraph:
         c.commit()
 
     @classmethod
-    def build(cls, files: list[FileRecord], symbols: list[Symbol],
-              manifests: list[str], domain: dict) -> "DependencyGraph":
+    def build(
+        cls, files: list[FileRecord], symbols: list[Symbol], manifests: list[str], domain: dict
+    ) -> DependencyGraph:
         g = cls()
         # Узлы-файлы.
         for f in files:
-            g.add_node(GraphNode(id=f"file:{f.path}", kind="file", name=Path(f.path).name,
-                                 path=f.path, language=f.language,
-                                 metadata={"is_entry": f.is_entry_candidate,
-                                           "is_test": f.is_test, "is_config": f.is_config,
-                                           "size": f.size, "sha": f.sha256}))
+            g.add_node(
+                GraphNode(
+                    id=f"file:{f.path}",
+                    kind="file",
+                    name=Path(f.path).name,
+                    path=f.path,
+                    language=f.language,
+                    metadata={
+                        "is_entry": f.is_entry_candidate,
+                        "is_test": f.is_test,
+                        "is_config": f.is_config,
+                        "size": f.size,
+                        "sha": f.sha256,
+                    },
+                )
+            )
         # Узлы-символы.
         for s in symbols:
             nid = _symbol_node_id(s)
-            g.add_node(GraphNode(id=nid, kind=s.kind, name=s.qualified_name, path=s.file,
-                                 metadata={"signature": s.signature, **s.metadata}))
+            g.add_node(
+                GraphNode(
+                    id=nid,
+                    kind=s.kind,
+                    name=s.qualified_name,
+                    path=s.file,
+                    metadata={"signature": s.signature, **s.metadata},
+                )
+            )
             # Ребро символ->файл (принадлежность).
             g.add_edge(GraphEdge(source=nid, target=f"file:{s.file}", kind="belongs_to"))
         # Ребра imports/references из usings/imports.
@@ -131,12 +150,14 @@ class DependencyGraph:
                     if u == ns or u.startswith(ns + ".") or ns.startswith(u + "."):
                         for tid in ids:
                             # ИСПРАВЛЕНИЕ: тоже через _symbol_node_id вместо s.id.
-                            self.add_edge(GraphEdge(
-                                source=_symbol_node_id(s),
-                                target=tid,
-                                kind="references",
-                                confidence=0.7,
-                            ))
+                            self.add_edge(
+                                GraphEdge(
+                                    source=_symbol_node_id(s),
+                                    target=tid,
+                                    kind="references",
+                                    confidence=0.7,
+                                )
+                            )
         # Python import -> file-узел по модульному имени.
         mod_index = {f.module_name: path_to_file_node.get(f.path) for f in files if f.module_name}
         for s in symbols:
@@ -144,18 +165,30 @@ class DependencyGraph:
                 head = imp.split(".")[0]
                 tgt = mod_index.get(head)
                 if tgt and tgt != path_to_file_node.get(s.file):
-                    self.add_edge(GraphEdge(source=f"file:{s.file}", target=tgt, kind="imports", confidence=0.8))
+                    self.add_edge(
+                        GraphEdge(source=f"file:{s.file}", target=tgt, kind="imports", confidence=0.8)
+                    )
 
     def _link_domain(self, domain: dict) -> None:
         ans = domain.get("ansible") or {}
         for e in ans.get("role_edges", []):
-            self.add_edge(GraphEdge(source=f"role:{e['from']}", target=f"role:{e['to']}",
-                                    kind="depends_on", confidence=0.9))
+            self.add_edge(
+                GraphEdge(
+                    source=f"role:{e['from']}", target=f"role:{e['to']}", kind="depends_on", confidence=0.9
+                )
+            )
             self.add_node(GraphNode(id=f"role:{e['from']}", kind="role", name=e["from"]))
             self.add_node(GraphNode(id=f"role:{e['to']}", kind="role", name=e["to"]))
         for r in ans.get("roles", []):
-            self.add_node(GraphNode(id=f"role:{r['name']}", kind="role", name=r["name"], path=r["path"],
-                                    metadata={"tasks": len(r.get("tasks", [])), "handlers": len(r.get("handlers", []))}))
+            self.add_node(
+                GraphNode(
+                    id=f"role:{r['name']}",
+                    kind="role",
+                    name=r["name"],
+                    path=r["path"],
+                    metadata={"tasks": len(r.get("tasks", [])), "handlers": len(r.get("handlers", []))},
+                )
+            )
             for t in r.get("tasks", []):
                 self.add_edge(GraphEdge(source=f"role:{r['name']}", target=f"file:{t}", kind="includes"))
         tf = domain.get("terraform") or {}
@@ -166,14 +199,25 @@ class DependencyGraph:
         vg = domain.get("vagrant") or []
         for v in vg:
             vid = f"vagrant:{v['path']}"
-            self.add_node(GraphNode(id=vid, kind="box", name=Path(v["path"]).name, path=v["path"],
-                                    metadata={"boxes": v.get("boxes"), "providers": v.get("providers"),
-                                              "env_vars": v.get("env_vars"),
-                                              "commented_provisions": v.get("commented_provisions")}))
+            self.add_node(
+                GraphNode(
+                    id=vid,
+                    kind="box",
+                    name=Path(v["path"]).name,
+                    path=v["path"],
+                    metadata={
+                        "boxes": v.get("boxes"),
+                        "providers": v.get("providers"),
+                        "env_vars": v.get("env_vars"),
+                        "commented_provisions": v.get("commented_provisions"),
+                    },
+                )
+            )
             for i, pr in enumerate(v.get("provision_chain", [])):
                 pid = f"{vid}#prov{i}"
-                self.add_node(GraphNode(id=pid, kind="provisioner", name=pr.get("target", f"step{i}")[:60],
-                                        metadata=pr))
+                self.add_node(
+                    GraphNode(id=pid, kind="provisioner", name=pr.get("target", f"step{i}")[:60], metadata=pr)
+                )
                 self.add_edge(GraphEdge(source=vid, target=pid, kind="provisions", line=i))
 
     def _compute_degrees(self) -> None:
@@ -184,6 +228,7 @@ class DependencyGraph:
 
     def _score(self, files, domain) -> None:
         import math
+
         mentioned = self._doc_mentions(domain)
         for n in self.nodes.values():
             s = 0.0
@@ -194,7 +239,7 @@ class DependencyGraph:
             if n.name in mentioned or (n.path and any(m in n.path for m in mentioned)):
                 s += 3.0
             if n.kind in {"var", "method", "function", "task", "provisioner"}:
-                s -= 1.0     # листы вниз по приоритету для L1-отбора
+                s -= 1.0  # листы вниз по приоритету для L1-отбора
             if n.metadata.get("is_test"):
                 s -= 2.0
             n.score = round(s, 3)
@@ -202,9 +247,13 @@ class DependencyGraph:
     def _doc_mentions(self, domain) -> set[str]:
         out: set[str] = set()
         # из contract_md (AGENTS.md/PLAN.md) roadmap/ветки/риски
-        for piece in (domain.get("ansible_partial") or []) + (domain.get("terraform_partial") or []) + (domain.get("vagrant_partial") or []):
+        for piece in (
+            (domain.get("ansible_partial") or [])
+            + (domain.get("terraform_partial") or [])
+            + (domain.get("vagrant_partial") or [])
+        ):
             pass
-        return out   # заполняется в repomap из файлов-контрактов
+        return out  # заполняется в repomap из файлов-контрактов
 
     def top_nodes(self, kinds: Iterable[str], limit: int) -> list[GraphNode]:
         ks = set(kinds)
@@ -238,7 +287,8 @@ class DependencyGraph:
                     out.append(e)
                     other = e.target if e.source == nid else e.source
                     if other not in seen:
-                        seen.add(other); nxt.append(other)
+                        seen.add(other)
+                        nxt.append(other)
             frontier = nxt
             if not frontier:
                 break
@@ -252,10 +302,25 @@ class DependencyGraph:
         if not self._conn:
             return
         import json
+
         c = self._conn
-        c.executemany("INSERT OR REPLACE INTO nodes VALUES(?,?,?,?,?,?,?)",
-                      [(n.id, n.kind, n.name, n.path, n.language, json.dumps(n.metadata, ensure_ascii=False), n.score)
-                       for n in self.nodes.values()])
-        c.executemany("INSERT OR REPLACE INTO edges VALUES(?,?,?,?,?)",
-                      [(e.source, e.target, e.kind, e.confidence, e.line) for e in self.edges])
+        c.executemany(
+            "INSERT OR REPLACE INTO nodes VALUES(?,?,?,?,?,?,?)",
+            [
+                (
+                    n.id,
+                    n.kind,
+                    n.name,
+                    n.path,
+                    n.language,
+                    json.dumps(n.metadata, ensure_ascii=False),
+                    n.score,
+                )
+                for n in self.nodes.values()
+            ],
+        )
+        c.executemany(
+            "INSERT OR REPLACE INTO edges VALUES(?,?,?,?,?)",
+            [(e.source, e.target, e.kind, e.confidence, e.line) for e in self.edges],
+        )
         c.commit()

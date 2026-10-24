@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -29,25 +28,29 @@ from PySide6.QtWidgets import (
 
 from agents.agent_loop import AgentContext
 from agents.context_loader import load_agents_context
-
 from agents.hypotheses import HypothesisStore
 from agents.investigation import is_research_question
-
-
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import ChatMessage, OllamaClient
-
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
-
+from core.chat_commands import (
+    COMMAND_TAGS,
+    DEFAULT_PLACEHOLDER,
+    detect_active_command,
+    find_first_word,
+    get_command,
+)
 from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
 from core.model_registry import ModelRegistry
+from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
+from ui.chat.backends import BackendsMixin
 from ui.chat.message_item import (
     ChatActivityItem,
     ChatDiagramItem,
@@ -55,6 +58,7 @@ from ui.chat.message_item import (
     ChatMessageItem,
     ChatSourcesItem,
 )
+from ui.chat.research import ResearchMixin
 from ui.chat.research_passport import ChatResearchPassport
 from ui.chat.thought_stream import ChatThoughtStream
 from ui.chat.threads import (
@@ -67,21 +71,10 @@ from ui.chat.threads import (
     _SLMLoadThread,
 )
 from ui.widgets.auto_scroll import AutoScrollArea
-from ui.widgets.pipeline_selectors import PipelineSelectors
-from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
-from ui.widgets.profiles_selector import ProfilesSelector
-from core.chat_commands import (
-    ALL_COMMANDS,
-    COMMAND_TAGS,
-    DEFAULT_PLACEHOLDER,
-    detect_active_command,
-    find_first_word,
-    get_command,
-)
-from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
-from ui.chat.backends import BackendsMixin
-from ui.chat.research import ResearchMixin
+from ui.widgets.command_completer import CommandCompleter
+from ui.widgets.pipeline_selectors import PipelineSelectors
+from ui.widgets.profiles_selector import ProfilesSelector
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -235,7 +228,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_thought_stream: ChatThoughtStream | None = None
 
         self._generating = False
-        self._last_run_params: dict | None = None   # для кнопки «Продолжить»
+        self._last_run_params: dict | None = None  # для кнопки «Продолжить»
         # Показывать reasoning_content модели в чате. Управляется чекбоксом
         # в правой панели; сохраняется в ProjectSettings.show_reasoning.
         self._show_reasoning: bool = True
@@ -308,11 +301,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # Детект и загрузка бэкендов
     # ---------------------------------------------------------
 
-
-
-
-
-
     def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
         """Лимит итераций для текущего режима и типа задачи.
 
@@ -355,28 +343,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         return cfg.chat_max_iterations
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
@@ -403,13 +369,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         создаём его.
         """
         if self._last_assistant_widget is None:
-            widget = ChatMessageItem(
-                "assistant", "", mode_name=self._current_mode_name()
-            )
+            widget = ChatMessageItem("assistant", "", mode_name=self._current_mode_name())
             self._last_assistant_widget = widget
-            self.scroll_layout.insertWidget(
-                self.scroll_layout.count() - 1, widget
-            )
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
             # [9.10] Свернуть старые, если порог превышен.
             self._maybe_collapse_old_messages()
@@ -806,9 +768,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._pipeline_selectors = PipelineSelectors(_cfg_for_pipeline)
             self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
             self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
-            self._pipeline_selectors.open_slm_dialog_requested.connect(
-                self.slm_models_requested.emit
-            )
+            self._pipeline_selectors.open_slm_dialog_requested.connect(self.slm_models_requested.emit)
             top_bar.addWidget(self._pipeline_selectors)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
@@ -992,7 +952,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         text = self.input_edit.toPlainText()
         first = find_first_word(text)
-        rest = text[len(first):]
+        rest = text[len(first) :]
 
         # Если пользователь набрал частичный префикс — заменяем на полный tag.
         new_text = f"{tag} {rest.lstrip()}" if rest.strip() else f"{tag} "
@@ -1023,7 +983,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         first = find_first_word(text)
 
         # Случай 1: `@tag` (без пробела) — общая подсказка по команде.
-        if first in COMMAND_TAGS and not text[len(first):].strip():
+        if first in COMMAND_TAGS and not text[len(first) :].strip():
             cmd = get_command(first)
             if cmd is not None:
                 self.input_edit.setPlaceholderText(cmd.placeholder)
@@ -1257,9 +1217,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         # [9.5.7] Активная карточка могла остаться «⏳» — прерываем.
         if self._active_tool_card is not None:
-            self._active_tool_card.set_result(
-                "Прервано пользователем", is_error=True
-            )
+            self._active_tool_card.set_result("Прервано пользователем", is_error=True)
             self._active_tool_card = None
 
         # Очищаем активный store — в следующий запрос гипотезы не утекут.
@@ -1469,8 +1427,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
 
-
-
     def _do_chat(self, text: str, override_limit: int | None = None):
         """Запускает ReAct-цикл в режиме Chat.
 
@@ -1644,6 +1600,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             else:
                 try:
                     from core.config import load_config
+
                     max_iters = load_config().agent_max_iterations
                 except Exception:
                     max_iters = 30
@@ -1757,8 +1714,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._agent_thread.start()
 
-
-
     # ---------------------------------------------------------
     # Существующие слоты
     # ---------------------------------------------------------
@@ -1792,9 +1747,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 cfg = load_config()
                 auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
             except Exception as e:
-                logger.debug(
-                    f"chat_auto_tools: fallback на встроенный список: {e}"
-                )
+                logger.debug(f"chat_auto_tools: fallback на встроенный список: {e}")
                 auto_tools = list(_CHAT_AUTO_TOOLS)
             for name in auto_tools:
                 registry.set_policy(name, ToolPolicy.AUTO)
@@ -1884,9 +1837,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._current_thought_stream is not None:
             if name not in ("record_hypothesis", "update_hypothesis"):
                 preview = (content or "").strip().replace("\n", " ")[:200]
-                self._current_thought_stream.append_result(
-                    name, ok=not is_error, preview=preview
-                )
+                self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
 
         # 3. Гипотезы — отдельный виджет (как было).
         if (
@@ -1951,9 +1902,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self.status_label.setText(f"↩ Удалён: {target.name}")
                 logger.info(f"revert write_file: удалён {path}")
             except OSError as e:
-                QMessageBox.warning(
-                    self, "Ошибка", f"Не удалось удалить файл:\n{e}"
-                )
+                QMessageBox.warning(self, "Ошибка", f"Не удалось удалить файл:\n{e}")
             return
 
         reply = QMessageBox.question(
@@ -1974,9 +1923,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 # Файл мог быть открыт в редакторе — перечитать.
                 self.source_activated.emit(path, 0)
         except OSError as e:
-            QMessageBox.warning(
-                self, "Ошибка", f"Не удалось восстановить файл:\n{e}"
-            )
+            QMessageBox.warning(self, "Ошибка", f"Не удалось восстановить файл:\n{e}")
 
     def _update_hypothesis_widget(self, content: str) -> bool:
         """Разбирает JSON-ответ тула гипотезы и обновляет/создаёт виджет."""
@@ -2016,7 +1963,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 evidence=str(h.get("evidence") or ""),
             )
 
-                # Новый элемент появился — если пользователь «на дне», следуем за стримом.
+            # Новый элемент появился — если пользователь «на дне», следуем за стримом.
         # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
         self._scroll_to_bottom()
         return True
@@ -2169,9 +2116,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if backend == BackendType.OLLAMA:
             self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
         elif backend == BackendType.LOCAL_SLM:
-            self._dashboard.set_backend(
-                "slm", "SLM", self._slm_model_name or "локальная"
-            )
+            self._dashboard.set_backend("slm", "SLM", self._slm_model_name or "локальная")
         elif backend == BackendType.RULE_BASED:
             self._dashboard.set_backend("rule", "Резерв", "без LLM")
         else:
@@ -2241,12 +2186,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._current_mode() == AgentMode.CHAT and not self._research_mode_active:
             return None
         self._current_thought_stream = ChatThoughtStream()
-        self.scroll_layout.insertWidget(
-            self.scroll_layout.count() - 1, self._current_thought_stream
-        )
-        self.scroll_layout.setStretch(
-            self.scroll_layout.indexOf(self._current_thought_stream), 0
-        )
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, self._current_thought_stream)
+        self.scroll_layout.setStretch(self.scroll_layout.indexOf(self._current_thought_stream), 0)
         # [9.10]
         self._maybe_collapse_old_messages()
         return self._current_thought_stream
@@ -2388,8 +2329,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self.scroll_area.scroll_to_bottom_if_sticky()
         logger.debug(
-            f"[9.10] Развёрнуто {len(widgets)} сообщений, "
-            f"осталось свёрнутых: {placeholder.collapsed_count}"
+            f"[9.10] Развёрнуто {len(widgets)} сообщений, осталось свёрнутых: {placeholder.collapsed_count}"
         )
 
     def _expand_all_collapsed(self) -> None:
@@ -2428,12 +2368,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # [9.5.4] Цвет фона кнопки Stop по состоянию. Кнопка остаётся «■»
     # (привычный Stop), но цвет фона подсказывает, что происходит.
     _STOP_BUTTON_BG = {
-        "idle": "#d32f2f",       # обычный Stop
-        "thinking": "#d4a373",   # янтарный — «думает»
-        "tool": "#6ba3d6",       # синий — «выполняет»
+        "idle": "#d32f2f",  # обычный Stop
+        "thinking": "#d4a373",  # янтарный — «думает»
+        "tool": "#6ba3d6",  # синий — «выполняет»
         "streaming": "#98c379",  # зелёный — «печатает»
         "cancelled": "#7a7a8a",  # серый — «остановлено»
-        "error": "#c0392b",      # тёмно-красный — «ошибка»
+        "error": "#c0392b",  # тёмно-красный — «ошибка»
     }
 
     def _set_activity_state(self, state: str, detail: str = "") -> None:
@@ -2538,10 +2478,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._last_research_summary = None
         self._research_mode_active = False
 
-
-
-
-
     def _reset_send_button(self):
         self._generating = False
         self.input_edit.setEnabled(True)
@@ -2585,9 +2521,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [9.5.4] Индикатор: ошибка (короткий detail).
         self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
-            self._active_tool_card.set_result(
-                f"Ошибка: {error_msg[:200]}", is_error=True
-            )
+            self._active_tool_card.set_result(f"Ошибка: {error_msg[:200]}", is_error=True)
             self._active_tool_card = None
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
@@ -2604,8 +2538,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._reset_research_state()
         self._reset_send_button()
         self._show_activity(
-            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать "
-            "агенту больше шагов."
+            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать агенту больше шагов."
         )
         # [9.5.4] Индикатор: «лимит итераций» вместо общего idle.
         self._set_activity_state("cancelled", "лимит итераций")
@@ -2799,9 +2732,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not self._messages:
             from PySide6.QtWidgets import QMessageBox
 
-            QMessageBox.information(
-                self, "Экспорт чата", "Чат пуст — нечего экспортировать."
-            )
+            QMessageBox.information(self, "Экспорт чата", "Чат пуст — нечего экспортировать.")
             return
 
         profile_name = self._profile.name if self._profile else ""
@@ -3065,10 +2996,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # P3: Orchestrator lifecycle
     # ------------------------------------------------------------------
 
-
-
-
-
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
         if self._orchestrator is not None:
@@ -3086,7 +3013,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             except Exception:
                 pass
             self._model_pool = None
-
 
     # ------------------------------------------------------------------
     # [9.3] Селекторы Planner/Analyst
@@ -3162,8 +3088,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 policy = _ToolPolicy(policy_str)
             except ValueError:
                 logger.warning(
-                    f"Профиль {profile.id}: неизвестная политика "
-                    f"{policy_str!r} для {tool_name} — пропускаю"
+                    f"Профиль {profile.id}: неизвестная политика {policy_str!r} для {tool_name} — пропускаю"
                 )
                 continue
             self.set_tool_policy(tool_name, policy)
@@ -3177,9 +3102,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
         if self._pipeline_selectors is not None:
-            self._pipeline_selectors.set_recommended_model(
-                profile.recommended_model, profile.name
-            )
+            self._pipeline_selectors.set_recommended_model(profile.recommended_model, profile.name)
 
         # 6. Кнопка «Возврат в Разработку» — видна только для не-development.
         if hasattr(self, "back_to_development_btn"):
@@ -3197,9 +3120,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._apply_profile(profile, emit_signal=True)
         # Профиль влияет на pipeline (какие модели), пересобираем.
         self.reset_pipeline()
-        self.status_label.setText(
-            f"{profile.icon} Профиль: {profile.name}"
-        )
+        self.status_label.setText(f"{profile.icon} Профиль: {profile.name}")
         logger.info(f"Профиль сменён: {profile.id} → reset_pipeline")
 
     @Slot()
@@ -3264,9 +3185,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if backend == BackendType.OLLAMA:
             self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
         elif backend == BackendType.LOCAL_SLM:
-            self._dashboard.set_backend(
-                "slm", "SLM", self._slm_model_name or "локальная"
-            )
+            self._dashboard.set_backend("slm", "SLM", self._slm_model_name or "локальная")
         elif backend == BackendType.RULE_BASED:
             self._dashboard.set_backend("rule", "Резерв", "без LLM")
         else:
@@ -3293,5 +3212,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._dashboard.set_pipeline("💤", "не активирован")
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
+
 
 # ---

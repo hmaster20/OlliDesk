@@ -107,9 +107,7 @@ class TestMigrationFromOldDB:
                 " session_id TEXT NOT NULL, role TEXT NOT NULL,"
                 " content TEXT NOT NULL, created_at TEXT NOT NULL)"
             )
-            conn.execute(
-                "INSERT INTO sessions VALUES ('s1', 'proj', '2024-01-01', '2024-01-01')"
-            )
+            conn.execute("INSERT INTO sessions VALUES ('s1', 'proj', '2024-01-01', '2024-01-01')")
             conn.execute(
                 "INSERT INTO messages (session_id, role, content, created_at) "
                 "VALUES ('s1', 'user', 'старое сообщение', '2024-01-01')"
@@ -135,9 +133,7 @@ class TestMigrationFromOldDB:
 class TestPartsSerializationFailure:
     """Битые parts не блокируют загрузку сессии."""
 
-    def test_corrupt_parts_json_falls_back_to_content(
-        self, tmp_path: Path
-    ) -> None:
+    def test_corrupt_parts_json_falls_back_to_content(self, tmp_path: Path) -> None:
         store = SessionStore(tmp_path / "s.db")
         sid = store.create_session("proj")
         # Пишем «нормальное» сообщение, потом портим parts_json вручную.
@@ -162,9 +158,7 @@ class TestPartsSerializationFailure:
         with sqlite3.connect(store.db_path) as conn:
             conn.execute(
                 "UPDATE messages SET parts_json = ?",
-                (
-                    '[{"kind":"alien","text":"x"},{"kind":"text","text":"остаток"}]',
-                ),
+                ('[{"kind":"alien","text":"x"},{"kind":"text","text":"остаток"}]',),
             )
             conn.commit()
 

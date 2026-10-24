@@ -19,11 +19,11 @@ from dataclasses import dataclass
 class PaletteCommand:
     """Одна команда палитры."""
 
-    id: str                               # уникальный стабильный id ("file.open_project")
-    label: str                            # отображаемое имя ("Открыть проект…")
-    hint: str = ""                        # короткая подсказка для второй строки
-    shortcut: str = ""                    # "Ctrl+O" (для отображения справа)
-    group: str = "General"                # "File" / "View" / "Chat" / "Help"
+    id: str  # уникальный стабильный id ("file.open_project")
+    label: str  # отображаемое имя ("Открыть проект…")
+    hint: str = ""  # короткая подсказка для второй строки
+    shortcut: str = ""  # "Ctrl+O" (для отображения справа)
+    group: str = "General"  # "File" / "View" / "Chat" / "Help"
     callback: Callable[[], None] | None = None
 
     def matches(self, query: str) -> bool:

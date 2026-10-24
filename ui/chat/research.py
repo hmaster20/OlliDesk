@@ -267,9 +267,7 @@ class ResearchMixin:
         # Профиль «Обучение» не использует двухмодельный пайплайн —
         # одна analyst-модель, tools off. Не грузим лишнюю память.
         if self._profile is not None and self._profile.id == "learning":
-            logger.debug(
-                "Orchestrator: профиль «Обучение» — пайплайн не требуется"
-            )
+            logger.debug("Orchestrator: профиль «Обучение» — пайплайн не требуется")
             return
 
         if self._pool_load_failed:
@@ -284,9 +282,7 @@ class ResearchMixin:
         self._pool_load_thread.finished.connect(self._on_pool_loaded)
         self._pool_load_thread.error.connect(self._on_pool_error)
         self._pool_load_thread.start()
-        self.status_label.setText(
-            "⏳ Загрузка двух моделей (3B GPU + 7B CPU)…"
-        )
+        self.status_label.setText("⏳ Загрузка двух моделей (3B GPU + 7B CPU)…")
         self._update_pipeline_status()
 
     def reset_pipeline(self) -> None:
@@ -336,10 +332,7 @@ class ResearchMixin:
                 vector_store=self.vector_store,
                 counter=ApproxCounter(),
             )
-            logger.info(
-                f"Orchestrator готов: planner+analyst загружены, "
-                f"intel_cache={intel_cache_dir}"
-            )
+            logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
             self.status_label.setText("✅ Двухмодельный пайплайн готов")
             self._update_pipeline_status()
             # Обновляем селекторы Planner/Analyst (могли измениться id).
@@ -357,10 +350,7 @@ class ResearchMixin:
         self._pool_load_failed = True
         self._orchestrator = None
         self._model_pool = None
-        self.status_label.setText(
-            f"⚠️ Оркестратор недоступен (ReAct продолжит работу): "
-            f"{error_msg[:100]}"
-        )
+        self.status_label.setText(f"⚠️ Оркестратор недоступен (ReAct продолжит работу): {error_msg[:100]}")
         self._update_pipeline_status()
 
     @Slot(object)
@@ -384,7 +374,8 @@ class ResearchMixin:
                 self._messages.append(assistant_message)  # type: ignore[attr-defined]
                 if self._session_id:  # type: ignore[attr-defined]
                     self.session_store.save_message(  # type: ignore[attr-defined]
-                        self._session_id, assistant_message  # type: ignore[attr-defined]
+                        self._session_id,
+                        assistant_message,  # type: ignore[attr-defined]
                     )
 
             # Диаграмма компонентов.
@@ -435,23 +426,18 @@ class ResearchMixin:
             task = data.get("task", "?")
             files = data.get("files", 0)
             deep = data.get("deep", False)
-            self.status_label.setText(
-                f"📋 План: {task}, файлов={files}" + (" (deep)" if deep else "")
-            )
+            self.status_label.setText(f"📋 План: {task}, файлов={files}" + (" (deep)" if deep else ""))
         elif kind == "coverage":
             val = float(data.get("value", 0.0))
             self.status_label.setText(f"📊 Покрытие: {val:.0%}")
         elif kind == "synthesize":
             self.status_label.setText("✍️ Синтез (7B CPU)…")
         elif kind == "regen":
-            self.status_label.setText(
-                f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}"
-            )
+            self.status_label.setText(f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}")
         elif kind == "fallback":
             self._add_message(  # type: ignore[attr-defined]
                 "system",
-                f"⚠️ Оркестратор упал, использую старый ReAct: "
-                f"{data.get('reason', '')[:120]}",
+                f"⚠️ Оркестратор упал, использую старый ReAct: {data.get('reason', '')[:120]}",
             )
         elif kind == "done":
             elapsed = data.get("elapsed_s")

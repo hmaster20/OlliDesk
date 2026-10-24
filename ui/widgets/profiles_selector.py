@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
 
 from core.config import AppConfig, save_config
-from core.profiles import ProfileConfig, get_profile_by_id
+from core.profiles import get_profile_by_id
 
 
 class ProfilesSelector(QWidget):
@@ -33,12 +33,9 @@ class ProfilesSelector(QWidget):
 
         self.combo = QComboBox()
         self.combo.setMinimumWidth(150)
-        self.combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
+        self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo.setToolTip(
-            "Профиль использования: влияет на набор инструментов, RAG, "
-            "системный промпт и лимиты итераций"
+            "Профиль использования: влияет на набор инструментов, RAG, системный промпт и лимиты итераций"
         )
         self.combo.currentIndexChanged.connect(self._on_changed)
         layout.addWidget(self.combo)

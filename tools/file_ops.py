@@ -286,15 +286,14 @@ def _verify_python_syntax(file_path: Path) -> str:
         return (result.stderr or result.stdout or "unknown syntax error").strip()
     return ""
 
+
 @tool(
     name="write_file",
     description="Записывает содержимое в файл. Перед записью создаёт Git-снапшот для отката.",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
 )
-def write_file(
-    path: str, content: str, project_root: str = ""
-) -> str | dict[str, Any]:
+def write_file(path: str, content: str, project_root: str = "") -> str | dict[str, Any]:
     """Записывает содержимое в файл.
 
     [9.6.1] Возвращает `dict` со структурированным результатом для UI:
@@ -324,9 +323,7 @@ def write_file(
         original_content = ""
         if not is_new_file:
             try:
-                original_content = file_path.read_text(
-                    encoding="utf-8", errors="replace"
-                )
+                original_content = file_path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 original_content = ""
 
@@ -350,9 +347,7 @@ def write_file(
         if project_root:
             repo_path = Path(project_root)
             try:
-                snapshot_status = create_snapshot(
-                    repo_path, message=f"Before agent write: {file_path.name}"
-                )
+                snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
             except Exception:
                 snapshot_status = None
 
@@ -380,18 +375,12 @@ def write_file(
         diff_text = "".join(diff_chunks)
 
         # Статистика по строкам.
-        lines_added = sum(
-            1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++")
-        )
-        lines_removed = sum(
-            1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---")
-        )
+        lines_added = sum(1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++"))
+        lines_removed = sum(1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---"))
 
         # [9.6.1] `_llm_text` — что видит модель. Добавляем хвост с
         # синтаксической ошибкой (если есть) — модель должна исправить.
-        status_line = (
-            "Файл создан" if is_new_file else "Файл успешно обновлён"
-        )
+        status_line = "Файл создан" if is_new_file else "Файл успешно обновлён"
         llm_text = f"{status_line}: {file_path.name}"
         if snapshot_status:
             llm_text += ". Создан Git-снапшот для отката."
@@ -400,12 +389,8 @@ def write_file(
         else:
             llm_text += " (Git-снапшот не создан — репозиторий не найден или нет изменений)."
         if syntax_error:
-            logger.warning(
-                f"py_compile {file_path} выявил синтаксическую ошибку"
-            )
-            llm_text += (
-                f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
-            )
+            logger.warning(f"py_compile {file_path} выявил синтаксическую ошибку")
+            llm_text += f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
 
         return {
             "_llm_text": llm_text,
@@ -426,4 +411,3 @@ def write_file(
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
-

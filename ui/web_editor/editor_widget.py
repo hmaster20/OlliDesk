@@ -196,9 +196,7 @@ class EditorWidget(QWidget):
             return
         monaco_theme = "vs" if theme == "light" else "vs-dark"
         try:
-            self.web_view.page().runJavaScript(
-                f"setTheme({json.dumps(monaco_theme)})"
-            )
+            self.web_view.page().runJavaScript(f"setTheme({json.dumps(monaco_theme)})")
         except Exception:
             logger.debug("Не удалось отправить setTheme в JS", exc_info=True)
 

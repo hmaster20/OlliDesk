@@ -310,10 +310,7 @@ class ChatThoughtStream(QWidget):
         if not label:
             return
         self._close_thought_block()
-        self._insert_html(
-            f'<span style="color: {_C_NUDGE}; font-style: italic;">'
-            f"{_escape(label)}</span>"
-        )
+        self._insert_html(f'<span style="color: {_C_NUDGE}; font-style: italic;">{_escape(label)}</span>')
         self._insert_newline()
 
     def mark_interrupted(self, reason: str = "") -> None:

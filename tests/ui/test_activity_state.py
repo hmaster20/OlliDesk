@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # Копия словарей из ChatPanel (без импорта, чтобы не тянуть Qt).
 _ICONS = {
     "idle": "💤",
@@ -73,6 +72,7 @@ class TestActivityMessageFormat:
         # Никаких висячих пробелов.
         assert self._format("idle", "").endswith("работа")
         assert not self._format("idle", "").endswith(" ")
+
 
 # Копия словаря цветов из ChatPanel (без импорта Qt).
 _STOP_BUTTON_BG = {

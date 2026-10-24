@@ -164,8 +164,8 @@ class TestRegistryFilter:
         reg.register_many(
             [
                 _make("a", "Some text with Экспорт inside"),  # не префикс
-                _make("b", "Экспорт чата"),                    # префикс
-                _make("c", "Другое"),                          # не подходит
+                _make("b", "Экспорт чата"),  # префикс
+                _make("c", "Другое"),  # не подходит
             ]
         )
         results = reg.filter("экспорт")

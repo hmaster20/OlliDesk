@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 # ============================================================================
 # Токены: цвета
 # ============================================================================
@@ -26,12 +25,12 @@ class ColorTokens:
     """Цветовые токены темы."""
 
     # Фоны
-    bg: str                     # основной фон окна
-    surface: str                # фон панелей, полей
-    surface_alt: str            # альтернативные строки таблиц, hover
-    surface_hover: str          # hover-фон
-    surface_pressed: str        # pressed-фон
-    header_bg: str              # заголовки таблиц
+    bg: str  # основной фон окна
+    surface: str  # фон панелей, полей
+    surface_alt: str  # альтернативные строки таблиц, hover
+    surface_hover: str  # hover-фон
+    surface_pressed: str  # pressed-фон
+    header_bg: str  # заголовки таблиц
 
     # Текст
     text: str
@@ -47,7 +46,7 @@ class ColorTokens:
     accent: str
     accent_hover: str
     accent_pressed: str
-    accent_text: str            # текст на accent-фоне
+    accent_text: str  # текст на accent-фоне
     accent_muted: str
 
     # Семантика
@@ -82,7 +81,7 @@ DARK_COLORS = ColorTokens(
     header_text="#d4d4d4",
     border="#555555",
     border_strong="#6a6a6a",
-    accent="#d4a373",           # янтарный
+    accent="#d4a373",  # янтарный
     accent_hover="#e0b88a",
     accent_pressed="#b8885a",
     accent_text="#1e1e1e",
@@ -91,7 +90,7 @@ DARK_COLORS = ColorTokens(
     warning="#e5c07b",
     danger="#e06c75",
     info="#61afef",
-    selection_bg="#4a6741",     # тёплое зелёное выделение (Darcula-style)
+    selection_bg="#4a6741",  # тёплое зелёное выделение (Darcula-style)
     selection_text="#ffffff",
     scrollbar="#4c5052",
     scrollbar_hover="#5c6062",
@@ -116,7 +115,7 @@ LIGHT_COLORS = ColorTokens(
     # Было #b8651f → 4.24:1 (не проходило). Теперь #9e5318 → 5.57:1.
     accent="#9e5318",
     accent_hover="#b8651f",
-    accent_pressed="#7a3f12",   # 8.3:1 с белым
+    accent_pressed="#7a3f12",  # 8.3:1 с белым
     accent_text="#ffffff",
     accent_muted="#d4a373",
     success="#4e9a06",

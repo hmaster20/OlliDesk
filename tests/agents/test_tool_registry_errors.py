@@ -96,9 +96,7 @@ class TestErrorCategories:
         assert result.is_error
         assert result.error_category == ErrorCategory.FIX_ARGUMENTS
 
-    async def test_missing_required_argument_fix_arguments(
-        self, registry: ToolRegistry
-    ) -> None:
+    async def test_missing_required_argument_fix_arguments(self, registry: ToolRegistry) -> None:
         # Пропущен обязательный аргумент n.
         tc = ToolCall(name="validator_tool", arguments={})
         result = await registry.execute(tc)

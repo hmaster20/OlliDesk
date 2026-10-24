@@ -168,8 +168,7 @@ class SessionStore:
                 )
             else:
                 cursor = conn.execute(
-                    "SELECT id, project_path, created_at, updated_at FROM sessions "
-                    "ORDER BY updated_at DESC"
+                    "SELECT id, project_path, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
                 )
             rows = cursor.fetchall()
 

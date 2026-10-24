@@ -214,12 +214,7 @@ def export_to_html(
         if msg.role == "tool":
             name = msg.name or "tool"
             label = f"🔧 {html_escape(name)}"
-        body.append(
-            f'<div class="msg {cls}">'
-            f'<div class="role">{label}</div>'
-            f"{_plain_to_html(content)}"
-            f"</div>"
-        )
+        body.append(f'<div class="msg {cls}"><div class="role">{label}</div>{_plain_to_html(content)}</div>')
 
     return f"""<!DOCTYPE html>
 <html lang="ru">

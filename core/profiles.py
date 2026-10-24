@@ -24,7 +24,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 ProfileToolPolicyStr = Literal["auto", "ask_first", "excluded"]
 
 
@@ -71,9 +70,7 @@ class ProfileConfig(BaseModel):
     rag_enabled: bool = True
     # Категории RAG (code / docs). Полная фильтрация по категориям —
     # Фаза 5; сейчас флаг работает как «включить/выключить RAG целиком».
-    rag_categories: list[Literal["code", "docs"]] = Field(
-        default_factory=lambda: ["code"]
-    )
+    rag_categories: list[Literal["code", "docs"]] = Field(default_factory=lambda: ["code"])
 
     # Промпт профиля (дополнение к роли, идёт в extra_rules).
     system_prompt: str = ""
@@ -213,9 +210,7 @@ def builtin_profile_ids() -> set[str]:
     return {p["id"] for p in _DEFAULT_PROFILES}
 
 
-def get_profile_by_id(
-    profiles: list[ProfileConfig], profile_id: str
-) -> ProfileConfig | None:
+def get_profile_by_id(profiles: list[ProfileConfig], profile_id: str) -> ProfileConfig | None:
     """Ищет профиль по id; None, если не найден."""
     for p in profiles:
         if p.id == profile_id:

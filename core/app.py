@@ -13,7 +13,6 @@ from core.logger import setup_logger
 from core.utils import get_app_data_dir
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
-from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 
 
 def _check_config_exists() -> bool:
@@ -119,7 +118,6 @@ class OlliDeskApp:
         if self.app is None:
             return
         from ui.theme import get_colors, get_stylesheet
-        from PySide6.QtGui import QColor
 
         self.app.setStyleSheet(get_stylesheet(theme))
         c = get_colors(theme)

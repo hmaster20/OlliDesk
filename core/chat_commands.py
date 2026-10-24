@@ -17,8 +17,8 @@ from dataclasses import dataclass
 class ChatCommand:
     """Описание одной `@`-команды."""
 
-    tag: str          # "@web", "@dir", "@file", "@path"
-    hint: str         # краткая подсказка в popup
+    tag: str  # "@web", "@dir", "@file", "@path"
+    hint: str  # краткая подсказка в popup
     placeholder: str  # что писать в placeholder поля ввода после выбора
 
 

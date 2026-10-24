@@ -321,9 +321,7 @@ class VectorStore:
                         "category": str(
                             chunk.metadata.get(
                                 "category",
-                                category_for_language(
-                                    str(chunk.metadata.get("language", "unknown"))
-                                ),
+                                category_for_language(str(chunk.metadata.get("language", "unknown"))),
                             )
                         ),
                     }

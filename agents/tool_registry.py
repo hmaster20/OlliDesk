@@ -331,9 +331,7 @@ class ToolRegistry:
                         llm_text = json.dumps(result_content, ensure_ascii=False)
                     except (TypeError, ValueError):
                         llm_text = str(result_content)
-                metadata = {
-                    k: v for k, v in result_content.items() if k != "_llm_text"
-                }
+                metadata = {k: v for k, v in result_content.items() if k != "_llm_text"}
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,

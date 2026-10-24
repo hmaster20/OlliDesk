@@ -97,30 +97,22 @@ def compact_history(
     # Шаг 1: опустошить reasoning в старых assistant-сообщениях.
     dialogue = _stub_old_reasoning(dialogue, keep_recent)
     if messages_tokens(head) + messages_tokens(dialogue) <= budget:
-        logger.info(
-            f"Сжатие истории: опустошён reasoning ({len(dialogue)} реплик)"
-        )
+        logger.info(f"Сжатие истории: опустошён reasoning ({len(dialogue)} реплик)")
         return head + dialogue
 
     # Шаг 2: опустошить содержимое старых tool-результатов.
     dialogue = _stub_old_tool_results(dialogue, keep_recent)
     if messages_tokens(head) + messages_tokens(dialogue) <= budget:
-        logger.info(
-            f"Сжатие истории: опустошены старые tool-результаты ({len(dialogue)} реплик)"
-        )
+        logger.info(f"Сжатие истории: опустошены старые tool-результаты ({len(dialogue)} реплик)")
         return head + dialogue
 
     # Шаг 3: выбросить старейшие реплики целиком.
     dialogue = _drop_oldest_turns(dialogue, budget - messages_tokens(head))
-    logger.info(
-        f"Сжатие истории: после отбрасывания реплик осталось {len(dialogue)}"
-    )
+    logger.info(f"Сжатие истории: после отбрасывания реплик осталось {len(dialogue)}")
     return head + dialogue
 
 
-def _stub_old_reasoning(
-    dialogue: list[ChatMessage], keep_recent: int
-) -> list[ChatMessage]:
+def _stub_old_reasoning(dialogue: list[ChatMessage], keep_recent: int) -> list[ChatMessage]:
     """Заменяет ReasoningPart в старых assistant-сообщениях на заглушку.
 
     Reasoning в истории — временный контекст. Для Ollama он вообще не идёт
@@ -137,9 +129,7 @@ def _stub_old_reasoning(
             and any(isinstance(p, ReasoningPart) for p in message.parts)
         ):
             new_parts = [
-                ReasoningPart(text=REASONING_STUB)
-                if isinstance(p, ReasoningPart)
-                else p
+                ReasoningPart(text=REASONING_STUB) if isinstance(p, ReasoningPart) else p
                 for p in message.parts
             ]
             result.append(
@@ -157,9 +147,7 @@ def _stub_old_reasoning(
     return result
 
 
-def _stub_old_tool_results(
-    dialogue: list[ChatMessage], keep_recent: int
-) -> list[ChatMessage]:
+def _stub_old_tool_results(dialogue: list[ChatMessage], keep_recent: int) -> list[ChatMessage]:
     """Заменяет содержимое старых `tool`-сообщений на короткую пометку.
 
     ``ChatMessage.content`` — read-only (property), поэтому замена идёт через
@@ -169,11 +157,7 @@ def _stub_old_tool_results(
     protected_from = max(0, len(dialogue) - keep_recent)
     result: list[ChatMessage] = []
     for index, message in enumerate(dialogue):
-        if (
-            index < protected_from
-            and message.role == "tool"
-            and message.content != TOOL_RESULT_STUB
-        ):
+        if index < protected_from and message.role == "tool" and message.content != TOOL_RESULT_STUB:
             result.append(message.with_content(TOOL_RESULT_STUB))
         else:
             result.append(message)
@@ -191,9 +175,7 @@ def _split_turns(dialogue: list[ChatMessage]) -> list[list[ChatMessage]]:
     return turns
 
 
-def _drop_oldest_turns(
-    dialogue: list[ChatMessage], budget: int
-) -> list[ChatMessage]:
+def _drop_oldest_turns(dialogue: list[ChatMessage], budget: int) -> list[ChatMessage]:
     """Выбрасывает старейшие реплики, пока список не уложится в бюджет."""
     turns = _split_turns(dialogue)
     while len(turns) > 1:

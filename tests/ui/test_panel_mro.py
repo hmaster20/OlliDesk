@@ -73,6 +73,4 @@ def test_panel_size_reduced() -> None:
         "def reset_pipeline",
     ]
     for name in moved_defs:
-        assert name not in source, (
-            f"{name} должен быть в backends.py/research.py, а не в panel.py"
-        )
+        assert name not in source, f"{name} должен быть в backends.py/research.py, а не в panel.py"

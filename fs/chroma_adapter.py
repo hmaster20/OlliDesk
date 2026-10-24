@@ -13,11 +13,11 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import IncludeEnum, Where
-from typing import NotRequired, TypedDict
+
 
 class ChunkMetadata(TypedDict, total=False):
     """Метаданные чанка в том виде, в каком их кладёт `VectorStore`.

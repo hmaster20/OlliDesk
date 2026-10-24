@@ -88,9 +88,7 @@ class TestCoerceList:
         assert ToolConfirmationDialog._coerce_value("[]", "list") == []
 
     def test_nested(self) -> None:
-        result = ToolConfirmationDialog._coerce_value(
-            '[{"a": 1}, [2, 3]]', "list"
-        )
+        result = ToolConfirmationDialog._coerce_value('[{"a": 1}, [2, 3]]', "list")
         assert result == [{"a": 1}, [2, 3]]
 
     def test_invalid_falls_back_to_string(self) -> None:
@@ -101,9 +99,7 @@ class TestCoerceList:
 
 class TestCoerceDict:
     def test_valid(self) -> None:
-        assert ToolConfirmationDialog._coerce_value('{"path": "a.py"}', "dict") == {
-            "path": "a.py"
-        }
+        assert ToolConfirmationDialog._coerce_value('{"path": "a.py"}', "dict") == {"path": "a.py"}
 
     def test_empty(self) -> None:
         assert ToolConfirmationDialog._coerce_value("{}", "dict") == {}

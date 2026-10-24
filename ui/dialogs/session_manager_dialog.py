@@ -53,16 +53,10 @@ class SessionManagerDialog(QDialog):
         left = QVBoxLayout()
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "Проект", "Создана", "Обновлена"]
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        self.table.setHorizontalHeaderLabels(["ID", "Проект", "Создана", "Обновлена"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.doubleClicked.connect(self._load_selected)
         # [9.6.4] Клик = preview, double-click = загрузить.
@@ -133,12 +127,8 @@ class SessionManagerDialog(QDialog):
         for i, s in enumerate(sessions):
             self.table.setItem(i, 0, QTableWidgetItem(s.id))
             self.table.setItem(i, 1, QTableWidgetItem(s.project_path))
-            self.table.setItem(
-                i, 2, QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M"))
-            )
-            self.table.setItem(
-                i, 3, QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M"))
-            )
+            self.table.setItem(i, 2, QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M")))
+            self.table.setItem(i, 3, QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M")))
         self.table.blockSignals(False)
         if self.table.rowCount() > 0:
             self.table.selectRow(0)
@@ -160,9 +150,7 @@ class SessionManagerDialog(QDialog):
         try:
             history = self.session_store.get_history(session_id, limit=1000)
         except Exception as e:
-            self.preview.setHtml(
-                f'<div style="color: #e06c75;">Ошибка загрузки: {e}</div>'
-            )
+            self.preview.setHtml(f'<div style="color: #e06c75;">Ошибка загрузки: {e}</div>')
             return
         self.preview.setHtml(_render_history_preview(history))
 
@@ -184,9 +172,7 @@ class SessionManagerDialog(QDialog):
         if session_id is None:
             return
         if (
-            QMessageBox.question(
-                self, "Подтверждение", f"Удалить сессию {session_id}?"
-            )
+            QMessageBox.question(self, "Подтверждение", f"Удалить сессию {session_id}?")
             == QMessageBox.StandardButton.Yes
         ):
             self.session_store.delete_session(session_id)
@@ -262,8 +248,7 @@ class SessionManagerDialog(QDialog):
             reply = QMessageBox.question(
                 self,
                 "Папка не пуста",
-                f"В {target} уже есть .ollidesk. Перезаписать chat_history.md "
-                "и AGENTS.md?",
+                f"В {target} уже есть .ollidesk. Перезаписать chat_history.md и AGENTS.md?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -297,25 +282,17 @@ class SessionManagerDialog(QDialog):
 
             cfg = load_config()
             # Сбрасываем recent_projects — пользователь сам добавит.
-            cfg.recent_projects = [str(target)] + [
-                p for p in cfg.recent_projects if p != str(target)
-            ][:9]
+            cfg.recent_projects = [str(target)] + [p for p in cfg.recent_projects if p != str(target)][:9]
             save_config(cfg)
 
-            logger.info(
-                f"Проект из сессии {session_id}: {target} "
-                f"({len(history)} сообщений)"
-            )
+            logger.info(f"Проект из сессии {session_id}: {target} ({len(history)} сообщений)")
             QMessageBox.information(
                 self,
                 "Готово",
-                f"Проект создан:\n{target}\n\n"
-                "Откройте его через File → Open Project.",
+                f"Проект создан:\n{target}\n\nОткройте его через File → Open Project.",
             )
         except OSError as e:
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось создать проект:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать проект:\n{e}")
 
 
 def _render_history_preview(history: list[ChatMessage]) -> str:

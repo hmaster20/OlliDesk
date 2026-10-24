@@ -67,6 +67,7 @@ class TestTruncatePreview:
         assert truncated is True
         assert text == "…"
 
+
 class TestEscapeDiff:
     """[9.6.1] HTML-экранирование в diff-сводке."""
 
@@ -106,6 +107,7 @@ class TestDiffMetadataShape:
         # Тест-«контракт»: подсказка будущим изменениям.
         # Реальное заполнение проверяется в tests/tools/test_file_ops_diff.py.
         assert len(required) == 9
+
 
 class TestDiffSignalShape:
     """[9.8] Структура payload для show_diff_requested."""

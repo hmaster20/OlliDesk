@@ -135,8 +135,7 @@ class BackendsMixin:
                     logger.warning(f"Не удалось сохранить автовыбор в конфиг: {e}")
             else:
                 logger.info(
-                    f"SLM: автовыбор подтвердил сохранённый выбор "
-                    f"(selected_model='{cfg.slm.selected_model}')"
+                    f"SLM: автовыбор подтвердил сохранённый выбор (selected_model='{cfg.slm.selected_model}')"
                 )
         elif cfg is not None:
             logger.info(
@@ -322,9 +321,7 @@ class BackendsMixin:
             logger.debug(f"Не удалось прочитать SLM-параметры из конфига: {e}")
 
         self._slm_loading = True
-        self.status_label.setText(
-            f"⏳ Загрузка {self._slm_model_name or chat_path.name}..."
-        )
+        self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
 
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
@@ -339,9 +336,7 @@ class BackendsMixin:
         self._slm_load_thread.finished.connect(
             lambda client, gen=generation: self._on_slm_loaded(client, gen)
         )
-        self._slm_load_thread.error.connect(
-            lambda err, gen=generation: self._on_slm_error(err, gen)
-        )
+        self._slm_load_thread.error.connect(lambda err, gen=generation: self._on_slm_error(err, gen))
         self._slm_load_thread.start()
 
     def _download_and_load_slm(self) -> None:
@@ -370,16 +365,12 @@ class BackendsMixin:
                 f"Активная SLM-модель '{info.id}' имеет kind='{info.kind}', "
                 f"а для чата нужна kind='chat'. Загрузка отменена."
             )
-            self.status_label.setText(
-                f"⚠️ Модель '{info.display_name}' не подходит для чата."
-            )
+            self.status_label.setText(f"⚠️ Модель '{info.display_name}' не подходит для чата.")
             return
 
         generation = self._slm_load_generation
         self._slm_loading = True
-        self.status_label.setText(
-            f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)..."
-        )
+        self.status_label.setText(f"⏳ Скачивание {info.display_name} (~{info.size_mb} МБ)...")
 
         self._slm_download_thread = _SLMDownloadThread(
             model_repo=info.repo,
@@ -391,13 +382,9 @@ class BackendsMixin:
             lambda msg, gen=generation: self._on_slm_progress(msg, gen)
         )
         self._slm_download_thread.finished.connect(
-            lambda chat, embed, gen=generation: self._on_slm_downloaded(
-                chat, embed, gen
-            )
+            lambda chat, embed, gen=generation: self._on_slm_downloaded(chat, embed, gen)
         )
-        self._slm_download_thread.error.connect(
-            lambda err, gen=generation: self._on_slm_error(err, gen)
-        )
+        self._slm_download_thread.error.connect(lambda err, gen=generation: self._on_slm_error(err, gen))
         self._slm_download_thread.start()
 
     def _on_slm_progress(self, message: str, generation: int | None = None) -> None:
@@ -409,10 +396,7 @@ class BackendsMixin:
     def _on_slm_error(self, error_msg: str, generation: int | None = None) -> None:
         """Ошибка загрузки/скачивания SLM (в GUI-потоке)."""
         if generation is not None and generation != self._slm_load_generation:
-            logger.info(
-                f"Отбрасываю ошибку устаревшей загрузки SLM "
-                f"(gen={generation}): {error_msg}"
-            )
+            logger.info(f"Отбрасываю ошибку устаревшей загрузки SLM (gen={generation}): {error_msg}")
             return
         self._slm_loading = False
         logger.error(f"Ошибка загрузки SLM: {error_msg}")

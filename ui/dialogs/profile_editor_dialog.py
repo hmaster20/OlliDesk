@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from loguru import logger
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -32,13 +33,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from loguru import logger
 
 from core.config import AppConfig, save_config
 from core.profiles import (
     ProfileConfig,
     ProfileToolPolicies,
-    builtin_profile_ids,
     default_profiles,
     get_profile_by_id,
 )
@@ -372,9 +371,7 @@ class ProfileEditorDialog(QDialog):
             return None
         if not current.builtin and new_id != current.id:
             if get_profile_by_id(self._profiles, new_id) is not None:
-                QMessageBox.warning(
-                    self, "Ошибка", f"Профиль с id {new_id!r} уже существует."
-                )
+                QMessageBox.warning(self, "Ошибка", f"Профиль с id {new_id!r} уже существует.")
                 return None
 
         rag_categories: list[str] = []
@@ -385,8 +382,7 @@ class ProfileEditorDialog(QDialog):
                 rag_categories.append("docs")
 
         policies_dict: dict[str, str] = {
-            key: (combo.currentData() or "auto")
-            for key, combo in self._tool_combos.items()
+            key: (combo.currentData() or "auto") for key, combo in self._tool_combos.items()
         }
 
         return ProfileConfig(
@@ -442,9 +438,7 @@ class ProfileEditorDialog(QDialog):
         while get_profile_by_id(self._profiles, new_id) is not None:
             new_id = f"{base}{suffix}"
             suffix += 1
-        new_id, ok = QInputDialog.getText(
-            self, "Клон профиля", "ID нового профиля:", text=new_id
-        )
+        new_id, ok = QInputDialog.getText(self, "Клон профиля", "ID нового профиля:", text=new_id)
         if not ok or not new_id.strip():
             return
         new_id = new_id.strip()
@@ -476,8 +470,7 @@ class ProfileEditorDialog(QDialog):
             return
         if profile.builtin:
             QMessageBox.information(
-                self, "Встроенный профиль",
-                "Встроенный профиль нельзя удалить — только клонировать."
+                self, "Встроенный профиль", "Встроенный профиль нельзя удалить — только клонировать."
             )
             return
         reply = QMessageBox.question(
@@ -497,8 +490,7 @@ class ProfileEditorDialog(QDialog):
         self._profiles = default_profiles() + custom
         self._refresh_list()
         QMessageBox.information(
-            self, "Готово",
-            "Встроенные профили восстановлены. Пользовательские сохранены."
+            self, "Готово", "Встроенные профили восстановлены. Пользовательские сохранены."
         )
 
     # ------------------------------------------------------------------
@@ -509,10 +501,7 @@ class ProfileEditorDialog(QDialog):
         # Сохраняем текущую форму.
         if not self._persist_current_from_form():
             if self._current_profile_id is not None:
-                QMessageBox.warning(
-                    self, "Ошибка",
-                    "Не удалось сохранить профиль: проверьте поля формы."
-                )
+                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить профиль: проверьте поля формы.")
                 return
 
         # Обновляем конфиг.
@@ -529,9 +518,7 @@ class ProfileEditorDialog(QDialog):
                 f"пользовательских: {sum(1 for p in self._profiles if not p.builtin)})"
             )
         except Exception as e:
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}"
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
             return
 
         self.profiles_saved.emit()

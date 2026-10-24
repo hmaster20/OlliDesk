@@ -16,6 +16,7 @@ from core.profiles import (
     get_profile_by_id,
 )
 
+
 class ModelRole(StrEnum):
     """Роль модели в системе."""
 
@@ -738,6 +739,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "open_modified_as_diff",
     }
 )
+
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""

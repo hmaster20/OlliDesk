@@ -24,7 +24,6 @@ from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import (
     ChatChunk,
     ChatMessage,
-    ReasoningPart,
     TextPart,
     ToolCall,
     ToolCallPart,
@@ -529,7 +528,11 @@ class LocalLLMClient:
                 content = (msg.content or "").strip()
                 if msg.reasoning_content:
                     thought = msg.reasoning_content.strip()
-                    content = f"<thought>{thought}</thought>\n{content}" if content else f"<thought>{thought}</thought>"
+                    content = (
+                        f"<thought>{thought}</thought>\n{content}"
+                        if content
+                        else f"<thought>{thought}</thought>"
+                    )
                 if content:
                     content = f"{content}\n{calls_json}"
                 else:
@@ -539,7 +542,11 @@ class LocalLLMClient:
                 content = msg.content or ""
                 if msg.role == "assistant" and msg.reasoning_content:
                     thought = msg.reasoning_content.strip()
-                    content = f"<thought>{thought}</thought>\n{content}" if content else f"<thought>{thought}</thought>"
+                    content = (
+                        f"<thought>{thought}</thought>\n{content}"
+                        if content
+                        else f"<thought>{thought}</thought>"
+                    )
                 result.append({"role": msg.role, "content": content})
         return result
 

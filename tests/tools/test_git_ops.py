@@ -9,7 +9,7 @@ import pytest
 from tools.git_ops import get_git_status_for_file, read_file_at_head
 
 
-@pytest.fixture()
+@pytest.fixture
 def git_repo(tmp_path: Path) -> Path:
     """Создаёт git-репозиторий с одним коммитом и изменённым файлом."""
     try:

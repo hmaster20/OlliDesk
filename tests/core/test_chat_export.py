@@ -64,9 +64,7 @@ class TestExportMarkdown:
 
         msg = ChatMessage(role="assistant", content="ok")
         msg.parts.append(
-            __import__(
-                "agents.ollama_client", fromlist=["ToolCallPart"]
-            ).ToolCallPart(
+            __import__("agents.ollama_client", fromlist=["ToolCallPart"]).ToolCallPart(
                 calls=[ToolCall(name="read_file", arguments={"path": "a.py"})]
             )
         )

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from core.chat_commands import (
     ALL_COMMANDS,
     COMMAND_TAGS,
-    ChatCommand,
     DEFAULT_PLACEHOLDER,
     detect_active_command,
     find_first_word,
@@ -18,7 +15,7 @@ from core.chat_commands import (
 
 class TestRegistry:
     def test_tags(self) -> None:
-        assert COMMAND_TAGS == {"@web", "@dir", "@file", "@path"}
+        assert {"@web", "@dir", "@file", "@path"} == COMMAND_TAGS
 
     def test_all_have_hint_and_placeholder(self) -> None:
         for c in ALL_COMMANDS:

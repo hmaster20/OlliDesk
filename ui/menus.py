@@ -44,7 +44,7 @@ class AppMenuBar(QMenuBar):
     # --- File ---
     open_project_requested = Signal()
     open_recent_requested = Signal(str)
-    export_chat_requested = Signal()      # [9.6.3]
+    export_chat_requested = Signal()  # [9.6.3]
     confirm_web_search_changed = Signal(bool)
     settings_requested = Signal()
     exit_requested = Signal()
@@ -65,7 +65,7 @@ class AppMenuBar(QMenuBar):
     # [9.9] Палитра команд (Ctrl+Shift+P).
     command_palette_requested = Signal()
     # [9.4] Профили использования.
-    profile_selected = Signal(str)          # profile_id
+    profile_selected = Signal(str)  # profile_id
     profile_editor_requested = Signal()
 
     # --- Help ---
@@ -280,9 +280,7 @@ class AppMenuBar(QMenuBar):
         projects = list(getattr(self._config, "recent_projects", []) or [])
         for path in projects:
             action = QAction(path, self)
-            action.triggered.connect(
-                lambda _checked=False, p=path: self.open_recent_requested.emit(p)
-            )
+            action.triggered.connect(lambda _checked=False, p=path: self.open_recent_requested.emit(p))
             self._recent_menu.addAction(action)
             self._recent_actions.append(action)
         if not projects:
@@ -337,9 +335,7 @@ class AppMenuBar(QMenuBar):
             act.setChecked(p.id == active_id)
             if p.description:
                 act.setToolTip(p.description)
-            act.triggered.connect(
-                lambda _checked=False, pid=p.id: self.profile_selected.emit(pid)
-            )
+            act.triggered.connect(lambda _checked=False, pid=p.id: self.profile_selected.emit(pid))
             self._profiles_menu.addAction(act)
             self._profile_actions.append(act)
 

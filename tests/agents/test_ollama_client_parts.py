@@ -218,9 +218,7 @@ class TestOllamaMessageParsing:
         assert isinstance(chunks[0].part, ReasoningPart)
 
     def test_reasoning_then_content(self) -> None:
-        chunks = OllamaClient._chunks_from_ollama_message(
-            {"reasoning_content": "мысль", "content": "ответ"}
-        )
+        chunks = OllamaClient._chunks_from_ollama_message({"reasoning_content": "мысль", "content": "ответ"})
         assert len(chunks) == 2
         assert isinstance(chunks[0].part, ReasoningPart)
         assert isinstance(chunks[1].part, TextPart)
@@ -229,9 +227,7 @@ class TestOllamaMessageParsing:
         chunks = OllamaClient._chunks_from_ollama_message(
             {
                 "content": "",
-                "tool_calls": [
-                    {"function": {"name": "read_file", "arguments": {"path": "a.py"}}}
-                ],
+                "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "a.py"}}}],
             }
         )
         assert len(chunks) == 1
@@ -257,9 +253,7 @@ class TestOllamaMessageParsing:
 
     def test_malformed_tool_calls_ignored(self) -> None:
         # Битый tool_calls не должен ронять разбор.
-        chunks = OllamaClient._chunks_from_ollama_message(
-            {"tool_calls": [{"garbage": "no function key"}]}
-        )
+        chunks = OllamaClient._chunks_from_ollama_message({"tool_calls": [{"garbage": "no function key"}]})
         # Контента нет, tool_call тоже отброшен — пустой результат.
         assert chunks == []
 
@@ -276,8 +270,6 @@ class TestToolResultPart:
         assert p.is_error is False
 
     def test_explicit(self) -> None:
-        p = ToolResultPart(
-            call_id="c1", name="read_file", content="x", is_error=True
-        )
+        p = ToolResultPart(call_id="c1", name="read_file", content="x", is_error=True)
         assert p.call_id == "c1"
         assert p.is_error is True
