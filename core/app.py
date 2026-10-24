@@ -10,7 +10,7 @@ from core._version import __version__
 from core.config import AppConfig, load_config
 from core.exceptions import ConfigError
 from core.logger import setup_logger
-from core.utils import get_app_data_dir
+from core.utils import get_app_data_dir, get_app_icon
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 
@@ -81,6 +81,15 @@ class OlliDeskApp:
         logger.info("Запуск OlliDesk...")
 
         self.app = QApplication(sys.argv)
+
+        # [FIX] Иконка приложения — до создания любых окон, иначе
+        # SetupWizard (в _load_config_or_wizard) откроется без неё.
+        # QApplication.setWindowIcon распространяется на все QDialog
+        # (QMessageBox, QFileDialog, наши *Dialog) автоматически.
+        icon = get_app_icon()
+        if icon is not None:
+            self.app.setWindowIcon(icon)
+
         self.app.setApplicationVersion(__version__)
         self.app.setApplicationName("OlliDesk")
         self.app.setOrganizationName("OlliDesk")
