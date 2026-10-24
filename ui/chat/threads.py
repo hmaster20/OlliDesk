@@ -667,6 +667,20 @@ class _ModelPoolLoadThread(QThread):
                 self.error.emit(f"Файл analyst не найден: {analyst_info.file}")
                 return
 
+            # [FIX] planner и analyst могут указывать на ОДИН ФАЙЛ под
+            # разными id (например, `qwen2.5-3b-instruct-q4_k_m` и
+            # `qwen2.5-3b-instruct` ведут на `qwen2.5-3b-instruct-q4_k_m.gguf`).
+            # Проверка `planner_info.id == analyst_info.id` выше это НЕ поймает.
+            # `ModelPool.add_role` кэширует клиент по файлу — вторая роль
+            # получит уже загруженный клиент, без второго 3 ГБ VRAM/RAM и без
+            # повторного `optimize`.
+            same_file = planner_path == analyst_path
+            if same_file:
+                self.progress.emit(
+                    f"⚠️ planner и analyst используют один файл "
+                    f"({planner_path.name}), грузим модель один раз"
+                )
+
             # --- Оптимизация: устройство задаётся ЯВНО ---
             # planner на GPU (пытаемся уместить целиком), analyst на CPU
             # (никогда не делит VRAM с planner).
@@ -682,26 +696,23 @@ class _ModelPoolLoadThread(QThread):
                 self.error.emit(f"planner optimize failed: {e}")
                 return
 
-            self.progress.emit(f"Оптимизация analyst: {analyst_info.display_name}")
-            try:
-                analyst_params = optimize(
-                    analyst_path,
-                    target_n_ctx=8192,
-                    device="CPU",
-                )
-            except Exception as e:
-                logger.exception("analyst optimize failed")
-                self.error.emit(f"analyst optimize failed: {e}")
-                return
-
-            # Если planner и analyst указывают на один файл — грузим ОДИН клиент.
-            # Второй роль получит тот же клиент из кэша `ModelPool.add_role`.
-            same_file = planner_path == analyst_path
             if same_file:
-                self.progress.emit(
-                    f"⚠️ planner и analyst используют один файл "
-                    f"({planner_path.name}), грузим один раз"
-                )
+                # Тот же файл — оптимизировать второй раз незачем, клиент
+                # берётся из кэша ModelPool.add_role.
+                analyst_params = planner_params
+            else:
+                self.progress.emit(f"Оптимизация analyst: {analyst_info.display_name}")
+                try:
+                    analyst_params = optimize(
+                        analyst_path,
+                        target_n_ctx=8192,
+                        device="CPU",
+                    )
+                except Exception as e:
+                    logger.exception("analyst optimize failed")
+                    self.error.emit(f"analyst optimize failed: {e}")
+                    return
+
             specs: dict[Role, RoleSpec] = {
                 Role.PLANNER: RoleSpec(
                     role=Role.PLANNER,
@@ -716,7 +727,11 @@ class _ModelPoolLoadThread(QThread):
                 Role.ANALYST: RoleSpec(
                     role=Role.ANALYST,
                     model_id=analyst_info.id,
-                    device="CPU",
+                    # [FIX] При same_file физически клиент тот же (GPU).
+                    # Ставим device="GPU", чтобы tooltip приборной панели был
+                    # честным и чтобы factory (если всё же вызван — например,
+                    # planner упал) не обнулил n_gpu_layers.
+                    device=("GPU" if same_file else "CPU"),
                     n_ctx=analyst_params.n_ctx,
                     kv_cache=analyst_params.kv_cache_type,
                     n_gpu_layers=analyst_params.n_gpu_layers,
