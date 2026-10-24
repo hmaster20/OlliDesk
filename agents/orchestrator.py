@@ -269,6 +269,22 @@ class Orchestrator:
                         relevance=0.6,
                     )
                 )
+        # Явно кладём в evidence все методы/сигнатуры top-классов —
+        # для архитектуры они информативнее, чем первые 40 строк файла.
+        top_class_ids = {n.id for n in top}
+        for n in intel.graph.nodes.values():
+            if n.kind not in {"method", "function"}:
+                continue
+            # Принадлежность к top-классу через path (эвристика дешёвая).
+            if any(c.path == n.path for c in top):
+                sig = n.metadata.get("signature") or n.name
+                evidence.put(EvidenceItem(
+                    id="", kind="symbol",
+                    source_path=n.path,
+                    content=sig,
+                    summary=f"метод {n.name}",
+                    relevance=0.7,
+                ))
         # 3. Доменные резюме (Ansible/Terraform/Vagrant) — сжатые, не сырой YAML.
         for dsum in self._domain_summaries(intel):
             evidence.put(EvidenceItem(id="", kind="module_summary", content=dsum, relevance=0.85))
@@ -364,9 +380,14 @@ class Orchestrator:
             "Ты — архитектор кода. Отвечай на русском, Markdown. "
             "Используй ТОЛЬКО предоставленные доказательства [Ei] и граф. "
             "Если факта нет в доказательствах — напиши «не подтверждено». "
-            "Схему компонентов НЕ рисуй сам — она приложена готовой (ASCII); "
-            "твоё дело — прозаическое объяснение, стек, роли, потоки, риски, "
-            "открытые вопросы. Не выдумывай имена файлов/классов.\n"
+            "Готовая ASCII-схема приложена ниже. Если она НЕ отражает "
+            "реальную архитектуру (пропущены протоколы обмена, потоки "
+            "данных, ключевые роли) — обязательно допиши:\n"
+            "  1) какие протоколы используются (TCP/UDP/HTTP/NamedPipe/…);\n"
+            "  2) поток данных: источник → обработка → хранилище;\n"
+            "  3) связи, которых нет в ASCII-схеме, с указанием [Ei];\n"
+            "  4) предложи уточнённую Mermaid-схему, если ASCII недостаточно.\n"
+            "НЕ выдумывай имена файлов/классов."
         )
         if light:
             base += "Режим: компактный проект — ответь по существу, без воды.\n"
@@ -459,7 +480,36 @@ class Orchestrator:
             return f"(не читается: {p.name})"
         ls = txt.splitlines()
         a, b = lines
-        return "\n".join(ls[a - 1 : b])
+        excerpt = "\n".join(ls[a - 1 : b])
+        # Для .cs/.csproj — добавим «оглавление»: все public-классы и их
+        # публичные методы. Иначе модель видит только шапку файла.
+        if p.suffix.lower() == ".cs":
+            import re
+            head = [
+                m.group(0).strip()[:140]
+                for m in re.finditer(
+                    r"^\s*(?:(?:public|internal|private|protected|sealed|static|abstract|partial)\s+)+"
+                    r"(?:class|interface|enum|struct|record)\s+\w+[^{]*",
+                    txt, re.M,
+                )
+            ][:15]
+            methods = [
+                m.group(0).strip()[:140]
+                for m in re.finditer(
+                    r"^\s*(?:(?:public|internal|private|protected|static|async|virtual|override|sealed)\s+)+"
+                    r"[\w<>\[\],.\s?]+?\s+\w+\s*\([^)]*\)\s*(?:=>|\{)",
+                    txt, re.M,
+                )
+            ][:25]
+            if head or methods:
+                excerpt = (
+                    "// ── Классы ──\n"
+                    + "\n".join(f"//   {h}" for h in head)
+                    + "\n\n// ── Методы ──\n"
+                    + "\n".join(f"//   {m}" for m in methods)
+                    + "\n\n" + excerpt
+                )
+        return excerpt
 
     def _known_paths(self, intel) -> set[str]:
         return {n.path for n in intel.graph.nodes.values() if n.kind == "file" and n.path}
@@ -507,6 +557,28 @@ class Orchestrator:
                 f"Vagrant {v['path']}: boxes={v.get('boxes')}, providers={v.get('providers')}, "
                 f"env={v.get('env_vars')}, prov_chain=[{chain}], техдолг(закомм.)={v.get('commented_provisions')}"
             )
+        # C# / .NET домен: csproj (TFM/OutputType/StartupObject), sln (проекты),
+        # AGENTS.md (roadmap/риски) — уже распарсены в fs/intel/csharp.py.
+        for piece in (intel.domain or {}).get("csharp_partial", []) or []:
+            if not isinstance(piece, dict):
+                continue
+            if piece.get("kind") == "csproj":
+                out.append(
+                    f"csproj {piece.get('path')}: TFM={piece.get('target_framework')}, "
+                    f"OutputType={piece.get('output_type')}, "
+                    f"StartupObject={piece.get('startup_object')}, "
+                    f"refs={len(piece.get('references') or [])}"
+                )
+            elif piece.get("kind") == "sln":
+                projects = piece.get("projects") or []
+                out.append(f"sln {piece.get('path')}: проектов={len(projects)}")
+            elif piece.get("kind") == "csharp_file" and piece.get("entry"):
+                e = piece["entry"]
+                out.append(
+                    f"entry {piece.get('path')}: has_main={e.get('has_main')}, "
+                    f"launches={e.get('launches')}, "
+                    f"gates={e.get('readiness_gates')}"
+                )
         return out
 
     def _dynamic_block(self, root: Path) -> str:

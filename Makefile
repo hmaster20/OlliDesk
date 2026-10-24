@@ -19,10 +19,13 @@ install-docs: $(VENV_NAME)
 download-monaco:
 	$(PYTHON) -m ui.web_editor.download_monaco
 
+download-mermaid:
+	$(PYTHON) -m ui.web_editor.download_mermaid
+
 download-slm:
 	$(PYTHON) -m agents.download_slm
 
-setup: install download-monaco download-slm
+setup: install download-monaco download-mermaid download-slm
 
 lint: $(VENV_NAME)
 	$(VENV_BIN)/ruff check .

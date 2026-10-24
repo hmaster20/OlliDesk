@@ -239,7 +239,7 @@ class DependencyGraph:
             if n.name in mentioned or (n.path and any(m in n.path for m in mentioned)):
                 s += 3.0
             if n.kind in {"var", "method", "function", "task", "provisioner"}:
-                s -= 1.0  # листы вниз по приоритету для L1-отбора
+                s -= 5.0   # было -1.0 — не хватало, чтобы они не попадали в top-24
             if n.metadata.get("is_test"):
                 s -= 2.0
             n.score = round(s, 3)

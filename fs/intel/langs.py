@@ -418,6 +418,8 @@ def _merge_domain(domain: dict, lang: str, piece: Any) -> None:
         domain.setdefault("terraform_partial", []).append(piece)
     elif lang in {"vagrant", "ruby"} and isinstance(piece, dict):
         domain.setdefault("vagrant_partial", []).append(piece)
+    elif lang in {"csharp", "msbuild", "solution"} and isinstance(piece, dict):
+        domain.setdefault("csharp_partial", []).append(piece)
 
 
 def _domain_entries(domain: dict) -> list[str]:
