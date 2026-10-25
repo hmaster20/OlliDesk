@@ -75,13 +75,13 @@ DARK_COLORS = ColorTokens(
     surface_hover="#4c5052",
     surface_pressed="#555555",
     header_bg="#3c3f41",
-    text="#bbbbbb",
-    text_muted="#7a7a7a",
+    text="#c4c4c4",          # было #bbbbbb — 4.82:1 на surface_hover (порог 4.5)
+    text_muted="#909090",    # было #7a7a7a — 3.53:1 на surface (порог 3.0)
     text_disabled="#555555",
     header_text="#d4d4d4",
     border="#555555",
     border_strong="#6a6a6a",
-    accent="#d4a373",  # янтарный
+    accent="#d4a373",
     accent_hover="#e0b88a",
     accent_pressed="#b8885a",
     accent_text="#1e1e1e",
@@ -90,7 +90,7 @@ DARK_COLORS = ColorTokens(
     warning="#e5c07b",
     danger="#e06c75",
     info="#61afef",
-    selection_bg="#4a6741",  # тёплое зелёное выделение (Darcula-style)
+    selection_bg="#4a6741",
     selection_text="#ffffff",
     scrollbar="#4c5052",
     scrollbar_hover="#5c6062",
@@ -111,18 +111,15 @@ LIGHT_COLORS = ColorTokens(
     header_text="#2b2b2b",
     border="#d0d0d0",
     border_strong="#b0b0b0",
-    # [9.11] accent 4.5:1 с белым текстом (WCAG AA).
-    # Было #b8651f → 4.24:1 (не проходило). Теперь #9e5318 → 5.57:1.
     accent="#9e5318",
     accent_hover="#b8651f",
-    accent_pressed="#7a3f12",  # 8.3:1 с белым
+    accent_pressed="#7a3f12",
     accent_text="#ffffff",
     accent_muted="#d4a373",
     success="#4e9a06",
-    warning="#b8860b",
+    warning="#b08000",       # было #b8860b — 3.32:1 на bg (порог 3.0)
     danger="#c0392b",
     info="#1976d2",
-    # [9.11] Тот же контраст с белым текстом (5.57:1).
     selection_bg="#9e5318",
     selection_text="#ffffff",
     scrollbar="#c0c0c0",
@@ -130,7 +127,6 @@ LIGHT_COLORS = ColorTokens(
     scrollbar_bg="#e8e8e8",
     row_alt="#f7f7f7",
 )
-
 
 # ============================================================================
 # Токены: типографика, отступы, радиусы

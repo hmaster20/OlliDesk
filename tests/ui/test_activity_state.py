@@ -69,9 +69,10 @@ class TestActivityMessageFormat:
         assert self._format("unknown") == "● unknown"
 
     def test_empty_detail_no_trailing_space(self) -> None:
-        # Никаких висячих пробелов.
-        assert self._format("idle", "").endswith("работа")
-        assert not self._format("idle", "").endswith(" ")
+        # Никаких висячих пробелов. Проверяем и текст, и отсутствие хвоста.
+        result = self._format("idle", "")
+        assert result == "💤 Готов к работе", repr(result)
+        assert not result.endswith(" "), repr(result)
 
 
 # Копия словаря цветов из ChatPanel (без импорта Qt).

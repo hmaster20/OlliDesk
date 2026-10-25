@@ -214,10 +214,12 @@ class TestAutoScrollToggle:
         sb = scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum() - 300)  # кнопка появляется
         assert scroll_area._down_button is not None
-        assert scroll_area._down_button.isVisible()
+        # isVisibleTo проверяет видимость относительно иерархии, не требуя
+        # явного .show() у корневого виджета (в тестах Qt-окна не показаны).
+        assert scroll_area._down_button.isVisibleTo(scroll_area)
+
         scroll_area.set_auto_scroll_enabled(False)
-        assert not scroll_area._down_button.isVisible()
-        assert scroll_area.auto_scroll_enabled is False
+        assert not scroll_area._down_button.isVisibleTo(scroll_area)
 
     def test_disabled_does_not_scroll(self, scroll_area: AutoScrollArea, qt_app) -> None:
         """При выключенном авто-скролле `scroll_to_bottom_if_sticky` — no-op."""

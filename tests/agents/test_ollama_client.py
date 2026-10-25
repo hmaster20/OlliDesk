@@ -138,10 +138,13 @@ class TestOllamaClient:
             async for chunk in client.chat(model="test-model", messages=messages):
                 chunks.append(chunk)
 
-        assert len(chunks) == 3
-        assert chunks[0].content == "Hello"
-        assert chunks[1].content == " world"
-        assert chunks[2].done is True
+        # [4.8.E] start + N delta + end. Считаем только delta — это
+        # семантический payload, устойчиво к числу граничных маркеров.
+        deltas = [c for c in chunks if c.event_type == "delta"]
+        assert [d.content for d in deltas] == ["Hello", " world"]
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
+        assert chunks[-1].done is True
 
     @pytest.mark.asyncio
     async def test_chat_non_stream(self, client):
@@ -162,9 +165,11 @@ class TestOllamaClient:
             async for chunk in client.chat(model="test-model", messages=messages, stream=False):
                 chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0].content == "Full response"
-        assert chunks[0].done is True
+        deltas = [c for c in chunks if c.event_type == "delta"]
+        assert [d.content for d in deltas] == ["Full response"]
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
+        assert chunks[-1].done is True
 
     @pytest.mark.asyncio
     async def test_chat_with_tools(self, client):
@@ -191,9 +196,14 @@ class TestOllamaClient:
             ):
                 chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0].tool_calls is not None
-        assert chunks[0].tool_calls[0].name == "read_file"
+        tool_chunks = [c for c in chunks if c.event_type == "tool_call"]
+        assert len(tool_chunks) == 1
+        calls = tool_chunks[0].tool_calls
+        assert calls is not None and len(calls) == 1
+        assert calls[0].name == "read_file"
+        assert calls[0].arguments == {"path": "main.py"}
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
 
     @pytest.mark.asyncio
     async def test_chat_connection_error(self, client):
