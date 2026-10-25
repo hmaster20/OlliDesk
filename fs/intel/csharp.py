@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-
+from typing import Any
 from fs.intel import FileRecord, Symbol
 
 _NS_RE = re.compile(r"^\s*namespace\s+([\w.]+)", re.M)
@@ -195,7 +195,10 @@ def _extract_calls(body: str) -> list[str]:
     return sorted(calls)
 
 
-def parse_csharp_file(p: Path, rec: FileRecord):
+def parse_csharp_file(
+    p: Path,
+    rec: FileRecord,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     """-> (symbols, domain_piece). Домен-пьеc для .csproj/AGENTS.md."""
     try:
         text = p.read_text(encoding="utf-8", errors="replace")

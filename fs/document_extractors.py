@@ -97,7 +97,7 @@ def _extract_pdf(path: Path, *, use_ocr: bool) -> ExtractResult:
 
     # 1. pdfplumber — лучше сохраняет структуру (абзацы, таблицы).
     try:
-        import pdfplumber  # type: ignore[import-not-found]
+        import pdfplumber
 
         with pdfplumber.open(str(path)) as pdf:
             pages = len(pdf.pages)
@@ -113,7 +113,7 @@ def _extract_pdf(path: Path, *, use_ocr: bool) -> ExtractResult:
     # 2. Fallback: pypdf.
     if not text_parts:
         try:
-            from pypdf import PdfReader  # type: ignore[import-not-found]
+            from pypdf import PdfReader
 
             reader = PdfReader(str(path))
             pages = len(reader.pages)
@@ -156,7 +156,7 @@ def _ocr_pdf(path: Path) -> str:
     """
     try:
         import numpy as np
-        from pdf2image import convert_from_path  # type: ignore[import-not-found]
+        from pdf2image import convert_from_path
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as e:
         logger.info(f"OCR PDF недоступен ({e}): нужны rapidocr-onnxruntime, pdf2image, poppler")
@@ -193,7 +193,7 @@ def _ocr_pdf(path: Path) -> str:
 def _extract_docx(path: Path) -> ExtractResult:
     """DOCX: python-docx, по абзацам; таблицы — отдельно (rows → "cell | cell")."""
     try:
-        from docx import Document  # type: ignore[import-not-found]
+        from docx import Document
     except ImportError:
         return ExtractResult(
             text="",
@@ -222,7 +222,7 @@ def _extract_docx(path: Path) -> ExtractResult:
 def _extract_pptx(path: Path) -> ExtractResult:
     """PPTX: python-pptx; слайды нумеруются, текст с shape."""
     try:
-        from pptx import Presentation  # type: ignore[import-not-found]
+        from pptx import Presentation
     except ImportError:
         return ExtractResult(
             text="",
@@ -249,7 +249,7 @@ def _extract_pptx(path: Path) -> ExtractResult:
 def _extract_xlsx(path: Path) -> ExtractResult:
     """XLSX: openpyxl, каждый лист — отдельная секция, row → " | cell"."""
     try:
-        from openpyxl import load_workbook  # type: ignore[import-not-found]
+        from openpyxl import load_workbook
     except ImportError:
         return ExtractResult(
             text="",
@@ -275,7 +275,7 @@ def _extract_xlsx(path: Path) -> ExtractResult:
 def _extract_rtf(path: Path) -> ExtractResult:
     """RTF: striprtf; fallback — простой regex-парсер."""
     try:
-        from striprtf.striprtf import rtf_to_text  # type: ignore[import-not-found]
+        from striprtf.striprtf import rtf_to_text
     except ImportError:
         # Fallback: читаем как текст, вычищаем RTF-команды.
         try:

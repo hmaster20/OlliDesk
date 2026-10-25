@@ -136,7 +136,12 @@ class DependencyGraph:
         self._adj.setdefault(e.source, []).append(e)
         self._radj.setdefault(e.target, []).append(e)
 
-    def _link_imports(self, files, symbols, domain) -> None:
+    def _link_imports(
+        self,
+        files: list[FileRecord],
+        symbols: list[Symbol],
+        domain: dict[str, Any],
+    ) -> None:
         path_to_file_node = {f.path: f"file:{f.path}" for f in files}
         # C#: usings -> namespace-узлы; Python: imports -> module-узлы.
         ns_index: dict[str, list[str]] = {}
@@ -323,7 +328,7 @@ class DependencyGraph:
                 self.nodes[e.source].outdegree += 1
                 self.nodes[e.target].indegree += 1
 
-    def _score(self, files, domain) -> None:
+    def _score(self, files: list[FileRecord], domain: dict[str, Any]) -> None:
         import math
 
         for n in self.nodes.values():

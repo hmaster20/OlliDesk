@@ -28,7 +28,10 @@ _ROLE_DIRS = {
 }
 
 
-def parse_yaml_file(p: Path, rec: FileRecord):
+def parse_yaml_file(
+    p: Path,
+    rec: FileRecord,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     """-> (symbols, domain_piece). Для yaml/ansible-файлов."""
     try:
         text = p.read_text(encoding="utf-8", errors="replace")

@@ -67,7 +67,11 @@ class ProjectIntel:
 
 
 def analyze_project(
-    root: Path, *, indexer=None, cache_dir: Path | None = None, enable_lsp: bool = False
+    root: Path,
+    *,
+    indexer: Any = None,
+    cache_dir: Path | None = None,
+    enable_lsp: bool = False,
 ) -> ProjectIntel:
     """Единая точка входа. Инкрементально: повторный вызов по mtime/sha256
     переиспользует граф и резюме (см. EvidenceStore.get_module_summary)."""
@@ -95,7 +99,13 @@ def analyze_project(
     )
 
 
-def _confidence(files, symbols, entries, manifests, domain) -> float:
+def _confidence(
+    files: list[FileRecord],
+    symbols: list[Symbol],
+    entries: list[str],
+    manifests: list[str],
+    domain: dict[str, Any],
+) -> float:
     """Эвристика уверенности: есть entry + манифест + символы + домен => высоко."""
     score = 0.0
     score += 0.3 if entries else 0.0

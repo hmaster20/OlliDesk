@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
-
+from collections.abc import Iterator
 from fs.intel import FileRecord, Symbol
 
 try:
@@ -26,7 +26,10 @@ _BLOCK_RE = re.compile(
 )
 
 
-def parse_hcl_file(p: Path, rec: FileRecord):
+def parse_hcl_file(
+    p: Path,
+    rec: FileRecord,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -84,7 +87,7 @@ def parse_hcl_file(p: Path, rec: FileRecord):
     return syms, domain
 
 
-def _iter_hcl_blocks(parsed: dict, kind: str):
+def _iter_hcl_blocks(parsed: dict[str, Any], kind: str) -> Iterator[dict[str, Any]]:
     node = parsed.get(kind)
     if not isinstance(node, dict):
         return
@@ -105,12 +108,11 @@ def _iter_hcl_blocks(parsed: dict, kind: str):
     elif kind == "locals" and isinstance(node, dict):
         yield {**node, "__address__": "locals"}
 
-
 def _hcl_addr(kind: str, blk: dict) -> str:
     return blk.get("name") or blk.get("type") or kind
 
 
-def build_terraform_project(root: Path, files: list[FileRecord]) -> dict:
+def build_terraform_project(root: Path, files: list[FileRecord]) -> dict[str, Any]:
     modules: list[str] = []
     resources: list[str] = []
     variables: list[str] = []

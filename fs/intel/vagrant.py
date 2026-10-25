@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-
+from typing import Any
 from fs.intel import FileRecord, Symbol
 
 _PROV_INLINE = re.compile(
@@ -35,7 +35,12 @@ _RB_MODULE = re.compile(r"^\s*module\s+(\w+)", re.M)
 _RB_DEF = re.compile(r"^\s*def\s+(\w+)", re.M)
 
 
-def parse_ruby_file(p: Path, rec: FileRecord, *, vagrant: bool):
+def parse_ruby_file(
+    p: Path,
+    rec: FileRecord,
+    *,
+    vagrant: bool,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:

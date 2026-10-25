@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-
+from typing import Any
 from fs.intel import FileRecord, Symbol
 
 _NET_CLIENT_RE = re.compile(r"\b(requests|httpx|curl_cffi|aiohttp)\b")
@@ -30,7 +30,10 @@ _CFG_CALL_RE = re.compile(r"\bConfig\(\)\.get(?:_int|_bool)?\(|\bself\.config\.g
 _ETL_RE = re.compile(r"\b(ETLService|SberImporter|raw_imports|raw_tables|process_import|file_hash)\b")
 
 
-def parse_python_file(p: Path, rec: FileRecord):
+def parse_python_file(
+    p: Path,
+    rec: FileRecord,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     try:
         src = p.read_text(encoding="utf-8", errors="replace")
     except OSError:

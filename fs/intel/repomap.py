@@ -95,10 +95,17 @@ def _dominant_lang(fs_: list[FileRecord]) -> str:
     c: dict[str, int] = defaultdict(int)
     for f in fs_:
         c[f.language] += 1
-    return max(c, key=c.get) if c else "?"
+    return max(c, key=lambda k: c[k]) if c else "?"
 
 
-def _render_l1(by_dir, symbols, graph, *, l1_top_dirs: int, l1_k: int) -> str:
+def _render_l1(
+    by_dir: dict[str, list[FileRecord]],
+    symbols: list[Symbol],
+    graph: DependencyGraph | None,
+    *,
+    l1_top_dirs: int,
+    l1_k: int,
+) -> str:
     sym_by_file: dict[str, list[Symbol]] = defaultdict(list)
     for s in symbols:
         sym_by_file[s.file].append(s)

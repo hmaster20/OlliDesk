@@ -12,8 +12,10 @@ import fnmatch
 import re
 from pathlib import Path
 from typing import Any
-
 from fs.intel import FileRecord, Symbol
+from collections.abc import Iterator
+from pathlib import Path
+import fnmatch
 
 # Файлы БЕЗ расширения, определяемые по имени (D6).
 _NAME_LANG: dict[str, str] = {
@@ -102,7 +104,7 @@ def detect_language(p: Path) -> str:
     return "unknown"
 
 
-def _grammar_or_none(lang: str):
+def _grammar_or_none(lang: str) -> Any:
     """Ленивая загрузка tree-sitter grammar; None => уровень B/C."""
     try:
         import tree_sitter as ts
@@ -127,7 +129,11 @@ def _grammar_or_none(lang: str):
         return None
 
 
-def detect_and_parse_all(root: Path, *, indexer=None):
+def detect_and_parse_all(
+    root: Path,
+    *,
+    indexer: Any = None,
+) -> tuple[list[FileRecord], list[Symbol], list[str], list[str], dict[str, Any]]:
     """Обход + диспетчинг. Возвращает (files, symbols, manifests, entries, domain)."""
     files: list[FileRecord] = []
     symbols: list[Symbol] = []
@@ -167,7 +173,11 @@ def detect_and_parse_all(root: Path, *, indexer=None):
     return files, symbols, manifests, entries, domain
 
 
-def _parse_by_lang(p: Path, lang: str, rec: FileRecord):
+def _parse_by_lang(
+    p: Path,
+    lang: str,
+    rec: FileRecord,
+) -> tuple[list[Symbol], dict[str, Any] | None]:
     """Выбор парсера: tree-sitter -> доменный -> regex-heuristic."""
     if lang == "csharp":
         from fs.intel.csharp import parse_csharp_file
@@ -196,7 +206,12 @@ def _parse_by_lang(p: Path, lang: str, rec: FileRecord):
     return [], None
 
 
-def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
+def _ts_generic(
+    parser: Any,
+    p: Path,
+    lang: str,
+    rec: FileRecord,
+) -> list[Symbol]:
     try:
         src = p.read_bytes()
     except OSError:
@@ -214,7 +229,7 @@ def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
         "type_alias_declaration": "type",
     }
 
-    def walk(node):
+    def walk(node: Any) -> None:
         if node.type in kind_nodes:
             name = _child_text(node, "name") or _child_text(node, "identifier") or "?"
             sig = _first_line(src, node.start_byte)
@@ -234,24 +249,22 @@ def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
     return out
 
 
-def _child_text(node, type_or_field: str) -> str | None:
+def _child_text(node: Any, type_or_field: str) -> str | None:
     try:
         ch = node.child_by_field_name(type_or_field)
         if ch is not None:
-            return ch.text.decode("utf-8", "replace")
+            return str(ch.text.decode("utf-8", "replace"))
     except Exception:
         pass
     for c in node.children:
         if c.type == type_or_field:
-            return c.text.decode("utf-8", "replace")
+            return str(c.text.decode("utf-8", "replace"))
     return None
-
 
 def _first_line(src: bytes, byte_off: int) -> str:
     nl = src.find(b"\n", byte_off)
     end = nl if nl != -1 else len(src)
     return src[byte_off:end].decode("utf-8", "replace").strip()[:160]
-
 
 def _make_record(p: Path, root: Path, lang: str) -> FileRecord:
     rel = p.relative_to(root).as_posix()
@@ -388,7 +401,7 @@ def _load_ignores(root: Path) -> list[str]:
     return pats
 
 
-def _walk(root: Path, ignored: list[str]):
+def _walk(root: Path, ignored: list[str]) -> Iterator[Path]:
     skip_dirs = set()
     for pat in ignored:
         if "/" not in pat and "*" not in pat and "." not in pat.lstrip("."):
@@ -422,7 +435,7 @@ def _merge_domain(domain: dict, lang: str, piece: Any) -> None:
         domain.setdefault("csharp_partial", []).append(piece)
 
 
-def _domain_entries(domain: dict) -> list[str]:
+def _domain_entries(domain: dict[str, Any]) -> list[str]:
     out: list[str] = []
     ans = domain.get("ansible") or {}
     out += [p["path"] for p in ans.get("playbooks", [])]
