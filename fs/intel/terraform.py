@@ -6,9 +6,10 @@ provider/locals; *.tf, *.tfvars, *.pkr.hcl). Дамп terraform-modules_2.md п�
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterator
+
 from fs.intel import FileRecord, Symbol
 
 try:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+
 from fs.intel import FileRecord, Symbol
 
 _PROV_INLINE = re.compile(

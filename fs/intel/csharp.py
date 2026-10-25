@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+
 from fs.intel import FileRecord, Symbol
 
 _NS_RE = re.compile(r"^\s*namespace\s+([\w.]+)", re.M)

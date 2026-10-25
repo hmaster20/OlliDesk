@@ -6,11 +6,12 @@
 """
 
 from __future__ import annotations
-from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
-from collections.abc import Sequence
+
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
 
 _KIND_ICON = {
     "file": "📄",

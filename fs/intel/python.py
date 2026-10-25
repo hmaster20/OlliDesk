@@ -19,6 +19,7 @@ import ast
 import re
 from pathlib import Path
 from typing import Any
+
 from fs.intel import FileRecord, Symbol
 
 _NET_CLIENT_RE = re.compile(r"\b(requests|httpx|curl_cffi|aiohttp)\b")

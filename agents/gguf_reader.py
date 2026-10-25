@@ -1,12 +1,12 @@
 """Чтение метаданных GGUF напрямую из файла (без llama.cpp, без CUDA)."""
 
 from __future__ import annotations
-from typing import BinaryIO, Any
 
 import struct
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, BinaryIO
 
 from loguru import logger
 

@@ -11,10 +11,10 @@ RAM 127 ГБ держит обе без напряжения.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
-from collections.abc import Callable
 
 
 class Role(StrEnum):

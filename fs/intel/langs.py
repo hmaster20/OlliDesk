@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from pathlib import Path
-from typing import Any
-from fs.intel import FileRecord, Symbol
 from collections.abc import Iterator
 from pathlib import Path
-import fnmatch
+from typing import Any
+
+from fs.intel import FileRecord, Symbol
 
 # Файлы БЕЗ расширения, определяемые по имени (D6).
 _NAME_LANG: dict[str, str] = {
