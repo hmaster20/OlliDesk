@@ -375,6 +375,10 @@ class OllamaClient:
     # chat(): HTTP-стриминг к POST /api/chat
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # chat(): HTTP-стриминг к POST /api/chat
+    # ------------------------------------------------------------------
+
     async def chat(
         self,
         model: str,
@@ -397,6 +401,11 @@ class OllamaClient:
         Отмена: ``cancel_request()`` выставляет флаг, проверяется между
         чанками. При отмене эмитим ``end`` и выходим — httpx-стрим
         корректно закроется через ``async with``.
+
+        Исключения:
+          * 404 → ``ModelNotFoundError``;
+          * 400 «does not support tools» → ``ToolsNotSupportedError``;
+          * прочие HTTP/сетевые → ``OllamaConnectionError``.
         """
         self.reset_cancel()
         client = await self._get_client()
@@ -475,6 +484,19 @@ class OllamaClient:
                     yield chunk
                 yield ChatChunk(event_type="end", done=True)
 
+        # ВАЖНО: порядок except — от самого специфичного к общему.
+        # HTTPStatusError (404/400/5xx) приходит напрямую от httpx, когда
+        # транспорт уже знает код (например, `stream.side_effect` в тестах
+        # или `post` без stream-обёртки). Классифицируем так же, как
+        # ошибку из response в `_raise_stream_error`/`_raise_sync_error`.
+        except httpx.HTTPStatusError as e:
+            response = e.response
+            status = response.status_code if response is not None else 0
+            try:
+                body_text = response.text if response is not None else ""
+            except Exception:
+                body_text = ""
+            self._classify_http_error(status, body_text, model)
         except httpx.ConnectError as e:
             raise OllamaConnectionError(
                 f"Не удалось подключиться к Ollama: {e}"

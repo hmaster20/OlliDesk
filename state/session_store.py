@@ -53,20 +53,113 @@ class SessionStore:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     parts_json TEXT,
+                    tool_call_id TEXT,
+                    name TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions (id)
                 )
             """)
-            # Миграция старых БД: добавляем parts_json, если её нет.
+            # Миграция старых БД: добавляем недостающие колонки.
+            # Идемпотентно: `PRAGMA table_info` проверяет наличие перед ALTER.
             cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
-            if "parts_json" not in cols:
+            for col, ddl in (
+                ("parts_json", "ALTER TABLE messages ADD COLUMN parts_json TEXT"),
+                ("tool_call_id", "ALTER TABLE messages ADD COLUMN tool_call_id TEXT"),
+                ("name", "ALTER TABLE messages ADD COLUMN name TEXT"),
+            ):
+                if col in cols:
+                    continue
                 try:
-                    conn.execute("ALTER TABLE messages ADD COLUMN parts_json TEXT")
-                    logger.info("SessionStore: миграция messages → добавлена колонка parts_json")
+                    conn.execute(ddl)
+                    logger.info(
+                        f"SessionStore: миграция messages → добавлена колонка {col}"
+                    )
                 except sqlite3.OperationalError as e:
-                    logger.warning(f"SessionStore: не удалось добавить parts_json: {e}")
+                    logger.warning(
+                        f"SessionStore: не удалось добавить {col}: {e}"
+                    )
             conn.commit()
         logger.debug(f"База данных инициализирована: {self.db_path}")
+
+    def save_message(self, session_id: str, message: ChatMessage) -> None:
+        """Сохраняет сообщение вместе с типизированными частями.
+
+        `content` пишется для обратной совместимости (UI читает строку),
+        `parts_json` — источник истины для новых записей. `tool_call_id`
+        и `name` — отдельные колонки: они принадлежат ChatMessage, а не
+        parts, и раньше терялись при восстановлении истории.
+        """
+        now = datetime.now().isoformat()
+        try:
+            parts_json: str | None = json.dumps(
+                [p.model_dump(mode="json") for p in message.parts],
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Не удалось сериализовать parts, сохраняю только content: {e}"
+            )
+            parts_json = None
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO messages "
+                "(session_id, role, content, parts_json, tool_call_id, name, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    message.role,
+                    message.content,
+                    parts_json,
+                    message.tool_call_id,
+                    message.name,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (now, session_id),
+            )
+            conn.commit()
+
+        logger.debug(f"Сохранено сообщение в сессию {session_id}: {message.role}")
+
+    def get_history(self, session_id: str, limit: int = 50) -> list[ChatMessage]:
+        """Загружает историю сообщений с восстановлением parts и метаданных tool."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT role, content, parts_json, tool_call_id, name "
+                "FROM messages WHERE session_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            )
+            rows = cursor.fetchall()
+
+        messages: list[ChatMessage] = []
+        for role, content, parts_json, tool_call_id, name in reversed(rows):
+            parts = self._parse_parts(parts_json)
+            if parts:
+                messages.append(
+                    ChatMessage(
+                        role=role,
+                        parts=parts,
+                        tool_call_id=tool_call_id,
+                        name=name,
+                    )
+                )
+            else:
+                # Fallback: старая запись без parts_json.
+                messages.append(
+                    ChatMessage(
+                        role=role,
+                        content=content or "",
+                        tool_call_id=tool_call_id,
+                        name=name,
+                    )
+                )
+        logger.debug(f"Загружено сообщений: {len(messages)}")
+        return messages
 
     def create_session(self, project_path: str) -> str:
         session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -79,38 +172,6 @@ class SessionStore:
             conn.commit()
         logger.info(f"Создана сессия: {session_id}")
         return session_id
-
-    def save_message(self, session_id: str, message: ChatMessage) -> None:
-        """Сохраняет сообщение вместе с типизированными частями.
-
-        Пишет ``message.content`` (строку) в `content` для обратной совместимости
-        и ``json.dumps(parts)`` в `parts_json` — источник истины для новых записей.
-        """
-        now = datetime.now().isoformat()
-        try:
-            parts_json: str | None = json.dumps(
-                [p.model_dump(mode="json") for p in message.parts],
-                ensure_ascii=False,
-                default=str,
-            )
-        except Exception as e:
-            logger.warning(f"Не удалось сериализовать parts, сохраняю только content: {e}")
-            parts_json = None
-
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO messages "
-                "(session_id, role, content, parts_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, message.role, message.content, parts_json, now),
-            )
-            conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now, session_id),
-            )
-            conn.commit()
-
-        logger.debug(f"Сохранено сообщение в сессию {session_id}: {message.role}")
 
     @staticmethod
     def _parse_parts(raw: str | None) -> list[MessagePart]:
@@ -137,26 +198,7 @@ class SessionStore:
                 logger.warning(f"SessionStore: пропускаю невалидную part: {e}")
         return parts
 
-    def get_history(self, session_id: str, limit: int = 50) -> list[ChatMessage]:
-        """Загружает историю сообщений с восстановлением parts (если есть)."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT role, content, parts_json FROM messages "
-                "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
-                (session_id, limit),
-            )
-            rows = cursor.fetchall()
 
-        messages: list[ChatMessage] = []
-        for role, content, parts_json in reversed(rows):
-            parts = self._parse_parts(parts_json)
-            if parts:
-                messages.append(ChatMessage(role=role, parts=parts))
-            else:
-                # Fallback: старая запись без parts_json.
-                messages.append(ChatMessage(role=role, content=content or ""))
-        logger.debug(f"Загружено сообщений: {len(messages)}")
-        return messages
 
     def list_sessions(self, project_path: str | None = None) -> list[SessionInfo]:
         with sqlite3.connect(self.db_path) as conn:

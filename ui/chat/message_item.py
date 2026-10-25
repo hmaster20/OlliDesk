@@ -705,6 +705,8 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
     clean = " ".join(str(text).split())
     if len(clean) <= limit:
         return (clean, False)
+    if limit <= 0:
+        return ("…", True)
     return (clean[: limit - 1] + "…", True)
 
 

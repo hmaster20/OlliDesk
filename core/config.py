@@ -1011,3 +1011,16 @@ def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
         if role in model.roles:
             return model
     raise ConfigError(f"Модель с ролью {role.value} не найдена в конфигурации")
+
+@field_validator("priority")
+@classmethod
+def validate_priority(cls, v: list[str]) -> list[str]:
+    allowed = {"ollama", "local_slm"}
+    unknown = [b for b in v if b not in allowed]
+    if unknown:
+        raise ValueError(f"Неизвестные бэкенды в priority: {unknown}")
+    seen: list[str] = []
+    for b in v:
+        if b not in seen:
+            seen.append(b)
+    return seen
