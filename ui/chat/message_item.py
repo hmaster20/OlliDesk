@@ -17,6 +17,7 @@
 """
 
 from __future__ import annotations
+from pathlib import Path
 
 import html as html_mod
 import json
@@ -1113,9 +1114,7 @@ class ToolCallCard(QWidget):
         # Язык — по расширению.
         ext = ""
         if path:
-            from pathlib import Path as _P
-
-            ext = _P(path).suffix.lower().lstrip(".")
+            ext = Path(path).suffix.lower().lstrip(".")
         payload = {
             "path": path,
             "original": original,

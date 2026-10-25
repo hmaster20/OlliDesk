@@ -203,7 +203,7 @@ def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
         return []
     tree = parser.parse(src)
     out: list[Symbol] = []
-    KIND_NODES = {
+    kind_nodes = {
         "class_definition": "class",
         "function_definition": "function",
         "method_definition": "method",
@@ -215,13 +215,13 @@ def _ts_generic(parser, p: Path, lang: str, rec: FileRecord) -> list[Symbol]:
     }
 
     def walk(node):
-        if node.type in KIND_NODES:
+        if node.type in kind_nodes:
             name = _child_text(node, "name") or _child_text(node, "identifier") or "?"
             sig = _first_line(src, node.start_byte)
             out.append(
                 Symbol(
                     qualified_name=name,
-                    kind=KIND_NODES[node.type],
+                    kind=kind_nodes[node.type],
                     file=rec.path,
                     line=node.start_point[0] + 1,
                     signature=sig,

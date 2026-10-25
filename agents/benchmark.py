@@ -301,11 +301,15 @@ async def _run_prompts_on_client(
                     messages=messages,
                     stream=True,
                 ):
-                    if chunk.event_type == "delta" and chunk.part is not None:
-                        if isinstance(chunk.part, TextPart) and chunk.part.text:
-                            if first_token_time is None:
-                                first_token_time = time.perf_counter() - t0
-                            collected_text += chunk.part.text
+                    if (
+                        chunk.event_type == "delta"
+                        and chunk.part is not None
+                        and isinstance(chunk.part, TextPart)
+                        and chunk.part.text
+                    ):
+                        if first_token_time is None:
+                            first_token_time = time.perf_counter() - t0
+                        collected_text += chunk.part.text
                 total_ms = (time.perf_counter() - t0) * 1000
 
                 # Для SLM: last_stats содержит ttft_ms, tokens, tokens_per_sec.

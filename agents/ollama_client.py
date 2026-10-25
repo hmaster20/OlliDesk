@@ -370,181 +370,157 @@ class OllamaClient:
             if calls:
                 chunks.append(ChatChunk(part=ToolCallPart(calls=calls), event_type="tool_call"))
         return chunks
-        async def chat(
-            self,
-            model: str,
-            messages: list[ChatMessage],
-            tools: list[Any] | None = None,
-            options: Any | None = None,
-            stream: bool = True,
-            op_type: str | None = None,
-            **kwargs: Any,
-        ) -> AsyncIterator[ChatChunk]:
-            """Стриминг ответа Ollama через POST /api/chat.
 
-            Контракт событий (4.8.E), симметричный LocalLLMClient:
+    # ------------------------------------------------------------------
+    # chat(): HTTP-стриминг к POST /api/chat
+    # ------------------------------------------------------------------
 
-            * ``event_type="start"`` — до открытия HTTP-стрима, чтобы UI
-                сразу показал «печатает»;
-            * ``event_type="delta"`` — TextPart/ReasoningPart по мере
-                генерации;
-            * ``event_type="tool_call"`` — ToolCallPart (приходит в одном
-                из чанков, обычно до ``done``);
-            * ``event_type="end"``, ``done=True`` — последний чанк.
+    async def chat(
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        tools: list[Any] | None = None,
+        options: Any | None = None,
+        stream: bool = True,
+        op_type: str | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatChunk]:
+        """Стриминг ответа Ollama через POST /api/chat.
 
-            Отмена: ``cancel_request()`` выставляет флаг, который проверяется
-            между чанками. При отмене эмитим ``end`` и выходим — httpx-стрим
-            корректно закроется через ``async with``.
+        Контракт событий (4.8.E), симметричный LocalLLMClient:
 
-            Args:
-                model: имя модели в Ollama.
-                messages: история; ``ChatMessage.to_ollama_dict()`` даёт
-                    готовый dict для API.
-                tools: список ``ToolSchema`` (pydantic) или dict-ов; при
-                    наличии добавляются в payload как ``tools[]``.
-                options: ``ChatOptions``-совместимый объект; поля
-                    temperature/top_p/top_k/num_predict/stop уходят в
-                    ``options`` Ollama.
-                stream: True — NDJSON-стрим; False — один POST и один ответ.
-                op_type: зарезервирован для будущего использования
-                    (temperature-профили по типу операции); сейчас не
-                    влияет на запрос — температура берётся из ``options``.
-                **kwargs: игнорируются (совместимость с LLMBackend).
+          * ``event_type="start"`` — до открытия HTTP-стрима;
+          * ``event_type="delta"`` — TextPart/ReasoningPart по мере генерации;
+          * ``event_type="tool_call"`` — ToolCallPart (обычно до ``done``);
+          * ``event_type="end"``, ``done=True`` — последний чанк.
 
-            Yields:
-                ChatChunk (см. контракт выше).
+        Отмена: ``cancel_request()`` выставляет флаг, проверяется между
+        чанками. При отмене эмитим ``end`` и выходим — httpx-стрим
+        корректно закроется через ``async with``.
+        """
+        self.reset_cancel()
+        client = await self._get_client()
 
-            Raises:
-                OllamaConnectionError: сеть недоступна или 5xx.
-                ModelNotFoundError: 404 (модель не скачана).
-                ToolsNotSupportedError: 400 с «does not support tools».
-                    ``AgentLoop`` ловит это исключение и повторяет запрос
-                    без tools (см. agents/agent_loop.py).
-            """
-            self.reset_cancel()
-            client = await self._get_client()
+        # --- payload ---
+        options_dict: dict[str, Any] = {"num_ctx": self.num_ctx}
+        if options is not None:
+            for attr in ("temperature", "top_p", "top_k", "num_predict", "stop"):
+                value = getattr(options, attr, None)
+                if value is not None:
+                    options_dict[attr] = value
 
-            # --- payload ---
-            options_dict: dict[str, Any] = {"num_ctx": self.num_ctx}
-            if options is not None:
-                for attr in ("temperature", "top_p", "top_k", "num_predict", "stop"):
-                    value = getattr(options, attr, None)
-                    if value is not None:
-                        options_dict[attr] = value
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [m.to_ollama_dict() for m in messages],
+            "stream": bool(stream),
+            "options": options_dict,
+        }
+        if tools:
+            payload["tools"] = [
+                t.model_dump() if hasattr(t, "model_dump") else t for t in tools
+            ]
 
-            payload: dict[str, Any] = {
-                "model": model,
-                "messages": [m.to_ollama_dict() for m in messages],
-                "stream": bool(stream),
-                "options": options_dict,
-            }
-            if tools:
-                payload["tools"] = [
-                    t.model_dump() if hasattr(t, "model_dump") else t for t in tools
-                ]
+        # [4.8.E] start-event до открытия HTTP-стрима.
+        yield ChatChunk(event_type="start", done=False)
 
-            # [4.8.E] start-event до открытия HTTP-стрима.
-            yield ChatChunk(event_type="start", done=False)
-
-            try:
-                if stream:
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/api/chat",
-                        json=payload,
-                    ) as response:
-                        if response.status_code >= 400:
-                            await self._raise_stream_error(response, model)
-
-                        async for line in response.aiter_lines():
-                            if not line:
-                                continue
-                            if self._cancel_requested:
-                                logger.info("Ollama stream cancelled by user")
-                                yield ChatChunk(event_type="end", done=True)
-                                return
-                            try:
-                                data = json.loads(line)
-                            except json.JSONDecodeError:
-                                logger.warning(
-                                    f"Некорректный JSON от Ollama: {line[:200]!r}"
-                                )
-                                continue
-                            if data.get("error"):
-                                raise OllamaConnectionError(f"Ollama: {data['error']}")
-
-                            message = data.get("message") or {}
-                            for chunk in self._chunks_from_ollama_message(message):
-                                yield chunk
-
-                            if data.get("done"):
-                                yield ChatChunk(event_type="end", done=True)
-                                return
-
-                    # Поток закрылся без done — крайний случай (OOM/разрыв).
-                    yield ChatChunk(event_type="end", done=True)
-                else:
-                    response = await client.post(
-                        f"{self.base_url}/api/chat",
-                        json=payload,
-                    )
+        try:
+            if stream:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                ) as response:
                     if response.status_code >= 400:
-                        self._raise_sync_error(response, model)
-                    data = response.json()
-                    if data.get("error"):
-                        raise OllamaConnectionError(f"Ollama: {data['error']}")
-                    message = data.get("message") or {}
-                    for chunk in self._chunks_from_ollama_message(message):
-                        yield chunk
-                    yield ChatChunk(event_type="end", done=True)
+                        await self._raise_stream_error(response, model)
 
-            except httpx.ConnectError as e:
-                raise OllamaConnectionError(
-                    f"Не удалось подключиться к Ollama: {e}"
-                ) from e
-            except httpx.HTTPError as e:
-                # Остаточные транспортные ошибки httpx (timeout, read error).
-                raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if self._cancel_requested:
+                            logger.info("Ollama stream cancelled by user")
+                            yield ChatChunk(event_type="end", done=True)
+                            return
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                f"Некорректный JSON от Ollama: {line[:200]!r}"
+                            )
+                            continue
+                        if data.get("error"):
+                            raise OllamaConnectionError(f"Ollama: {data['error']}")
 
-        # ------------------------------------------------------------------
-        # Хелперы классификации HTTP-ошибок для chat()
-        # ------------------------------------------------------------------
+                        message = data.get("message") or {}
+                        for chunk in self._chunks_from_ollama_message(message):
+                            yield chunk
 
-        async def _raise_stream_error(self, response: httpx.Response, model: str) -> None:
-            """Считывает тело стрим-ответа при ошибке и бросает нужное исключение.
+                        if data.get("done"):
+                            yield ChatChunk(event_type="end", done=True)
+                            return
 
-            В streaming-режиме ``response.raise_for_status()`` не читает тело,
-            а нам оно нужно, чтобы отличить «does not support tools» от
-            обычной 400.
-            """
-            try:
-                body = await response.aread()
-                body_text = body.decode("utf-8", errors="replace")
-            except Exception:
-                body_text = ""
-            self._classify_http_error(response.status_code, body_text, model)
-
-        def _raise_sync_error(self, response: httpx.Response, model: str) -> None:
-            """То же для не-стрим запроса (тело уже прочитано httpx)."""
-            try:
-                body_text = response.text
-            except Exception:
-                body_text = ""
-            self._classify_http_error(response.status_code, body_text, model)
-
-        @staticmethod
-        def _classify_http_error(status_code: int, body_text: str, model: str) -> None:
-            """Единая классификация ошибок Ollama — поднимает нужное исключение."""
-            lowered = body_text.lower()
-            if status_code == 400 and "does not support tools" in lowered:
-                raise ToolsNotSupportedError(
-                    f"Модель '{model}' не поддерживает инструменты"
+                # Поток закрылся без done — крайний случай (OOM/разрыв).
+                yield ChatChunk(event_type="end", done=True)
+            else:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
                 )
-            if status_code == 404:
-                raise ModelNotFoundError(f"Модель '{model}' не найдена")
+                if response.status_code >= 400:
+                    self._raise_sync_error(response, model)
+                data = response.json()
+                if data.get("error"):
+                    raise OllamaConnectionError(f"Ollama: {data['error']}")
+                message = data.get("message") or {}
+                for chunk in self._chunks_from_ollama_message(message):
+                    yield chunk
+                yield ChatChunk(event_type="end", done=True)
+
+        except httpx.ConnectError as e:
             raise OllamaConnectionError(
-                f"HTTP {status_code} от Ollama: {body_text[:500] or '(пустое тело)'}"
+                f"Не удалось подключиться к Ollama: {e}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
+
+    # ------------------------------------------------------------------
+    # Хелперы классификации HTTP-ошибок для chat()
+    # ------------------------------------------------------------------
+
+    async def _raise_stream_error(self, response: httpx.Response, model: str) -> None:
+        """Считывает тело стрим-ответа при ошибке и бросает нужное исключение.
+
+        В streaming-режиме ``response.raise_for_status()`` не читает тело,
+        а нам оно нужно, чтобы отличить «does not support tools» от
+        обычной 400.
+        """
+        try:
+            body = await response.aread()
+            body_text = body.decode("utf-8", errors="replace")
+        except Exception:
+            body_text = ""
+        self._classify_http_error(response.status_code, body_text, model)
+
+    def _raise_sync_error(self, response: httpx.Response, model: str) -> None:
+        """То же для не-стрим запроса (тело уже прочитано httpx)."""
+        try:
+            body_text = response.text
+        except Exception:
+            body_text = ""
+        self._classify_http_error(response.status_code, body_text, model)
+
+    @staticmethod
+    def _classify_http_error(status_code: int, body_text: str, model: str) -> None:
+        """Единая классификация ошибок Ollama — поднимает нужное исключение."""
+        lowered = body_text.lower()
+        if status_code == 400 and "does not support tools" in lowered:
+            raise ToolsNotSupportedError(
+                f"Модель '{model}' не поддерживает инструменты"
             )
+        if status_code == 404:
+            raise ModelNotFoundError(f"Модель '{model}' не найдена")
+        raise OllamaConnectionError(
+            f"HTTP {status_code} от Ollama: {body_text[:500] or '(пустое тело)'}"
+        )
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         client = await self._get_client()

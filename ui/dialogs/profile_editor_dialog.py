@@ -369,10 +369,13 @@ class ProfileEditorDialog(QDialog):
         new_id = current.id if current.builtin else self.id_edit.text().strip()
         if not new_id:
             return None
-        if not current.builtin and new_id != current.id:
-            if get_profile_by_id(self._profiles, new_id) is not None:
-                QMessageBox.warning(self, "Ошибка", f"Профиль с id {new_id!r} уже существует.")
-                return None
+        if (
+            not current.builtin
+            and new_id != current.id
+            and get_profile_by_id(self._profiles, new_id) is not None
+        ):
+            QMessageBox.warning(self, "Ошибка", f"Профиль с id {new_id!r} уже существует.")
+            return None
 
         rag_categories: list[str] = []
         if self.rag_check.isChecked():

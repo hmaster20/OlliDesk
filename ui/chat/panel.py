@@ -1863,10 +1863,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._active_tool_card = None
 
         # 2. Серый трейс — компактная запись результата (research).
-        if self._current_thought_stream is not None:
-            if name not in ("record_hypothesis", "update_hypothesis"):
-                preview = (content or "").strip().replace("\n", " ")[:200]
-                self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
+        if (
+            self._current_thought_stream is not None
+            and name not in ("record_hypothesis", "update_hypothesis")
+        ):
+            preview = (content or "").strip().replace("\n", " ")[:200]
+            self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
 
         # 3. Гипотезы — отдельный виджет (как было).
         if (
@@ -3003,12 +3005,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
         if self._orchestrator is not None:
-            try:
-                # LSP-клиенты живут вне Orchestrator (используются точечно),
-                # но на всякий случай сбрасываем ссылку.
+            with contextlib.suppress(Exception):
                 self._orchestrator = None
-            except Exception:
-                pass
         if self._model_pool is not None:
             try:
                 loop = asyncio.new_event_loop()

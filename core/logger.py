@@ -1,6 +1,7 @@
 """Настройка логирования через loguru."""
 
 import sys
+import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -24,14 +25,8 @@ def _reconfigure_streams() -> None:
         stream = getattr(sys, name, None)
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
-            try:
+            with contextlib.suppress(Exception):
                 reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                # Если stream не поддерживает reconfigure (custom wrapper
-                # от IDE / тестового фреймворка) — молча продолжаем:
-                # catch=True в logger.add защитит от падения.
-                pass
-
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.

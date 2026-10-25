@@ -186,7 +186,7 @@ class DependencyGraph:
         `MessageBufferManager → HistoryManager` и т. п.
 
         Точность: confidence=0.6 (эвристика по имени, без type-checker).
-        Ограничение: MAX_EDGES=500, чтобы `_to_layers` BFS не разрастался.
+        Ограничение: max_edges=500, чтобы `_to_layers` BFS не разрастался.
         """
         class_nodes: dict[str, str] = {}
         method_nodes: dict[str, str] = {}
@@ -216,7 +216,7 @@ class DependencyGraph:
 
         seen: set[tuple[str, str]] = set()
         added = 0
-        MAX_EDGES = 500
+        max_edges = 500
 
         for nid, n in self.nodes.items():
             if n.kind != "method":
@@ -259,9 +259,9 @@ class DependencyGraph:
                     )
                 )
                 added += 1
-                if added >= MAX_EDGES:
+                if added >= max_edges:
                     break
-            if added >= MAX_EDGES:
+            if added >= max_edges:
                 break
 
         if added:
