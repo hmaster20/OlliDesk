@@ -252,6 +252,20 @@ def _match_columns(prev, cur):
 def _mermaid(nodes, edges, graph):
     nmap = {n.id: n for n in nodes}
     lines = ["flowchart TD"]
+
+    # Стиль стрелки по типу связи. Осмысленно: пунктир для «использует»,
+    # жирная — для жёстких зависимостей.
+    arrow_styles = {
+        "imports": "-->",
+        "references": "-.->",
+        "depends_on": "==>",
+        "includes": "-->",
+        "provisions": "-->",
+        "module_call": "-->",
+        "calls": "-->",
+        "uses": "-.->",
+    }
+
     for n in nodes:
         shape = {
             "class": "[{lbl}]",
@@ -263,21 +277,13 @@ def _mermaid(nodes, edges, graph):
         }.get(n.kind, "[{lbl}]")
         lbl = f"{n.kind}: {_short(n)}"
         lines.append(f"  {_mid(n.id)} {shape.format(lbl=_esc(lbl))}")
-    arrow = {
-        "imports": "-->",
-        "references": "-.->",
-        "depends_on": "==>",
-        "includes": "-->",
-        "provisions": "-->",
-        "module_call": "-->",
-        "calls": "-->",
-        "uses": "-.->",
-    }.get("imports", "-->")
+
     for e in edges:
         if e.source in nmap and e.target in nmap:
-            lines.append(f"  {_mid(e.source)} -->|{e.kind}| {_mid(e.target)}")
-    return "\n".join(lines)
+            style = arrow_styles.get(e.kind, "-->")
+            lines.append(f"  {_mid(e.source)} {style}|{e.kind}| {_mid(e.target)}")
 
+    return "\n".join(lines)
 
 def _mid(nid: str) -> str:
     import hashlib

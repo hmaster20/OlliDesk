@@ -17,11 +17,11 @@
 """
 
 from __future__ import annotations
-from pathlib import Path
 
 import html as html_mod
 import json
 import re
+from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import Qt, Signal
