@@ -1,7 +1,7 @@
 """Настройка логирования через loguru."""
 
-import sys
 import contextlib
+import sys
 from pathlib import Path
 
 from loguru import logger

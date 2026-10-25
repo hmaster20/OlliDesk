@@ -8,12 +8,13 @@ ComboBox в верхней панели ChatPanel. Заполняется из `
 
 from __future__ import annotations
 
+import contextlib
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
 
 from core.config import AppConfig, save_config
 from core.profiles import get_profile_by_id
-import contextlib
 
 
 class ProfilesSelector(QWidget):

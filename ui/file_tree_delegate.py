@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -35,7 +36,6 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTreeView,
 )
-import contextlib
 
 # Цвета по одному символу XY из `git status --porcelain`.
 # X — индекс, Y — рабочее дерево.

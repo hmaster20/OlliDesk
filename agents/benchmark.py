@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import gc
 import time
@@ -35,7 +36,6 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
-import contextlib
 
 # ============================================================================
 # Промпты и структуры данных

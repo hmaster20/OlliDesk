@@ -65,8 +65,7 @@ def qt_app():
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
 
-    app = QApplication.instance() or QApplication([])
-    return app
+    return QApplication.instance() or QApplication([])
 
 
 class TestPopRestoreBatch:

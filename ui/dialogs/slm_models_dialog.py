@@ -1,5 +1,6 @@
 """Диалог управления локальными SLM-моделями (GGUF, llama.cpp)."""
 
+import contextlib
 import re
 
 from loguru import logger
@@ -27,7 +28,6 @@ from agents.download_slm import (
     is_model_installed,
 )
 from core.config import AppConfig, SLMModelInfo, save_config
-import contextlib
 
 # Модульный реестр активных скачиваний: держит сильные ссылки на QThread
 # до завершения, чтобы GC не уничтожил объект во время работы.

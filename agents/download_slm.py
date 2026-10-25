@@ -6,11 +6,11 @@
 показ таблицы дёргал HF для каждой из ~30 моделей.
 """
 
+import contextlib
 import re
 from pathlib import Path
 
 from loguru import logger
-import contextlib
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 

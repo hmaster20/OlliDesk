@@ -10,6 +10,7 @@ from ui.widgets.status_dashboard import StatusDashboard
 __all__ = [
     "AutoScrollArea",
     "CommandCompleter",
+    "CommandPalette",
     "PipelineSelectors",
     "ProfilesSelector",
     "StatusDashboard",

@@ -36,8 +36,7 @@ def qt_app():
     `pytest-qt` не подключаем (по плану 9.11), но QApplication нужен
     для виджетов. Создаём вручную.
     """
-    app = QApplication.instance() or QApplication([])
-    return app
+    return QApplication.instance() or QApplication([])
 
 
 @pytest.fixture

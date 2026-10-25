@@ -13,7 +13,11 @@ from typing import Any
 
 from fs.intel.graph import (
     DependencyGraph,
+)
+from fs.intel.graph import (
     GraphEdge as GraphEdge,
+)
+from fs.intel.graph import (
     GraphNode as GraphNode,
 )
 from fs.intel.repomap import RepoMap, build_repomap

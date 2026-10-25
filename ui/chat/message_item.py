@@ -1106,8 +1106,6 @@ class ToolCallCard(QWidget):
         modified = str(self._metadata.get("written_content") or "")
         if not modified and path:
             try:
-                from pathlib import Path
-
                 modified = Path(path).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 modified = ""

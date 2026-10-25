@@ -9,7 +9,7 @@ tool-results живут в EvidenceStore, а не в истории.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, StrEnum
+from enum import StrEnum
 from typing import Protocol
 
 

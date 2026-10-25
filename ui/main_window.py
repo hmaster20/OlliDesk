@@ -23,6 +23,7 @@
 """
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -65,7 +66,6 @@ from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
-import contextlib
 
 
 class ModelCheckThread(QThread):

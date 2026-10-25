@@ -219,13 +219,13 @@ def _short(n: GraphNode) -> str:
 def _arrow_row(prev, cur, *, width: int) -> str:
     # Упрощённо: рисуем вертикальные '|' и 'v' под совпадающими колонками.
     grid = [" "] * max(width, 1)
-    for (px, _), (cx, _) in _match_columns(prev, cur):
+    for (_px, _), (cx, _) in _match_columns(prev, cur):
         if 0 <= cx < len(grid):
             grid[cx] = "|"
     line = "".join(grid).rstrip()
     # нижняя строка со стрелками
     arrow = [" "] * max(width, 1)
-    for (px, _), (cx, _) in _match_columns(prev, cur):
+    for (_px, _), (cx, _) in _match_columns(prev, cur):
         if 0 <= cx < len(arrow):
             arrow[cx] = "v"
     return line + "\n" + "".join(arrow).rstrip() if line else "".join(arrow).rstrip()

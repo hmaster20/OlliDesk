@@ -327,31 +327,17 @@ class DependencyGraph:
     def _score(self, files, domain) -> None:
         import math
 
-        mentioned = self._doc_mentions(domain)
         for n in self.nodes.values():
             s = 0.0
             if n.metadata.get("is_entry"):
                 s += 10.0
             if n.kind in {"class", "role", "module_tf", "resource", "box"}:
                 s += 2.0 * math.log1p(n.indegree) + 1.0 * math.log1p(n.outdegree)
-            if n.name in mentioned or (n.path and any(m in n.path for m in mentioned)):
-                s += 3.0
             if n.kind in {"var", "method", "function", "task", "provisioner"}:
-                s -= 5.0   # было -1.0 — не хватало, чтобы они не попадали в top-24
+                s -= 5.0
             if n.metadata.get("is_test"):
                 s -= 2.0
             n.score = round(s, 3)
-
-    def _doc_mentions(self, domain) -> set[str]:
-        out: set[str] = set()
-        # из contract_md (AGENTS.md/PLAN.md) roadmap/ветки/риски
-        for piece in (
-            (domain.get("ansible_partial") or [])
-            + (domain.get("terraform_partial") or [])
-            + (domain.get("vagrant_partial") or [])
-        ):
-            pass
-        return out  # заполняется в repomap из файлов-контрактов
 
     def top_nodes(self, kinds: Iterable[str], limit: int) -> list[GraphNode]:
         ks = set(kinds)
