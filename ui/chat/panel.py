@@ -1117,12 +1117,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     def _emit_settings_changed(self):
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        self.settings_changed.emit(
-            {
-                "model": self.get_current_model(),
-                "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-            }
-        )
+        payload: dict = {"mode": mode_map.get(self.mode_combo.currentIndex(), "chat")}
+        # Модель имеет смысл только когда активна Ollama. При SLM model_combo
+        # содержит «последнюю выбранную Ollama-модель» (например, 7B) и
+        # сохранять её в last_model при каждой смене режима бессмысленно —
+        # в итоге config.last_model остаётся 7B, хотя реально грузится 3B.
+        if self._router.active_backend == BackendType.OLLAMA:
+            payload["model"] = self.get_current_model()
+        self.settings_changed.emit(payload)
 
     def _toggle_agent_panel(self):
         self.agent_panel_toggle.emit(True)

@@ -496,11 +496,11 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):
-        self.config.last_model = settings.get("model", "")
+        if "model" in settings:
+            self.config.last_model = settings["model"]
         self.config.last_mode = settings.get("mode", "chat")
         from core.config import save_config
-
-        logger.info(f"⚙️ settings_changed: model={settings.get('model')}, mode={settings.get('mode')}")
+        logger.info(f"⚙️ settings_changed: {settings}")
         save_config(self.config)
 
     def _read_file(self, path: str) -> str:

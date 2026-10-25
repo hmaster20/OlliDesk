@@ -103,10 +103,28 @@ class OlliDeskApp:
 
         self.main_window = MainWindow(self.config)
 
-        # Применяем глобальные настройки
-        if self.config.last_model:
+        # [FIX] last_model — это имя модели Ollama. Применять его к ChatPanel
+        # имеет смысл только когда Ollama разрешена в backends.enabled.
+        # Иначе:
+        #   * combo моделей скрыт (`_update_model_selector_visibility`),
+        #   * сам combo получает «фантомное» значение 7B,
+        #   * при любом mode_changed `_on_chat_settings_changed` перетирает
+        #     last_model ещё раз — и в config.yaml навсегда оседает 7B,
+        #     хотя реально грузится SLM `qwen2.5-3b-instruct-q4_k_m`.
+        # Правильно: применять last_model только когда Ollama активна,
+        # и логировать одну понятную строку, если проигнорировали.
+        ollama_enabled = "ollama" in self.config.backends.enabled
+
+        if self.config.last_model and ollama_enabled:
             logger.info(f"Применяю last_model={self.config.last_model}")
             self.main_window.chat_panel.set_model(self.config.last_model)
+        elif self.config.last_model:
+            logger.info(
+                f"last_model={self.config.last_model!r} не применяется: "
+                f"Ollama выключена (backends.enabled={self.config.backends.enabled}). "
+                f"SLM использует selected_model={self.config.slm.selected_model!r}."
+            )
+
         if self.config.last_mode:
             logger.info(f"Применяю last_mode={self.config.last_mode}")
             # 2.4: публичный API вместо прямого доступа к mode_combo.
