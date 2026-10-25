@@ -25,14 +25,20 @@ from core.config_v3 import ConfigV3, ModelRoleCfg
 
 
 def _usable_vram_mb() -> int:
+    """Свободная VRAM для планировщика, МБ.
+
+    Использует ``HardwareProfile.best_gpu`` (это property, возвращает
+    самую мощную CUDA-карту или ``None``), а не поле ``gpu`` —
+    поля ``gpu`` у ``HardwareProfile`` не существует.
+    """
     try:
         from agents.hardware_profile import get_hardware_profile
 
         hp = get_hardware_profile()
-        return int(getattr(hp.gpu, "usable_vram_mb", 0) or 0)
+        gpu = hp.best_gpu
+        return int(gpu.usable_vram_mb) if gpu is not None else 0
     except Exception:
         return 0
-
 
 def migrate(v2: dict[str, Any]) -> ConfigV3:
     slm = v2.get("slm", {}) or {}
@@ -116,13 +122,17 @@ def migrate(v2: dict[str, Any]) -> ConfigV3:
     )
 
 
-def _pick(v2: dict, *, planner_default: str) -> str:
-    # planner берём из реестра, если есть 3B; иначе дефолт.
-    reg = v2.get("model_registry", []) or []
+def _pick(v2: dict[str, Any], *, planner_default: str) -> str:
+    """Возвращает id планировщика из реестра моделей или дефолт.
+
+    Ищет модель, у которой ``id`` содержит ``3b`` и ``instruct``
+    (case-insensitive). Если не нашёл — ``planner_default``.
+    """
+    reg: list[dict[str, Any]] = v2.get("model_registry") or []
     for m in reg:
-        mid = (m.get("id") or "").lower()
+        mid = str(m.get("id") or "").lower()
         if "3b" in mid and "instruct" in mid:
-            return m["id"]
+            return str(m["id"])
     return planner_default
 
 
