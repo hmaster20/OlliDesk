@@ -155,10 +155,13 @@ class ModelRouter:
         ровно этот бэкенд» (если клиент есть). При ``auto`` — старая
         логика с whitelist.
         """
-        if self._embed_preference is not None:
-            if self._client_for(self._embed_preference) is not None:
-                return [self._embed_preference]
-            # Клиента нет — падаем на auto-логику ниже.
+        # Явный пиннинг: клиент есть → используем ровно его, независимо
+        # от `_enabled`. Клиента нет → падаем на auto-логику ниже.
+        if (
+            self._embed_preference is not None
+            and self._client_for(self._embed_preference) is not None
+        ):
+            return [self._embed_preference]
 
         available = [
             b
