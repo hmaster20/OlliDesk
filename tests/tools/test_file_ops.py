@@ -180,13 +180,11 @@ class TestWriteFile:
         assert "Файл создан" in result["_llm_text"]
         assert (temp_project / "deep" / "nested" / "new.txt").read_text(encoding="utf-8") == "данные"
 
-
     def test_reports_snapshot_created(self, temp_project: Path, monkeypatch):
         monkeypatch.setattr("tools.file_ops.create_snapshot", lambda *a, **kw: "снапшот")
         result = write_file("a.txt", "x", project_root=str(temp_project))
         assert isinstance(result, dict)
         assert "Создан Git-снапшот для отката" in result["_llm_text"]
-
 
     def test_without_root_no_snapshot_attempted(self, temp_project: Path, monkeypatch):
         def fail(*args, **kwargs):

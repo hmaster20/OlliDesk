@@ -35,6 +35,7 @@ def get_app_data_dir() -> Path:
     """
     return Path.home() / ".ollidesk"
 
+
 def get_app_icon():
     """Возвращает QIcon приложения или None, если файла нет.
 

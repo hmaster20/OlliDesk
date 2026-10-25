@@ -63,7 +63,8 @@ def _prune(graph, edges, max_nodes, roots=()):
     # Отбрасываем листья-методы/поля: они не архитектурные узлы,
     # но при `belongs_to`-BFS забивают top-N и создают «мусорные» строки
     keep_ids = {
-        iid for iid in keep_ids
+        iid
+        for iid in keep_ids
         if iid in graph.nodes
         and graph.nodes[iid].kind not in {"method", "function", "var", "task", "provisioner"}
     }
@@ -284,6 +285,7 @@ def _mermaid(nodes, edges, graph):
             lines.append(f"  {_mid(e.source)} {style}|{e.kind}| {_mid(e.target)}")
 
     return "\n".join(lines)
+
 
 def _mid(nid: str) -> str:
     import hashlib

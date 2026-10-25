@@ -133,6 +133,7 @@ class ModelPool:
         self._clients[spec.role] = client
         self._specs[spec.role] = spec
         return client
+
     def client(self, role: Role) -> ClientLike:
         if role not in self._clients:
             raise RuntimeError(f"Модель роли {role.value} не загружена")

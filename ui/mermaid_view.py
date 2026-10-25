@@ -50,8 +50,7 @@ class DiagramView(QStackedWidget):
         self._ascii = QLabel()
         self._ascii.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._ascii.setStyleSheet(
-            "font-family:Consolas,monospace;font-size:12px;"
-            "color:#cdd6f4;background:#181825;padding:8px;"
+            "font-family:Consolas,monospace;font-size:12px;color:#cdd6f4;background:#181825;padding:8px;"
         )
         self._web: QWebEngineView | None = None
         self._mermaid_loaded = False

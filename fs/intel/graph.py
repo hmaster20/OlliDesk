@@ -235,8 +235,7 @@ class DependencyGraph:
                 target_class = None
                 if candidates:
                     same_ns = [
-                        c for c in candidates
-                        if class_node_names.get(c, "").rsplit(".", 1)[0] == owner_ns
+                        c for c in candidates if class_node_names.get(c, "").rsplit(".", 1)[0] == owner_ns
                     ]
                     target_class = same_ns[0] if same_ns else candidates[0]
                 # Приоритет 2: вызов метода — через method_owner.

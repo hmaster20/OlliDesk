@@ -683,8 +683,7 @@ class _ModelPoolLoadThread(QThread):
             same_file = planner_path == analyst_path
             if same_file:
                 self.progress.emit(
-                    f"⚠️ planner и analyst используют один файл "
-                    f"({planner_path.name}), грузим модель один раз"
+                    f"⚠️ planner и analyst используют один файл ({planner_path.name}), грузим модель один раз"
                 )
 
             # --- Оптимизация: устройство задаётся ЯВНО ---

@@ -71,13 +71,9 @@ class SessionStore:
                     continue
                 try:
                     conn.execute(ddl)
-                    logger.info(
-                        f"SessionStore: миграция messages → добавлена колонка {col}"
-                    )
+                    logger.info(f"SessionStore: миграция messages → добавлена колонка {col}")
                 except sqlite3.OperationalError as e:
-                    logger.warning(
-                        f"SessionStore: не удалось добавить {col}: {e}"
-                    )
+                    logger.warning(f"SessionStore: не удалось добавить {col}: {e}")
             conn.commit()
         logger.debug(f"База данных инициализирована: {self.db_path}")
 
@@ -97,9 +93,7 @@ class SessionStore:
                 default=str,
             )
         except Exception as e:
-            logger.warning(
-                f"Не удалось сериализовать parts, сохраняю только content: {e}"
-            )
+            logger.warning(f"Не удалось сериализовать parts, сохраняю только content: {e}")
             parts_json = None
 
         with sqlite3.connect(self.db_path) as conn:
@@ -197,8 +191,6 @@ class SessionStore:
             except ValidationError as e:
                 logger.warning(f"SessionStore: пропускаю невалидную part: {e}")
         return parts
-
-
 
     def list_sessions(self, project_path: str | None = None) -> list[SessionInfo]:
         with sqlite3.connect(self.db_path) as conn:

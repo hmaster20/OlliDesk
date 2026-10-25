@@ -1865,9 +1865,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._active_tool_card = None
 
         # 2. Серый трейс — компактная запись результата (research).
-        if (
-            self._current_thought_stream is not None
-            and name not in ("record_hypothesis", "update_hypothesis")
+        if self._current_thought_stream is not None and name not in (
+            "record_hypothesis",
+            "update_hypothesis",
         ):
             preview = (content or "").strip().replace("\n", " ")[:200]
             self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
@@ -2786,6 +2786,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         try:
             from core.config import load_config as _load_cfg
+
             cfg = _load_cfg()
             ollama_enabled = "ollama" in cfg.backends.enabled
         except Exception:
@@ -2881,9 +2882,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             if not tooltip and role.id == "default":
                 tooltip = "Универсальный ассистент — подходит для большинства задач."
             if tooltip:
-                self.role_combo.setItemData(
-                    idx, tooltip, Qt.ItemDataRole.ToolTipRole
-                )
+                self.role_combo.setItemData(idx, tooltip, Qt.ItemDataRole.ToolTipRole)
 
         idx = self.role_combo.findData("default")
         if idx >= 0:
@@ -3237,5 +3236,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             lines.append("Инструменты: ❓ не проверено")
         lines.append("Локально: ✅" if info.is_local else "Локально: ⬇️ не скачана")
         return "<br>".join(lines)
+
 
 # ---

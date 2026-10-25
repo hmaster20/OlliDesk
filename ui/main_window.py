@@ -129,8 +129,7 @@ class ModelCheckThread(QThread):
                     # бессмысленно — все упадут с тем же таймаутом. Логируем
                     # ОДНУ строку вместо 39.
                     logger.warning(
-                        f"Ollama недоступна, проверка моделей прервана на "
-                        f"{i + 1}/{total} ({model}): {e}"
+                        f"Ollama недоступна, проверка моделей прервана на {i + 1}/{total} ({model}): {e}"
                     )
                     break
                 except Exception as e:
@@ -500,6 +499,7 @@ class MainWindow(QMainWindow):
             self.config.last_model = settings["model"]
         self.config.last_mode = settings.get("mode", "chat")
         from core.config import save_config
+
         logger.info(f"⚙️ settings_changed: {settings}")
         save_config(self.config)
 
@@ -1946,8 +1946,7 @@ class MainWindow(QMainWindow):
                 # Поток всё ещё живёт (например, соединение висит дольше).
                 # НЕ убиваем — выйдет сам по cancel(). Сообщаем пользователю.
                 logger.warning(
-                    "ModelCheckThread не завершился за 10 сек; "
-                    "продолжает работу в фоне и выйдет по cancel()"
+                    "ModelCheckThread не завершился за 10 сек; продолжает работу в фоне и выйдет по cancel()"
                 )
                 self.status_bar.showMessage(
                     "⏹ Останавливаю проверку в фоне (завершится при следующем ответе Ollama)",

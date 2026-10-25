@@ -1464,8 +1464,7 @@ class ChatDiagramItem(QWidget):
         if not self._mermaid_enabled:
             self._mermaid_btn.setEnabled(False)
             self._mermaid_btn.setToolTip(
-                "Mermaid недоступен: нужен QWebEngine и "
-                "ui/web_editor/vendor/mermaid.min.js."
+                "Mermaid недоступен: нужен QWebEngine и ui/web_editor/vendor/mermaid.min.js."
             )
         if not self._mermaid_enabled and self._mermaid:
             logger.info(
@@ -1609,8 +1608,7 @@ class ChatHypothesisItem(QWidget):
             self._detail.setVisible(False)
 
         self._detail.setStyleSheet(
-            "font-size: 11px;"
-            " font-family: 'Consolas','Cascadia Mono',monospace; padding: 0;"
+            "font-size: 11px; font-family: 'Consolas','Cascadia Mono',monospace; padding: 0;"
         )
         self._container.setStyleSheet(
             "QFrame#_hypothesis_item {"

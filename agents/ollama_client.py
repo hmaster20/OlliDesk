@@ -425,9 +425,7 @@ class OllamaClient:
             "options": options_dict,
         }
         if tools:
-            payload["tools"] = [
-                t.model_dump() if hasattr(t, "model_dump") else t for t in tools
-            ]
+            payload["tools"] = [t.model_dump() if hasattr(t, "model_dump") else t for t in tools]
 
         # [4.8.E] start-event до открытия HTTP-стрима.
         yield ChatChunk(event_type="start", done=False)
@@ -452,9 +450,7 @@ class OllamaClient:
                         try:
                             data = json.loads(line)
                         except json.JSONDecodeError:
-                            logger.warning(
-                                f"Некорректный JSON от Ollama: {line[:200]!r}"
-                            )
+                            logger.warning(f"Некорректный JSON от Ollama: {line[:200]!r}")
                             continue
                         if data.get("error"):
                             raise OllamaConnectionError(f"Ollama: {data['error']}")
@@ -498,9 +494,7 @@ class OllamaClient:
                 body_text = ""
             self._classify_http_error(status, body_text, model)
         except httpx.ConnectError as e:
-            raise OllamaConnectionError(
-                f"Не удалось подключиться к Ollama: {e}"
-            ) from e
+            raise OllamaConnectionError(f"Не удалось подключиться к Ollama: {e}") from e
         except httpx.HTTPError as e:
             raise OllamaConnectionError(f"Ошибка HTTP: {e}") from e
 
@@ -535,14 +529,10 @@ class OllamaClient:
         """Единая классификация ошибок Ollama — поднимает нужное исключение."""
         lowered = body_text.lower()
         if status_code == 400 and "does not support tools" in lowered:
-            raise ToolsNotSupportedError(
-                f"Модель '{model}' не поддерживает инструменты"
-            )
+            raise ToolsNotSupportedError(f"Модель '{model}' не поддерживает инструменты")
         if status_code == 404:
             raise ModelNotFoundError(f"Модель '{model}' не найдена")
-        raise OllamaConnectionError(
-            f"HTTP {status_code} от Ollama: {body_text[:500] or '(пустое тело)'}"
-        )
+        raise OllamaConnectionError(f"HTTP {status_code} от Ollama: {body_text[:500] or '(пустое тело)'}")
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         client = await self._get_client()

@@ -565,10 +565,9 @@ class BackendSettings(BaseModel):
         """Один из auto/ollama/local_slm."""
         allowed = {"auto", "ollama", "local_slm"}
         if v not in allowed:
-            raise ValueError(
-                f"embed_backend должен быть одним из {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"embed_backend должен быть одним из {sorted(allowed)}, got {v!r}")
         return v
+
 
 class RerankSettings(BaseModel):
     """Реранкинг RAG-выдачи кросс-энкодером (sentence-transformers).

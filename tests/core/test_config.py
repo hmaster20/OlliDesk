@@ -483,6 +483,7 @@ class TestSLMModels:
         assert any("14b" in mid for mid in by_id), sorted(by_id)
         # Пользовательская (не встроенная) модель тоже сохранилась.
         assert "qwen2.5-7b-instruct" in by_id
+
     def test_custom_model_preserved(self):
         custom = SLMConfig(
             available_models=[

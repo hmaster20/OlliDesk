@@ -13,9 +13,7 @@ def make_slm(embed_result=None, embed_error=None):
     if embed_error is not None:
         client.embed = AsyncMock(side_effect=embed_error)
     else:
-        client.embed = AsyncMock(
-            return_value=[[0.1, 0.2, 0.3]] if embed_result is None else embed_result
-        )
+        client.embed = AsyncMock(return_value=[[0.1, 0.2, 0.3]] if embed_result is None else embed_result)
     return client
 
 

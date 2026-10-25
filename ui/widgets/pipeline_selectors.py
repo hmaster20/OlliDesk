@@ -60,7 +60,7 @@ class PipelineSelectors(QWidget):
         layout.addWidget(planner_lbl)
         self.planner_combo = QComboBox()
         self.planner_combo.setMinimumWidth(160)
-        self.planner_combo.setSizePolicy( QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed )
+        self.planner_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.planner_combo.setToolTip("Planner (GPU) — classify/plan/critique. Рекомендуется 3B.")
         self.planner_combo.currentIndexChanged.connect(self._on_planner_selected)
         layout.addWidget(self.planner_combo, stretch=1)
@@ -72,7 +72,7 @@ class PipelineSelectors(QWidget):
         layout.addWidget(analyst_lbl)
         self.analyst_combo = QComboBox()
         self.analyst_combo.setMinimumWidth(160)
-        self.analyst_combo.setSizePolicy( QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed )
+        self.analyst_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.analyst_combo.setToolTip("Analyst (CPU) — synthesis/regen. Рекомендуется 7B.")
         self.analyst_combo.currentIndexChanged.connect(self._on_analyst_selected)
         layout.addWidget(self.analyst_combo, stretch=1)
@@ -214,8 +214,7 @@ class PipelineSelectors(QWidget):
         current_id = combo.currentData() or ""
         if not current_id:
             combo.setToolTip(
-                "<b>(автовыбор)</b><br>"
-                "Модель выбирается автоматически по tier и свободной VRAM."
+                "<b>(автовыбор)</b><br>Модель выбирается автоматически по tier и свободной VRAM."
             )
             return
         info = self._config.slm.get_model_by_id(current_id)

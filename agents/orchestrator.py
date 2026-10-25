@@ -273,8 +273,7 @@ class Orchestrator:
         # они информативнее «шапки файла»: модель видит, ЧТО класс делает,
         # а не только `using`-и и `namespace`.
         top_class_paths = {
-            n.path for n in top
-            if n.path and n.kind in {"class", "interface", "module", "role"}
+            n.path for n in top if n.path and n.kind in {"class", "interface", "module", "role"}
         }
         if top_class_paths:
             methods_added = 0
@@ -515,12 +514,14 @@ class Orchestrator:
         # публичные методы. Иначе модель видит только шапку файла.
         if p.suffix.lower() == ".cs":
             import re
+
             head = [
                 m.group(0).strip()[:140]
                 for m in re.finditer(
                     r"^\s*(?:(?:public|internal|private|protected|sealed|static|abstract|partial)\s+)+"
                     r"(?:class|interface|enum|struct|record)\s+\w+[^{]*",
-                    txt, re.M,
+                    txt,
+                    re.M,
                 )
             ][:15]
             methods = [
@@ -528,7 +529,8 @@ class Orchestrator:
                 for m in re.finditer(
                     r"^\s*(?:(?:public|internal|private|protected|static|async|virtual|override|sealed)\s+)+"
                     r"[\w<>\[\],.\s?]+?\s+\w+\s*\([^)]*\)\s*(?:=>|\{)",
-                    txt, re.M,
+                    txt,
+                    re.M,
                 )
             ][:25]
             if head or methods:
@@ -537,7 +539,8 @@ class Orchestrator:
                     + "\n".join(f"//   {h}" for h in head)
                     + "\n\n// ── Методы ──\n"
                     + "\n".join(f"//   {m}" for m in methods)
-                    + "\n\n" + excerpt
+                    + "\n\n"
+                    + excerpt
                 )
         return excerpt
 

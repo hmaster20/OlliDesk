@@ -250,10 +250,7 @@ class TestAntiHallucinationGuard:
         assert client.calls == 2
         assert "🔁 Формат вызова не распознан — уточняю…" in statuses
         # Во втором запросе модели показали корректирующую подсказку.
-        hint_seen = any(
-            "не был распознан" in str(getattr(m, "content", ""))
-            for m in client.seen[1]
-        )
+        hint_seen = any("не был распознан" in str(getattr(m, "content", "")) for m in client.seen[1])
         assert hint_seen
 
     async def test_plain_answer_not_nudged(self):
@@ -380,9 +377,7 @@ class TestSystemPromptBudget:
 
     def test_rules_survive_over_map(self):
         rules = "Правила проекта: не коммить без просьбы."
-        prompt = _build_system_prompt(
-            AgentContext(project_map="M" * 20000, extra_rules=rules, num_ctx=4096)
-        )
+        prompt = _build_system_prompt(AgentContext(project_map="M" * 20000, extra_rules=rules, num_ctx=4096))
 
         assert rules in prompt
         assert len(prompt) <= system_prompt_char_budget(4096)

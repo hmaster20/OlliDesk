@@ -415,6 +415,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
     except Exception as e:
         return f"Ошибка записи файла: {e}"
 
+
 def _resolve_path(path: str, project_root: str = "") -> Path | None:
     """Устаревшая обёртка для обратной совместимости тестов.
 

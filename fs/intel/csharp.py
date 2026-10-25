@@ -51,19 +51,72 @@ _CALL_METHOD_RE = re.compile(r"\.([A-Za-z_]\w*)\s*\(")
 _CALL_BARE_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,})\s*\(")
 
 # Имена из BCL/фреймворка и коллекционных методов — не архитектурные вызовы.
-_BUILTIN_METHODS = frozenset({
-    "ToString", "Equals", "GetHashCode", "GetType", "ReferenceEquals",
-    "Add", "AddRange", "Remove", "RemoveAt", "RemoveAll", "Contains",
-    "ContainsKey", "ContainsValue", "Clear", "Count", "Any", "All",
-    "First", "FirstOrDefault", "Last", "LastOrDefault", "Where", "Select",
-    "SelectMany", "ToArray", "ToList", "ToDictionary", "ForEach",
-    "Trim", "TrimStart", "TrimEnd", "Split", "Replace", "Substring",
-    "StartsWith", "EndsWith", "IndexOf", "LastIndexOf", "ToLower", "ToUpper",
-    "Write", "WriteLine", "Read", "ReadLine", "Flush", "Dispose", "Close",
-    "Show", "ShowDialog", "Hide", "Invoke", "BeginInvoke", "EndInvoke",
-    "Format", "Parse", "TryParse", "Concat", "Join",
-    "GetString", "GetBytes", "GetBuffer", "GetLength",
-})
+_BUILTIN_METHODS = frozenset(
+    {
+        "ToString",
+        "Equals",
+        "GetHashCode",
+        "GetType",
+        "ReferenceEquals",
+        "Add",
+        "AddRange",
+        "Remove",
+        "RemoveAt",
+        "RemoveAll",
+        "Contains",
+        "ContainsKey",
+        "ContainsValue",
+        "Clear",
+        "Count",
+        "Any",
+        "All",
+        "First",
+        "FirstOrDefault",
+        "Last",
+        "LastOrDefault",
+        "Where",
+        "Select",
+        "SelectMany",
+        "ToArray",
+        "ToList",
+        "ToDictionary",
+        "ForEach",
+        "Trim",
+        "TrimStart",
+        "TrimEnd",
+        "Split",
+        "Replace",
+        "Substring",
+        "StartsWith",
+        "EndsWith",
+        "IndexOf",
+        "LastIndexOf",
+        "ToLower",
+        "ToUpper",
+        "Write",
+        "WriteLine",
+        "Read",
+        "ReadLine",
+        "Flush",
+        "Dispose",
+        "Close",
+        "Show",
+        "ShowDialog",
+        "Hide",
+        "Invoke",
+        "BeginInvoke",
+        "EndInvoke",
+        "Format",
+        "Parse",
+        "TryParse",
+        "Concat",
+        "Join",
+        "GetString",
+        "GetBytes",
+        "GetBuffer",
+        "GetLength",
+    }
+)
 
 
 def _extract_method_body(text: str, from_pos: int, max_len: int = 4000) -> str:
@@ -140,6 +193,7 @@ def _extract_calls(body: str) -> list[str]:
             continue
         calls.add(name)
     return sorted(calls)
+
 
 def parse_csharp_file(p: Path, rec: FileRecord):
     """-> (symbols, domain_piece). Домен-пьеc для .csproj/AGENTS.md."""

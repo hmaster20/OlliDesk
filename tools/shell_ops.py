@@ -232,6 +232,7 @@ async def run_shell_command(
     footer = "\n[Вывод обрезан до 5000 символов]" if truncated else ""
     return f"{header}\n{body}{footer}"
 
+
 def _resolve_cwd(cwd: str, project_root: str) -> Path | None:
     """Устаревшая обёртка для обратной совместимости тестов.
 
