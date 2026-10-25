@@ -147,14 +147,18 @@ class ModelRouter:
         return None
 
     def _embed_order(self) -> list[BackendType]:
-        """Порядок попыток для эмбеддингов."""
+        """Порядок попыток для эмбеддингов.
+
+        Явный `embed_backend` (``ollama`` / ``local_slm``) имеет приоритет
+        над чат-whitelist ``_enabled``: пользователь мог выключить Ollama
+        для чата, но оставить её для эмбеддингов. Пиннинг = «используй
+        ровно этот бэкенд» (если клиент есть). При ``auto`` — старая
+        логика с whitelist.
+        """
         if self._embed_preference is not None:
-            # Явный выбор пользователя: пробуем ТОЛЬКО этот бэкенд, даже если
-            # он не в чат-whitelist (_enabled). Это UX-требование: выбор
-            # embed_backend=ollama должен давать Ollama.
             if self._client_for(self._embed_preference) is not None:
                 return [self._embed_preference]
-            # Клиент недоступен — падаем на auto-логику ниже.
+            # Клиента нет — падаем на auto-логику ниже.
 
         available = [
             b

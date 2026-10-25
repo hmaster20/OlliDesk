@@ -536,9 +536,27 @@ class BackendSettings(BaseModel):
         for b in v:
             if b not in seen:
                 seen.append(b)
-        # local_slm всегда доступен — это локальный режим по умолчанию.
         if "local_slm" not in seen:
             seen.insert(0, "local_slm")
+        return seen
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: list[str]) -> list[str]:
+        """Проверяет и дедуплицирует порядок бэкендов.
+
+        НЕ добавляет `local_slm` автоматически (в отличие от `enabled`):
+        priority — это явный порядок предпочтения, пользователь имеет право
+        не указывать SLM, если её нет в enabled.
+        """
+        allowed = {"ollama", "local_slm"}
+        unknown = [b for b in v if b not in allowed]
+        if unknown:
+            raise ValueError(f"Неизвестные бэкенды в priority: {unknown}")
+        seen: list[str] = []
+        for b in v:
+            if b not in seen:
+                seen.append(b)
         return seen
 
     @field_validator("embed_backend")
@@ -547,9 +565,10 @@ class BackendSettings(BaseModel):
         """Один из auto/ollama/local_slm."""
         allowed = {"auto", "ollama", "local_slm"}
         if v not in allowed:
-            raise ValueError(f"embed_backend должен быть одним из {sorted(allowed)}, got {v!r}")
+            raise ValueError(
+                f"embed_backend должен быть одним из {sorted(allowed)}, got {v!r}"
+            )
         return v
-
 
 class RerankSettings(BaseModel):
     """Реранкинг RAG-выдачи кросс-энкодером (sentence-transformers).
@@ -1011,16 +1030,3 @@ def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
         if role in model.roles:
             return model
     raise ConfigError(f"Модель с ролью {role.value} не найдена в конфигурации")
-
-@field_validator("priority")
-@classmethod
-def validate_priority(cls, v: list[str]) -> list[str]:
-    allowed = {"ollama", "local_slm"}
-    unknown = [b for b in v if b not in allowed]
-    if unknown:
-        raise ValueError(f"Неизвестные бэкенды в priority: {unknown}")
-    seen: list[str] = []
-    for b in v:
-        if b not in seen:
-            seen.append(b)
-    return seen

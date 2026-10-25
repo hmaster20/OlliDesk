@@ -155,8 +155,12 @@ class TestToolInstruction:
         assert '{"name": "имя_инструмента", "arguments":' in text
 
     def test_project_study_recipe_present(self):
+        """Рецепт изучения проекта: последовательность «обзор → чтение → поиск»."""
         text = _make_client(n_ctx=4096)._build_tool_instruction(self._tools())
-        assert "КАК ИЗУЧИТЬ ПРОЕКТ" in text
+        # «КАК ИЗУЧИТЬ ПРОЕКТ» было заменено на «ПРАВИЛЬНЫЙ ПОРЯДОК ...».
+        assert "ПРАВИЛЬНЫЙ ПОРЯДОК" in text
+        assert "list_directory" in text
+        assert "read_file" in text
         assert "search_codebase" in text
 
     def test_available_tools_listed_with_args(self):
