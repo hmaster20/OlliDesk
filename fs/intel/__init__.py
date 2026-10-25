@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
+from fs.intel.graph import (
+    DependencyGraph,
+    GraphEdge as GraphEdge,
+    GraphNode as GraphNode,
+)
 from fs.intel.repomap import RepoMap, build_repomap
 
 

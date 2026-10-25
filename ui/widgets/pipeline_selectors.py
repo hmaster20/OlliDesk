@@ -100,9 +100,7 @@ class PipelineSelectors(QWidget):
         # Снимаем прежние звёздочки во всех ComboBox.
         for combo in (self.planner_combo, self.analyst_combo):
             for i in range(combo.count()):
-                data = combo.itemData(i) or ""
                 text = combo.itemText(i)
-                # Снимаем ведущие "★ " если они были.
                 if text.startswith("★ "):
                     combo.setItemText(i, text[2:])
 

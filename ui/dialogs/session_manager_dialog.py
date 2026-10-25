@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTextBrowser,
     QVBoxLayout,
+    QWidget,
 )
 
 from agents.ollama_client import ChatMessage
