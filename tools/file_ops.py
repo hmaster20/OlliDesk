@@ -412,3 +412,12 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
         return f"Ошибка доступа при записи: {file_path}"
     except Exception as e:
         return f"Ошибка записи файла: {e}"
+
+def _resolve_path(path: str, project_root: str = "") -> Path | None:
+    """Устаревшая обёртка для обратной совместимости тестов.
+
+    Реализация — `core.sandbox.SandboxedPathResolver`. Оставлена, чтобы
+    существующие тесты `tests/tools/test_file_ops.py` продолжали
+    импортировать это имя. Новый код должен использовать резолвер напрямую.
+    """
+    return SandboxedPathResolver(project_root).resolve(path)

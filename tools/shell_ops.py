@@ -230,3 +230,12 @@ async def run_shell_command(
     body = out.rstrip() if out else "(пустой вывод)"
     footer = "\n[Вывод обрезан до 5000 символов]" if truncated else ""
     return f"{header}\n{body}{footer}"
+
+def _resolve_cwd(cwd: str, project_root: str) -> Path | None:
+    """Устаревшая обёртка для обратной совместимости тестов.
+
+    Семантика совпадает с `run_shell_command`: пустой `cwd` — корень
+    проекта, иначе резолв относительно корня; выход за проект → None.
+    """
+    resolver = SandboxedPathResolver(project_root)
+    return resolver.root if not cwd else resolver.resolve(cwd)
