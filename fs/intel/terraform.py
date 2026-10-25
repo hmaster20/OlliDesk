@@ -102,9 +102,8 @@ def _iter_hcl_blocks(parsed: dict, kind: str):
         for name, body in node.items():
             if isinstance(body, dict):
                 yield {**body, "__address__": f"{kind}.{name}"}
-    elif kind == "locals":
-        if isinstance(node, dict):
-            yield {**node, "__address__": "locals"}
+    elif kind == "locals" and isinstance(node, dict):
+        yield {**node, "__address__": "locals"}
 
 
 def _hcl_addr(kind: str, blk: dict) -> str:

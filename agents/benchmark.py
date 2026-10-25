@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
+import contextlib
 
 # ============================================================================
 # Промпты и структуры данных
@@ -231,10 +232,8 @@ async def _measure_slm_model(
                 )
             )
             if client is not None:
-                try:
+                with contextlib.suppress(Exception):
                     del client
-                except Exception:
-                    pass
             gc.collect()
             return  # промпты прогонять бессмысленно
 
@@ -256,10 +255,8 @@ async def _measure_slm_model(
             )
 
         # Выгружаем — следующая итерация замерит чистую загрузку.
-        try:
+        with contextlib.suppress(Exception):
             del client
-        except Exception:
-            pass
         gc.collect()
         # На Windows нативная память CUDA возвращается не сразу —
         # даём ОС время, чтобы следующая загрузка не получила OOM.

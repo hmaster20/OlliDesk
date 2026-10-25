@@ -499,10 +499,9 @@ class ProfileEditorDialog(QDialog):
 
     def _on_save(self) -> None:
         # Сохраняем текущую форму.
-        if not self._persist_current_from_form():
-            if self._current_profile_id is not None:
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить профиль: проверьте поля формы.")
-                return
+        if not self._persist_current_from_form() and self._current_profile_id is not None:
+            QMessageBox.warning(self, "Ошибка", "Не удалось сохранить профиль: проверьте поля формы.")
+            return
 
         # Обновляем конфиг.
         self._config.profiles = self._profiles

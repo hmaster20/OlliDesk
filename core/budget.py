@@ -9,11 +9,11 @@ tool-results живут в EvidenceStore, а не в истории.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Protocol
 
 
-class OpType(str, Enum):
+class OpType(StrEnum):
     CLASSIFY = "classify"  # 3B: тип запроса
     PLAN = "plan"  # 3B: compact JSON-план
     TOOL_CALL = "tool_call"  # structured output

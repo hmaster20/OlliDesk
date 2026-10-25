@@ -168,11 +168,9 @@ class FileTreeController(QObject):
     def _is_file_modified(file_path: str) -> bool:
         """[9.8] True, если у файла есть git-статус M/A/R (не ??, не clean)."""
         try:
-            from pathlib import Path as _P
-
             from tools.git_ops import get_git_status_for_file
 
-            target = _P(file_path).resolve()
+            target = Path(file_path).resolve()
             status = get_git_status_for_file(target.parent, target)
         except Exception:
             return False

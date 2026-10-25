@@ -81,10 +81,10 @@ def parse_ruby_file(p: Path, rec: FileRecord, *, vagrant: bool):
     domain = {
         "kind": "vagrantfile",
         "path": rec.path,
-        "boxes": sorted(set(x for m in _BOX.finditer(text) for x in m.groups() if x)),
+        "boxes": sorted({x for m in _BOX.finditer(text) for x in m.groups() if x}),
         "networks": [{"type": m.group(1), "arg": m.group(2)} for m in _NETWORK.finditer(text)],
         "synced_folders": [{"host": m.group(1), "guest": m.group(2)} for m in _SYNCED.finditer(text)],
-        "providers": sorted(set(m.group(1).lower() for m in _PROVIDER.finditer(text))),
+        "providers": sorted({m.group(1).lower() for m in _PROVIDER.finditer(text)}),
         "provision_chain": prov_chain,
         "env_vars": env_vars,
         "commented_provisions": commented,  # техдолг-сигнал

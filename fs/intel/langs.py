@@ -327,9 +327,7 @@ def _is_entry(rel: str, lang: str) -> bool:
         return True
     if lang == "msbuild" and base.endswith(".csproj"):
         return True  # манифест сборки = кандидат точки входа для .NET
-    if _ENTRY_DIRHINT.search(rel) and lang in {"python", "csharp", "go", "ruby", "typescript", "javascript"}:
-        return True
-    return False
+    return bool(_ENTRY_DIRHINT.search(rel) and lang in {"python", "csharp", "go", "ruby", "typescript", "javascript"})
 
 
 def _module_of(rel: str, lang: str) -> str | None:

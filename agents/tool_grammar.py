@@ -68,6 +68,4 @@ def should_fallback(
         return True
     if looks_like_ascii_junk(text):
         return True
-    if _REACT_LEAK_RE.search(text):
-        return True
-    return False
+    return bool(_REACT_LEAK_RE.search(text))

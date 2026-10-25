@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Final
 
 from loguru import logger
 
 
-class NetworkMode(str, Enum):
+class NetworkMode(StrEnum):
     """Режим исходящего трафика для web_search."""
 
     OFF = "off"  # полный запрет (confidential-проекты)

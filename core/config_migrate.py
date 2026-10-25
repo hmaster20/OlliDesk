@@ -88,7 +88,7 @@ def migrate(v2: dict[str, Any]) -> ConfigV3:
     for extra in (".cs", ".csproj", ".sln", ".rb", ".tf", ".tfvars", ".hcl", ".pkr.hcl", ".yml"):
         if extra not in idx_ext:
             idx_ext.append(extra)
-    cfg = ConfigV3(
+    return ConfigV3(
         security=__import__("core.config_v3", fromlist=["SecurityCfg"]).SecurityCfg(**security),
         backend_priority=v2.get("backends", {}).get("priority")
         or v2.get("backend_priority")
@@ -114,7 +114,6 @@ def migrate(v2: dict[str, Any]) -> ConfigV3:
         last_mode=v2.get("last_mode"),
         project_path=v2.get("project_path"),
     )
-    return cfg
 
 
 def _pick(v2: dict, *, planner_default: str) -> str:

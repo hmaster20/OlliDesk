@@ -65,6 +65,7 @@ from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
+import contextlib
 
 
 class ModelCheckThread(QThread):
@@ -1473,8 +1474,6 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _on_agent_settings_applied(self, settings: dict) -> None:
         """[9.2] Применяет настройки агента к ChatPanel и конфигу."""
-        from core.config import ToolPolicy as _TP
-
         # Температура/max_tokens/context_window — в текущую модель.
         # ChatPanel пока не хранит их per-model, но get_settings() возвращает
         # только model/mode/show_reasoning. Расширяем постепенно:
@@ -1503,7 +1502,7 @@ class MainWindow(QMainWindow):
         # Tools: policy auto/excluded.
         tools = settings.get("tools") or {}
         for name, enabled in tools.items():
-            policy = _TP.AUTO if enabled else _TP.EXCLUDED
+            policy = ToolPolicy.AUTO if enabled else ToolPolicy.EXCLUDED
             self.chat_panel.set_tool_policy(name, policy)
             if hasattr(self, "_tool_checkboxes") and name in self._tool_checkboxes:
                 cb = self._tool_checkboxes[name]
@@ -1730,10 +1729,8 @@ class MainWindow(QMainWindow):
         logger.info("Закрытие главного окна")
         # [9.9] Закрываем палитру команд, если была открыта.
         if self._palette_dialog is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._palette_dialog.close()
-            except Exception:
-                pass
             self._palette_dialog = None
         self._save_project_settings()
         if self.chat_panel:

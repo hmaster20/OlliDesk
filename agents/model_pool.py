@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any, Protocol
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     PLANNER = "planner"  # 3B GPU: classify/plan/critique/tool-grammar
     ANALYST = "analyst"  # 7B CPU: synthesis/regen (качество)
     # Слот на будущее для больших/критичных задач:

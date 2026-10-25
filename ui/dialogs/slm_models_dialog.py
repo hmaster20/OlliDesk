@@ -27,6 +27,7 @@ from agents.download_slm import (
     is_model_installed,
 )
 from core.config import AppConfig, SLMModelInfo, save_config
+import contextlib
 
 # Модульный реестр активных скачиваний: держит сильные ссылки на QThread
 # до завершения, чтобы GC не уничтожил объект во время работы.
@@ -49,10 +50,8 @@ def _register_download(thread: QThread) -> None:
     _ACTIVE_DOWNLOADS.append(thread)
 
     def _cleanup() -> None:
-        try:
+        with contextlib.suppress(ValueError):
             _ACTIVE_DOWNLOADS.remove(thread)
-        except ValueError:
-            pass
 
     # QThread.finished — встроенный сигнал без аргументов, испускается
     # ровно один раз при выходе из run().

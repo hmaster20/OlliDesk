@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
 
 from core.config import AppConfig, save_config
 from core.profiles import get_profile_by_id
+import contextlib
 
 
 class ProfilesSelector(QWidget):
@@ -87,10 +88,8 @@ class ProfilesSelector(QWidget):
         if profile is None:
             return
         self._config.active_profile = profile.id
-        try:
+        with contextlib.suppress(Exception):
             save_config(self._config)
-        except Exception:
-            pass
         self.profile_changed.emit(profile)
 
 

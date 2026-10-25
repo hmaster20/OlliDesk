@@ -304,8 +304,8 @@ def _parse_md_contract(text: str, rec: FileRecord) -> dict:
     return {
         "kind": "contract_md",
         "path": rec.path,
-        "branch_conventions": sorted(set(b.lower() for b in branches)),
+        "branch_conventions": sorted({b.lower() for b in branches}),
         "roadmap_headers": roadmap_h,
         "open_tasks": todos[:40],
-        "risk_keywords": sorted(set(r.lower() for r in risks)),
+        "risk_keywords": sorted({r.lower() for r in risks}),
     }

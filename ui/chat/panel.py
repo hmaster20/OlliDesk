@@ -1143,10 +1143,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             try:
                 # Скроем и удалим содержимое placeholder'а.
                 for w in getattr(placeholder, "_collapsed", []):
-                    try:
+                    with contextlib.suppress(Exception):
                         w.deleteLater()
-                    except Exception:
-                        pass
                 placeholder.deleteLater()
             except Exception:
                 logger.debug(
@@ -1486,10 +1484,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if file_count <= 100:
             total_bytes = 0
             for rel in self._project_files:
-                try:
+                with contextlib.suppress(OSError):
                     total_bytes += (Path(self.project_root) / rel).stat().st_size
-                except OSError:
-                    pass
         else:
             total_bytes = 0  # не используется при file_count > 100
 
@@ -1611,10 +1607,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if file_count <= 100:
             total_bytes = 0
             for rel in self._project_files:
-                try:
+                with contextlib.suppress(OSError):
                     total_bytes += (Path(self.project_root) / rel).stat().st_size
-                except OSError:
-                    pass
         else:
             total_bytes = 0
 
@@ -2137,10 +2131,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         client = self._router.active_client
         stats = getattr(client, "last_stats", None) or {}
         tps = stats.get("tokens_per_sec", 0.0)
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             self._dashboard.set_tok_per_sec(float(tps))
-        except (TypeError, ValueError):
-            pass
 
     # ------------------------------------------------------------------
     # [9.5.3] Серый трейс в обычном Agent/Plan (не только research)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 
 # ---------------------------------------------------------------------------
 # Эвристики: какие файлы считаются «точкой входа» и «конфигом сборки»
@@ -83,7 +83,7 @@ def _is_hint(path: str, hints: tuple[str, ...]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class Phase(str, Enum):
+class Phase(StrEnum):
     """Фаза исследовательского прогона."""
 
     RECON = "recon"
@@ -221,9 +221,7 @@ class InvestigationState:
             return True
         # [D4] Модель не открыла entry-point, но индекс знает кандидата —
         # считаем entry покрытым детерминированно.
-        if self.known_entry_points and len(self.read_with_content) >= 2:
-            return True
-        return False
+        return bool(self.known_entry_points and len(self.read_with_content) >= 2)
 
     def summary(self) -> str:
         """Короткая сводка для инъекции в промпт."""

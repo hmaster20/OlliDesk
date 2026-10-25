@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTreeView,
 )
+import contextlib
 
 # Цвета по одному символу XY из `git status --porcelain`.
 # X — индекс, Y — рабочее дерево.
@@ -84,10 +85,8 @@ class _GitStatusWorker(QRunnable):
             self._d._status_ready.emit(status_map, branch, self._gen)
         except Exception as e:
             logger.debug(f"GitStatusWorker failed: {e}")
-            try:
+            with contextlib.suppress(Exception):
                 self._d._status_ready.emit({}, "", self._gen)
-            except Exception:
-                pass
 
 
 class GitStatusDelegate(QStyledItemDelegate):

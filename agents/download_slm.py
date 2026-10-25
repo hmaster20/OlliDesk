@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from loguru import logger
+import contextlib
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 
@@ -217,10 +218,8 @@ def get_local_size_mb(filename: str, target_dir: Path | None = None) -> int:
     for entry in target_dir.iterdir():
         m = _SPLIT_PART_RE.match(entry.name)
         if m and m.group("stem") == stem:
-            try:
+            with contextlib.suppress(OSError):
                 total += entry.stat().st_size
-            except OSError:
-                pass
     return total // (1024 * 1024)
 
 
