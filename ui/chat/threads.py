@@ -650,13 +650,19 @@ class _ModelPoolLoadThread(QThread):
                 )
                 return
 
+            # [FIX] Раньше здесь была ошибка «Нужны ДВЕ разные модели»
+            # если planner_info.id == analyst_info.id. Это ломало
+            # сценарий single-model (пользователь явно выбрал одну модель
+            # на обе роли, или второй модели нет в каталоге). ModelPool.add_role
+            # умеет кэшировать клиент по файлу — грузим ОДИН раз, используем
+            # для обеих ролей. Ниже есть ветка `same_file`, которая это делает.
             if planner_info.id == analyst_info.id:
-                self.error.emit(
-                    f"planner и analyst указывают на одну модель "
-                    f"({planner_info.id}). Скачайте вторую модель "
-                    f"(например, 7B) и повторите."
+                self.progress.emit(
+                    f"ℹ️ planner и analyst — одна модель ({planner_info.id}). "
+                    f"Работаем в single-model режиме: модель загрузится один раз "
+                    f"и обслужит обе роли."
                 )
-                return
+            # НЕ return — продолжаем, обработка same_file ниже по коду.
 
             planner_path = get_model_path(planner_info.file)
             if planner_path is None:

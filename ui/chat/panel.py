@@ -305,6 +305,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
         # чтобы _profiles_selector уже существовал).
         self._apply_initial_profile()
+        self._update_model_selector_visibility()
         self._update_pipeline_status()
         QTimer.singleShot(100, self._detect_backends)
 
@@ -745,9 +746,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.role_combo.currentIndexChanged.connect(self._on_role_changed)
         top_bar.addWidget(self.role_combo)
 
-        model_label = QLabel("Модель:")
-        model_label.setStyleSheet("font-size: 13px; padding: 4px;")
-        top_bar.addWidget(model_label)
+        self.model_label = QLabel("Модель:")
+        self.model_label.setStyleSheet("font-size: 13px; padding: 4px;")
+        top_bar.addWidget(self.model_label)
 
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
@@ -793,10 +794,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.mode_combo.addItems(["💬 Chat", "📋 Plan", "🤖 Agent"])
         for index, description in _MODE_DESCRIPTIONS.items():
             self.mode_combo.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
-        self.mode_combo.setToolTip(_MODE_DESCRIPTIONS[0])
-        self.mode_combo.setCurrentIndex(2)
         self.mode_combo.setStyleSheet("font-size: 13px; padding: 4px;")
+        # ВАЖНО: connect ДО setCurrentIndex, чтобы `_on_mode_changed(2)`
+        # сам выставил tooltip для текущего элемента (иначе между
+        # setCurrentIndex(2) и connect tooltip остаётся от _MODE_DESCRIPTIONS[0]).
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self.mode_combo.setCurrentIndex(2)
         top_bar.addWidget(self.mode_combo)
 
         self.gear_btn = QPushButton("⚙")
@@ -2819,6 +2822,34 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.model_combo.blockSignals(False)
         self._update_model_status(self.model_combo.currentData())
 
+    def _update_model_selector_visibility(self) -> None:
+        """Скрывает выбор Ollama-модели, если Ollama не активна в конфиге.
+
+        Назначение: когда Ollama выключена (не в `cfg.backends.enabled`),
+        combo моделей Ollama, кнопка «🔄» (проверка tools) и иконка статуса
+        модели бесполезны — все записи в combo неактивны, `_start_model_check`
+        сразу отказывает. Оставлять их на виду — источник недоумения.
+
+        Безопасно вызывается в любой момент: если UI ещё не создан
+        (`model_combo` отсутствует), тихо выходит.
+        """
+        if not hasattr(self, "model_combo"):
+            return
+        try:
+            from core.config import load_config as _load_cfg
+            cfg = _load_cfg()
+            ollama_enabled = "ollama" in cfg.backends.enabled
+        except Exception:
+            ollama_enabled = False
+        for widget in (
+            getattr(self, "model_label", None),
+            self.model_combo,
+            self.refresh_models_btn,
+            self.model_status_label,
+        ):
+            if widget is not None:
+                widget.setVisible(ollama_enabled)
+
     def _update_model_status(self, model_name: str):
         if not self.registry:
             self.model_status_label.setText("❓")
@@ -3095,6 +3126,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self.mode_combo.blockSignals(True)
             self.mode_combo.setCurrentIndex(idx)
             self.mode_combo.blockSignals(False)
+            # Синхронизируем tooltip, т.к. blockSignals подавил
+            # `currentIndexChanged` → `_on_mode_changed` не вызвался.
+            self.mode_combo.setToolTip(_MODE_DESCRIPTIONS.get(idx, ""))
 
         # 2. show_reasoning.
         self._show_reasoning = bool(profile.show_reasoning)

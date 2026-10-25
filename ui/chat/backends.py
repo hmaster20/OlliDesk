@@ -216,6 +216,7 @@ class BackendsMixin:
             self._router.set_ollama_available(False)
 
         self._detect_and_load_slm()
+        self._update_model_selector_visibility()
 
     def _active_backend_label(self) -> str:
         """Человекочитаемое имя активного бэкенда (для UI)."""

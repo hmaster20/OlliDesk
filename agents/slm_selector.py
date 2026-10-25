@@ -186,22 +186,22 @@ def select_pair(
                 if planner is None or candidate.id != planner.id:
                     analyst = candidate
 
-    # --- 4. Guard: одна модель на две роли ---
+    # --- 4. Одна модель на две роли: НЕ отбрасываем, работаем single-model ---
     if planner is not None and analyst is not None and planner.id == analyst.id:
         if cfg.slm.planner_model_id and cfg.slm.analyst_model_id:
-            logger.warning(
-                f"select_pair: planner и analyst явно выбраны как одна модель "
-                f"({planner.id}). Откройте «View → Локальные модели» и выберите "
-                f"РАЗНЫЕ модели для planner и analyst."
+            logger.info(
+                f"select_pair: planner и analyst — одна модель "
+                f"({planner.id}), пользователь выбрал явно. "
+                f"Модель будет загружена ОДИН раз и обслужит обе роли "
+                f"(ModelPool.add_role кэширует клиент по файлу)."
             )
         else:
             logger.warning(
-                f"select_pair: planner и analyst — одна модель ({planner.id}). "
-                f"Для двухмодельного пайплайна нужны РАЗНЫЕ модели. "
-                f"Выберите их явно в «View → Локальные модели» "
-                f"или скачайте недостающую (например, 7B)."
+                f"select_pair: planner и analyst — одна модель ({planner.id}) "
+                f"после автовыбора (второй подходящей модели нет). "
+                f"Работаем в single-model режиме."
             )
-        analyst = None
+        # analyst = None  ← УДАЛЕНО: не обнуляем, пусть будет тот же объект.
 
     logger.info(
         f"Автовыбор SLM (pair): "

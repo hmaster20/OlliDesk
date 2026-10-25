@@ -69,7 +69,7 @@ from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
-
+from core.config import AppConfig, ToolPolicy
 
 class ModelCheckThread(QThread):
     """Поток для проверки поддержки инструментов моделями Ollama.
@@ -1168,6 +1168,7 @@ class MainWindow(QMainWindow):
             self.chat_panel.router.set_priority(new_priority)
             self.chat_panel._emit_backend_status()
             self.chat_panel._sync_dashboard()
+            self.chat_panel._update_model_selector_visibility()
         self.status_bar.showMessage(f"Бэкенд переключён: {target.upper()}", 3000)
 
     def _check_ollama_connection(self) -> None:
