@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import AppConfig, save_config
+from core.config import AppConfig, SLMModelInfo, save_config
 
 
 class PipelineSelectors(QWidget):
@@ -128,7 +128,12 @@ class PipelineSelectors(QWidget):
     # ------------------------------------------------------------------
 
     def refresh_models(self) -> None:
-        """Перечитывает список моделей из конфига и обновляет ComboBox'ы."""
+        """Перечитывает список моделей из конфига и обновляет ComboBox'ы.
+
+        Для каждого пункта выставляется подробный HTML-tooltip: сам
+        display_name в списке усечён по ширине, а в tooltip'е — целиком
+        (id, tier, n_ctx, размер, файл, репозиторий, статус).
+        """
         from agents.download_slm import is_model_installed
 
         self._updating = True
@@ -149,16 +154,84 @@ class PipelineSelectors(QWidget):
             ):
                 combo.blockSignals(True)
                 combo.clear()
+
+                # «(автовыбор)» тоже с tooltip — объясняем, как работает автовыбор.
+                auto_tip = (
+                    "<b>(автовыбор)</b><br>"
+                    "Модель выбирается автоматически по tier и свободной VRAM "
+                    "при загрузке проекта (см. <code>agents.slm_selector.select_pair</code>)."
+                )
                 combo.addItem("(автовыбор)", "")
+                combo.setItemData(0, auto_tip, Qt.ItemDataRole.ToolTipRole)
+
                 for m in sorted_models:
                     installed = is_model_installed(m.file)
                     prefix = "✅ " if installed else "⬇️ "
+                    idx = combo.count()
                     combo.addItem(f"{prefix}{m.display_name}", m.id)
+                    combo.setItemData(
+                        idx,
+                        self._build_model_tooltip(m, installed),
+                        Qt.ItemDataRole.ToolTipRole,
+                    )
+
                 idx = combo.findData(current_id) if current_id else 0
                 combo.setCurrentIndex(idx if idx >= 0 else 0)
                 combo.blockSignals(False)
+                # Tooltip на самом ComboBox — показываем текущий выбор подробно.
+                self._sync_combo_tooltip(combo)
         finally:
             self._updating = False
+
+    @staticmethod
+    def _build_model_tooltip(m: SLMModelInfo, installed: bool) -> str:
+        """Подробный HTML-tooltip для пункта ComboBox.
+
+        Содержит: display_name (не усечён), id, tier, n_ctx, размер, файл,
+        репозиторий, статус установки.
+        """
+        tier_labels = {
+            0: "T0 микро (≤4 ГБ RAM, CPU)",
+            1: "T1 малый (≈4 ГБ VRAM, GPU)",
+            2: "T2 средний (6–8 ГБ VRAM / 16 ГБ RAM)",
+            3: "T3 крупный (10–12 ГБ VRAM / 32 ГБ RAM)",
+            4: "T4 XL (16–24 ГБ VRAM / 64 ГБ RAM)",
+            5: "T5 XXL (32+ ГБ VRAM / 96+ ГБ RAM)",
+        }
+        ctx = f"{m.n_ctx} ток." if m.n_ctx > 0 else "из config.slm.n_ctx"
+        kind_label = "chat" if m.kind == "chat" else f"{m.kind} (не для чата!)"
+        lines = [
+            f"<b>{m.display_name}</b>",
+            f"<code>{m.id}</code>",
+            "",
+            f"Уровень: {tier_labels.get(m.tier, f'T{m.tier}')}",
+            f"Назначение: {kind_label}",
+            f"Контекст: {ctx}",
+            f"Размер: ~{m.size_mb} МБ" if m.size_mb else "Размер: неизвестен",
+            f"Файл: <code>{m.file}</code>",
+            f"Репозиторий: <code>{m.repo}</code>",
+            "",
+            "✅ Установлена" if installed else "⬇️ Не скачана (кнопка ⬇️ в SLMModelsDialog)",
+        ]
+        return "<br>".join(line for line in lines if line is not None)
+
+    def _sync_combo_tooltip(self, combo: QComboBox) -> None:
+        """Tooltip на самом ComboBox — по текущему выбору."""
+        current_id = combo.currentData() or ""
+        if not current_id:
+            combo.setToolTip(
+                "<b>(автовыбор)</b><br>"
+                "Модель выбирается автоматически по tier и свободной VRAM."
+            )
+            return
+        info = self._config.slm.get_model_by_id(current_id)
+        if info is None:
+            combo.setToolTip(current_id)
+            return
+        from agents.download_slm import is_model_installed
+
+        installed = is_model_installed(info.file)
+        combo.setToolTip(self._build_model_tooltip(info, installed))
 
     # ------------------------------------------------------------------
     # Слоты
@@ -176,6 +249,7 @@ class PipelineSelectors(QWidget):
         self._config.slm.planner_model_id = model_id
         save_config(self._config)
         logger.info(f"Pipeline: planner={model_id or '(авто)'}")
+        self._sync_combo_tooltip(self.planner_combo)  # NEW
         self.planner_changed.emit(model_id)
 
     def _on_analyst_selected(self, index: int) -> None:
@@ -190,6 +264,7 @@ class PipelineSelectors(QWidget):
         self._config.slm.analyst_model_id = model_id
         save_config(self._config)
         logger.info(f"Pipeline: analyst={model_id or '(авто)'}")
+        self._sync_combo_tooltip(self.analyst_combo)  # NEW
         self.analyst_changed.emit(model_id)
 
     def _warn_same_model(self) -> None:

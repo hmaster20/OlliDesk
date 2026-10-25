@@ -44,7 +44,7 @@ from core.chat_commands import (
 )
 from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
-from core.model_registry import ModelRegistry
+from core.model_registry import ModelInfo, ModelRegistry
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
 from core.system_prompts import SystemPromptManager
@@ -2794,7 +2794,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         for model_name in sorted_names:
             info = all_models[model_name]
             display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
+            idx = self.model_combo.count()
             self.model_combo.addItem(display, model_name)
+            self.model_combo.setItemData(
+                idx,
+                self._build_registry_model_tooltip(info),
+                Qt.ItemDataRole.ToolTipRole,
+            )
 
         if current and self.model_combo.findData(current) >= 0:
             self.model_combo.setCurrentIndex(self.model_combo.findData(current))
@@ -3224,5 +3230,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
 
+    @staticmethod
+    def _build_registry_model_tooltip(info: ModelInfo) -> str:
+        """HTML-tooltip для пункта главного селектора моделей (Ollama)."""
+        lines = [f"<b>{info.name}</b>", ""]
+        if info.description:
+            lines.append(info.description)
+            lines.append("")
+        if info.recommended_modes:
+            lines.append(f"Рекомендуемые режимы: {', '.join(info.recommended_modes)}")
+        if info.supports_tools is True:
+            lines.append("Инструменты: ✅ поддерживает")
+        elif info.supports_tools is False:
+            lines.append("Инструменты: ❌ только чат")
+        else:
+            lines.append("Инструменты: ❓ не проверено")
+        lines.append("Локально: ✅" if info.is_local else "Локально: ⬇️ не скачана")
+        return "<br>".join(lines)
 
 # ---

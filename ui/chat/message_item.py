@@ -1468,6 +1468,11 @@ class ChatDiagramItem(QWidget):
                 "Mermaid недоступен: нужен QWebEngine и "
                 "ui/web_editor/vendor/mermaid.min.js."
             )
+        if not self._mermaid_enabled and self._mermaid:
+            logger.info(
+                "ChatDiagramItem: mermaid не активирован — проверьте "
+                "`make download-mermaid` и PySide6.QtWebEngineWidgets"
+            )
 
     def _switch_view(self, kind: str) -> None:
         if kind == "mermaid":
