@@ -3,9 +3,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   test:
@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -28,6 +28,12 @@ jobs:
 
       - name: Type check with mypy
         run: mypy .
+
+      - name: Type check
+        run: mypy core agents fs state tools
+
+      - name: Test
+        run: pytest -q
 
       - name: Test with pytest
         run: pytest --cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui --cov-report=xml

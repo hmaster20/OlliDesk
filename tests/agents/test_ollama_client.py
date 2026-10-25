@@ -199,7 +199,8 @@ class TestOllamaClient:
         tool_chunks = [c for c in chunks if c.event_type == "tool_call"]
         assert len(tool_chunks) == 1
         calls = tool_chunks[0].tool_calls
-        assert calls is not None and len(calls) == 1
+        assert calls is not None
+        assert len(calls) == 1
         assert calls[0].name == "read_file"
         assert calls[0].arguments == {"path": "main.py"}
         assert chunks[0].event_type == "start"
