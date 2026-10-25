@@ -1,6 +1,5 @@
 """Скачивает mermaid.min.js из jsDelivr в ui/web_editor/vendor/."""
 
-import io
 import urllib.request
 from pathlib import Path
 

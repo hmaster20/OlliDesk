@@ -1,15 +1,5 @@
 """Асинхронный клиент Ollama API."""
 
-from collections.abc import AsyncIterator
-from types import TracebackType
-from typing import Annotated, Any, Literal, cast
-
-import httpx
-from loguru import logger
-from pydantic import BaseModel, Field, model_validator
-
-from core.context_budget import DEFAULT_NUM_CTX
-from core.exceptions import ModelNotFoundError, OllamaConnectionError
 import json
 from collections.abc import AsyncIterator
 from types import TracebackType
@@ -25,6 +15,7 @@ from core.exceptions import (
     OllamaConnectionError,
     ToolsNotSupportedError,
 )
+
 
 class OllamaModelInfo(BaseModel):
     """Информация о модели Ollama."""

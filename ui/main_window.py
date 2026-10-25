@@ -28,9 +28,7 @@ from pathlib import Path
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFileDialog,
-    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -38,8 +36,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSlider,
-    QSpinBox,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -47,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from agents.ollama_client import OllamaClient
-from core.config import AppConfig
+from core.config import AppConfig, ToolPolicy
 from core.model_registry import ModelRegistry
 from core.profiles import get_profile_by_id
 from core.prompt_watcher import PromptWatcher
@@ -69,7 +65,7 @@ from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
-from core.config import AppConfig, ToolPolicy
+
 
 class ModelCheckThread(QThread):
     """Поток для проверки поддержки инструментов моделями Ollama.

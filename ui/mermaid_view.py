@@ -19,10 +19,9 @@ mermaid.min.js (бандлится в приложение, НЕ тянется 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import QUrl, Qt, Slot
+from PySide6.QtCore import Qt, QUrl, Slot
 from PySide6.QtWidgets import QLabel, QStackedWidget, QWidget
 
 from core.utils import get_resource_path
