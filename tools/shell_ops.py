@@ -55,8 +55,9 @@ _BLACKLIST: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:rd|rmdir)\s+/s\b", re.I),
     # format C:
     re.compile(r"\bformat\s+[a-z]:", re.I),
-    # shutdown /r /s
-    re.compile(r"\bshutdown\b", re.I),
+    # shutdown: только с флагом (/r, /s, -h, …) или в начале команды.
+    # Не срабатывает на `Get-Content shutdown.log` — там за `shutdown` идёт `.`.
+    re.compile(r"(?:^|[;&|]\s*)shutdown\s+[-/]\w", re.I),
     # реестр
     re.compile(r"\breg\s+add\b", re.I),
     re.compile(r"\bSet-ItemProperty\b", re.I),

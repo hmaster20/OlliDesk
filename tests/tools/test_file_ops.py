@@ -50,11 +50,24 @@ class TestResolvePath:
 class TestReadFile:
     def test_reads_existing_file(self, temp_project: Path):
         result = read_file("src/main.py", project_root=str(temp_project))
-        assert result == "print('hello')"
+        # Новый контракт: заголовок с диапазоном + содержимое + хвостовой hint.
+        assert "src/main.py" in result
+        assert "[символы 0-14 из 14" in result
+        assert "print('hello')" in result
+        assert "(конец файла)" in result
 
     def test_reads_file_in_root(self, temp_project: Path):
         (temp_project / "root.txt").write_text("данные", encoding="utf-8")
-        assert read_file("root.txt", project_root=str(temp_project)) == "данные"
+        result = read_file("root.txt", project_root=str(temp_project))
+        assert "root.txt" in result
+        assert "данные" in result
+        assert "(конец файла)" in result
+
+    def test_read_file_returns_continuation_hint(self, temp_project: Path):
+        (temp_project / "big.txt").write_text("x" * 20000, encoding="utf-8")
+        result = read_file("big.txt", project_root=str(temp_project))
+        assert "Продолжение: read_file(path=" in result
+        assert "offset=" in result
 
     def test_missing_file_returns_message(self, temp_project: Path):
         result = read_file("нет_такого.py", project_root=str(temp_project))
@@ -159,8 +172,40 @@ class TestWriteFile:
 
     def test_creates_new_file_with_parents(self, temp_project: Path):
         result = write_file("deep/nested/new.txt", "данные", project_root=str(temp_project))
-        assert result.startswith("Файл успешно обновлён")
+
+        # Новый контракт: dict (для UI), текст — в _llm_text.
+        assert isinstance(result, dict)
+        assert result["status"] == "ok"
+        assert result["is_new_file"] is True
+        assert "Файл создан" in result["_llm_text"]
         assert (temp_project / "deep" / "nested" / "new.txt").read_text(encoding="utf-8") == "данные"
+
+
+    def test_reports_snapshot_created(self, temp_project: Path, monkeypatch):
+        monkeypatch.setattr("tools.file_ops.create_snapshot", lambda *a, **kw: "снапшот")
+        result = write_file("a.txt", "x", project_root=str(temp_project))
+        assert isinstance(result, dict)
+        assert "Создан Git-снапшот для отката" in result["_llm_text"]
+
+
+    def test_without_root_no_snapshot_attempted(self, temp_project: Path, monkeypatch):
+        def fail(*args, **kwargs):
+            raise AssertionError("снапшот не должен создаваться без project_root")
+
+        monkeypatch.setattr("tools.file_ops.create_snapshot", fail)
+        target = temp_project / "no_root.txt"
+        result = write_file(str(target), "данные")
+
+        # Без project_root write_file работает, снапшот не создаётся.
+        assert isinstance(result, dict)
+        assert result["status"] == "ok"
+        # _llm_text явно сообщает «без Git-снапшота» — это и проверяем.
+        assert "без Git-снапшота" in result["_llm_text"]
+
+    def test_rejects_path_outside_project(self, temp_project: Path):
+        result = write_file("../../../etc/passwd", "x", project_root=str(temp_project))
+        assert isinstance(result, str)
+        assert "вне допустимой директории" in result
 
     def test_overwrites_existing_file(self, temp_project: Path):
         (temp_project / "src" / "main.py").write_text("старое", encoding="utf-8")
@@ -177,20 +222,6 @@ class TestWriteFile:
         result = write_file("src", "данные", project_root=str(temp_project))
         assert result.startswith("Ошибка:")
         assert "является директорией" in result
-
-    def test_reports_snapshot_created(self, temp_project: Path, monkeypatch):
-        monkeypatch.setattr("tools.file_ops.create_snapshot", lambda *a, **kw: "снапшот")
-        result = write_file("a.txt", "x", project_root=str(temp_project))
-        assert "Git-снапшот для отката" in result
-
-    def test_without_root_no_snapshot_attempted(self, temp_project: Path, monkeypatch):
-        def fail(*args, **kwargs):
-            raise AssertionError("снапшот не должен создаваться без project_root")
-
-        monkeypatch.setattr("tools.file_ops.create_snapshot", fail)
-        target = temp_project / "no_root.txt"
-        result = write_file(str(target), "данные")
-        assert result.startswith("Файл успешно обновлён")
 
     def test_write_error_is_returned_as_string(self, temp_project: Path, monkeypatch):
         def boom(*args, **kwargs):
