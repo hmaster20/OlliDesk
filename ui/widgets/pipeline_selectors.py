@@ -42,7 +42,7 @@ class PipelineSelectors(QWidget):
         self._config = config
         self._updating = False
 
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -60,12 +60,10 @@ class PipelineSelectors(QWidget):
         layout.addWidget(planner_lbl)
         self.planner_combo = QComboBox()
         self.planner_combo.setMinimumWidth(160)
-        self.planner_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
+        self.planner_combo.setSizePolicy( QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed )
         self.planner_combo.setToolTip("Planner (GPU) — classify/plan/critique. Рекомендуется 3B.")
         self.planner_combo.currentIndexChanged.connect(self._on_planner_selected)
-        layout.addWidget(self.planner_combo)
+        layout.addWidget(self.planner_combo, stretch=1)
 
         # Analyst.
         analyst_lbl = QLabel("A:")
@@ -74,12 +72,10 @@ class PipelineSelectors(QWidget):
         layout.addWidget(analyst_lbl)
         self.analyst_combo = QComboBox()
         self.analyst_combo.setMinimumWidth(160)
-        self.analyst_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
+        self.analyst_combo.setSizePolicy( QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed )
         self.analyst_combo.setToolTip("Analyst (CPU) — synthesis/regen. Рекомендуется 7B.")
         self.analyst_combo.currentIndexChanged.connect(self._on_analyst_selected)
-        layout.addWidget(self.analyst_combo)
+        layout.addWidget(self.analyst_combo, stretch=1)
 
         # Кнопка «⋯».
         self.more_btn = QToolButton()

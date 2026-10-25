@@ -743,6 +743,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.role_combo = QComboBox()
         self.role_combo.setMinimumWidth(180)
         self.role_combo.setStyleSheet("font-size: 13px; padding: 4px;")
+        # Tooltip на закрытом combo — что такое роль и когда её менять.
+        self.role_combo.setToolTip(
+            "Роль — это системный промпт, задающий стиль и специализацию ответов "
+            "(хранится в ~/.ollidesk/roles/*.md).\n\n"
+            "• «🤖 Ассистент OlliDesk» — универсальная роль по умолчанию. "
+            "Подходит для большинства задач: код, объяснения, рефакторинг.\n"
+            "• Специализированные роли (Python, C#, DevOps, Frontend, Security, "
+            "Tech Writer, PM и др.) — узкий фокус: более точные и глубокие ответы "
+            "в своей области, но хуже справляются с чужими темами.\n\n"
+            "Менять роль СТОИТ, когда задача явно из области специализации "
+            "(например, код на C# или аудит безопасности).\n"
+            "Оставлять по умолчанию — когда задача универсальная или непонятно, "
+            "какая роль лучше.\n\n"
+            "Смена роли действует на СЛЕДУЮЩИЙ запрос — текущая история "
+            "не перегенерируется."
+        )
         self.role_combo.currentIndexChanged.connect(self._on_role_changed)
         top_bar.addWidget(self.role_combo)
 
@@ -781,7 +797,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
             self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
             self._pipeline_selectors.open_slm_dialog_requested.connect(self.slm_models_requested.emit)
-            top_bar.addWidget(self._pipeline_selectors)
+            top_bar.addWidget(self._pipeline_selectors, stretch=1)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         top_bar.addWidget(self.model_combo)
@@ -2923,7 +2939,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.role_combo.clear()
 
         for role in manager.get_all_roles():
+            idx = self.role_combo.count()
             self.role_combo.addItem(f"{role.icon} {role.name}", role.id)
+            # Per-item tooltip: описание роли из её frontmatter.
+            # Для default — «Универсальный AI-ассистент …»,
+            # для python_dev — «Senior Python разработчик (FastAPI, Django, Pydantic)» и т.д.
+            tooltip = role.description.strip() if role.description else ""
+            if not tooltip and role.id == "default":
+                tooltip = "Универсальный ассистент — подходит для большинства задач."
+            if tooltip:
+                self.role_combo.setItemData(
+                    idx, tooltip, Qt.ItemDataRole.ToolTipRole
+                )
 
         idx = self.role_combo.findData("default")
         if idx >= 0:
