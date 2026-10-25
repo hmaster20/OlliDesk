@@ -38,3 +38,8 @@ ui/web_editor/vendor
 Notes.md
 Roadmap.md
 Model.md
+
+# Локальные отчёты
+mypy-report.txt
+coverage.xml
+.coverage

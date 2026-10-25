@@ -1,4 +1,5 @@
-.PHONY: all setup install download-monaco download-slm lint test check clean
+.PHONY: all setup install download-monaco download-mermaid download-slm \
+        lint test check clean check-fast typecheck check-strict
 
 VENV_NAME ?= .venv
 VENV_BIN := $(VENV_NAME)/Scripts
@@ -33,10 +34,19 @@ lint: $(VENV_NAME)
 test: $(VENV_NAME)
 	$(VENV_BIN)/pytest tests/ -q --tb=short
 
-check: lint test
+check: check-fast lint test
 
 clean:
 	rm -rf $(VENV_NAME)
 	rm -rf ui/web_editor/vendor/monaco
 	rm -rf .pytest_cache .ruff_cache .mypy_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+check-fast: $(VENV_NAME)
+	$(VENV_BIN)/ruff check . --select F,E9
+	$(PYTHON) -m compileall -q agents core fs state tools ui
+
+typecheck: $(VENV_NAME)
+	$(VENV_BIN)/mypy core agents fs state tools || true
+
+check-strict: check-fast lint typecheck test
