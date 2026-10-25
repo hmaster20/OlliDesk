@@ -1,6 +1,7 @@
 """Чтение метаданных GGUF напрямую из файла (без llama.cpp, без CUDA)."""
 
 from __future__ import annotations
+from typing import BinaryIO, Any
 
 import struct
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ _T_BOOL, _T_STRING, _T_ARRAY = 7, 8, 9
 _T_UINT64, _T_INT64, _T_FLOAT64 = 10, 11, 12
 
 
-def _skip_value(f, vtype: int) -> None:
+def _skip_value(f: BinaryIO, vtype: int) -> None:
     """Пропускает значение без декодирования (быстро для больших массивов)."""
     if vtype in (_T_UINT8, _T_INT8, _T_BOOL):
         f.seek(1, 1)
@@ -41,7 +42,7 @@ def _skip_value(f, vtype: int) -> None:
         raise ValueError(f"unknown GGUF type: {vtype}")
 
 
-def _read_value(f, vtype: int):
+def _read_value(f: BinaryIO, vtype: int) -> Any:
     if vtype == _T_UINT8:
         return struct.unpack("B", f.read(1))[0]
     if vtype == _T_INT8:

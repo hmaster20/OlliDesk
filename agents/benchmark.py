@@ -34,7 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-
+from typing import Any
 from loguru import logger
 
 # ============================================================================
@@ -265,7 +265,7 @@ async def _measure_slm_model(
 
 async def _run_prompts_on_client(
     *,
-    client,
+    client: Any,
     model_id: str,
     model_name: str,
     provider: str,
@@ -563,18 +563,18 @@ def save_csv(result: BenchmarkResult, path: Path) -> None:
                 "error",
             ]
         )
-        for row in result.load_rows:
+        for load_row in result.load_rows:
             writer.writerow(
                 [
-                    row.model_id,
-                    row.model_name,
-                    row.n_ctx,
-                    row.n_threads,
-                    row.n_gpu_layers,
-                    row.attempt,
-                    f"{row.load_ms:.1f}",
-                    "ok" if row.ok else "error",
-                    row.error,
+                    load_row.model_id,
+                    load_row.model_name,
+                    load_row.n_ctx,
+                    load_row.n_threads,
+                    load_row.n_gpu_layers,
+                    load_row.attempt,
+                    f"{load_row.load_ms:.1f}",
+                    "ok" if load_row.ok else "error",
+                    load_row.error,
                 ]
             )
 
@@ -611,11 +611,12 @@ def to_markdown(result: BenchmarkResult) -> str:
         lines.append("")
         lines.append("| Модель | n_ctx | n_threads | n_gpu_layers | Попытка | Загрузка (ms) | OK |")
         lines.append("|---|---|---|---|---|---|---|")
-        for r in result.load_rows:
+        for load_row in result.load_rows:
             lines.append(
-                f"| {r.model_name} | {r.n_ctx} | {r.n_threads} | "
-                f"{r.n_gpu_layers} | {r.attempt} | {r.load_ms:.0f} | "
-                f"{'✅' if r.ok else '❌'} |"
+                f"| {load_row.model_name} | {load_row.n_ctx} | "
+                f"{load_row.n_threads} | {load_row.n_gpu_layers} | "
+                f"{load_row.attempt} | {load_row.load_ms:.0f} | "
+                f"{'✅' if load_row.ok else '❌'} |"
             )
         lines.append("")
 

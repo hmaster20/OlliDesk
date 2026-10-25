@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 CRITIC_SCHEMA = {
     "type": "object",
@@ -37,8 +38,17 @@ class Critique:
     format_issues: list[str]
     hint: str
 
+class _PlannerLike(Protocol):
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_schema: dict | None = None,
+    ) -> Any: ...
 
-async def critique(answer: str, task: str, planner_client) -> Critique:
+async def critique(answer: str, task: str, planner_client: _PlannerLike) -> Critique:
     req = REQUIRED_SECTIONS.get(task, [])
     low = answer.lower()
     missing = [s for s in req if s not in low]

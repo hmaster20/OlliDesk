@@ -1070,7 +1070,7 @@ class AgentLoop:
                                 )
                             )
                             if on_tool_result:
-                                await on_tool_result(tc.name, "Отклонено пользователем", True)
+                                await on_tool_result(tc.name, "Отклонено пользователем", True, None)
                             continue
 
                     extra: dict[str, object] = {}

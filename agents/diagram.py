@@ -6,11 +6,11 @@
 """
 
 from __future__ import annotations
-
+from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
+from collections.abc import Sequence
 from collections import defaultdict
 from dataclasses import dataclass
 
-from fs.intel.graph import DependencyGraph, GraphNode
 
 _KIND_ICON = {
     "file": "📄",
@@ -55,7 +55,12 @@ def render_architecture(
     )
 
 
-def _prune(graph, edges, max_nodes, roots=()):
+def _prune(
+    graph: DependencyGraph,
+    edges: list[GraphEdge],
+    max_nodes: int,
+    roots: Sequence[str] = (),
+) -> tuple[list[GraphNode], list[GraphEdge]]:
     keep_ids: set[str] = set(roots)
     for e in edges:
         keep_ids.add(e.source)
@@ -76,7 +81,11 @@ def _prune(graph, edges, max_nodes, roots=()):
     return nodes, edges
 
 
-def _to_layers(nodes, edges, roots):
+def _to_layers(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    roots: Sequence[str],
+) -> list[list[GraphNode]]:
     """Слои по расстоянию от корней (BFS по directed-рёбрам imports/references/depends_on/includes/provisions)."""
     fwd = defaultdict(list)
     for e in edges:
@@ -141,14 +150,23 @@ def _to_layers(nodes, edges, roots):
     return [by_layer[d] for d in sorted(by_layer)]
 
 
-def _topo_flat(nodes, edges, roots):
+def _topo_flat(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    roots: Sequence[str],
+) -> list[list[GraphNode]]:
     return [sorted(nodes, key=lambda n: -n.score)]
 
 
 _MAX_ROW_WIDTH = 110
 
 
-def _ascii(layers, nodes, edges, graph):
+def _ascii(
+    layers: list[list[GraphNode]],
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    graph: DependencyGraph,
+) -> str:
     if not nodes:
         return ""
     # Каждый слой пакуем в физические строки шириной <= _MAX_ROW_WIDTH,
@@ -217,7 +235,12 @@ def _short(n: GraphNode) -> str:
     return (name[:24] + "…") if len(name) > 25 else name
 
 
-def _arrow_row(prev, cur, *, width: int) -> str:
+def _arrow_row(
+    prev: list[tuple[int, int]],
+    cur: list[tuple[int, int]],
+    *,
+    width: int,
+) -> str:
     # Упрощённо: рисуем вертикальные '|' и 'v' под совпадающими колонками.
     grid = [" "] * max(width, 1)
     for (_px, _), (cx, _) in _match_columns(prev, cur):
@@ -232,7 +255,10 @@ def _arrow_row(prev, cur, *, width: int) -> str:
     return line + "\n" + "".join(arrow).rstrip() if line else "".join(arrow).rstrip()
 
 
-def _match_columns(prev, cur):
+def _match_columns(
+    prev: list[tuple[int, int]],
+    cur: list[tuple[int, int]],
+) -> list[tuple[tuple[int, int], tuple[int, int]]]:
     # сопоставляем по x-близости (жадно)
     pairs = []
     used_cur = set()
@@ -250,7 +276,11 @@ def _match_columns(prev, cur):
     return pairs
 
 
-def _mermaid(nodes, edges, graph):
+def _mermaid(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    graph: DependencyGraph,
+) -> str:
     nmap = {n.id: n for n in nodes}
     lines = ["flowchart TD"]
 

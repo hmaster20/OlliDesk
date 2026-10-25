@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,13 +22,13 @@ from typing import Any
 
 from loguru import logger
 
-from agents.critic import critique
-from agents.diagram import render_architecture
+from agents.critic import Critique, critique
+from agents.diagram import Diagram, render_architecture
 from agents.evidence import EvidenceItem, EvidenceStore
-from agents.model_pool import ModelPool, Role
-from agents.verifier import verify
-from core.budget import ApproxCounter, OpType, plan_budget, trim_to_tokens
-from fs.intel import analyze_project
+from agents.model_pool import ClientLike, ModelPool, Role
+from agents.verifier import VerifyResult, verify
+from core.budget import ApproxCounter, OpType, TokenCounter, plan_budget, trim_to_tokens
+from fs.intel import GraphNode, ProjectIntel, analyze_project
 
 SMALL_PROJECT_FILES = 100
 SMALL_PROJECT_BYTES = 300_000
@@ -50,13 +51,18 @@ class RunResult:
 
 class Orchestrator:
     def __init__(
-        self, pool: ModelPool, *, intel_cache_dir: Path | None = None, vector_store=None, counter=None
+        self,
+        pool: ModelPool,
+        *,
+        intel_cache_dir: Path | None = None,
+        vector_store: Any = None,
+        counter: TokenCounter | None = None,
     ) -> None:
         self.pool = pool
         self.counter = counter or ApproxCounter()
         self.intel_cache_dir = intel_cache_dir
         self.vector_store = vector_store
-        self._intel_memo: dict[str, Any] = {}
+        self._intel_memo: dict[str, ProjectIntel] = {}
 
     # ---------- публичный вход ----------
     async def run(
@@ -64,8 +70,8 @@ class Orchestrator:
         user_query: str,
         *,
         project_root: Path,
-        history: list,
-        on_event: Callable[[str, dict], None] | None = None,
+        history: list[Any],                                  # ← было history: list
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,  # ← dict → dict[str, Any]
         quality_mode: bool = False,
         deep: bool | None = None,
         time_budget_s: float | None = None,
@@ -198,7 +204,12 @@ class Orchestrator:
                 return "vagrant_box", "whole_project"
             return "chat", "whole_project"
 
-    async def _plan(self, task: str, scope: str, intel) -> dict:
+    async def _plan(
+            self,
+            task: str,
+            scope: str,
+            intel: ProjectIntel,
+        ) -> dict[str, Any]:
         planner = self.pool.client(Role.PLANNER)
         prompt = (
             f"Составь compact JSON-план для задачи '{task}' scope='{scope}'. "
@@ -209,12 +220,24 @@ class Orchestrator:
         )
         raw = await self._gen(planner, Role.PLANNER, OpType.PLAN, prompt)
         try:
-            return json.loads(raw if isinstance(raw, str) else raw.content)
+            parsed: Any = json.loads(raw if isinstance(raw, str) else raw.content)
+            if isinstance(parsed, dict):
+                return parsed                               # dict[Any, Any] → ok
+            return {"focus": intel.entry_points[:5], "depth": 1, "must_read": []}
         except Exception:
             return {"focus": intel.entry_points[:5], "depth": 1, "must_read": []}
 
     async def _collect(
-        self, task, scope, intel, plan_obj, evidence: EvidenceStore, ev, *, iterative: bool, light: bool
+        self,
+        task: str,
+        scope: str,
+        intel: ProjectIntel,
+        plan_obj: dict[str, Any],
+        evidence: EvidenceStore,
+        ev: Callable[[str, dict[str, Any]], None],
+        *,
+        iterative: bool,
+        light: bool,
     ) -> None:
         """Детерминированный сбор доказательств (код, не LLM)."""
         # 1. project_map + entry + manifests как evidence.
@@ -349,7 +372,12 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"RAG-досбор не удался: {e}")
 
-    async def _fill_gaps(self, evidence: EvidenceStore, gaps: list[str], intel) -> None:
+    async def _fill_gaps(
+        self,
+        evidence: EvidenceStore,
+        gaps: list[str],
+        intel: ProjectIntel,
+        ) -> None:
         for g in gaps[:5]:
             p = Path(intel.root) / g
             if p.exists():
@@ -359,7 +387,13 @@ class Orchestrator:
                 )
 
     # ---------- генерация с бюджетом ----------
-    async def _gen(self, client, role: Role, op: OpType, prompt: str) -> str:
+    async def _gen(
+        self,
+        client: ClientLike,
+        role: Role,
+        op: OpType,
+        prompt: str,
+        ) -> str:
         ctx = self.pool.runtime_ctx(role)
         bp = plan_budget(
             ctx_total=ctx,
@@ -422,7 +456,16 @@ class Orchestrator:
             base += "Режим: компактный проект — ответь по существу, без воды.\n"
         return base
 
-    def _synth_prompt(self, sys_p, repomap, pack, ascii_d, dyn, query, task) -> str:
+    def _synth_prompt(
+        self,
+        sys_p: str,
+        repomap: str,
+        pack: str,
+        ascii_d: str,
+        dyn: str,
+        query: str,
+        task: str,
+    ) -> str:
         return (
             f"{sys_p}\n\n=== ЗАПРОС ===\n{query}\n\n"
             f"=== REPO-MAP ===\n{repomap}\n\n"
@@ -435,13 +478,13 @@ class Orchestrator:
             f"7) Открытые вопросы."
         )
 
-    def _merge(self, prose: str, diagram) -> str:
+    def _merge(self, prose: str, diagram: Diagram) -> str:
         # Гарантируем наличие схемы даже если 7B её «потерял».
         if diagram.ascii and diagram.ascii not in prose:
             prose = prose.rstrip() + "\n\n### Схема компонентов\n```text\n" + diagram.ascii + "\n```\n"
         return prose
 
-    def _regen_hint(self, ver, crit) -> str:
+    def _regen_hint(self, ver: VerifyResult, crit: Critique) -> str:
         bits = []
         if ver.missing_paths:
             bits.append(f"убери/исправь пути вне индекса: {ver.missing_paths[:5]}")
@@ -454,7 +497,7 @@ class Orchestrator:
         return "; ".join(bits) or "сократи и опирайся на доказательства"
 
     # ---------- вспомогательное ----------
-    async def _intel(self, root: Path):
+    async def _intel(self, root: Path) -> ProjectIntel:
         key = str(root)
         if key in self._intel_memo:
             return self._intel_memo[key]
@@ -476,7 +519,7 @@ class Orchestrator:
         self._intel_memo[key] = intel
         return intel
 
-    def _coverage(self, intel, evidence: EvidenceStore) -> float:
+    def _coverage(self, intel: ProjectIntel, evidence: EvidenceStore) -> float:
         required = set(intel.entry_points) | {
             n.path
             for n in intel.graph.top_nodes(["class", "role", "module_tf", "resource", "box"], 8)
@@ -487,7 +530,7 @@ class Orchestrator:
         covered = evidence.all_paths() & required
         return round(len(covered) / len(required), 3)
 
-    def _coverage_gaps(self, intel, evidence) -> list[str]:
+    def _coverage_gaps(self, intel: ProjectIntel, evidence: EvidenceStore) -> list[str]:
         required = set(intel.entry_points) | {
             n.path
             for n in intel.graph.top_nodes(["class", "role", "module_tf", "resource", "box"], 8)
@@ -495,10 +538,10 @@ class Orchestrator:
         }
         return sorted(required - evidence.all_paths())
 
-    def _top_roots(self, intel) -> list[str]:
+    def _top_roots(self, intel: ProjectIntel) -> list[str]:
         return [n.id for n in intel.graph.top_nodes(["file", "class", "role", "box", "module_tf"], 3)]
 
-    def _file_record(self, intel, path):
+    def _file_record(self, intel: ProjectIntel, path: str) -> GraphNode | None:
         """Находит узел-файл в графе по относительному пути."""
         return intel.graph.nodes.get(f"file:{path}")
 
@@ -544,10 +587,10 @@ class Orchestrator:
                 )
         return excerpt
 
-    def _known_paths(self, intel) -> set[str]:
+    def _known_paths(self, intel: ProjectIntel) -> set[str]:
         return {n.path for n in intel.graph.nodes.values() if n.kind == "file" and n.path}
 
-    def _known_symbols(self, intel) -> set[str]:
+    def _known_symbols(self, intel: ProjectIntel) -> set[str]:
         return {
             n.name
             for n in intel.graph.nodes.values()
@@ -568,7 +611,7 @@ class Orchestrator:
             }
         }
 
-    def _domain_summaries(self, intel) -> list[str]:
+    def _domain_summaries(self, intel: ProjectIntel) -> list[str]:
         out: list[str] = []
         d = intel.domain or {}
         ans = d.get("ansible") or {}
@@ -620,9 +663,8 @@ class Orchestrator:
 
     def _dynamic_block(self, root: Path) -> str:
         """git-ветка + diff-stat + последние коммиты (OpenCode-паритет)."""
-        import subprocess
 
-        def _run(*args):
+        def _run(*args: str) -> str:
             try:
                 return subprocess.run(
                     args,

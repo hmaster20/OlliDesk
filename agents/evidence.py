@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from core.budget import TokenCounter
 
 EvidenceKind = Literal[
     "file_excerpt",
@@ -105,7 +106,7 @@ class EvidenceStore:
                 return it
         return None
 
-    def pack_for_prompt(self, budget_tokens: int, counter) -> str:
+    def pack_for_prompt(self, budget_tokens: int, counter: TokenCounter) -> str:
         """Собрать компактный пакет доказательств в рамках бюджета.
 
         Порядок: entry_point → manifest → project_map → dependency_edge →

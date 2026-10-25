@@ -14,6 +14,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
+from collections.abc import Callable
 
 
 class Role(StrEnum):
@@ -88,7 +89,11 @@ class ModelPool:
         self._specs: dict[Role, RoleSpec] = {}
         self._lock = asyncio.Lock()
 
-    async def load(self, specs: dict[Role, RoleSpec], factory) -> None:
+    async def load(
+    self,
+    specs: dict[Role, RoleSpec],
+    factory: Callable[[RoleSpec], ClientLike],
+    ) -> None:
         """factory(spec) -> ClientLike. Грузим planner и analyst параллельно
         (разные устройства → нет contention при загрузке)."""
 
@@ -101,7 +106,11 @@ class ModelPool:
             self._clients[role] = client
             self._specs[role] = specs[role]
 
-    async def add_role(self, spec: RoleSpec, factory) -> ClientLike:
+    async def add_role(
+    self,
+    spec: RoleSpec,
+    factory: Callable[[RoleSpec], ClientLike],
+    ) -> ClientLike:
         """Загружает роль, переиспользуя клиент по файлу модели.
 
         Если предыдущая роль уже загрузила модель из ТОГО ЖЕ файла —
