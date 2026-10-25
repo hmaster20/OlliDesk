@@ -90,9 +90,9 @@ class ModelPool:
         self._lock = asyncio.Lock()
 
     async def load(
-    self,
-    specs: dict[Role, RoleSpec],
-    factory: Callable[[RoleSpec], ClientLike],
+        self,
+        specs: dict[Role, RoleSpec],
+        factory: Callable[[RoleSpec], ClientLike],
     ) -> None:
         """factory(spec) -> ClientLike. Грузим planner и analyst параллельно
         (разные устройства → нет contention при загрузке)."""
@@ -107,9 +107,9 @@ class ModelPool:
             self._specs[role] = specs[role]
 
     async def add_role(
-    self,
-    spec: RoleSpec,
-    factory: Callable[[RoleSpec], ClientLike],
+        self,
+        spec: RoleSpec,
+        factory: Callable[[RoleSpec], ClientLike],
     ) -> ClientLike:
         """Загружает роль, переиспользуя клиент по файлу модели.
 

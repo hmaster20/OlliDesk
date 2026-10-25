@@ -70,7 +70,7 @@ class Orchestrator:
         user_query: str,
         *,
         project_root: Path,
-        history: list[Any],                                  # ← было history: list
+        history: list[Any],
         on_event: Callable[[str, dict[str, Any]], None] | None = None,  # ← dict → dict[str, Any]
         quality_mode: bool = False,
         deep: bool | None = None,
@@ -205,11 +205,11 @@ class Orchestrator:
             return "chat", "whole_project"
 
     async def _plan(
-            self,
-            task: str,
-            scope: str,
-            intel: ProjectIntel,
-        ) -> dict[str, Any]:
+        self,
+        task: str,
+        scope: str,
+        intel: ProjectIntel,
+    ) -> dict[str, Any]:
         planner = self.pool.client(Role.PLANNER)
         prompt = (
             f"Составь compact JSON-план для задачи '{task}' scope='{scope}'. "
@@ -222,7 +222,7 @@ class Orchestrator:
         try:
             parsed: Any = json.loads(raw if isinstance(raw, str) else raw.content)
             if isinstance(parsed, dict):
-                return parsed                               # dict[Any, Any] → ok
+                return parsed
             return {"focus": intel.entry_points[:5], "depth": 1, "must_read": []}
         except Exception:
             return {"focus": intel.entry_points[:5], "depth": 1, "must_read": []}
@@ -377,7 +377,7 @@ class Orchestrator:
         evidence: EvidenceStore,
         gaps: list[str],
         intel: ProjectIntel,
-        ) -> None:
+    ) -> None:
         for g in gaps[:5]:
             p = Path(intel.root) / g
             if p.exists():
@@ -393,7 +393,7 @@ class Orchestrator:
         role: Role,
         op: OpType,
         prompt: str,
-        ) -> str:
+    ) -> str:
         ctx = self.pool.runtime_ctx(role)
         bp = plan_budget(
             ctx_total=ctx,

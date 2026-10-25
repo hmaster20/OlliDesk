@@ -261,10 +261,12 @@ def _child_text(node: Any, type_or_field: str) -> str | None:
             return str(c.text.decode("utf-8", "replace"))
     return None
 
+
 def _first_line(src: bytes, byte_off: int) -> str:
     nl = src.find(b"\n", byte_off)
     end = nl if nl != -1 else len(src)
     return src[byte_off:end].decode("utf-8", "replace").strip()[:160]
+
 
 def _make_record(p: Path, root: Path, lang: str) -> FileRecord:
     rel = p.relative_to(root).as_posix()

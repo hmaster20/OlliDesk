@@ -38,6 +38,7 @@ class Critique:
     format_issues: list[str]
     hint: str
 
+
 class _PlannerLike(Protocol):
     async def generate(
         self,
@@ -47,6 +48,7 @@ class _PlannerLike(Protocol):
         temperature: float,
         json_schema: dict | None = None,
     ) -> Any: ...
+
 
 async def critique(answer: str, task: str, planner_client: _PlannerLike) -> Critique:
     req = REQUIRED_SECTIONS.get(task, [])

@@ -108,6 +108,7 @@ def _iter_hcl_blocks(parsed: dict[str, Any], kind: str) -> Iterator[dict[str, An
     elif kind == "locals" and isinstance(node, dict):
         yield {**node, "__address__": "locals"}
 
+
 def _hcl_addr(kind: str, blk: dict) -> str:
     return blk.get("name") or blk.get("type") or kind
 

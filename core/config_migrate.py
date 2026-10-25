@@ -40,6 +40,7 @@ def _usable_vram_mb() -> int:
     except Exception:
         return 0
 
+
 def migrate(v2: dict[str, Any]) -> ConfigV3:
     slm = v2.get("slm", {}) or {}
     vram = _usable_vram_mb()
