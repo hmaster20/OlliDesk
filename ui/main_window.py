@@ -554,162 +554,6 @@ class MainWindow(QMainWindow):
 
         self.tab_widget.setCurrentWidget(self.editor_widget)
 
-    def _create_right_panel(self) -> QWidget:
-        """Создает правую панель (настройки агента)."""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        label = QLabel("⚙️ Настройки агента")
-        label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
-        layout.addWidget(label)
-
-        # Temperature
-        temp_label = QLabel("Temperature:")
-        temp_label.setStyleSheet("font-size: 12px; padding: 4px 10px 0;")
-        layout.addWidget(temp_label)
-
-        self.temp_slider = QSlider(Qt.Orientation.Horizontal)
-        self.temp_slider.setRange(0, 100)
-        self.temp_slider.setValue(70)
-        self.temp_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.temp_slider.setStyleSheet("font-size: 12px; padding: 0 10px;")
-        layout.addWidget(self.temp_slider)
-
-        self.temp_value_label = QLabel("0.70")
-        self.temp_value_label.setStyleSheet("font-size: 12px; color: gray; padding: 0 10px;")
-        self.temp_slider.valueChanged.connect(lambda v: self.temp_value_label.setText(f"{v / 100:.2f}"))
-        layout.addWidget(self.temp_value_label)
-
-        # Тумблер показа reasoning_content в чате (4.8.B).
-        self.show_reasoning_check = QCheckBox("Показывать размышления модели")
-        self.show_reasoning_check.setChecked(True)
-        self.show_reasoning_check.setStyleSheet("font-size: 12px; padding: 8px 10px;")
-        self.show_reasoning_check.setToolTip(
-            "Если выключено, reasoning_content модели не отображается в чате "
-            "(полезно при демонстрации или для уменьшения визуального шума)."
-        )
-        self.show_reasoning_check.toggled.connect(self._on_show_reasoning_toggled)
-        layout.addWidget(self.show_reasoning_check)
-
-        # Max tokens
-        tokens_label = QLabel("Max tokens:")
-        tokens_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
-        layout.addWidget(tokens_label)
-
-        self.tokens_spin = QSpinBox()
-        self.tokens_spin.setRange(256, 32768)
-        self.tokens_spin.setValue(4096)
-        self.tokens_spin.setSingleStep(256)
-        self.tokens_spin.setStyleSheet(
-            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555;"
-            " border-radius: 4px; color: #ccc; }"
-            " QSpinBox::up-button, QSpinBox::down-button {"
-            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
-            " QSpinBox::up-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-bottom: 6px solid #ccc; }"
-            " QSpinBox::down-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-top: 6px solid #ccc; }"
-            " QSpinBox:hover { border: 1px solid #1976d2; }"
-            " QSpinBox:focus { border: 1px solid #42a5f5; }"
-        )
-        layout.addWidget(self.tokens_spin)
-
-        # Context window
-        ctx_label = QLabel("Context window:")
-        ctx_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
-        layout.addWidget(ctx_label)
-
-        self.context_spin = QSpinBox()
-        self.context_spin.setRange(1024, 128000)
-        self.context_spin.setValue(8192)
-        self.context_spin.setSingleStep(1024)
-        self.context_spin.setStyleSheet(
-            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555;"
-            " border-radius: 4px; color: #ccc; }"
-            " QSpinBox::up-button, QSpinBox::down-button {"
-            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
-            " QSpinBox::up-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-bottom: 6px solid #ccc; }"
-            " QSpinBox::down-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-top: 6px solid #ccc; }"
-            " QSpinBox:hover { border: 1px solid #1976d2; }"
-            " QSpinBox:focus { border: 1px solid #42a5f5; }"
-        )
-        layout.addWidget(self.context_spin)
-
-        # Max iterations (агент)
-        self.iterations_label = QLabel("Max iterations (агент):")
-        self.iterations_label.setStyleSheet("font-size: 12px; padding: 8px 10px 0;")
-        layout.addWidget(self.iterations_label)
-
-        self.iterations_spin = QSpinBox()
-        self.iterations_spin.setRange(1, 50)
-        self.iterations_spin.setValue(10)
-        self.iterations_spin.setStyleSheet(
-            "QSpinBox { font-size: 13px; padding: 4px; margin: 0 10px;"
-            " background: transparent; border: 1px solid #555;"
-            " border-radius: 4px; color: #ccc; }"
-            " QSpinBox::up-button, QSpinBox::down-button {"
-            "  border: 1px solid #555; border-radius: 2px; background: #333; }"
-            " QSpinBox::up-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-bottom: 6px solid #ccc; }"
-            " QSpinBox::down-arrow { image: none;"
-            "  border-left: 4px solid transparent;"
-            "  border-right: 4px solid transparent;"
-            "  border-top: 6px solid #ccc; }"
-            " QSpinBox:hover { border: 1px solid #1976d2; }"
-            " QSpinBox:focus { border: 1px solid #42a5f5; }"
-        )
-        layout.addWidget(self.iterations_spin)
-
-        # Инструменты
-        self.tools_box = QGroupBox("Инструменты")
-        tools_layout = QVBoxLayout(self.tools_box)
-        self.tool_checkboxes: dict[str, QCheckBox] = {}
-        tool_names = [
-            ("read_file", "Чтение файлов"),
-            ("list_directory", "Список директории"),
-            ("write_file", "Запись файлов"),
-            ("search_codebase", "Поиск по коду"),
-            ("web_search", "Поиск в интернете"),
-            ("get_git_status", "Статус Git"),
-            ("create_snapshot", "Снапшот Git"),
-            ("undo_last_snapshot", "Откат снапшота"),
-        ]
-        for tool_key, tool_label in tool_names:
-            cb = QCheckBox(tool_label)
-            cb.setChecked(True)
-            cb.setStyleSheet("font-size: 12px; padding: 2px 10px;")
-            cb.toggled.connect(lambda checked, k=tool_key: self._on_tool_toggled(k, checked))
-            tools_layout.addWidget(cb)
-            self.tool_checkboxes[tool_key] = cb
-        self.tools_box.setStyleSheet("font-size: 12px;")
-        layout.addWidget(self.tools_box)
-
-        # RAG switch
-        self.rag_check = QCheckBox("Использовать RAG")
-        self.rag_check.setChecked(True)
-        self.rag_check.setStyleSheet("font-size: 12px; padding: 8px 10px;")
-        layout.addWidget(self.rag_check)
-
-        layout.addStretch()
-
-        # По умолчанию скрыта (показывается только по кнопке)
-        panel.setVisible(False)
-        return panel
-
     def _setup_menu(self) -> None:
         """Создаёт меню-бар и подключает его сигналы (план 2.4).
 
@@ -1105,7 +949,7 @@ class MainWindow(QMainWindow):
             if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
                 self.chat_panel._profiles_selector.set_profile(profile.id)
             self.chat_panel._on_profile_changed(profile)
-            self.menu_bar.set_active_profile(profile.id)
+            self.menu_bar._refresh_profiles_menu()
         except Exception:
             logger.exception("Не удалось применить профиль из палитры")
 
@@ -1190,19 +1034,6 @@ class MainWindow(QMainWindow):
             return
         QTimer.singleShot(500, self._do_check_ollama)
 
-    def _do_check_ollama(self) -> None:
-        """[9.7] Проверка Ollama в фоновом потоке.
-
-        `_OllamaCheckThread` эмитит `models_ready(bool, list)` —
-        `MainWindow` слушает его и обновляет реестр моделей, ChatPanel
-        и (через `_sync_dashboard`) приборную панель.
-        """
-        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
-            return
-        self._ollama_check_thread = _OllamaCheckThread(self.ollama_client)
-        self._ollama_check_thread.models_ready.connect(self._on_ollama_checked)
-        self._ollama_check_thread.start()
-
     @Slot(bool, list)
     def _on_ollama_checked(self, ok: bool, models: list[str]) -> None:
         """[9.7] Обрабатывает результат фоновой проверки Ollama (GUI-поток).
@@ -1259,28 +1090,6 @@ class MainWindow(QMainWindow):
             # Dashboard.
             self.chat_panel._sync_dashboard()
 
-    def _update_window_title(self) -> None:
-        """Обновляет заголовок окна с именем проекта."""
-        base = "OlliDesk — Local AI Coding Assistant"
-        if self.project_path:
-            self.setWindowTitle(f"{base} ———> {self.project_path.name}")
-        else:
-            self.setWindowTitle(base)
-
-    def _check_ollama_connection(self) -> None:
-        """Проверяет подключение к Ollama только если он разрешён в конфиге."""
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-            if "ollama" not in cfg.backends.enabled:
-                self.ollama_status_label.setText("● Ollama: выключен")
-                self.ollama_status_label.setStyleSheet("color: #888; padding: 5px;")
-                return
-        except Exception:
-            return
-        QTimer.singleShot(500, self._do_check_ollama)
-
     # 🆕 Полностью переписано: фоновая проверка вместо new_event_loop().
     def _do_check_ollama(self) -> None:
         """Проверка Ollama в фоновом потоке.
@@ -1306,27 +1115,6 @@ class MainWindow(QMainWindow):
         """[9.7] Проброс в приборную панель (совместимость)."""
         if self.chat_panel:
             self.chat_panel._sync_dashboard()
-
-    def _update_ollama_status(self, ok: bool = False, models: list[str] | None = None) -> None:
-        if ok and models:
-            self.ollama_status_label.setText(f"● Ollama: Подключен ({len(models)} моделей)")
-            self.ollama_status_label.setStyleSheet("color: green; padding: 5px;")
-            self.model_registry.sync_with_ollama(models)
-            if not hasattr(self.chat_panel, "registry") or self.chat_panel.registry is None:
-                self.chat_panel.set_registry(self.model_registry)
-            else:
-                self.chat_panel.update_models(models)
-            # Устанавливаем модель ТОЛЬКО если она ещё не выбрана
-            current_model = self.chat_panel.get_current_model()
-            if not current_model and models:
-                first_local = next(
-                    (m for m in models if (info := self.model_registry.get(m)) is not None and info.is_local),
-                    models[0],
-                )
-                self.chat_panel.set_model(first_local)
-        else:
-            self.ollama_status_label.setText("● Ollama: Не подключен")
-            self.ollama_status_label.setStyleSheet("color: red; padding: 5px;")
 
     def _update_window_title(self) -> None:
         """Обновляет заголовок окна с именем проекта."""
@@ -1742,19 +1530,6 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Настройки агента применены", 3000)
 
-    def _on_tool_toggled(self, tool_key: str, checked: bool) -> None:
-        """Обрабатывает переключение инструмента."""
-        from core.config import ToolPolicy
-
-        policy = ToolPolicy.AUTO if checked else ToolPolicy.EXCLUDED
-        self.chat_panel.set_tool_policy(tool_key, policy)
-
-    @Slot(bool)
-    def _on_show_reasoning_toggled(self, checked: bool) -> None:
-        """Прокидывает переключение reasoning в ChatPanel."""
-        if self.chat_panel:
-            self.chat_panel.set_show_reasoning(checked)
-
     def _show_chat_tab(self) -> None:
         """Показывает вкладку чата (создаёт если закрыта)."""
         if self.tab_widget.indexOf(self.chat_panel) < 0:
@@ -1815,7 +1590,7 @@ class MainWindow(QMainWindow):
         * селектор профиля (на случай вызова из ChatPanel API).
         """
         # [9.4] Обновляем галочку в подменю View → Профили.
-        self.menu_bar.set_active_profile(profile_id)
+        self.menu_bar._refresh_profiles_menu()
         # Синхронизируем чекбокс reasoning (он в AgentSettingsDialog).
         if hasattr(self, "show_reasoning_check") and self.chat_panel:
             value = self.chat_panel.get_show_reasoning()

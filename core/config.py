@@ -834,7 +834,6 @@ class AppConfig(BaseModel):
     last_model: str = ""
     last_mode: str = "agent"
     agent_max_iterations: int = 30
-    agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
     # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней

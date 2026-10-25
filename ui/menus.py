@@ -336,13 +336,3 @@ class AppMenuBar(QMenuBar):
             act.triggered.connect(lambda _checked=False, pid=p.id: self.profile_selected.emit(pid))
             self._profiles_menu.addAction(act)
             self._profile_actions.append(act)
-
-    def set_active_profile(self, profile_id: str) -> None:
-        """[9.4] Обновляет галочку в подменю (MainWindow вызывает после смены)."""
-        for act in self._profile_actions:
-            text = act.text()
-            # Сопоставляем по tooltip-содержимому бесполезно, храним id в action.data().
-            # Проще: сохраняем id в data при построении — переделаем _refresh.
-            pass
-        # Надёжный путь — пересобрать.
-        self._refresh_profiles_menu()

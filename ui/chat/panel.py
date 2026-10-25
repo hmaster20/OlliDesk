@@ -8,7 +8,7 @@ import re
 
 os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
@@ -76,6 +76,11 @@ from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.pipeline_selectors import PipelineSelectors
 from ui.widgets.profiles_selector import ProfilesSelector
+
+if TYPE_CHECKING:
+    from agents.local_llm_client import LocalLLMClient
+    from agents.model_pool import ModelPool
+    from agents.orchestrator import Orchestrator
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -2118,69 +2123,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if hasattr(self, "_dashboard"):
             self._dashboard.set_tools_active(False)
 
-    @Slot()
-    def _on_stream_finished_event(self) -> None:
-        """Конец стрима — показываем tok/s из last_stats."""
-        logger.trace("stream_finished")
-        client = self._router.active_client
-        stats = getattr(client, "last_stats", None) or {}
-        tps = stats.get("tokens_per_sec", 0.0)
-        if hasattr(self, "_dashboard"):
-            try:
-                self._dashboard.set_tok_per_sec(float(tps))
-            except (TypeError, ValueError):
-                pass
-
-    def set_dashboard(self, dashboard) -> None:
-        """Инжектится из MainWindow после создания приборной панели."""
-        self._dashboard = dashboard
-        # Сразу синхронизируем бэкенд и pipeline.
-        self._sync_dashboard()
-
-    def _sync_dashboard(self) -> None:
-        """Обновляет приборную панель по текущему состоянию ChatPanel."""
-        if not hasattr(self, "_dashboard") or self._dashboard is None:
-            return
-        # Бэкенд.
-        backend = self._router.active_backend
-        if backend == BackendType.OLLAMA:
-            self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
-        elif backend == BackendType.LOCAL_SLM:
-            self._dashboard.set_backend("slm", "SLM", self._slm_model_name or "локальная")
-        elif backend == BackendType.RULE_BASED:
-            self._dashboard.set_backend("rule", "Резерв", "без LLM")
-        else:
-            self._dashboard.set_backend("none", "Нет", "—")
-        # Pipeline.
-        if self._orchestrator is not None and self._model_pool is not None:
-            try:
-                planner_id = self._model_pool.spec(Role.PLANNER).model_id
-                analyst_id = self._model_pool.spec(Role.ANALYST).model_id
-                self._dashboard.set_pipeline(
-                    "⚡",
-                    f"{planner_id} + {analyst_id}",
-                    f"planner={planner_id} (GPU), analyst={analyst_id} (CPU)",
-                )
-            except Exception:
-                self._dashboard.set_pipeline("⚡", "готов")
-        elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
-            self._dashboard.set_pipeline_loading("загрузка…")
-        elif self._pool_load_failed:
-            self._dashboard.set_pipeline("⚠️", "недоступен (fallback)")
-        elif not self.project_root:
-            self._dashboard.set_pipeline("💤", "не активирован")
-        else:
-            self._dashboard.set_pipeline("⏸", "ожидание")
-
     @Slot(str)
     def _on_reasoning_delta_event(self, token: str) -> None:
         """[4.8.E] Reasoning-delta от AgentLoop. Аналогично, только лог."""
         logger.trace(f"reasoning_delta: {token[:40]!r}")
-
-    @Slot()
-    def _on_stream_started_event(self) -> None:
-        """[4.8.E] Начало нового стрима модели (start-event)."""
-        logger.trace("stream_started")
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
@@ -2440,15 +2386,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 " color: white; border: none; border-radius: 4px;"
             )
             self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
-
-    @Slot()
-    def _on_finish(self):
-        self._send_finished()
-
-    @Slot(str)
-    def _on_chat_error(self, error_msg: str):
-        self._add_message("system", f"❌ Ошибка: {error_msg}")
-        self._send_finished()
 
     @Slot(str)
     def _on_agent_finish(self, result: str):
