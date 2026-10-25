@@ -64,7 +64,7 @@ _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 @pytest.mark.parametrize(
-    "colors,name",
+    ("colors", "name"),
     [
         (DARK_COLORS, "DARK"),
         (LIGHT_COLORS, "LIGHT"),
@@ -104,13 +104,13 @@ _CONTRAST_PAIRS = [
 
 
 @pytest.mark.parametrize(
-    "colors,name",
+    ("colors", "name"),
     [
         (DARK_COLORS, "DARK"),
         (LIGHT_COLORS, "LIGHT"),
     ],
 )
-@pytest.mark.parametrize("fg_key,bg_key,threshold,description", _CONTRAST_PAIRS)
+@pytest.mark.parametrize(("fg_key", "bg_key", "threshold", "description"), _CONTRAST_PAIRS)
 def test_wcag_contrast(
     colors: ColorTokens,
     name: str,
@@ -217,7 +217,7 @@ _REQUIRED_SELECTORS = [
 
 
 @pytest.mark.parametrize(
-    "theme,qss",
+    ("theme", "qss"),
     [
         ("dark", DARK_STYLESHEET),
         ("light", LIGHT_STYLESHEET),

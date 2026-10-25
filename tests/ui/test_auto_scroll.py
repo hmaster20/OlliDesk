@@ -37,7 +37,7 @@ def qt_app():
     для виджетов. Создаём вручную.
     """
     app = QApplication.instance() or QApplication([])
-    yield app
+    return app
 
 
 @pytest.fixture

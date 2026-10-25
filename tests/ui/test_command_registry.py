@@ -76,7 +76,7 @@ class TestCommandRegistry:
 
     def test_empty_id_rejected(self) -> None:
         reg = CommandRegistry()
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="id не может быть пустым"):
             reg.register(_make("", "Cmd"))
 
     def test_duplicate_id_overwrites(self) -> None:

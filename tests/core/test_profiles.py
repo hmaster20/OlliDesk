@@ -59,7 +59,7 @@ class TestProfileConfig:
         assert builtin_profile_ids() == {"development", "research", "learning"}
 
     def test_tool_policies_validation(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="literal_error|Input should be"):
             ProfileToolPolicies(write_file="invalid")  # type: ignore[arg-type]
 
 

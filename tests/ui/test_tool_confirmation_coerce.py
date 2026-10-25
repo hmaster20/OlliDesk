@@ -17,7 +17,7 @@ from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
 
 class TestCoerceInt:
     @pytest.mark.parametrize(
-        "raw,expected",
+        ("raw", "expected"),
         [
             ("42", 42),
             ("-7", -7),
@@ -37,7 +37,7 @@ class TestCoerceInt:
 
 class TestCoerceFloat:
     @pytest.mark.parametrize(
-        "raw,expected",
+        ("raw", "expected"),
         [
             ("3.14", 3.14),
             ("-0.5", -0.5),
@@ -56,7 +56,7 @@ class TestCoerceFloat:
 
 class TestCoerceBool:
     @pytest.mark.parametrize(
-        "raw,expected",
+        ("raw", "expected"),
         [
             ("true", True),
             ("True", True),

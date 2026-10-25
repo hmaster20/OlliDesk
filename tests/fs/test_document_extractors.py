@@ -37,7 +37,7 @@ class TestIsDocument:
 
 class TestLanguageForDocument:
     @pytest.mark.parametrize(
-        "ext,expected",
+        ("ext", "expected"),
         [
             (".pdf", "pdf"),
             (".docx", "docx"),

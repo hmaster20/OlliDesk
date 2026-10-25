@@ -18,7 +18,7 @@ from ui.widgets.collapsed_placeholder import _plural_ru
 
 class TestPluralRu:
     @pytest.mark.parametrize(
-        "n,expected",
+        ("n", "expected"),
         [
             # Один.
             (1, "сообщение"),
@@ -66,7 +66,7 @@ def qt_app():
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
-    yield app
+    return app
 
 
 class TestPopRestoreBatch:
