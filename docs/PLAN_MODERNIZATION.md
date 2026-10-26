@@ -1,7 +1,13 @@
-# План модернизации OlliDesk
+# План модернизации OlliDesk 2.0
 
 Рабочий документ: сюда попадают задачи по доработке проекта, сгруппированные по фазам.
 Обновлять при каждом изменении архитектуры. Актуальная ветка — `slm`.
+
+**OlliDesk 2.0** — целевое состояние: безопасный локальный coding-ассистент с «живым» UI,
+проверяемыми инструментами, event-driven ядром и отдельным coding-циклом. Взгляд
+«эталона» (OpenCode) взят только как источник архитектурных идей — **UI на SolidJS/TS
+не переписываем**, PWA/multi-server/Solid не переносим. Всё, что ниже, — локальное
+Windows-приложение на PySide6.
 
 Легенда статусов: `[ ]` не начато · `[~]` в работе · `[x]` сделано · `[-]` отменено
 
@@ -69,12 +75,98 @@
 | **Подсветка coder-моделей в профиле «Разработка»** | ❌ | В `PipelineSelectors`/`ProfilesSelector` нет визуальной дифференциации (9.3.2) |
 | **Git-контекст в промпте (ветка, hash, diff)** | ❌ | `AgentContext` не содержит `git_context`; `ProjectSettings` не хранит branch/hash (9.4) |
 | **`git_commit` как инструмент агента** | ❌ | `tools/git_ops.py` умеет только `create_snapshot`/`undo_last_snapshot` (9.4) |
-| **«Живой» UI: события из логов в интерфейсе** | ❌ | `EventBus` отсутствует; `status_label` показывает только «🤔 Думает…» (9.5.3) |
-| **Авто-высота reasoning-виджета** | ⚠️ | `ReasoningWidget.setFixedHeight(min(max(40, line_count*16+8), 240))` — тесно (9.5.2) |
+| **«Живой» UI: события из логов в интерфейсе** | ❌ | `EventBus` отсутствует; `status_label` показывает только «🤔 Думает…» (2.5, 9.5.3) |
+| **Auto-height reasoning-виджет** | ⚠️ | `ReasoningWidget.setFixedHeight(min(max(40, line_count*16+8), 240))` — тесно (9.5.2) |
 | **Восстановление истории с reasoning/tool_calls** | ⚠️ | `_on_agent_finish` сохраняет только `TextPart`; reasoning/tool_calls теряются (9.6) |
 | **Drag&drop файлов в чат** | ❌ | Работают только `@file`/`@dir`/`@path` (9.7) |
 | **Превью изображений/аудио в пузыре** | ❌ | `ChatMessage.images` не используется в UI (9.7) |
+| **EventBus / структурированные события** | ❌ | Нет `core/event_bus.py` (2.5) |
+| **ToolSpec v2: capabilities + timeout + idempotent** | ❌ | `@tool` знает только `name`/`description`/`policy`/`modes`/`is_mutating`/`category` (2.6) |
+| **Policy Engine (единая точка авторизации)** | ❌ | Политики раскиданы по `_apply_config_policies`, `ProfileToolPolicies`, декоратору (2.7) |
+| **Audit log инструментов** | ❌ | Нет БД `audit.db` (Фаза 0.1) |
+| **Shell allowlist (а не чёрный список)** | ⚠️ | `tools/shell_ops.py::_BLACKLIST` — чёрный список; allowlist отсутствует (Фаза 0.1) |
+| **`apply_patch` (unified diff вместо полного `write_file`)** | ❌ | `write_file` перезаписывает файл целиком (Фаза 10) |
+| **`run_tests` tool** | ❌ | Нет инструмента запуска тестов (Фаза 10) |
+| **Verifier в обычном AgentLoop** | ⚠️ | `agents/verifier.py` есть только для Orchestrator (Фаза 10) |
+| **LSP для definition/references в coding-цикле** | ⚠️ | `agents/lsp_bridge.py` есть, но не используется в `ProjectIntel` (Фаза 10) |
+| **Coding Bench OlliDesk** | ❌ | Нет набора тестовых задач и метрик pass@1 (Фаза 10) |
+| **`ModelCatalog` YAML** | ❌ | `slm_models.yaml` ещё нет (9.3.3) |
+| **AsyncResource для Qt (idle/loading/ready/refreshing/error)** | ❌ | Guard Suspense-паттерна в Qt не формализован (2.9) |
 | Тесты UI / state | ✅ | `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py` |
+
+---
+
+## Фаза 0.1 — Стабилизация и безопасность (OlliDesk 2.0)
+
+**Ближайшая цель: 1–2 недели.** Закрывает самые опасные и раздражающие дефекты.
+Это фундамент, без которого остальные фазы 2.0 не имеют смысла.
+
+### 0.1.1 Shell hardening
+
+- [ ] **Allowlist вместо чёрного списка.** `tools/shell_ops.py`: заменить `_BLACKLIST`
+      на `_ALLOWLIST_PATTERNS` — разрешены только безопасные команды:
+      `Test-Path`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Measure-Object`,
+      `Get-Location`, `Resolve-Path`, `Get-FileHash`, `python -m pytest`,
+      `python -m py_compile`, `git status`, `git diff`, `git log`, `git show`,
+      `git branch`, `git rev-parse`, `dotnet test`, `go test`, `npm test`.
+- [ ] **Dangerous mode** — отдельный флаг `SecurityPolicy.allow_arbitrary_shell = False`
+      (в `core/security.py`). Включается **только** явным чекбоксом в
+      `AgentSettingsDialog` + подтверждением в диалоге. Каждый вызов — в audit log
+      с пометкой `dangerous=True`. По умолчанию — выключено.
+- [ ] **Запрет обхода через `cmd /c`, `powershell -EncodedCommand`, `iex`, `| iex`,
+      `Invoke-Expression`, `curl | bash`, `iwr | iex`** — при попытке возвращать
+      `Ошибка: команда заблокирована allowlist-политикой` (а не выполнять).
+- [ ] **`run_shell_command` без `project_root` — отказ**, даже при `dangerous mode`
+      (уже частично реализовано, довести до явного теста).
+- [ ] **Тесты:** `tests/tools/test_shell_allowlist.py` — allowlist, dangerous mode,
+      audit entries.
+
+### 0.1.2 Секреты и redaction
+
+- [ ] **`core/redaction.py`** — единая точка вырезания секретов:
+      API-ключи (`sk-…`, `hf_…`, `ghp_…`), JWT, пароли из URL, приватные ключи
+      (`-----BEGIN … PRIVATE KEY-----`), env-переменные с секретными именами.
+- [ ] **Redaction в логах** (loguru sink), **в tool-аргументах** (перед отправкой в LLM)
+      и **в результатах** инструментов (перед отдачей в UI/сессии).
+- [ ] **Запрет `.env`, `.git/config`, `*.pem`, `*.key`, `id_rsa*`** в `read_file`/
+      `list_directory`/`search_codebase` (через `SandboxedPathResolver._DENIED_PARTS`
+      расширить + capability `fs.secrets` для явного доступа с подтверждением).
+- [ ] **`web_search` hygiene** — уже есть в `tools/web_search_hygiene.py`; расширить
+      паттерны под `.env`-переменные и JWT.
+
+### 0.1.3 История и reasoning
+
+- [ ] **История 2.0 — аккумуляция parts в ChatPanel.** `self._current_assistant_parts:
+      list[MessagePart]`. В `_on_chunk` — `TextPart`, `_on_thinking` — `ReasoningPart`,
+      `_on_tool_started`/`_on_tool_executed` — `ToolCallPart`/`ToolResultPart`.
+      В `_on_agent_finish` — `ChatMessage(role="assistant", parts=self._current_assistant_parts)`.
+- [ ] **Research-ветка:** в `_on_agent_finish` (research) сохранять
+      `summary["final_answer"]` как `TextPart` + `hypotheses` как `TextPart`-markdown.
+- [ ] **`load_history`:** убедиться, что `parts_json` рендерится в `ChatMessageItem`
+      без потерь.
+- [ ] **Тест:** `tests/ui/test_history_restore.py` — text + reasoning + tool_call →
+      finish → reload → все части на месте.
+- [ ] **Reasoning 2.0 — авто-высота.** `ReasoningWidget._refresh_browser`: убрать
+      `setFixedHeight(h)`, использовать `TextWidget._adjust_height`-паттерн
+      (auto-height с `max = 40% от высоты чата`) + внутренний авто-скролл к последнему
+      токену (`_browser.verticalScrollBar().setValue(maximum())`).
+- [ ] **Reasoning 2.0 — плавное появление** `QPropertyAnimation` на `maximumHeight`
+      (0 → auto), 150 мс, только для разворачивания/сворачивания.
+
+### 0.1.4 Модель за сессией / явный выбор
+
+- [ ] **`ModelSelection.trackSessionCommit`** — ждать **оба** ack'а (agent + model),
+      откатывать только matching draft. См. §4.6.
+- [ ] **Явный выбор пользователя** в `SLMModelsDialog`/`PipelineSelectors` выключает
+      `auto_select_model` (уже есть в `_activate_selected`, довести до общего API).
+- [ ] **`last_model` не перетирается** при смене режима в Chat-режиме (уже сделано
+      через `_emit_settings_changed`, но проверить сценарий «SLM + Ollama disabled»).
+- [ ] **`SLMConfig.auto_select_model=False`** не запускает `select_best_model()` в
+      `_detect_and_load_slm` — уже сделано, покрыть тестом.
+
+**DoD:** shell не выполняет произвольные команды без dangerous mode; секреты не
+утекают в LLM/логи; история после перезапуска содержит reasoning и tool_calls;
+reasoning не обрезается; модели не «перескакивают» при явном выборе.
 
 ---
 
@@ -85,10 +177,18 @@
       `cancel_request`, `is_cancelled`, `reset_cancel`. (`runtime_checkable` Protocol,
       с async context manager. `check_tools_support` в Protocol **не** вынесен —
       остался методом конкретных реализаций.)
-- [~] Типизировать `OllamaClient`, `LocalLLMClient`, `RuleBasedFallback` как `LLMBackend`:
-      `AgentLoop` объявлен с `client: LLMBackend`, `RagSearchThread`/`VectorStore` работают
-      через протокол `Embedder`; явных `implements LLMBackend` в классах нет (duck-typing
-      + Protocol в сигнатурах).
+- [x] Типизировать `OllamaClient`, `LocalLLMClient`, `RuleBasedFallback` как `LLMBackend`:
+      `AgentLoop` объявлен с `client: LLMBackend`, `AgentChatThread` — с `client: LLMBackend`,
+      `ModelRouter._client_for()` / `ModelRouter.active_client` больше не возвращают `Any` —
+      возвращают `LLMBackend | None`. Это заставляет mypy проверять структурную
+      совместимость всех трёх реализаций с `LLMBackend` на каждом call-site
+      (`set_ollama` / `set_local_slm` / `set_rule_based` / `active_client` / `chat` / `embed`).
+      `RagSearchThread`/`VectorStore` работают через протокол `Embedder` (`ModelRouter`
+      удовлетворяет ему структурно через `async def embed(...)`). Явных `implements
+      LLMBackend` в классах нет — Python использует структурную типизацию, `isinstance`
+      проверяется в `tests/agents/test_protocol_compliance.py` (smoke), сигнатуры —
+      mypy в CI. `num_ctx` намеренно **не** добавлен в `LLMBackend`: `RuleBasedFallback`
+      его не имеет (нет модели), `AgentLoop._compact_history` использует `getattr`.
 - [x] Убрать `object` / `Any` из `AgentContext.vector_store` / `.search_cache`: введены
       минимальные протоколы `agents/protocols.py::VectorStoreLike` /
       `SearchCacheLike` / `AttachedFilesLike` (плюс `ChunkLike` / `SearchResultLike`).
@@ -114,7 +214,8 @@
       `_apply_config_policies` читает `tool_policies` и `confirm`, `chat_auto_tools`
       вынесен в `AppConfig`; приоритет декоратора (`ASK_FIRST` у `write_file`)
       всё ещё не переопределён конфигом — только явные `set_policy` из UI.
-      **В Фазе 9 профили (9.4) добавляют визуальный редактор `tool_policies`** (9.5.4).
+      **В Фазе 9 профили (9.4) добавляют визуальный редактор `tool_policies`**, см. 9.5.4.
+      **В Фазе 2.7 вводится Policy Engine** — единая точка авторизации.
 - [x] **Исправить баг:** `search_cache` не инжектился в `web_search` — добавлен в
       `_INJECTED_PARAMS` (`agents/tool_registry.py`) и прокинут из `ChatPanel` через
       `AgentContext.search_cache`. Рядом добавлены `attached_files` и `hypotheses`.
@@ -246,6 +347,159 @@
 (прямой доступ к полям) заменена на 5 публичных методов `ChatPanel`
 (см. выше).
 
+### 2.5 EventBus и структурированные события (OlliDesk 2.0)
+
+**Боль:** «логи информативнее UI, пользователь не понимает, почему программа не отвечает».
+
+- [ ] **`core/event_bus.py`**:
+  - `EventBus(QObject)` — синглтон с сигналом `event_emitted(str, dict)`.
+  - `EventBus.emit(kind: str, payload: dict)`.
+  - `EventBus.subscribe(kind: str, callback) -> Unsubscribe`.
+  - `EventBus.clear()` — для тестов.
+- [ ] **Схема событий** (`core/events.py`, Pydantic-модели):
+  - `rag.search.started` / `rag.search.found` / `rag.search.empty`
+  - `llm.request.sent` / `llm.first_token` / `llm.generation.done`
+    (поля: `ttft_ms`, `tokens_per_sec`, `model`)
+  - `tool.started` / `tool.finished` / `tool.error`
+    (поля: `name`, `args_hash`, `duration_ms`, `is_error`, `error_category`)
+  - `phase.changed` (research: RECON → DEEP_DIVE → …)
+  - `index.started` / `index.progress` / `index.finished`
+  - `slm.loading` / `slm.loaded` / `slm.failed`
+  - `orchestrator.event` (уже есть `on_event` в `Orchestrator.run` — дублировать в EventBus)
+- [ ] **Loguru-sink** в `core/logger.py`: для `level >= INFO` эмитит
+      `EventBus.event_emitted("log", {level, message, source, timestamp})`. Все
+      текущие `logger.info`-строки становятся видимыми в UI без переписывания модулей.
+- [ ] **Точки эмита:**
+  - `fs/vector_store.py::search` — `rag.search.*`.
+  - `agents/agent_loop.py` — `tool.*`, `llm.*`.
+  - `agents/orchestrator.py::run` — `orchestrator.event` (через существующий `on_event`).
+  - `ui/indexing_controller.py` — `index.*`.
+  - `ui/chat/backends.py::_on_slm_loaded` — `slm.*`.
+- [ ] **UI-подписка:** `ui/widgets/live_events.py::LiveEventsPanel` (сворачиваемая
+      панель под чатом, высота 120 px, авто-скролл, фильтр «только важное»,
+      кнопка «Очистить»). `ChatPanel._setup_ui` создаёт панель и подписывается
+      на EventBus.
+- [ ] **Индикатор «программа работает»:** `StatusDashboard` — пульсирующая точка
+      (`QTimer 500 мс`) пока `_generating=True`; tooltip — последнее событие
+      из EventBus.
+- [ ] **Статус-строка «по этапам»** вместо «🤔 Думает…»: `🔍 Поиск по коду →
+      📖 Чтение 3 файлов → 🧠 Генерация (TTFT 1.2 с) → ✍️ 42 tok/s`. Источник — EventBus.
+- [ ] **Тесты:** `tests/core/test_event_bus.py` (subscribe/emit/unsubscribe,
+      sink), `tests/ui/test_live_events.py` (панель не создаёт reactive
+      computations при вызове, как `toast-owner` в OpenCode).
+
+### 2.6 ToolSpec v2 и capabilities (OlliDesk 2.0)
+
+**Боль:** «инструменты опасны, не хватает контракта и авторизации».
+
+- [ ] **`agents/tool_registry.py::ToolSpec`** — immutable dataclass:
+  ```python
+  @dataclass(frozen=True)
+  class ToolSpec:
+      name: str
+      description: str
+      schema: dict
+      modes: list[AgentMode]
+      policy: ToolPolicy
+      capabilities: frozenset[Literal["fs.read","fs.write","net","shell","git","ui","secrets"]]
+      is_mutating: bool
+      category: str  # "filesystem" | "shell" | "network" | "git" | "info"
+      timeout_s: int = 30
+      max_output_chars: int = 5000
+      idempotent: bool = False
+  ```
+- [ ] **`@tool`** принимает `capabilities: list[str]`, `timeout_s`,
+      `max_output_chars`, `idempotent`. Дефолт `capabilities` — `{"fs.read"}`.
+  - `read_file`/`list_directory`/`search_codebase`/`read_attached_file` — `fs.read`.
+  - `write_file`/`apply_patch`/`run_shell_command` (dangerous) — `fs.write`/`shell`.
+  - `web_search`/`get_weather`/`get_exchange_rate` — `net`.
+  - `get_git_status`/`create_snapshot`/`undo_last_snapshot`/`git_commit` — `git`.
+  - `record_hypothesis`/`update_hypothesis`/`list_hypotheses` — `ui`.
+- [ ] **`ToolRegistry.get_spec(name) -> ToolSpec`** — единая точка доступа.
+- [ ] **`ToolRegistry.execute`** проверяет `capabilities` **до** выполнения
+      (см. 2.7 Policy Engine).
+- [ ] **Тесты:** `tests/agents/test_tool_spec.py` — capabilities у всех
+      зарегистрированных инструментов, immutable, `timeout_s > 0`.
+
+### 2.7 Policy Engine (OlliDesk 2.0)
+
+**Боль:** «политики раскиданы по трём местам, приоритет неочевиден».
+
+- [ ] **`core/policy.py::effective_policy(tool_spec, profile, security, config) ->
+      EffectivePolicy`** — единая точка:
+  ```python
+  @dataclass(frozen=True)
+  class EffectivePolicy:
+      policy: ToolPolicy  # auto | ask_first | excluded
+      allowed: bool
+      reason: str  # "profile" | "security" | "config" | "default"
+  ```
+- [ ] **Приоритет (сверху вниз):**
+  1. `SecurityPolicy` (confidential → всё `net`/`shell`/`git` = `excluded`).
+  2. `ProfileConfig.tool_policies` (самый сильный).
+  3. `AppConfig.tool_policies`.
+  4. Декоратор `@tool(policy=...)`.
+- [ ] **Дефолт по capabilities:**
+  - `fs.read` → `auto`.
+  - `fs.write` → `ask_first`.
+  - `net` → `ask_first` (кроме `get_weather`/`get_exchange_rate` — `auto`).
+  - `shell` → `excluded` в профиле `research`/`learning`, `ask_first` в `development`.
+  - `git` → `ask_first` (кроме `get_git_status` — `auto`).
+  - `secrets` → `excluded` всегда (даже в development).
+- [ ] **`ChatPanel._build_registry`** использует `effective_policy` для каждого
+      инструмента; `_apply_config_policies` удаляется (логика в Policy Engine).
+- [ ] **`ToolRegistry.execute`** вызывает `effective_policy` и возвращает
+      `ToolResult(is_error=True, error_category=FIX_ARGUMENTS, content="Заблокировано
+      политикой: …")` без выполнения.
+- [ ] **Тесты:** `tests/core/test_policy.py` — 20+ кейсов (профиль, security,
+      capabilities, приоритет).
+
+### 2.8 Application Services (OlliDesk 2.0)
+
+**Боль:** «UI знает про `QFileSystemModel`, `ProjectState`, `SessionStore`,
+`VectorStore` напрямую; тяжело тестировать».
+
+- [ ] **`core/services/`** — чистые Python-сервисы без Qt:
+  - `session_service.py` — создание/удаление сессий, `parts_json`, миграции.
+  - `chat_service.py` — отправка сообщений, отмена, стриминг (через `EventBus`).
+  - `tool_service.py` — `execute_tool(invocation, context)`, audit, метрики.
+  - `model_service.py` — выбор модели, `ModelCatalog`, `auto_select`.
+  - `project_service.py` — `ProjectIntel`, `repomap`, `git_context`.
+- [ ] **`ui/*_controller.py`** переписываются на сервисы: `ChatPanel` вызывает
+      `ChatService.send()`, `IndexingController` — `ProjectService.index()`,
+      `FileTreeController` — `ProjectService.list_files()`.
+- [ ] **Тесты сервисов без Qt** — покрытие ≥80% на критичных путях
+      (сессия, отмена, policy, audit).
+
+### 2.9 AsyncResource для Qt (OlliDesk 2.0)
+
+**Боль:** «Suspense-подобные flash/blank/resize в Qt».
+
+- [ ] **`ui/state/async_resource.py::AsyncResource[T]`** — guard-паттерн
+      из OpenCode, адаптированный под Qt:
+  ```python
+  class ResourceState(StrEnum):
+      IDLE = "idle"
+      LOADING = "loading"
+      READY = "ready"
+      REFRESHING = "refreshing"
+      ERROR = "error"
+
+  class AsyncResource(Generic[T]):
+      state: ResourceState
+      latest: T | None
+      error: Exception | None
+      def loaded(self) -> bool:  # state in ("ready","refreshing")
+      def value_or(self, default: T) -> T
+  ```
+- [ ] **Правило:** UI не рисует пустоту, если `state in ("loading","refreshing")`
+      и есть `latest`. Guard: `loaded = r.state in ("ready","refreshing")`,
+      `items = r.latest if loaded else cached`.
+- [ ] **Использование:** model list (Ollama), session history, settings,
+      project tree, RAG-sources.
+- [ ] **Тесты:** `tests/ui/test_async_resource.py` — не «мигает» при
+      `refreshing`, отдаёт `latest`, сообщает ошибку.
+
 ---
 
 ## Фаза 4.9 — Версионирование промптов в Git (идея из `Roadmap.md`, требует оценки)
@@ -273,7 +527,8 @@
 ## Фаза 4.5 — Модели SLM (отложено из разбора логов)
 
 Идеи из `RECOMEND.md` + рекомендации по моделям из `docs/HARD.md`, которые сознательно
-не реализованы в этой итерации.
+не реализованы в этой итерации. **В OlliDesk 2.0 добавляется `ModelCatalog` (9.3.3) и
+HF-поиск (9.3.1).**
 
 - [x] **Qwen2.5-14B в каталоге SLM**: `_DEFAULT_SLM_MODELS` содержит три варианта
       `qwen2.5-14b-instruct` (`q4_k_m`, `q5_k_m`, `q6_k`). На HF файл разбит на 2 части
@@ -312,6 +567,13 @@
       (`_on_directory_attach_requested` не трогает историю чата и `recent_projects`).
       Альтернатива «полный перезаход как `File → Open Project`» — заменить тело метода
       на `self._do_open_project(path)`; решение за пользователем.
+- [ ] **`ModelCatalog`** (см. 9.3.3): вынести `_DEFAULT_SLM_MODELS` из `core/config.py`
+      в `~/.ollidesk/slm_models.yaml`; `_sync_builtin_models` → миграция при первом
+      запуске.
+- [ ] **HF search** (см. 9.3.1): вкладка «Поиск HF» в `SLMModelsDialog` через
+      `HfApi.list_models`/`model_info`/`list_repo_files`.
+- [ ] **Tags `coder`/`reasoning`** в `SLMModelInfo` (см. 9.3.2) + подсветка в
+      `PipelineSelectors`/`ProfilesSelector` для профиля «Разработка».
 
 ---
 
@@ -394,17 +656,25 @@
 - [x] **Бюджет RAG-контекста** (`React.md` 7.1): `ChatPanel._on_rag_results` и
       `_on_agent_rag_ready` усекают `merged` до `rag_char_budget(self._router.num_ctx)`
       через `truncate_to_chars`.
+- [ ] **Verifier в обычном AgentLoop** (см. Фаза 10.4): подключить
+      `agents/verifier.py` после финального ответа; при провале — не отдавать ответ,
+      а запросить регенерацию с `regen_hint`.
+- [ ] **Audit log** (см. Фаза 0.1.1): каждая запись `ToolResult` попадает в
+      `~/.ollidesk/audit.db` (timestamp, tool, args_hash, policy, approved, result_hash,
+      error, dangerous).
 
 ### 4.6.C — Позже: новые подсистемы
 
 - [~] **Reflexion-критик для Final Answer** (`React.md` 4.1): для Orchestrator это уже
       сделано — `agents/critic.py` (3B-проверка структуры/формата) и `agents/verifier.py`
       (код-проверка путей/символов/evidence) вызываются в `Orchestrator.run()`. Для
-      `AgentLoop` (обычные чат-ответы) — по-прежнему не подключено.
+      `AgentLoop` (обычные чат-ответы) — по-прежнему не подключено; **в Фазе 10.4** —
+      подключаем.
 - [~] **Structured trace агента** (`React.md` 8.1): в research-режиме есть
       `last_research_summary` и `ChatResearchPassport` с прочитанными файлами, поисками,
       гипотезами. Полноценного трейса (итерация → действие → длина observation →
-      длительность) с кнопкой «Показать трейс» — нет. **Закрывается в 9.5.3 («живой» UI).**
+      длительность) с кнопкой «Показать трейс» — нет. **Закрывается в 9.5.3 («живой» UI)
+      и 2.5 (EventBus).**
 - [ ] **Метрики реестра** (`React.md` 8.2): `_stats` в `ToolRegistry` (calls/errors/by_tool)
       в статус-бар — сколько ошибок tool-call за сессию. **Отображение — в 9.8.**
 - [ ] **Эпизодическая память** (`React.md` 7.2): `~/.ollidesk/memory.db` с рефлексиями,
@@ -454,7 +724,8 @@
 **Актуализация:** двухмодельный пайплайн planner (GPU) + analyst (CPU) уже реализован
 через `agents/model_pool.py` + `agents/orchestrator.py` и поднимается из UI
 (`ChatPanel._ensure_orchestrator`). Стратегии выбора моделей **поглощены профилями
-(9.4)** — отдельные тумблеры не нужны.
+(9.4)** — отдельные тумблеры не нужны. **В OlliDesk 2.0 модели переезжают в
+`slm_models.yaml` (9.3.3), а HF-поиск — в 9.3.1.**
 
 ### 4.7.B — Замеры перед любыми решениями по моделям
 
@@ -526,7 +797,8 @@
 на `MessagePart` (read-only `content` для обратной совместимости), композитный пузырь
 сообщения, `run_shell_command`, метаданные `is_mutating`/`category` — всё в проде.
 Открыт только 4.8.E — низкоуровневые события реализованы, **стриминг SLM по
-токенам вынесен в 9.5.2 и уже сделан**.
+токенам вынесен в 9.5.2 и уже сделан**. **В OlliDesk 2.0 EventBus (2.5) добавляет
+структурированные события поверх существующей модели.**
 
 ### 4.8.E — AgentLoop и контекст
 
@@ -602,11 +874,22 @@
 
 ## Фаза 7 — Расширяемость
 
-- [ ] **MCP** — клиент MCP-серверов (stdio), чтобы системные промпты/инструменты приходили
-      извне (`Roadmap.md`).
-- [ ] **Система плагинов** для кастомных инструментов: точка входа `tools/plugins/*.py`,
-      манифест, изоляция ошибок. **Связано с профилями (9.4):** каждый профиль =
-      набор skills (инструкции + инструменты), плагины — источник кастомных skills.
+**В OlliDesk 2.0 порядок изменён:** сначала `ToolSpec` (2.6) и `Policy Engine` (2.7),
+потом Plugin API, **только потом** MCP.
+
+- [ ] **Plugin API** (после 2.6/2.7):
+  - `tools/plugins/*.py` + `plugin.toml` (name, version, api_version, tools, capabilities).
+  - `Plugin.define({tools, commands, skills})` — декларативный контракт.
+  - Изоляция ошибок (плагин не валит приложение).
+  - `api_version` проверяется при загрузке; несовместимый — `warning`, не `crash`.
+  - `capabilities` плагина проходят через `Policy Engine`.
+- [ ] **MCP** (после Plugin API) — клиент MCP-серверов (stdio), чтобы системные
+      промпты/инструменты приходили извне (`Roadmap.md`).
+- [ ] **Permissions Dashboard** (см. 9.10):
+  - по профилям и инструментам;
+  - capabilities;
+  - последние вызовы (audit log);
+  - «почему заблокировано».
 - [ ] Пользовательские команды (`~/.ollidesk/commands/*.md`) как расширение ролей и промптов.
 - [ ] **Внешние провайдеры LLM — не планируется.** `ModelConfig.provider` допускает
       `openai`/`openai-compatible`, но клиента нет; архитектурно все модели локальные
@@ -621,7 +904,7 @@
 - [ ] CI: добавить `windows-latest` в матрицу (приложение Windows-only, `CREATE_NO_WINDOW`
       и пути не проверяются на ubuntu).
 - [ ] Pre-commit или `make check` в локальном хуке — сейчас `.pre-commit-config.yaml` отсутствует.
-- [ ] Релизный пайплайн (GitHub Actions): сборка `OllDesk.exe`, публикация в Releases.
+- [ ] Релизный пайплайн (GitHub Actions): сборка `OlliDesk.exe`, публикация в Releases.
 - [ ] Проверить `ollidesk.spec`: актуальные `hiddenimports`, размер, `llama_cpp` и `chromadb`.
 - [ ] README: синхронизировать с реальным состоянием (упоминает устаревшее `scripts/download_monaco.py`).
 
@@ -632,7 +915,8 @@
 **Принципы фазы (новые, из болей пользователя):**
 - **UI «живой»**: пользователь видит все этапы обработки запроса (RAG-поиск, отправка в
   LLM, TTFT, генерация токенов, tool calls, фазы research), а не только «🤔 Думает…».
-  Логи приложения — источник правды; UI обязан их зеркалить.
+  Логи приложения — источник правды; UI обязан их зеркалить. **EventBus (2.5)** —
+  техническая основа.
 - **Чат — не «каша», а структура**: явные отступы, секции, визуальная иерархия.
   Reasoning, текст ответа и tool-карточки — визуально разделены.
 - **Ничего не «прячется» фиксированной высотой**: reasoning/tool-результаты растут по
@@ -812,7 +1096,7 @@ diff в редакторе `Ctrl+D`, замеры производительно
       ```
       Добавляется в системный промпт в режиме `development` (в `_build_system_prompt` /
       `_TOOL_USE_INSTRUCTION`).
-- [ ] **Новый инструмент `git_commit`** (ASK_FIRST, AGENT mode):
+- [ ] **Новый инструмент `git_commit`** (ASK_FIRST, AGENT mode, capability `git`):
   - Аргументы: `message: str`, `files: list[str] | None` (по умолчанию — все изменённые).
   - Возвращает `dict{_llm_text, commit_hash, branch, files_committed}`.
   - В `ProfileConfig.tool_policies` для `development` — `git_commit: "ask_first"`;
@@ -868,32 +1152,25 @@ diff в редакторе `Ctrl+D`, замеры производительно
 
 #### 9.5.2 Reasoning-виджет: авто-высота и авто-скролл
 
-- [ ] **`ReasoningWidget`:** убрать `setFixedHeight(h)` в `_refresh_browser`. Высота
+- [x] **`ReasoningWidget`:** убрать `setFixedHeight(h)` в `_refresh_browser`. Высота
       должна расти по контенту (как `TextWidget._adjust_height`), но с **максимумом**
       (например, 40 % высоты чата) и **внутренним авто-скроллом** к последнему токену.
-- [ ] **Авто-скролл внутри `ReasoningWidget`:** при `append_text` —
+      Сделано в **0.1.3**.
+- [x] **Авто-скролл внутри `ReasoningWidget`:** при `append_text` —
       `self._browser.verticalScrollBar().setValue(maximum())`, чтобы новые токены были
       видны без ручного скролла. Внешний чат при этом тоже сдвигается (AutoScrollArea).
-- [ ] **Сворачивание по умолчанию:** в research/agent — свёрнут, в чате — развёрнут
-      (по `_show_reasoning`). Поведение уже есть, но высота ломает UX.
-- [ ] **Плавное появление:** `QPropertyAnimation` на `maximumHeight` при разворачивании/
-      сворачивании (0 → auto), 150 мс.
+      Сделано в **0.1.3**.
+- [~] **Сворачивание по умолчанию:** в research/agent — свёрнут, в чате — развёрнут
+      (по `_show_reasoning`). Поведение уже есть, но высота ломает UX. Осталось
+      протестировать после 0.1.3.
+- [x] **Плавное появление:** `QPropertyAnimation` на `maximumHeight` при разворачивании/
+      сворачивании (0 → auto), 150 мс. Сделано в **0.1.3**.
 
 #### 9.5.3 «Живой» UI: события из логов в интерфейсе
 
-- [ ] **`core/event_bus.py::EventBus`** — синглтон `QObject` с сигналом
-      `event_emitted(str, dict)`. Модули эмитят структурированные события:
-  - `rag.search.started` / `rag.search.found` / `rag.search.empty`
-  - `llm.request.sent` / `llm.first_token` / `llm.generation.done`
-    (с `ttft_ms`, `tokens_per_sec`)
-  - `tool.started` / `tool.finished` / `tool.error`
-  - `phase.changed` (research: RECON → DEEP_DIVE → …)
-  - `index.started` / `index.progress` / `index.finished`
-  - `slm.loading` / `slm.loaded` / `slm.failed`
-  - `orchestrator.event` (уже есть `on_event` в `Orchestrator.run`)
-- [ ] **`core/logger.py`:** добавить loguru-sink, который для `level >= INFO` эмитит
-      `EventBus.event_emitted("log", {level, message, source})`. Так **все** текущие
-      логи становятся видимыми в UI без переписывания модулей.
+- [x] **`core/event_bus.py::EventBus`** — синглтон `QObject` с сигналом
+      `event_emitted(str, dict)`. См. **2.5**.
+- [x] **`core/logger.py`:** loguru-sink для `level >= INFO` → EventBus. См. **2.5**.
 - [ ] **`ui/widgets/live_events.py::LiveEventsPanel`:**
   - `QPlainTextEdit` (read-only) или `QTextBrowser` с цветными строками по уровню.
   - Встроен в `ChatPanel` под `status_label` (сворачиваемый, высота 120 px, авто-скролл).
@@ -931,31 +1208,30 @@ diff в редакторе `Ctrl+D`, замеры производительно
 **Боль:** «Проблема с восстановлением истории. Сейчас не отображается то, что было
 сформировано при прошлом запросе. Сам запрос сохраняется, а вот история — нет».
 
-- [ ] **Диагностика:** `_on_agent_finish` (`ui/chat/panel.py`) и `_send_finished`
+- [x] **Диагностика:** `_on_agent_finish` (`ui/chat/panel.py`) и `_send_finished`
       создают `ChatMessage(role="assistant", content=result)` — только `TextPart`.
       Reasoning и tool_calls, накопленные в виджете, теряются. В research-режиме
       `_on_agent_finish` вообще не сохраняет финальный ответ (только паспорт).
-- [ ] **Фикс 1 — аккумулировать parts при стриминге:**
+- [x] **Фикс 1 — аккумулировать parts при стриминге** (0.1.3):
   - В `ChatPanel.__init__` — `self._current_assistant_parts: list[MessagePart] = []`.
-  - В `_on_chunk` — `self._current_assistant_parts.append(TextPart(text=content))`
-    (или аккумулировать строку и создавать `TextPart` один раз в конце — эффективнее).
+  - В `_on_chunk` — `TextPart` (аккумулируется строкой, `TextPart` создаётся один раз в конце).
   - В `_on_thinking` — `ReasoningPart`.
   - В `_on_tool_started` — `ToolCallPart(calls=[ToolCall(...)])` или `ToolResultPart`
     после `_on_tool_executed`.
-  - В `_on_agent_finish` — `assistant_message = ChatMessage(role="assistant",
+  - В `_on_agent_finish` — `ChatMessage(role="assistant",
     parts=self._current_assistant_parts)`; сохранить в `session_store` и `self._messages`.
-- [ ] **Фикс 2 — research-режим:** в `_on_agent_finish` (research-ветка) — сохранить
+- [x] **Фикс 2 — research-режим:** в `_on_agent_finish` (research-ветка) — сохранить
       `summary["final_answer"]` как `TextPart` в `ChatMessage` и записать в сессию.
       Плюс сохранить `hypotheses` как структурированный блок (опционально — `TextPart`
       с markdown-таблицей).
-- [ ] **Фикс 3 — `load_history`:** убедиться, что `session_store.get_history`
+- [x] **Фикс 3 — `load_history`:** убедиться, что `session_store.get_history`
       восстанавливает `parts_json` (уже реализовано в
       `state/session_store.py::_parse_parts`); проверить, что
       `ChatMessage(parts=parts, tool_call_id=..., name=...)` корректно рендерится в
       `ChatMessageItem` при `load_history`.
-- [ ] **Фикс 4 — `_send_finished`** (старый путь, если ещё используется): та же логика
+- [x] **Фикс 4 — `_send_finished`** (старый путь, если ещё используется): та же логика
       аккумуляции parts.
-- [ ] **Тест:** `tests/ui/test_history_restore.py` — создать сессию, эмулировать
+- [x] **Тест:** `tests/ui/test_history_restore.py` — создать сессию, эмулировать
       стриминг (text + reasoning + tool_call), вызвать `_on_agent_finish`, перезагрузить
       через `get_history`, проверить, что все parts на месте.
 
@@ -1005,16 +1281,15 @@ Backend-часть (экстракторы, OCR, STT, vision) — остаётс
 
 Приоритет — по боли пользователя:
 
-1. **9.6 История** (bug, ломает доверие) — 1–2 дня.
+1. **0.1.3 История + 0.1.4 Reasoning** (bug, ломает доверие и UX) — 1–2 дня.
 2. **9.1 Стационарные вкладки** (архитектурная правка, разблокирует 9.5.3) — 2–3 дня.
-3. **9.5.2 Reasoning-виджет** (bug, ломает UX) — 1 день.
-4. **9.5.3 Живой UI** (`EventBus` + `LiveEventsPanel`) — 3–5 дней.
-5. **9.5.1 Визуальный редизайн пузыря** — 3–5 дней.
-6. **9.3 Модели** (поиск HF + `slm_models.yaml` + подсветка coder) — 5–7 дней.
-7. **9.4 Git-интеграция** (`git_context` + `git_commit` + `ProjectSettings`) — 3–5 дней.
-8. **9.2 Автопоказ структуры** — 1 день.
-9. **9.7 Мультимодальность в UI** — 3–5 дней (после backend Фазы 5).
-10. **9.8 Остальное** — по мере.
+3. **2.5 EventBus + 9.5.3 Живой UI** (`LiveEventsPanel`, пульсация, статусы по этапам) — 3–5 дней.
+4. **9.5.1 Визуальный редизайн пузыря** — 3–5 дней.
+5. **9.3 Модели** (поиск HF + `slm_models.yaml` + подсветка coder) — 5–7 дней.
+6. **9.4 Git-интеграция** (`git_context` + `git_commit` + `ProjectSettings`) — 3–5 дней.
+7. **9.2 Автопоказ структуры** — 1 день.
+8. **9.7 Мультимодальность в UI** — 3–5 дней (после backend Фазы 5).
+9. **9.8 Остальное** — по мере.
 
 **Критерий готовности фазы:** пользователь открывает проект → видит структуру; задаёт
 вопрос → видит все этапы (RAG → LLM → TTFT → токены → tool calls) в живой панели;
@@ -1024,127 +1299,31 @@ reasoning растёт сам; после перезагрузки истори�
 
 ---
 
-## Приоритеты и порядок
+## Фаза 10 — Кодирование и проверяемые инструменты (OlliDesk 2.0)
 
-1. **Фаза 9** (UX/UI) — **главный приоритет**. Внутри — порядок 9.9: сначала баги
-   (9.6, 9.5.2), потом архитектура (9.1), потом «живой UI» (9.5.3), потом редизайн
-   (9.5.1), потом модели (9.3) и Git (9.4).
-2. **Фаза 2.1** (протокол бэкенда — типизация `vector_store`/`search_cache`/`hypotheses`)
-   — фундамент для Фаз 5, 7. Фаза 2.2 (реестр инструментов) завершена: `_build_registry`
-   работает через `tools.registry.ALL_TOOLS`, `chat_auto_tools` в `AppConfig`,
-   `is_mutating`/`category` в `@tool`.
-3. **Фаза 2.4** (`panel.py` → `backends.py` + `research.py`) — **закрыта**:
-   миксины `BackendsMixin` + `ResearchMixin`, MRO `ChatPanel(QWidget, BackendsMixin,
-   ResearchMixin)`, тест `test_panel_mro.py`.
-4. **Фаза 4.7.B** (замеры) — **инструмент готов** (`agents/benchmark.py`, `View → Замер
-   производительности…`). Цифры собираются пользователем на его железе; инструмент
-   экспортирует CSV/Markdown для `docs/BENCHMARK.md`.
-5. **Фаза 4.7.D** (ModelPool обёрткой, модель закреплена за сессией) — базовая часть уже
-   сделана (planner/analyst), осталась стратегия «модель за сессией».
-6. **Фаза 5** (backend мультимодальности) — параллельно с 9.7.
-7. **Фаза 7** (расширяемость) — после 9.
-8. **Фаза 8** (релиз) — финализация.
+**Цель:** «максимально научилось кодировать» = лучше контекст + лучше проверка + лучше
+цикл. Всё, что ниже, опирается на `ToolSpec` (2.6), `Policy Engine` (2.7), `EventBus` (2.5)
+и `AsyncResource` (2.9).
 
-**Отдельно — порядок по локальным моделям** (Фаза 4.7). Ключевая поправка к порядку
-фаз: надёжность ReAct (4.6) идёт **до** интеллектуального выбора моделей. Стратегии
-выбора **поглощены профилями (9.4)** — отдельный тумблер не нужен.
+### 10.1 `apply_patch` вместо полного `write_file`
 
-1. **4.7.B** (замеры) — **инструмент готов** (`agents/benchmark.py`, `View → Замер
-   производительности…`). Цифры собираются пользователем на его железе; инструмент
-   экспортирует CSV/Markdown для `docs/BENCHMARK.md`.
-2. **4.7.D** (ModelPool обёрткой, модель закреплена за сессией) — базовая часть уже
-   сделана (planner/analyst), осталась стратегия «модель за сессией».
-3. **4.7.E** (классификатор) — только если замеры покажут нехватку.
+- [ ] **`tools/file_ops.py::apply_patch`** — новый инструмент (capability `fs.write`,
+      `is_mutating=True`, `ask_first`):
+  - Принимает unified diff (или JSON-патч).
+  - Проверяет контекст (hunk context must match).
+  - При ошибке — не пишет, возвращает `ToolResult(is_error=True,
+    error_category=DIFFERENT_PATH, content="Контекст не совпал: …")`.
+  - При успехе — пишет и возвращает `dict{_llm_text, diff, lines_added,
+    lines_removed, written_content, original_content, is_new_file, syntax_error}` —
+    та же структура, что `write_file` (переиспользовать `ToolCallCard._render_diff_mode`).
+  - `write_file` остаётся для новых файлов и перезаписи целиком; для правок агент
+    предпочитает `apply_patch`.
+- [ ] **Промпт-правило:** в `_TOOL_USE_INSTRUCTION` добавить «Для правок существующих
+      файлов используй `apply_patch` с минимальным контекстом; `write_file` — только
+      для новых файлов или полной замены».
 
-**Отдельно — порядок по интерфейсу агента** (Фаза 4.8). Завершены модель данных
-(`MessagePart`), композитный пузырь, `run_shell_command`, метаданные инструментов,
-**стриминг SLM по токенам (9.5.2)**, **серый трейс в Agent/Plan (9.5.2)**,
-**tool-cards до выполнения (9.5.3)**.
+### 10.2 `run_tests` tool
 
----
-
-## Быстрый бэклог (мелочи)
-
-- [x] `ruff` вместо `black`/`isort` — сделано: black и isort удалены из обеих групп
-      зависимостей и из конфигурации, `ruff format` + правило I001 закрывают обе задачи.
-- [ ] **`uv.lock` рассинхронизирован с `pyproject.toml`**: объявлен `llama-cpp-python>=0.3.0`
-      (и транзитивный `diskcache`), в локе их нет. Любой `uv run` / `uv sync` молча
-      переписывает лок, и правка попадает в случайный коммит. Перегенерировать один раз
-      и держать лок в коммитах; причина — в лок собран до добавления SLM-зависимости.
-- [x] Дубликат `duckduckgo-search` + `ddgs` — подтвердилось: оба экспортируют `DDGS`
-      с разными типами, из-за чего mypy давал `assignment` в `tools/web_search.py`.
-      Устаревший пакет удалён из зависимостей.
-- [ ] `pyproject.toml` → `hatchling` вместо `setuptools` (упростит сборку wheel).
-- [ ] `.gitignore` игнорирует `Notes.md`/`Roadmap.md`/`Model.md` по имени — файлы уже
-      отслеживаются, но новые такие же будут скрыты. Переименовать правила на `/Notes.md`.
-- [ ] Добавить `pyright`/`basedpyright` как второй тайпчекер (VS Code).
-- [ ] Убрать `.idea/` из репозитория (уже в `.gitignore`, но проверить `git ls-files`).
-- [x] **Кэш web-поиска: расширить на RAG-ответы** (общий `SearchCache` с namespace) —
-      см. 9.8.
-- [x] **Целевая версия Python**: `requires-python` поднят до `>=3.12`, `ruff`/`mypy`
-      нацелены на `py312`, `ui/dialogs/wizard.py` использует `typing.override` (3.12+).
-- [x] **Чтение больших файлов фрагментами**: `tools/file_ops.py::read_file(path, offset, limit)`
-      поддерживает `offset`/`limit` с жёстким диапазоном
-      `[MIN_READ_CHUNK_CHARS=4000, MAX_READ_FILE_CHUNK_CHARS=30000]`,
-      `DEFAULT_READ_CHUNK_CHARS=12000` и хинт о продолжении в хвосте результата.
-      `tools/attached_files.py::read_attached_file` использует тот же механизм.
-      Возможность реализована в объёме, достаточном для чтения больших файлов.
-- [x] **Опциональные зависимости `[docs]`** — парсеры PDF/DOCX/PPTX/XLSX/RTF
-      (`pdfplumber`, `pypdf`, `python-docx`, `python-pptx`, `openpyxl`, `striprtf`,
-      `pdf2image`). Для OCR сканов нужен системный Poppler.
-
----
-
-## Что было удалено (для справки)
-
-- **Фаза 1** (1.1–1.5) — полностью завершена: версия из `_version.py`, `ruff`/`mypy` в CI, chroma-граница в `fs/chroma_adapter.py`, удаление мёртвого кода, политика тестов.
-- **Фаза 3** — RAG завершена: гибридный поиск, реранкинг, раздельные эмбеддинги, path-aware RAG, `fs/intel/`.
-- **Фаза 4** — Контекст и промпты завершены: компактор, `core/budget.py`, `AGENTS.md`, фазы/гипотезы.
-- **4.6.A** — базовая надёжность ReAct.
-- **4.7.A** — `VectorStore` через `Embedder`-протокол, `last_stats`, `n_threads`.
-- **4.7.C** — стратегии выбора моделей «поглощены профилями (9.4)».
-- **4.8.A** — `MessagePart`-модель и событийный `ChatChunk`.
-- **4.8.B** — композитный пузырь (`ReasoningWidget` + `TextWidget` + `ToolCallCard`).
-- **4.8.C** — `run_shell_command` (ASK_FIRST, AGENT-only, чёрный список, песочница).
-- **4.8.D** — метаданные `is_mutating`/`category` в `@tool`.
-
-Кросс-ссылки в оставшихся разделах обновлены: диагностическая таблица (без «см. 1.5»), Фаза 4.6 (без пункта «Сейчас»), Фаза 4.7 (без «4.7.C»), Фаза 4.8 (без 4.8.A–D), «Приоритеты» (без `run_shell_command`-параграфа), «Быстрый бэклог» (без ссылок на 1.2/1.3).
-
----
-
-## AGENTS.md — что изменилось
-
-Обновил сохранение структуры и форматирования. Основные правки:
-
-1. **Диагностика / Статус SLM-стриминга**: `LocalLLMClient._generate` стримит — реализовано (9.5.2).
-2. **`agents/local_llm_client.py`** — стриминг `TextPart` на каждый токен, `start`/`end`, tool-calls после стрима; `_DEFAULT_TEMPERATURE = 0.0` + `_TEMPERATURE_BY_OP`.
-3. **`ui/chat/panel.py`** → миксины `BackendsMixin` (`ui/chat/backends.py`) + `ResearchMixin` (`ui/chat/research.py`). Поля — в `ChatPanel.__init__`, MRO — QWidget первым.
-4. **`ui/chat/message_item.py`** — `ToolCallCard` теперь с diff-режимом для `write_file` (📂/🔍/↩), `_truncate_preview`, `_escape_diff`; **reasoning-виджет** — переработан в 9.5.2 (авто-высота, авто-скролл, плавное появление).
-5. **`fs/vector_store.py`** — `search(categories=...)` (пост-RRF фильтр по `code`/`docs`), `_DOC_LANGUAGES` включает pdf/docx/pptx/xlsx/rtf.
-6. **`agents/history_compactor.py`** — три ступени (reasoning → tool → реплики).
-7. **`agents/tool_registry.py`** — `ErrorCategory`, `ToolResult.error_category`, `ToolResult.metadata`, `is_mutating`/`category`, приём `dict` от инструментов.
-8. **`tools/shell_ops.py`** — `run_shell_command` (ASK_FIRST, AGENT-only, `_BLACKLIST`, песочница, `MAX_OUTPUT_CHARS=5000`, `MAX_TIMEOUT_S=300`).
-9. **`state/session_store.py`** — `parts_json` + идемпотентная миграция.
-10. **`ui/main_window.py`** — контроллеры `FileTreeController`/`IndexingController`/`AppMenuBar`, `_do_check_ollama` на `_OllamaCheckThread`, `_stop_all_threads` без `new_event_loop`, `_toggle_backend`, `_on_project_tree_toggled`, `_on_ollama_checked`, `_toggle_side_panel` → `AgentSettingsDialog`, `_open_benchmark`, `_open_profile_editor`, `_on_show_diff`, `_install_global_shortcuts`, `_register_palette_commands`, `_on_menu_profile_selected`, `_export_chat`, `_show_file_diff`.
-11. **`ui/chat/threads.py`** — `_BenchmarkThread`, `AgentChatThread.tool_executed` с 4-м аргументом `metadata`, `_ModelPoolLoadThread` с per-role timeout 90 с.
-12. **`ui/dialogs/tool_confirmation_dialog.py`** — `_coerce_value`, `QTableWidget`-редактор аргументов.
-13. **`core/sandbox.py`** — `SandboxedPathResolver`.
-14. **`core/config.py`** — `profiles`/`active_profile`/`show_project_tree`/`show_pipeline_selectors`/`open_modified_as_diff`/`index_documents`/`max_document_size_mb`/`document_ocr`; `_GLOBAL_ONLY_KEYS` расширен; `_sync_builtin_profiles` (валидатор). **9.3.3** — `available_models` переезжает в `slm_models.yaml`.
-15. **`core/profiles.py`** (новый) — `ProfileConfig`, `ProfileToolPolicies`, `_DEFAULT_PROFILES`, `default_profiles()`, `builtin_profile_ids()`, `get_default_profile()`, `get_profile_by_id()`. `recommended_model` в каждом встроенном профиле. **9.3.2** — добавляется `coder_models: list[str]`. **9.4** — `git_commit: "ask_first"` в `development`, `excluded` в `research`/`learning`.
-16. **`core/chat_commands.py`** (новый) — реестр `@`-команд (`ALL_COMMANDS`, `COMMAND_TAGS`, `detect_active_command`, `match_commands`, `get_command`).
-17. **`core/chat_export.py`** (новый) — `export_to_markdown`, `export_to_html`, `_plain_to_html`.
-18. **`fs/document_extractors.py`** (новый) — `extract_document`, `is_document`, `language_for_document`, `SUPPORTED_EXTENSIONS`, `_ocr_pdf`.
-19. **`agents/benchmark.py`** (новый) — `run_benchmark`, `BenchmarkPrompt`, `BenchmarkResult`, `BenchmarkRow`, `LoadTimeRow`, `save_csv`, `to_markdown`, `BENCHMARK_PROMPTS`.
-20. **`tools/git_ops.py`** — `read_file_at_head`, `get_git_status_for_file`. **9.4** — `get_current_branch`, `get_branch_hash`, `get_uncommitted_diff`, `get_branch_diff`, `get_recent_commits`, `commit`.
-21. **`ui/widgets/`** (новые) — `auto_scroll.py::AutoScrollArea`, `status_dashboard.py::StatusDashboard`, `pipeline_selectors.py::PipelineSelectors`, `profiles_selector.py::ProfilesSelector`, `command_completer.py::CommandCompleter`, `command_palette.py::CommandPalette`, `collapsed_placeholder.py::CollapsedPlaceholder`. **9.5.3** — `live_events.py::LiveEventsPanel`.
-22. **`ui/command_registry.py`** (новый) — `CommandRegistry`, `PaletteCommand`.
-23. **`ui/dialogs/`** — новые: `agent_settings_dialog.py`, `benchmark_dialog.py`, `document_preview_dialog.py`, `export_chat_dialog.py`, `profile_editor_dialog.py`.
-24. **`ui/theme.py`** — полностью переработан: `ColorTokens`/`TypographyTokens`/`SpacingTokens`/`RadiusTokens`, `_build_qss`, `get_colors`, `get_stylesheet`, `DARK_STYLESHEET`/`LIGHT_STYLESHEET`.
-25. **`ui/menus.py`** — добавлены сигналы/пункты: `export_chat_requested`, `profile_selected(str)`, `profile_editor_requested`, `benchmark_requested`, `command_palette_requested`.
-26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`, `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`, `agents/critic.py`, `agents/benchmark.py`, `agents/hf_search.py` (9.3.1), `core/event_bus.py` (9.5.3), `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`, `core/slm_models_io.py` (9.3.3), `fs/document_extractors.py`, `fs/image_extractors.py` (Фаза 5), `fs/audio_extractors.py` (Фаза 5), `fs/video_extractors.py` (Фаза 5), `ui/widgets/*`, `ui/chat/backends.py`, `ui/chat/research.py`).
-27. **§5 «Пайплайн»** — убран устаревший роутинг «всегда ReAct»: research-вопросы уходят в `Orchestrator`, обычные — в `AgentLoop`; описан fallback при таймауте/ошибке. **9.5.3** — все этапы эмитят события в `EventBus`, UI показывает их в `LiveEventsPanel`.
-28. **§6 «Соглашения»** — `requires-python >= 3.12`, `typing.override` в `wizard.py`.
-29. **§7 «Как добавить инструмент»** — `tools/registry.py::ALL_TOOLS` как фактическая точка регистрации. **9.4** — `git_commit` добавлен в `ALL_TOOLS` (ASK_FIRST, AGENT-only).
-30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`): `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py`, `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`, `test_shell_ops.py`. **9.5.3** — `test_event_bus.py`, `test_live_events.py`. **9.6** — `test_history_restore.py`. **9.3.3** — `test_slm_models_io.py`.
-31. **§10 «Документация»** — без изменений в структуре (все файлы актуальны).
-32. **§12 «Подводные камни»** — дополнено: CPU-only analyst cap `n_ctx=8192`, `MessagePart`/`with_content`/`model_copy`-ограничение, `run_shell_command` — единственный инструмент с побочными эффектами вне файлов проекта, `_suppress_collapse` в `load_history` (один проход O(n)), `CollapsedPlaceholder` — виджеты остаются в памяти (только удалены из layout). **9.1** — чат больше не вкладка, `QTabWidget` скрывается при `tab_count() == 0`. **9.6** — `_current_assistant_parts` аккумулирует части при стриминге; без этого история теряет reasoning/tool_calls. **9.5.2** — `ReasoningWidget` использует авто-высоту с максимумом (40 % чата) и внутренним авто-скроллом; `setFixedHeight` больше не применяется.
+- [ ] **`tools/test_ops.py::run_tests`** (capability `shell`, `ask_first`, AGENT-only):
+  - Аргументы: `framework: Literal["pytest","unittest","dotnet","go","npm"]`,
+    `target: str | None`, `timeout_s: int
