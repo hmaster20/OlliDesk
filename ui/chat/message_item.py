@@ -18,13 +18,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import html as html_mod
 import json
 import re
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextBrowser,
     QVBoxLayout,
@@ -485,20 +487,31 @@ def format_source_label(file_path: str, start: int, end: int) -> str:
 
 
 class ReasoningWidget(QWidget):
-    """Сворачиваемый блок размышлений модели (ReasoningPart).
+    """Сворачиваемый блок размышлений модели (ReasoningPart) — 0.1.3a.
 
-    Во время стриминга развёрнут на первом токене и остаётся развёрнутым,
-    пока пользователь не свернёт вручную. `collapse()` вызывается в
-    `ChatMessageItem.finalize()` — после завершения ответа блок сам
-    схлопывается, чтобы не занимать визуальное место.
+    Авто-высота: тело растёт по контенту до потолка (~40 % высоты чата),
+    дальше — внутренний скролл. При разворачивании/сворачивании —
+    ``QPropertyAnimation`` на ``maximumHeight`` (150 мс). При ``append_text``
+    — внутренний авто-скролл к последнему токену, чтобы новые токены
+    были видны без ручного скролла.
+
+    Контракт не меняется: ``set_text`` / ``append_text`` / ``collapse``.
     """
 
-    _PREVIEW_CHARS = 0  # 0 = показываем весь текст; заголовок только со счётчиком
+    # Fallback-потолок, если QScrollArea не нашлась и окно ещё не показано.
+    _FALLBACK_MAX_HEIGHT = 480
+    # Доля высоты viewport чата, под которую пускаем reasoning.
+    _MAX_HEIGHT_RATIO = 0.4
+    # Минимальная полезная высота тела.
+    _MIN_BODY_HEIGHT = 40
+    # Длительность анимации раскрытия/сворачивания.
+    _ANIM_DURATION_MS = 150
 
     def __init__(self, initial_text: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self._text = initial_text or ""
         self._expanded = bool(self._text)
+        self._anim: QPropertyAnimation | None = None
 
         container = QFrame(self)
         container.setObjectName("_reasoning_widget")
@@ -549,23 +562,82 @@ class ReasoningWidget(QWidget):
             " font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 12px; padding: 2px 0; }"
         )
-        self._browser.setMaximumHeight(240)
+        self._browser.setMinimumHeight(0)
+        self._browser.setMaximumHeight(self._compute_max_height())
         body.addWidget(self._browser)
 
         self._refresh_browser()
         self._apply_visibility()
 
+    # ---------------------------------------------------------------
+    # Высота
+    # ---------------------------------------------------------------
+
+    def _compute_max_height(self) -> int:
+        """Потолок высоты: 40 % viewport ближайшего QScrollArea, иначе окна.
+
+        Ищем ``QScrollArea`` вверх по иерархии: ``ChatPanel`` использует
+        ``AutoScrollArea`` (наследник ``QScrollArea``), поэтому обычно
+        находим именно его. Если виджет ещё не встроен — берём высоту
+        окна; если и её нет (headless) — ``_FALLBACK_MAX_HEIGHT``.
+        """
+        p: QWidget | None = self.parent()  # type: ignore[assignment]
+        while p is not None:
+            if isinstance(p, QScrollArea):
+                vh = p.viewport().height()
+                if vh > 0:
+                    return max(self._MIN_BODY_HEIGHT * 2, int(vh * self._MAX_HEIGHT_RATIO))
+                break
+            p = p.parent()  # type: ignore[assignment]
+        try:
+            wh = self.window().height()
+        except Exception:
+            wh = 0
+        if wh > 0:
+            return max(self._MIN_BODY_HEIGHT * 2, int(wh * self._MAX_HEIGHT_RATIO))
+        return self._FALLBACK_MAX_HEIGHT
+
+    def _natural_height(self) -> int:
+        """Естественная высота документа при текущей ширине viewport."""
+        vw = self._browser.viewport().width()
+        if vw <= 0:
+            return self._MIN_BODY_HEIGHT
+        doc: QTextDocument = self._browser.document()
+        doc.setTextWidth(vw)
+        return max(self._MIN_BODY_HEIGHT, int(doc.size().height()) + 8)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        """Пересчитываем потолок при изменении ширины/высоты (0.1.3a).
+
+        Если идёт анимация — не мешаем ей; иначе сразу применяем cap,
+        чтобы при ресайзе окна reasoning не «залипал» на старой высоте.
+        """
+        super().resizeEvent(event)
+        if self._expanded and self._anim is None:
+            self._browser.setMaximumHeight(self._compute_max_height())
+
+    # ---------------------------------------------------------------
+    # Содержимое
+    # ---------------------------------------------------------------
+
     def _refresh_browser(self) -> None:
-        """Пересобирает HTML из `_text` (курсив, серый)."""
+        """Пересобирает HTML из `_text`; высота — по контенту с потолком."""
         safe = (
             self._text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         )
         self._browser.setHtml(f'<div style="color:#a8a8b8; font-style:italic;">{safe}</div>')
-        # Авто-высота: ~16px на строку, потолок 240.
-        line_count = self._text.count("\n") + 1
-        h = min(max(40, line_count * 16 + 8), 240)
-        self._browser.setFixedHeight(h)
+        cap = self._compute_max_height()
+        self._browser.setMaximumHeight(cap)
+        # Внутренний авто-скролл к последнему токену: пользователь видит
+        # свежие мысли, не прокручивая вручную.
+        if self._expanded:
+            QTimer.singleShot(0, self._scroll_body_to_end)
         self._refresh_header()
+
+    def _scroll_body_to_end(self) -> None:
+        """Скроллит внутренний QTextBrowser к последнему токену."""
+        sb = self._browser.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _refresh_header(self) -> None:
         n = len(self._text)
@@ -580,15 +652,87 @@ class ReasoningWidget(QWidget):
             f'<span style="color: #6a6a7a; font-size: 11px;">· {n} {unit}</span>'
         )
 
+    # ---------------------------------------------------------------
+    # Видимость и анимация
+    # ---------------------------------------------------------------
+
     def _apply_visibility(self) -> None:
+        """Мгновенное состояние (без анимации) — для __init__ и set_text."""
         self._browser.setVisible(self._expanded)
+        if self._expanded:
+            self._browser.setMaximumHeight(self._compute_max_height())
+        else:
+            self._browser.setMaximumHeight(0)
         self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
 
-    def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        self._apply_visibility()
+    def _stop_anim(self) -> None:
+        """Останавливает текущую анимацию (если идёт)."""
+        if self._anim is not None:
+            with contextlib.suppress(Exception):
+                self._anim.stop()
+            self._anim = None
 
-    # --- Публичный API ---
+    def _animate_height(self, *, expand: bool) -> None:
+        """Плавно меняет maximumHeight: 0 ⇄ cap, 150 мс (0.1.3a).
+
+        Вырожденный случай (``start == target``) обрабатываем явно: в
+        PySide6 ``QPropertyAnimation.finished`` не гарантирован для no-op
+        анимаций, а нам критично вызвать ``hide()`` после сворачивания.
+        Для collapse дополнительно ставим ``QTimer.singleShot`` — safety
+        net на случай, если ``finished`` всё равно не сработает.
+        """
+        self._stop_anim()
+        self._browser.setVisible(True)
+        # ``height()`` до первого layout может быть 0. ``max(1, ...)``
+        # гарантирует, что анимация не вырожденная и ``finished`` сработает.
+        start = max(1, self._browser.height())
+        target = self._compute_max_height() if expand else 0
+        if start == target:
+            self._browser.setMaximumHeight(target)
+            if not expand:
+                self._browser.hide()
+            return
+        anim = QPropertyAnimation(self._browser, b"maximumHeight", self)
+        anim.setDuration(self._ANIM_DURATION_MS)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        if not expand:
+            anim.finished.connect(self._on_collapse_finished)
+            # Safety net: даже если finished не придёт — тело скроется.
+            QTimer.singleShot(
+                self._ANIM_DURATION_MS + 20,
+                self._finalize_collapse_if_still_collapsed,
+            )
+        anim.start()
+        self._anim = anim
+
+    def _on_collapse_finished(self) -> None:
+        """Сработал ``finished`` анимации сворачивания — скрываем тело."""
+        self._anim = None
+        self._browser.hide()
+
+    def _finalize_collapse_if_still_collapsed(self) -> None:
+        """Safety net: гарантированно скрыть тело после collapse.
+
+        Если ``finished`` уже отработал — no-op. Если пользователь успел
+        развернуть обратно (``_expanded=True``) — не трогаем, чтобы не
+        «моргнуть» открытым блоком.
+        """
+        if not self._expanded:
+            self._browser.hide()
+            self._browser.setMaximumHeight(0)
+
+    def _toggle(self) -> None:
+        """Разворачивает/сворачивает тело с анимацией."""
+        self._expanded = not self._expanded
+        self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
+        self._animate_height(expand=self._expanded)
+        if self._expanded:
+            QTimer.singleShot(self._ANIM_DURATION_MS, self._scroll_body_to_end)
+
+    # ---------------------------------------------------------------
+    # Публичный API (контракт не меняется)
+    # ---------------------------------------------------------------
 
     def set_text(self, text: str) -> None:
         self._text = text or ""
@@ -610,11 +754,11 @@ class ReasoningWidget(QWidget):
         self._refresh_browser()
 
     def collapse(self) -> None:
-        """Свернуть блок (вызывается на finish)."""
+        """Свернуть блок (вызывается в ChatMessageItem.finalize)."""
         if self._expanded:
             self._expanded = False
-            self._apply_visibility()
-
+            self._toggle_btn.setText("▼ Развернуть")
+            self._animate_height(expand=False)
 
 class TextWidget(QTextBrowser):
     """Markdown-текст ответа модели с авто-высотой под содержимое."""

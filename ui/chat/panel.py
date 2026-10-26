@@ -32,7 +32,16 @@ from agents.hypotheses import HypothesisStore
 from agents.investigation import is_research_question
 from agents.model_pool import Role
 from agents.model_router import BackendType, ModelRouter
-from agents.ollama_client import ChatMessage, OllamaClient
+from agents.ollama_client import (
+    ChatMessage,
+    MessagePart,
+    OllamaClient,
+    ReasoningPart,
+    TextPart,
+    ToolCall,
+    ToolCallPart,
+    ToolResultPart,
+)
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
 from core.chat_commands import (
@@ -81,6 +90,7 @@ if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
     from agents.model_pool import ModelPool
     from agents.orchestrator import Orchestrator
+    from ui.chat.message_item import ToolCallCard
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -213,6 +223,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+
+        # 0.1.3b: аккумулятор частей текущего ответа ассистента.
+        # Нужен, чтобы _on_agent_finish/_send_finished сохраняли полный
+        # ChatMessage (reasoning + text + tool_calls + tool_results),
+        # а не только TextPart. Без этого reasoning и tool-calls терялись
+        # при перезагрузке сессии.
+        self._current_assistant_parts: list[MessagePart] = []
+        self._current_assistant_text: str = ""
+        self._current_assistant_reasoning: str = ""
+
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
@@ -375,6 +395,50 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # промежуточные проходы O(n²).
         if not getattr(self, "_suppress_collapse", False):
             self._maybe_collapse_old_messages()
+        return widget
+
+    def _render_assistant_parts(self, msg: ChatMessage) -> ChatMessageItem:
+        """Восстанавливает композитный пузырь из ChatMessage.parts (0.1.3c).
+
+        Порядок частей — как их складывал `_on_chunk`/`_on_thinking`/
+        `_on_tool_started`/`_on_tool_executed`: reasoning → text → tool_call
+        → tool_result → tool_call → tool_result → …
+
+        `ToolResultPart` привязывается к последней «pending»-карточке с тем
+        же `name`. Порядок частей гарантирует, что к моменту прихода
+        результата карточка уже создана (start всегда идёт до executed).
+
+        Args:
+            msg: Сообщение ассистента с непустым `parts`.
+
+        Returns:
+            Собранный `ChatMessageItem`. Пустые части (`text=""`) пропускаются.
+        """
+        widget = ChatMessageItem(
+            msg.role,
+            content="",
+            mode_name=self._current_mode_name(),
+        )
+        # Очередь pending-карточек по имени инструмента. Список, потому что
+        # модель может вызвать один и тот же инструмент дважды подряд.
+        pending_cards: dict[str, list[ToolCallCard]] = {}
+        for part in msg.parts:
+            if isinstance(part, ReasoningPart) and part.text:
+                widget.append_reasoning(part.text)
+            elif isinstance(part, TextPart) and part.text:
+                widget.append_text(part.text)
+            elif isinstance(part, ToolCallPart):
+                for tc in part.calls:
+                    args_json = json.dumps(tc.arguments, ensure_ascii=False)
+                    card = widget.append_tool_call(tc.name, args_json)
+                    if card is not None:
+                        pending_cards.setdefault(tc.name, []).append(card)
+            elif isinstance(part, ToolResultPart):
+                queue = pending_cards.get(part.name) or []
+                if queue:
+                    card = queue.pop(0)
+                    card.set_result(part.content, part.is_error)
+        widget.finalize()
         return widget
 
     def _ensure_assistant_widget(self) -> ChatMessageItem:
@@ -668,7 +732,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self._update_bubble_width(item.widget())
 
     @Slot(str)
+    @Slot(str)
     def _on_thinking(self, token: str):
+        if not token:
+            return
+        # 0.1.3b: reasoning аккумулируется в буфер НЕЗАВИСИМО от того,
+        # показываем ли его в UI (_show_reasoning). Иначе при выключенном
+        # тумблере история сессии теряла бы reasoning_content.
+        self._current_assistant_reasoning += token
         if not self._show_reasoning:
             return
         self._current_thinking_content += token
@@ -688,6 +759,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._activity_state != "streaming":
             self._set_activity_state("streaming")
         self._current_assistant_content += content
+        # 0.1.3b: копим текст отдельно — _build_assistant_message
+        # соберёт из него TextPart один раз при завершении.
+        self._current_assistant_text += content
         widget = self._ensure_assistant_widget()
         widget.append_text(content)
         # QTimer.singleShot(0, ...) НЕ нужен: AutoScrollArea.scroll_to_bottom_if_sticky
@@ -1168,6 +1242,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._messages.clear()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._rag_context = None
         self._attached_files.clear()
         self._hypotheses.clear()
@@ -1274,6 +1351,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._research_mode_active = False
         self._research_cancelled = False
         self._current_thought_stream = None
@@ -1288,6 +1368,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
+        # 0.1.3b: новый запрос — новый буфер частей.
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self.input_edit.clear()
         self.input_edit.setFocus()
 
@@ -1856,6 +1940,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """
         card_was_present = self._active_tool_card is not None
 
+        # 0.1.3b: фиксируем результат в буфере. Порядок в буфере —
+        # ToolCallPart → ToolResultPart → ToolCallPart → … — важен
+        # для _render_assistant_parts, который матчит результат с
+        # последней pending-карточкой по name.
+        self._current_assistant_parts.append(
+            ToolResultPart(
+                call_id="",
+                name=name,
+                content=content or "",
+                is_error=bool(is_error),
+            )
+        )
+
         # [9.5.4] Возвращаемся в «думает» — модель обработает результат.
         self._set_activity_state("thinking")
 
@@ -2019,6 +2116,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except json.JSONDecodeError:
             args = {}
         arg_summary = ", ".join(f"{k}={v}" for k, v in args.items())
+        # 0.1.3b: фиксируем вызов в буфере текущего ответа.
+        # При восстановлении сессии _render_assistant_parts восстановит
+        # карточку и привяжет к ней результат из ToolResultPart.
+        self._current_assistant_parts.append(
+            ToolCallPart(calls=[ToolCall(name=name, arguments=args)])
+        )
         tool_labels = {
             "read_file": "📖 Чтение файла",
             "write_file": "✏️ Запись файла",
@@ -2383,6 +2486,33 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
             self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
 
+    def _build_assistant_message(self, *, fallback_text: str = "") -> ChatMessage:
+        """Собирает ChatMessage из накопленных частей текущего ответа (0.1.3b).
+
+        Reasoning добавляется первым, чтобы модель и UI видели его до текста
+        (порядок важен для воспроизведения истории). Tool-call/result-части
+        идут в порядке реального выполнения.
+
+        Args:
+            fallback_text: Что подставить, если буферы пусты (например,
+                модель вернула только финальный текст без стрима — на
+                случай будущих бэкендов).
+
+        Returns:
+            ChatMessage с parts; пустой TextPart гарантирует, что сообщение
+            не окажется совсем без частей (pydantic-модель допускает parts=[]).
+        """
+        parts: list[MessagePart] = []
+        if self._current_assistant_reasoning:
+            parts.append(ReasoningPart(text=self._current_assistant_reasoning))
+        text = self._current_assistant_text or fallback_text
+        if text:
+            parts.append(TextPart(text=text))
+        parts.extend(self._current_assistant_parts)
+        if not parts:
+            parts.append(TextPart(text=""))
+        return ChatMessage(role="assistant", parts=parts)
+
     @Slot(str)
     def _on_agent_finish(self, result: str):
         # 4.8.B: свернуть reasoning в последнем пузыре — модель закончила.
@@ -2392,8 +2522,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # --- Research-режим: паспорт с выводами, без обычного пузыря ---
         if self._research_mode_active and not self._research_cancelled:
             summary = self._last_research_summary
+            final_text = self._pending_final_answer
             if summary:
-                summary["final_answer"] = self._pending_final_answer
+                summary["final_answer"] = final_text
                 # Если финального текста нет — добавляем явную плашку.
                 # Раньше паспорт показывался с пустым разделом «Выводы»,
                 # и пользователь не понимал, что произошло.
@@ -2409,9 +2540,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if self._should_show_passport(summary):
                     self._show_research_passport(summary)
 
+            # 0.1.3b/c: в research-режиме тоже сохраняем ответ в сессию,
+            # иначе после перезагрузки пользователь видел только паспорт,
+            # а reasoning/tool-calls/финальный текст пропадали.
+            if final_text and self._session_id:
+                assistant_message = self._build_assistant_message(
+                    fallback_text=final_text
+                )
+                self._messages.append(assistant_message)
+                self.session_store.save_message(self._session_id, assistant_message)
+
             self._reset_send_button()
             self._current_assistant_content = ""
             self._current_thinking_content = ""
+            self._current_assistant_parts = []
+            self._current_assistant_text = ""
+            self._current_assistant_reasoning = ""
             self._last_assistant_widget = None
             self._current_thought_stream = None
             self._pending_final_answer = ""
@@ -2419,9 +2563,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._research_mode_active = False
             return
 
-        # --- Обычный режим: как раньше ---
+        # --- Обычный режим: как раньше, но через _build_assistant_message ---
         if result and result != "Отменено":
-            assistant_message = ChatMessage(role="assistant", content=result)
+            assistant_message = self._build_assistant_message(fallback_text=result)
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
@@ -2434,6 +2578,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._last_assistant_widget = None
         # [9.5.3] Ссылку сбрасываем, но виджет трейса остаётся в ленте.
         self._current_thought_stream = None
@@ -2465,8 +2612,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._last_assistant_widget is not None:
             self._last_assistant_widget.finalize()
 
-        if self._current_assistant_content:
-            assistant_message = ChatMessage(role="assistant", content=self._current_assistant_content)
+        if self._current_assistant_text or self._current_assistant_reasoning:
+            assistant_message = self._build_assistant_message(
+                fallback_text=self._current_assistant_content
+            )
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
@@ -2474,6 +2623,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._last_assistant_widget = None
 
     @Slot(str)
@@ -2490,6 +2642,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._reset_send_button()
         # _reset_send_button ставит idle — явно выставим error после.
         self._set_activity_state("error", error_msg[:60])
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._research_mode_active = False
         self._research_cancelled = False
         self._pending_final_answer = ""
@@ -2943,12 +3098,25 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._session_id = session_id
 
     def load_history(self, messages: list[ChatMessage]):
-        """[9.10] Загрузка истории с одним проходом сворачивания в конце."""
+        """[9.10] Загрузка истории с одним проходом сворачивания в конце.
+
+        0.1.3c: рендерим не только content, но и reasoning/tool_calls/
+        tool_results из `msg.parts`. Для старых сообщений без parts
+        (`content`-only) остаётся текстовый рендер — обратная совместимость
+        через `ChatMessage.parts`, собранный в `model_validator`.
+        """
         self._clear_chat(keep_session=True)
         self._suppress_collapse = True
         try:
             for msg in messages:
-                self._add_message(msg.role, msg.content)
+                if msg.role == "assistant" and msg.parts:
+                    widget = self._render_assistant_parts(msg)
+                    self.scroll_layout.insertWidget(
+                        self.scroll_layout.count() - 1, widget
+                    )
+                    self._update_bubble_width(widget)
+                else:
+                    self._add_message(msg.role, msg.content)
                 self._messages.append(msg)
         finally:
             self._suppress_collapse = False

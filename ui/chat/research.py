@@ -22,6 +22,7 @@ from loguru import logger
 from PySide6.QtCore import QTimer, Slot
 
 from agents.model_pool import ModelPool, Role
+from agents.ollama_client import TextPart
 from agents.orchestrator import Orchestrator, RunResult
 from core.budget import ApproxCounter
 
@@ -62,6 +63,11 @@ class ResearchMixin:
         self._pending_final_answer = ""
         self._last_research_summary = None
         self._current_thought_stream = None
+        # 0.1.3b: буферы частей должны быть пусты к началу нового прогона —
+        # иначе parts предыдущего ответа «прилипнут» к следующему.
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
 
     # ------------------------------------------------------------------
     # Слоты research-режима (подключаются в _connect_agent_thread_signals).
@@ -368,14 +374,19 @@ class ResearchMixin:
             if self._last_assistant_widget is not None:  # type: ignore[attr-defined]
                 self._last_assistant_widget.finalize()  # type: ignore[attr-defined]
 
-            # Сохраняем assistant-сообщение в историю.
+            # Сохраняем assistant-сообщение в историю (0.1.3b).
+            # Оркестратор не стримит через _on_chunk, поэтому собираем
+            # ChatMessage напрямую из TextPart(result.answer).
             if result.answer:
-                assistant_message = ChatMessage(role="assistant", content=result.answer)
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    parts=[TextPart(text=result.answer)],
+                )
                 self._messages.append(assistant_message)  # type: ignore[attr-defined]
                 if self._session_id:  # type: ignore[attr-defined]
                     self.session_store.save_message(  # type: ignore[attr-defined]
                         self._session_id,
-                        assistant_message,  # type: ignore[attr-defined]
+                        assistant_message,
                     )
 
             # Диаграмма компонентов.
