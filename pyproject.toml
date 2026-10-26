@@ -70,10 +70,55 @@ line-length = 110 # Максимальная длина строки (симво
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
+# select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
+# ignore = [
+# "E501",   # Игнорировать слишком длинные строки
+# "SIM108"  # Игнорировать замену If на тернарный оператор
+# ]
+# РАЗРЕШАЕМ КИРИЛЛИЦУ: этот параметр должен лежать строго здесь | важно для RUF
+allowed-confusables = [
+    "А", "а", "Б", "б", "В", "в", "Г", "г", "Д", "д", "Е", "е", "Ж", "ж",
+    "З", "з", "И", "и", "Й", "й", "К", "к", "Л", "л", "М", "м", "Н", "н",
+    "О", "о", "П", "п", "Р", "р", "С", "с", "Т", "т", "У", "у", "Ф", "ф",
+    "Х", "х", "Ц", "ц", "Ч", "ч", "Ш", "ш", "Щ", "щ", "Ъ", "ъ", "Ы", "ы",
+    "Ь", "ь", "Э", "э", "Ю", "ю", "Я", "я"
+]
+# Базовый набор правил для максимального качества, строгости и безопасности
+select = [
+    # --- ВАШИ ИСХОДНЫЕ ПРАВИЛА ---
+    "E",  # pycodestyle (Errors): критические нарушения базового стиля кода
+    "F",      # Pyflakes: логические ошибки, синтаксические баги, неиспользуемые переменные
+    "I",      # isort: строгая сортировка, группировка и чистота секции импортов
+    "N",      # pep8-naming: жесткое соблюдение стандартов именования (CamelCase, snake_case)
+    "UP",     # pyupgrade: автообновление синтаксиса до актуальной версии Python
+    "B",      # flake8-bugbear: поиск неочевидных багов, которые Python пропускает в рантайме
+    "A",      # flake8-builtins: запрет на затенение (перезапись) встроенных функций Python (id, list)
+    "C4",     # flake8-comprehensions: оптимизация и упрощение создания списков, словарей и множеств
+    "PT",     # flake8-pytest-style: унификация стилей написания тестов для pytest
+    "RET",    # flake8-return: контроль за логикой return (убирает лишние else после return)
+    "SIM",    # flake8-simplify: упрощение запутанных условий и избыточных конструкций
+    # --- ДОПОЛНЕНИЯ ДЛЯ МАКСИМАЛЬНОГО КАЧЕСТВА И БЕЗОПАСНОСТИ ---
+#    "ASYNC",  # flake8-async: ловит критические ошибки асинхронности (забытые await, блокирующий ввод-вывод)
+#    "S",      # flake8-bandit: безопасность (поиск уязвимостей, паролей в коде, небезопасных eval/exec)
+#    "BLE",    # flake8-blind-except: запрет на слепой перехват `except Exception: pass`, скрывающий баги
+#    "FBT",    # flake8-boolean-trap: запрет позиционных bool-аргументов в функциях (повышает читаемость)
+#    "C90",    # mccabe: контроль цикломатической сложности (ругается, если функция слишком запутанная)
+#    "COM",    # flake8-commas: контроль висячих запятых (делает git diff чистым и однозначным)
+#    "DTZ",    # flake8-datetimez: запрет datetime без таймзон (избавляет от багов со временем на сервере)
+#    "T10",    # flake8-debugger: гарантирует, что в продакшен не улетят забытые `breakpoint()` и дебаггеры
+#    "ISC",    # flake8-implicit-str-concat: ловит неявное объединение строк (частая опечатка в списках)
+#    "PIE",    # flake8-pie: мелкие улучшения качества кода и удаление дублирующихся конструкций
+#    "RSE",    # flake8-raise: однозначность при вызове исключений (убирает избыточные скобки у raise)
+#    "RUF",    # Ruff-specific rules: глубокие внутренние проверки самого Ruff (утечки памяти и т.д.)
+#    "YTT",    # flake8-2020: ловит устаревшие и ненадёжные способы проверки версии Python
+]
 ignore = [
-"E501",   # Игнорировать слишком длинные строки
-"SIM108"  # Игнорировать замену If на тернарный оператор
+    # --- ИСХОДНЫЕ ИСКЛЮЧЕНИЯ ---
+    "E501",    # line-too-long: длинные строки разрешены (удобно для больших экранов и SQL-запросов)
+    "SIM108",  # use-ternary-operator: отключает принудительное сжатие if-else условий в тернарные
+    # --- ТЕХНИЧЕСКИЕ ИСКЛЮЧЕНИЯ ДЛЯ СОВМЕСТИМОСТИ ---
+    "COM812",  # missing-trailing-comma: отключает конфликт запятых, если используется `ruff format`
+    "ISC001",  # single-line-implicit-string-concatenation: отключает конфликт склеивания строк с форматером
 ]
 
 [tool.ruff.format]
@@ -127,6 +172,41 @@ module = [
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+
+#    [tool.mypy]
+#    python_version = "3.12"
+#    strict = true
+#    warn_return_any = true
+#    warn_unused_configs = true
+#    ignore_missing_imports = true
+#    disallow_untyped_defs = false
+#    disallow_incomplete_defs = false
+#    check_untyped_defs = true
+#    disallow_untyped_calls = false
+#    disallow_any_generics = false
+#
+#    # Pydantic v2: без плагина mypy не понимает `model_validator(mode="before")`
+#    # и ругается «Unexpected keyword argument "content" for "ChatMessage"» на
+#    # каждый ChatMessage(content=...)/ChatChunk(content=...). Плагин ставится
+#    # вместе с pydantic, отдельная зависимость не нужна.
+#    plugins = ["pydantic.mypy"]
+#
+#    [[tool.mypy.overrides]]
+#    module = [
+#        "core.*",
+#        "agents.*",
+#        "fs.*",
+#        "state.*",
+#        "tools.*",
+#    ]
+#    disallow_untyped_defs = true
+#    disallow_incomplete_defs = true
+#
+#    [tool.pydantic-mypy]
+#    init_forbid_extra = false
+#    init_typed = false
+#    warn_required_dynamic_aliases = true
+
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
