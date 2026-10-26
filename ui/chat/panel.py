@@ -259,6 +259,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # в правой панели; сохраняется в ProjectSettings.show_reasoning.
         self._show_reasoning: bool = True
         self._last_assistant_widget: ChatMessageItem | None = None
+        # 0.1.4: программная установка модели (set_model из _do_open_project,
+        # восстановление last_model) не должна триггерить сохранение
+        # settings_changed — иначе при SLM-active это могло бы перетереть
+        # config.last_model именем модели Ollama, которая не используется.
+        self._suppress_model_save: bool = False
         self.tool_policies: dict[str, ToolPolicy] = {}
         self.registry: ModelRegistry | None = None
 
@@ -1189,16 +1194,29 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.mode_changed.emit(mode)
         self._emit_settings_changed()
 
-    def _emit_settings_changed(self):
+    def _settings_payload(self) -> dict:
+        """Собирает актуальный payload для ``settings_changed`` (0.1.4).
+
+        Модель включается в payload только когда активна Ollama: при SLM
+        ``model_combo`` содержит «последнюю выбранную Ollama-модель», и
+        сохранять её в ``last_model`` при каждой смене режима бессмысленно —
+        в итоге ``config.last_model`` остался бы 7B, хотя реально грузится 3B.
+
+        Returns:
+            Словарь ``{"mode": ..., "model": ...}`` (``model`` — только при
+            Ollama). Оба потребителя (``_emit_settings_changed`` и
+            ``_save_current_settings``) используют этот метод, чтобы не
+            расходиться по фильтру.
+        """
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
         payload: dict = {"mode": mode_map.get(self.mode_combo.currentIndex(), "chat")}
-        # Модель имеет смысл только когда активна Ollama. При SLM model_combo
-        # содержит «последнюю выбранную Ollama-модель» (например, 7B) и
-        # сохранять её в last_model при каждой смене режима бессмысленно —
-        # в итоге config.last_model остаётся 7B, хотя реально грузится 3B.
         if self._router.active_backend == BackendType.OLLAMA:
             payload["model"] = self.get_current_model()
-        self.settings_changed.emit(payload)
+        return payload
+
+    def _emit_settings_changed(self):
+        """Эмитит ``settings_changed`` с актуальным payload (0.1.4)."""
+        self.settings_changed.emit(self._settings_payload())
 
     def _toggle_agent_panel(self):
         self.agent_panel_toggle.emit(True)
@@ -2726,12 +2744,24 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.tool_status_label.setVisible(True)
 
     def set_model(self, model: str):
-        idx = self.model_combo.findData(model)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-        else:
-            self.model_combo.addItem(model, model)
-            self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
+        """Устанавливает модель в combo (0.1.4).
+
+        Программная установка (восстановление ``last_model`` при открытии
+        проекта, ``core/app.py::run``) не должна триггерить сохранение —
+        иначе при SLM-active ``_on_model_changed`` мог бы записать чужую
+        модель в ``config.last_model``. ``_suppress_model_save`` подавляет
+        только сохранение; обновление статуса/совместимости остаётся.
+        """
+        self._suppress_model_save = True
+        try:
+            idx = self.model_combo.findData(model)
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+            else:
+                self.model_combo.addItem(model, model)
+                self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
+        finally:
+            self._suppress_model_save = False
 
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         self.tool_policies[tool_name] = policy
@@ -2984,21 +3014,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.model_status_label.setToolTip(tooltip)
 
     def _on_model_changed(self, index: int):
+        """Реакция на смену модели в combo (0.1.4).
+
+        Обновляет статус и совместимость **всегда** (это UI), а сохранение
+        настроек — только когда это ручное действие пользователя. При
+        программной установке через ``set_model`` флаг ``_suppress_model_save``
+        подавляет сохранение: иначе восстановление ``last_model`` из конфига
+        при открытии проекта могло бы записать это значение обратно в SLM-сессию.
+        """
         model_name = self.get_current_model()
         if model_name:
             self._update_model_status(model_name)
             self._check_mode_compatibility()
-            self._save_current_settings()
+            if not self._suppress_model_save:
+                self._save_current_settings()
 
     def _save_current_settings(self):
+        """Эмитит settings_changed с актуальным mode (и model, если Ollama активна).
+
+        0.1.4: при активном SLM поле ``model`` НЕ эмитится. Иначе
+        ``MainWindow._on_chat_settings_changed`` перетёр бы ``config.last_model``
+        именем модели Ollama, которая на самом деле не используется. Тот же
+        фильтр уже применён в ``_emit_settings_changed`` — теперь оба пути
+        (смена режима и смена модели) согласованы.
+        """
         try:
-            mode_map = {0: "chat", 1: "plan", 2: "agent"}
-            self.settings_changed.emit(
-                {
-                    "model": self.get_current_model(),
-                    "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-                }
-            )
+            self.settings_changed.emit(self._settings_payload())
         except Exception as e:
             logger.warning(f"Не удалось сохранить настройки: {e}")
 
