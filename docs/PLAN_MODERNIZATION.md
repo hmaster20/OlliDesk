@@ -36,32 +36,44 @@
 | **Project Intelligence (граф зависимостей, repomap, парсеры Ansible/Terraform/Vagrant/C#/Python)** | ✅ | `fs/intel/` |
 | **Research-режим: фазы, гипотезы, нуджи, паспорт исследования** | ✅ | `agents/investigation.py`, `agents/hypotheses.py`, `ui/chat/thought_stream.py`, `ui/chat/research_passport.py` |
 | **AGENTS.md как постоянный контекст проекта** | ✅ | `agents/context_loader.py` |
-| **Стриминг SLM (токены онлайн)** | ✅ | `agents/local_llm_client.py::_generate` эмитит `TextPart` на каждый токен + start/end (9.5) |
-| **Живой трейс для Agent/Plan** | ✅ | `ChatThoughtStream` в Agent/Plan через `_ensure_thought_stream`; в Chat — плоский activity (9.5.3) |
-| **Единая приборная панель статусов** | ✅ | `ui/widgets/status_dashboard.py::StatusDashboard` в статус-баре: backend/pipeline/tok/s/RAG/tools (9.7) |
+| **Стриминг SLM (токены онлайн)** | ✅ | `agents/local_llm_client.py::_generate` эмитит `TextPart` на каждый токен + start/end (9.5.2) |
+| **Живой трейс для Agent/Plan** | ✅ | `ChatThoughtStream` в Agent/Plan через `_ensure_thought_stream`; в Chat — плоский activity (9.5.2) |
+| **Единая приборная панель статусов** | ✅ | `ui/widgets/status_dashboard.py::StatusDashboard` в статус-баре: backend/pipeline/tok/s/RAG/tools (9.8) |
 | **SLM-first селекторы моделей** | ✅ | `ui/widgets/pipeline_selectors.py::PipelineSelectors` в верхней панели; глобальный переключатель SLM⇄Ollama в дашборде (9.3) |
 | **Профили использования (Разработка / Исследование / Обучение)** | ✅ | `core/profiles.py`, `ui/widgets/profiles_selector.py`, `ui/dialogs/profile_editor_dialog.py`, меню `View → Профили` (9.4) |
-| **PDF/DOCX/PPTX/XLSX/RTF + OCR + предпросмотр** | ✅ | `fs/document_extractors.py`, `ui/dialogs/document_preview_dialog.py`, `_DOC_LANGUAGES` в `VectorStore` (9.4/Фаза 5 частично) |
+| **PDF/DOCX/PPTX/XLSX/RTF + OCR + предпросмотр** | ✅ | `fs/document_extractors.py`, `ui/dialogs/document_preview_dialog.py`, `_DOC_LANGUAGES` в `VectorStore` (Фаза 5 частично + 9.7) |
 | **Дизайн-система (токены, полное покрытие QSS)** | ✅ | `ui/theme.py`: Darcula + тёплые акценты, QTableWidget/QHeaderView и т.д. (9.1) |
-| **OCR изображений (JPG/PNG)** | ⚠️ | `rapidocr-onnxruntime` есть, подключение к drag&drop картинок — Фаза 5 |
-| **Аудио/видео (STT)** | ❌ | `faster-whisper` + ffmpeg — Фаза 5 |
-| **Vision-модели через Ollama** | ❌ | `qwen2.5-vl` / `llama3.2-vision` — Фаза 5 |
+| **OCR изображений (JPG/PNG)** | ⚠️ | `rapidocr-onnxruntime` есть, подключение к drag&drop картинок — Фаза 5 (backend) + 9.7 (UI) |
+| **Аудио/видео (STT)** | ❌ | `faster-whisper` + ffmpeg — Фаза 5 (backend) + 9.7 (UI) |
+| **Vision-модели через Ollama** | ❌ | `qwen2.5-vl` / `llama3.2-vision` — Фаза 5 (backend) |
 | **MCP** | ❌ | Фаза 7 |
 | **Система плагинов** | ❌ | Фаза 7 |
 | **Событийная модель сообщений (`MessagePart`)** | ✅ | `agents/ollama_client.py` (`TextPart`/`ReasoningPart`/`ToolCallPart`/`ToolResultPart`), `state/session_store.py` (колонка `parts_json`) |
 | **Композитный пузырь сообщения** | ✅ | `ui/chat/message_item.py` (`ChatMessageItem` из `ReasoningWidget` + `TextWidget` + `ToolCallCard`) |
 | **Выполнение shell-команд агентом** | ✅ | `tools/shell_ops.py::run_shell_command` (ASK_FIRST, AGENT-only, чёрный список, песочница cwd) |
 | Компактор истории диалога | ✅ | `agents/history_compactor.py` (вызывается в `AgentLoop`; приоритет: reasoning → tool-результаты → старейшие реплики) |
-| **Дифф-карточка `write_file`** | ✅ | `ToolCallCard._render_diff_mode` + `tools/file_ops.py::write_file` → dict `{diff, lines_added, lines_removed, written_content, ...}` (9.6.1) |
-| **Автодополнение `@`-тегов** | ✅ | `ui/widgets/command_completer.py::CommandCompleter`, `core/chat_commands.py` (9.6.2) |
-| **Экспорт чата в Markdown/HTML** | ✅ | `core/chat_export.py`, `ui/dialogs/export_chat_dialog.py`, `File → Экспорт чата…` (9.6.3) |
-| **Менеджер сессий: preview + «Создать проект из сессии»** | ✅ | `ui/dialogs/session_manager_dialog.py` (9.6.4) |
-| **Палитра команд `Ctrl+Shift+P`** | ✅ | `ui/command_registry.py`, `ui/widgets/command_palette.py`, `_register_palette_commands` (9.9) |
-| **Виртуализация длинных чатов** | ✅ | `ui/widgets/collapsed_placeholder.py::CollapsedPlaceholder`, порог 80 (9.10) |
-| **Авто-скролл с порогом 32 px** | ✅ | `ui/widgets/auto_scroll.py::AutoScrollArea` (9.5.5) |
+| **Дифф-карточка `write_file`** | ✅ | `ToolCallCard._render_diff_mode` + `tools/file_ops.py::write_file` → dict `{diff, lines_added, lines_removed, written_content, ...}` (9.5.3) |
+| **Автодополнение `@`-тегов** | ✅ | `ui/widgets/command_completer.py::CommandCompleter`, `core/chat_commands.py` (9.5.4) |
+| **Экспорт чата в Markdown/HTML** | ✅ | `core/chat_export.py`, `ui/dialogs/export_chat_dialog.py`, `File → Экспорт чата…` (9.5.4) |
+| **Менеджер сессий: preview + «Создать проект из сессии»** | ✅ | `ui/dialogs/session_manager_dialog.py` (9.5.4) |
+| **Палитра команд `Ctrl+Shift+P`** | ✅ | `ui/command_registry.py`, `ui/widgets/command_palette.py`, `_register_palette_commands` (9.8) |
+| **Виртуализация длинных чатов** | ✅ | `ui/widgets/collapsed_placeholder.py::CollapsedPlaceholder`, порог 80 (9.8) |
+| **Авто-скролл с порогом 32 px** | ✅ | `ui/widgets/auto_scroll.py::AutoScrollArea` (9.5.1) |
 | **Замеры производительности (TTFT/tok/s/load)** | ✅ | `agents/benchmark.py`, `ui/dialogs/benchmark_dialog.py`, `View → Замер производительности…` (4.7.B) |
-| **Git-diff в редакторе (HEAD ↔ рабочая копия)** | ✅ | `tools/git_ops.py::read_file_at_head`/`get_git_status_for_file`, `EditorWidget.show_git_diff_for_file`, Ctrl+D (9.8) |
+| **Git-diff в редакторе (HEAD ↔ рабочая копия)** | ✅ | `tools/git_ops.py::read_file_at_head`/`get_git_status_for_file`, `EditorWidget.show_git_diff_for_file`, Ctrl+D (9.4) |
 | **Вынос `panel.py` в миксины** | ✅ | `ui/chat/backends.py::BackendsMixin` + `ui/chat/research.py::ResearchMixin` (2.4) |
+| **Стационарный чат без крестика (чат — не вкладка)** | ❌ | `MainWindow._create_center_panel` ещё кладёт чат в `QTabWidget` (9.1) |
+| **Авто-показ структуры проекта при открытии** | ⚠️ | Сейчас восстанавливается `config.show_project_tree` (по умолчанию `False`) (9.2) |
+| **Поиск моделей на HuggingFace** | ❌ | `SLMModelsDialog` работает только с локальным каталогом (9.3.1) |
+| **Отдельный `slm_models.yaml` (модели и tier вне `config.yaml`)** | ❌ | `_DEFAULT_SLM_MODELS` в `core/config.py`, `available_models` в `config.yaml` (9.3.3) |
+| **Подсветка coder-моделей в профиле «Разработка»** | ❌ | В `PipelineSelectors`/`ProfilesSelector` нет визуальной дифференциации (9.3.2) |
+| **Git-контекст в промпте (ветка, hash, diff)** | ❌ | `AgentContext` не содержит `git_context`; `ProjectSettings` не хранит branch/hash (9.4) |
+| **`git_commit` как инструмент агента** | ❌ | `tools/git_ops.py` умеет только `create_snapshot`/`undo_last_snapshot` (9.4) |
+| **«Живой» UI: события из логов в интерфейсе** | ❌ | `EventBus` отсутствует; `status_label` показывает только «🤔 Думает…» (9.5.3) |
+| **Авто-высота reasoning-виджета** | ⚠️ | `ReasoningWidget.setFixedHeight(min(max(40, line_count*16+8), 240))` — тесно (9.5.2) |
+| **Восстановление истории с reasoning/tool_calls** | ⚠️ | `_on_agent_finish` сохраняет только `TextPart`; reasoning/tool_calls теряются (9.6) |
+| **Drag&drop файлов в чат** | ❌ | Работают только `@file`/`@dir`/`@path` (9.7) |
+| **Превью изображений/аудио в пузыре** | ❌ | `ChatMessage.images` не используется в UI (9.7) |
 | Тесты UI / state | ✅ | `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py` |
 
 ---
@@ -102,7 +114,7 @@
       `_apply_config_policies` читает `tool_policies` и `confirm`, `chat_auto_tools`
       вынесен в `AppConfig`; приоритет декоратора (`ASK_FIRST` у `write_file`)
       всё ещё не переопределён конфигом — только явные `set_policy` из UI.
-      **В Фазе 9 профили (9.4) добавляют визуальный редактор `tool_policies`** (9.6).
+      **В Фазе 9 профили (9.4) добавляют визуальный редактор `tool_policies`** (9.5.4).
 - [x] **Исправить баг:** `search_cache` не инжектился в `web_search` — добавлен в
       `_INJECTED_PARAMS` (`agents/tool_registry.py`) и прокинут из `ChatPanel` через
       `AgentContext.search_cache`. Рядом добавлены `attached_files` и `hypotheses`.
@@ -121,6 +133,8 @@
       — часть 4.8.B, там `_ICONS` в `ToolCallCard` работает как единственный источник).
 
 ### 2.3 Управление потоками и отменой
+> **Влияет на отзывчивость UI** — см. 9.5.3 («живой» UI) и 9.8 (прогресс индексации).
+
 - [ ] Единый `ThreadPool`/`TaskManager` вместо независимых `QThread`-классов.
       Сейчас в `ui/chat/threads.py`: `AgentChatThread`, `RagSearchThread`,
       `WebSearchThread`, `_OllamaCheckThread`, `_SLMLoadThread`, `_SLMDownloadThread`,
@@ -143,7 +157,7 @@
       `_GitStatusWorker`: `git status --porcelain` и определение ветки/тега выполняются
       в worker-потоке, `_running`-флаг защищает от накопления однотипных проверок.
       `PullThread` в `model_manager_dialog.py` остался — объединить с
-      `_DownloadThread` (см. 4.6.D).
+      `_DownloadThread` (см. 9.3.3).
 - [ ] Корректно отменять/удалять потоки при закрытии окна (`closeEvent`).
 
 ### 2.4 Разделение `ui/main_window.py` и `ui/chat/panel.py`
@@ -344,7 +358,7 @@
       `PRAGMA table_info`), `save_message` пишет `message.parts` в JSON (плюс `content`
       для обратной совместимости), `get_history` читает `parts_json` с фоллбэком на
       `content`. `reasoning_content` и `tool_calls` теперь переживают перезагрузку
-      сессии — при условии, что они попали в `ChatMessage.parts` (см. 4.8.B — сборка
+      сессии — при условии, что они попали в `ChatMessage.parts` (см. 9.6 — сборка
       `ChatMessage` из виджета при finish).
 - [x] **`slm.n_ctx: 4096` → 8192** (`React.md` 10.1): `SLMConfig.n_ctx` и `target_n_ctx`
       теперь по умолчанию 8192. `_SLMLoadThread` сохранил дефолт параметра 4096, но
@@ -390,9 +404,9 @@
 - [~] **Structured trace агента** (`React.md` 8.1): в research-режиме есть
       `last_research_summary` и `ChatResearchPassport` с прочитанными файлами, поисками,
       гипотезами. Полноценного трейса (итерация → действие → длина observation →
-      длительность) с кнопкой «Показать трейс» — нет. **Связано с 9.5 (живой трейс).**
+      длительность) с кнопкой «Показать трейс» — нет. **Закрывается в 9.5.3 («живой» UI).**
 - [ ] **Метрики реестра** (`React.md` 8.2): `_stats` в `ToolRegistry` (calls/errors/by_tool)
-      в статус-бар — сколько ошибок tool-call за сессию.
+      в статус-бар — сколько ошибок tool-call за сессию. **Отображение — в 9.8.**
 - [ ] **Эпизодическая память** (`React.md` 7.2): `~/.ollidesk/memory.db` с рефлексиями,
       подгрузка top-3 через существующий `VectorStore`.
 - [x] **Типизированное редактирование аргументов** (`React.md` 9.2): `ToolConfirmationDialog._edit_arguments`
@@ -404,7 +418,7 @@
       при смене версии модели.
 - [ ] **Warning о `n_gpu_layers` в UI** (`React.md` 5.3): показывать итоговое число слоёв в
       статус-строке при загрузке SLM. Сейчас `optimize()` пишет в лог, но в UI не выводится.
-      **Связано с 9.7 (приборная панель).**
+      **Отображение — в 9.8.**
 - [x] **Multi-tool-call у SLM** (`React.md` 5.1): `LocalLLMClient._parse_tool_calls`
       возвращает список из `extract_tool_calls` (JSON + function-call), в `chat()` все
       вызовы уходят одним `ChatChunk(part=ToolCallPart(calls=[...]), event_type="tool_call")`.
@@ -415,7 +429,7 @@
 - [x] `RouterChatThread` (`React.md` 1.3, 6.3) — **уже удалён** вместе с
       `OllamaChatThread`; в `ui/chat/threads.py` его нет. Задача закрыта.
 - [ ] `ui/dialogs/model_manager_dialog.py::PullThread` — дублирует `_DownloadThread`
-      из `slm_models_dialog.py`; объединить.
+      из `slm_models_dialog.py`; объединить (см. 9.3.3).
 - [~] Закомментированные блоки в `core/search_cache.py`, `fs/vector_store.py`, `main.py` —
       не восстанавливать, вычистить при рефакторинге. Часть закомментированных строк в
       `main.py` осталась (например, в `_build_system_prompt`), плюс `_OllamaCheckThread`,
@@ -512,7 +526,7 @@
 на `MessagePart` (read-only `content` для обратной совместимости), композитный пузырь
 сообщения, `run_shell_command`, метаданные `is_mutating`/`category` — всё в проде.
 Открыт только 4.8.E — низкоуровневые события реализованы, **стриминг SLM по
-токенам вынесен в 9.5 и уже сделан**.
+токенам вынесен в 9.5.2 и уже сделан**.
 
 ### 4.8.E — AgentLoop и контекст
 
@@ -528,7 +542,7 @@
       подключены к `_on_stream_started_event` / `_on_stream_finished_event`
       (обновляют tok/s в дашборде) и `logger.trace`. Высокоуровневые
       `chunk_received`/`thinking_received` остаются источником для композитного
-      пузыря. **Стриминг SLM по токенам — сделан в 9.5.**
+      пузыря. **Стриминг SLM по токенам — сделан в 9.5.2.**
 - [x] **Базовый приоритет сжатия в компакторе истории** (модуль переписан в
       Фазе 4 как `agents/history_compactor.py`): три ступени — reasoning → содержимое
       старых tool-результатов → старейшие реплики целиком (вместе с tool-вызовами).
@@ -541,108 +555,48 @@
       сообщении не трогаются.
 - [x] **Стриминг SLM (`LocalLLMClient._generate`)**: отдаёт `ChatChunk(part=TextPart,
       event_type="delta")` на каждый токен, `start`/`end` по границам, tool calls —
-      сразу при распознавании (после стрима текста). См. **9.5**.
+      сразу при распознавании (после стрима текста). См. **9.5.2**.
 
 ---
 
-## Фаза 5 — Мультимодальность и документы
+## Фаза 5 — Мультимодальность: backend (UI — в Фазе 9.7)
 
-- [ ] Распознавание скриншотов: `rapidocr-onnxruntime` уже в зависимостях — подключить к
-      drag&drop в чат (`ChatMessage.images` поле в модели есть).
-- [x] **Распознавание документов (PDF, DOCX, PPTX, XLSX, RTF)** для профиля
-      «Исследование» (9.4): `fs/document_extractors.py::extract_document` — извлечение
+**Только backend-экстракторы и модели.** Всё, что связано с отображением в UI (drag&drop,
+превью, кнопки), — в **9.7**.
+
+- [ ] Распознавание скриншотов (JPG, PNG, WebP, BMP): backend-обёртка над
+      `rapidocr-onnxruntime` (`fs/image_extractors.py::extract_image`).
+      Поле `ChatMessage.images` в модели уже есть — UI-часть в 9.7.
+- [ ] Vision-модели через Ollama (backend): `qwen2.5-vl:7b` / `llama3.2-vision:11b`
+      (GPU offload = 0, 4 ГБ VRAM не вмещают мультимодальный контекст).
+      Клиентская обёртка `agents/vision_client.py`; UI-вызов — 9.7.
+- [ ] Аудио (MP3, WAV, OGG, M4A, FLAC): backend `fs/audio_extractors.py::transcribe_audio`
+      через `faster-whisper` (строго CPU, `large-v3` / `whisper-large-v3-russian`),
+      конвертация в 16 кГц WAV через ffmpeg. UI (плеер, прогресс) — 9.7.
+- [ ] Видео (MP4, MKV, WebM, AVI): backend `fs/video_extractors.py::extract_transcript` —
+      извлечение звуковой дорожки ffmpeg → тот же `faster-whisper`. UI — 9.7.
+- [x] **Распознавание документов (PDF, DOCX, PPTX, XLSX, RTF)**:
+      `fs/document_extractors.py::extract_document` — извлечение
       текста через `pdfplumber`/`pypdf`, `python-docx`, `python-pptx`, `openpyxl`,
       `striprtf`; **отдельная коллекция `docs`** (см. `_DOC_LANGUAGES` в
-      `fs/vector_store.py`); **предпросмотр** перед отправкой — `ui/dialogs/document_preview_dialog.py`
-      (`ChatPanel._attach_document`). Опциональные зависимости — `[project.optional-dependencies].docs`.
+      `fs/vector_store.py`). UI-предпросмотр — 9.7.
 - [x] **OCR сканов PDF** (через `rapidocr-onnxruntime` + `pdf2image` + Poppler):
-      `fs/document_extractors.py::_ocr_pdf`, включается явно (`use_ocr=True`),
-      кнопка «🔍 Запустить OCR» в `DocumentPreviewDialog`. По умолчанию выключен
-      (`AppConfig.document_ocr = False`).
-- [ ] Распознавание изображений (JPG, PNG, WebP, BMP): OCR для извлечения текста.
-      Поверх OCR — Vision-модели (из `HARD.md`): через Ollama `qwen2.5-vl:7b`
-      (GGUF Q4_K_M/Q8_0, 5–9 ГБ) или `llama3.2-vision:11b` (8–12 ГБ); экспериментально
-      `qwen2.5-vl:72b` (Q4_K_M, 45–50 ГБ, 1–2 т/с). GPU offload = 0 — 4 ГБ VRAM не
-      вмещают мультимодальный контекст. Поле `ChatMessage.images` уже есть в модели —
-      отправлять картинку вместе с запросом.
-- [ ] Распознавание аудио (MP3, WAV, OGG, M4A, FLAC): транскрипция в текст (Speech-to-Text),
-      извлечение текста, анализ по запросу. Стек из `HARD.md`: `faster-whisper` строго на
-      CPU (`device="cpu", compute_type="float32"`), модель `large-v3` — приоритетно
-      дообученная русскоязычная `whisper-large-v3-russian`; 4 ГБ VRAM не хватает даже на
-      Large. Вход — 16 кГц WAV (конвертация через ffmpeg), i7-11800H разбирает час аудио
-      за несколько минут.
-- [ ] Распознавание видео (MP4, MKV, WebM, AVI): извлечение звуковой дорожки → STT
-      (транскрипция), анализ текста, возможность прикрепления ключевых фрагментов.
-      Дорожку вытаскивать ffmpeg, дальше — тот же `faster-whisper`, что и в аудио.
-- [~] Кнопка «Скрепка» (прикрепить файлы/пути) в чате — `@file`/`@dir`/`@path` работают;
-      drag&drop — не реализован. **Связано с 9.6.**
-- [~] Поддержка мультимедиа в прикреплениях: `@file` и прикреплённые файлы, хранение
-      метаданных (тип, размер), отображение превью. Документы — с предпросмотром;
-      аудио/видео/картинки — не реализованы.
-- [ ] База мультимедиа-экстрактов: кэширование транскрипций/OCR, чтобы не дублировать
-      обработку одних и тех же файлов.
-- [x] PDF/DJVU: извлечение текста через `pdfplumber`/`pypdf`, индексация. **Связано с 9.4
-      (профиль «Исследование»).** DJVU — не реализован (нужен `djvulibre`).
-- [x] Показать пользователю распознанный текст перед отправкой в модель —
-      `DocumentPreviewDialog`.
+      `fs/document_extractors.py::_ocr_pdf`, включается явно (`use_ocr=True`).
+      По умолчанию выключен (`AppConfig.document_ocr = False`).
+- [ ] База мультимедиа-экстрактов: `~/.ollidesk/media_cache/` с хэшем файла →
+      извлечённый текст, чтобы не дублировать обработку одних и тех же файлов.
+- [ ] PDF/DJVU: DJVU не реализован (нужен `djvulibre`); PDF — есть.
 
-**Предупреждение для крупных моделей (32B/70B и в SLM, и в Ollama):** «модель
-требовательна, ответы придётся ждать»; отдельный селектор «большая модель для
-обучения» — в **9.4.1**.
-
-Генерация изображений (из `HARD.md`: SD1.5 / SDXL `--lowvram` через ComfyUI / SD WebUI
-Forge) — **вне объёма OlliDesk**: отдельный движок и внешние окна. Приложение занимается
-только распознаванием (OCR/Vision/STT), синтезом — нет.
+> Генерация изображений (SD1.5 / SDXL / ComfyUI / Forge) — **вне объёма OlliDesk**:
+> отдельный движок и внешние окна. Приложение занимается только распознаванием
+> (OCR/Vision/STT), синтезом — нет.
 
 ---
 
-## Фаза 6 — UX: быстрые правки (перенесено в Фазу 9)
+## Фаза 6 — UX: быстрые правки (схлопнута в Фазу 9)
 
-**Основная переработка UI/UX — в Фазе 9 (закрыта).** Здесь остаются только мелкие правки,
-которые имеет смысл сделать параллельно, с сохранением оригинальных формулировок:
-
-- [x] **F4 — скрыть/показать панель структуры проекта** (только левую панель, редактор
-      не трогаем), `ui/main_window.py::_toggle_project_structure`. **Перенесено в 9.2**
-      (дерево по умолчанию скрыто, переключатель на виду — кнопка «📁» в ChatPanel).
-- [x] **Подсветка `@`-команд в поле ввода** (`@web`, `@dir`, `@file`, `@path`) —
-      `ui/chat/panel.py::_highlight_web_command` через `COMMAND_TAGS` из
-      `core/chat_commands.py`. **Автодополнение — 9.6.2** (реализовано).
-- [x] **Доработка отображения рассуждений модели (`reasoning_content`)** — реализовано
-      через `ReasoningWidget` (4.8.B) + тумблер в `AgentSettingsDialog` (9.2). **Тумблер
-      перенесён в поповер «⚙»** (9.2); сворачиваемый блок, инкрементальное обновление,
-      `_show_reasoning` в `ProjectSettings` — сохранены.
-- [x] **Автодополнение и подсказки `@`-тегов** — реализовано в 9.6.2:
-  - [x] реестр команд в одном месте: `core/chat_commands.py` (`ALL_COMMANDS`,
-        `COMMAND_TAGS`, `ChatCommand`, `DEFAULT_PLACEHOLDER`);
-  - [x] описание команд: `ChatCommand.hint` + `placeholder`;
-  - [x] `QCompleter` с `CompletionMode.PopupCompletion` на `QStandardItemModel`
-        (`ui/widgets/command_completer.py::CommandCompleter`);
-  - [x] показ popup только при `@` в начале строки (`detect_active_command`);
-  - [x] перехват `Tab`/`Enter`/`Up`/`Down`/`Esc` на время автодополнения
-        (`ChatPanel.eventFilter`);
-  - [x] автовставка пробела после выбранного тега и позиционирование курсора
-        (`_on_command_completed`);
-  - [x] placeholder показывает подсказку команды, если набран `@tag `
-        (`_update_command_placeholder`).
-- [x] **Лишние пустые строки в облаке сообщения пользователя** — `ChatMessageItem._ensure_text_widget`
-      ставит `document().setDefaultStyleSheet("p { margin: 0; }")` для `role in ("user", "system")`.
-- [ ] **Прогресс индексации:** ETA, очередь файлов, возможность отмены.
-      **Перенесено в 9.7.**
-- [x] **Менеджер сессий:** клик → preview; экспорт (через `core/chat_export.py`);
-      «создать проект из сессии»; удаление. **Реализовано в 9.6.4.**
-- [x] **Экспорт чата в Markdown/HTML.** `core/chat_export.py`,
-      `ui/dialogs/export_chat_dialog.py`, `File → Экспорт чата…` (`Ctrl+Shift+X`).
-- [x] **Диалог настроек:** визуальный редактор `tool_policies` — реализован через
-      профили (9.4) и `AgentSettingsDialog` (9.2). Ползунки температуры/top_p,
-      num_ctx — в `AgentSettingsDialog`.
-- [-] **Сдвинуть панель чата влево** (из `Roadmap.md`) — **отменено**: дерево слева
-      скрыто по умолчанию (9.2), панель чата остаётся основной.
-- [ ] **Цвет заголовка окна при тёмной теме:** на Windows нативный title bar не наследует
-      stylesheet — варианты: frameless window + собственный title bar, либо
-      `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`. **Перенесено в 9.1.**
-- [x] **Иконки-индикаторы в чате:** RAG, Tools, web_search — «что сейчас включено».
-      Единая приборная панель `StatusDashboard` (9.7): backend, pipeline, tok/s,
-      RAG, tools.
+**Все пункты перенесены в Фазу 9** (9.1, 9.2, 9.5, 9.8). Раздел оставлен пустым,
+чтобы не ломать нумерацию фаз.
 
 ---
 
@@ -673,227 +627,423 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 
 ---
 
-## Фаза 9 — Редизайн UI/UX (SLM-first, живой трейс, единая тема, профили)
+## Фаза 9 — UX/UI (единый дом)
 
-**Контекст.** Приоритет бэкендов сместился на локальные SLM (planner GPU + analyst CPU),
-но UI остался Ollama-центричным: `model_combo` в чате заполняется из `ModelRegistry`
-(Ollama), SLM planner/analyst спрятаны в `View → Локальные модели`, `LocalLLMClient`
-не стримит токены (отдаёт один `ChatChunk` в конце), тёмная тема не стилизует
-`QTableWidget`/`QHeaderView` — «болят глаза» в `SLMModelsDialog` и `ModelManagerDialog`.
-Статусы размазаны по четырём местам (`status_bar`, верхняя панель, `status_label`,
-`tool_status_label`).
+**Принципы фазы (новые, из болей пользователя):**
+- **UI «живой»**: пользователь видит все этапы обработки запроса (RAG-поиск, отправка в
+  LLM, TTFT, генерация токенов, tool calls, фазы research), а не только «🤔 Думает…».
+  Логи приложения — источник правды; UI обязан их зеркалить.
+- **Чат — не «каша», а структура**: явные отступы, секции, визуальная иерархия.
+  Reasoning, текст ответа и tool-карточки — визуально разделены.
+- **Ничего не «прячется» фиксированной высотой**: reasoning/tool-результаты растут по
+  контенту или скроллятся внутри себя; внешний layout сдвигается автоматически.
+- **Стационарные вкладки — только для файлов**: чат не вкладка, а базовый экран;
+  вкладки появляются на файлах и исчезают, когда файлов нет.
+- **Модели и tier — не в коде**: отдельный `~/.ollidesk/slm_models.yaml`, редактируемый
+  руками и программой.
+- **Git — часть контекста**: агент знает ветку, hash, diff и умеет делать осмысленные
+  коммиты (с подтверждением).
 
-**Цели:**
-- SLM-first: селекторы Planner/Analyst в верхней панели, глобальный переключатель
-  SLM/Ollama в статус-баре.
-- Живой трейс: токены + tool calls стримом, без авто-сворачивания, авто-скролл с
-  кнопкой «▼ Вниз».
-- Единая тёмная тема (Darcula-основа + тёплые акценты янтарный/терракотовый),
-  полное покрытие QSS.
-- Профили использования: Разработка / Исследование / Обучение — ручной селектор в
-  верхней панели; каждый профиль = набор skills (инструкции + инструменты +
-  системный промпт + настройки RAG/нуджей).
-- Все модели локальные: SLM или Ollama, без облака.
-- Меньше «поиска по меню»: частое — на виду, редкое — в палитре команд
-  (Ctrl+Shift+P).
+### 9.0 Архив: что уже закрыто (не трогать)
 
-### 9.1 Дизайн-система и темы
-- [x] Токены (палитра, типографика, отступы, радиусы) в `ui/theme.py`; QSS собирается
-      из них — одна точка правды. `_build_qss(ColorTokens, TypographyTokens, SpacingTokens, RadiusTokens)`.
-- [x] Палитра: **Darcula** как основа тёмной темы + тёплые акценты (янтарный/терракотовый)
-      вместо синего. Светлая — нейтральная. **Контраст WCAG AA подтверждён**
-      (`tests/ui/test_theme_tokens.py`), при багфиксе изменены:
-      `LIGHT_COLORS.accent=#9e5318` (5.57:1 с белым), `selection_bg=#9e5318`,
-      `accent_hover=#b8651f`, `accent_pressed=#7a3f12`.
-- [x] Стилизованы **все** интерактивные элементы: `QTableWidget`, `QHeaderView`,
-      `QTableView`, `QTableCornerButton`, `QComboBox` popup, `QMenu`, `QToolTip`,
-      `QScrollBar`, `QTabBar`, `QSplitter::handle`, `QGroupBox`, `QCheckBox`,
-      `QRadioButton`, `QSpinBox`/`QDoubleSpinBox`, `QProgressBar`, `QListWidget`,
-      `QLineEdit`, `QTreeView`, `QTreeWidget`. **Таблицы — приоритет №1** —
-      покрыты (`QTableWidget`, `QTableView`, `QHeaderView::section`,
-      `QTableCornerButton::section`).
-- [x] QSS применяется до создания окон (`OlliDeskApp._apply_theme` до `MainWindow`),
-      палитра и QSS из одного источника (`get_colors` + `get_stylesheet`).
-- [ ] Авто-детект темы ОС + ручное переключение в настройках; проверка контраста.
-- [ ] Цвет заголовка окна в тёмной теме: на Windows нативный title bar не наследует
-      stylesheet — `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` (предпочтительно)
-      либо frameless + собственный title bar.
+См. текущие 9.1–9.11 в плане: дизайн-система с токенами, композитный пузырь
+(`ReasoningWidget` + `TextWidget` + `ToolCallCard`), SLM-стриминг по токенам,
+`ChatThoughtStream` в Agent/Plan, `AutoScrollArea` с кнопкой «▼ Вниз», diff-карточка
+`write_file` (📂/🔍/↩), автодополнение `@`-тегов, экспорт чата (MD/HTML), менеджер
+сессий с preview и «Создать проект из сессии», палитра команд `Ctrl+Shift+P`,
+виртуализация длинных чатов, `StatusDashboard` (backend/pipeline/tok/s/RAG/tools),
+diff в редакторе `Ctrl+D`, замеры производительности. Все пункты переносятся в архив
+без изменения статусов.
 
-### 9.2 Главное окно: компоновка и навигация
-- [x] Дерево проекта слева, **скрыто по умолчанию**, переключатель на виду — кнопка
-      «📁» в верхней панели ChatPanel (`ChatPanel.project_tree_toggled` →
-      `MainWindow._on_project_tree_toggled`). Состояние — `AppConfig.show_project_tree`.
-      F4 остаётся (синхронизирован с кнопкой).
-- [x] Правая панель настроек агента → **поповер «⚙»** (`ui/dialogs/agent_settings_dialog.py::AgentSettingsDialog`,
-      открывается через `ChatPanel.agent_panel_toggle` → `MainWindow._toggle_side_panel`).
-- [~] Вкладки: «Чат» (основная), «Редактор» (только при открытом проекте).
-      Сплит «чат + редактор» — не реализован (отложено).
-- [x] Убраны дубли статусов — единая приборная панель (9.7).
+### 9.1 Стационарные вкладки и навигация
 
-### 9.3 Модели и пайплайн (SLM / Ollama, Planner / Analyst)
-- [x] **Верхняя панель:** два селектора `Planner` и `Analyst` (`ui/widgets/pipeline_selectors.py::PipelineSelectors`)
-      + кнопка «⋯» (открывает `SLMModelsDialog`). Статусы ✅ установлена / ⬇️ не скачана.
-- [x] **Глобальный переключатель бэкенда** `SLM (локально)` / `Ollama (локально)` —
-      кликабельная иконка `backend` в `StatusDashboard` → `MainWindow._toggle_backend`.
-      Обычный чат **отдельного селектора не получает**.
-- [x] Явное переключение на Ollama — с предупреждением `QMessageBox` при первом включении.
-- [x] Индикатор пайплайна (⏳/⚡/⚠️/💤) с tooltip: `PipelineSelectors.set_state` +
-      `_pipeline_tooltip`.
-- [x] `tok/s` и `TTFT` из `last_stats` после каждой генерации — `_on_stream_finished_event`
-      → `StatusDashboard.set_tok_per_sec`.
-- [x] `SLMModelsDialog`: убраны дублирующие селекторы planner/analyst, оставлена
-      инфо-строка «Пайплайн настраивается в верхней панели чата».
+**Боль:** «Нужно намертво прикрепить чат и убрать крестик… В идеале вообще не показывать
+чат как вкладку… у каждого файла на вкладке будет крестик, и когда последний закроется —
+структура вкладок должна скрыться».
 
-### 9.4 Профили использования (Разработка / Исследование / Обучение)
-- [x] `AppConfig.profiles` + встроенные пресеты (`core/profiles.py::_DEFAULT_PROFILES`):
-      **Разработка** (agent, tools enabled, RAG code, `recommended_model="qwen2.5-coder-7b-instruct-q6_k"`),
-      **Исследование** (plan, write/git/shell excluded, RAG docs+code,
-      `recommended_model="qwen2.5-7b-instruct-q6_k"`), **Обучение** (chat, все tools excluded,
-      RAG off, `show_reasoning=False`, `recommended_model="qwen2.5-14b-instruct-q4_k_m"`).
-      `_sync_builtin_profiles` (валидатор `AppConfig`) — синхронизирует встроенные
-      с кодом, сохраняет пользовательские.
-- [x] Переключение — **селектор в верхней панели** (`ui/widgets/profiles_selector.py::ProfilesSelector`),
-      **ручное**.
-- [x] Профиль применяется через `ChatPanel._apply_profile`:
-      `mode_combo`, `set_tool_policy` для каждого инструмента, `_profile_rag_enabled`,
-      `_project_rules` подмешивает `system_prompt` профиля, `_profile_agent_max_iters` /
-      `_profile_chat_max_iters`, `reset_pipeline()` после смены.
-- [x] **Профиль «Исследование»** — документы: `fs/document_extractors.py` (PDF/DOCX/PPTX/XLSX/RTF),
-      OCR сканов (`rapidocr-onnxruntime` + `pdf2image`), `DocumentPreviewDialog` —
-      предпросмотр перед прикреплением, `AppConfig.document_ocr` (по умолчанию `False`),
-      `RagSearchThread(categories=...)` + `VectorStore.search(categories=...)`.
-      `_DOC_LANGUAGES` расширены pdf/docx/pptx/xlsx/rtf. `AppConfig`:
-      `index_documents`, `max_document_size_mb`, `document_ocr`.
-- [x] **Профиль «Обучение»** — `_ensure_orchestrator` не грузит двухмодельный пайплайн,
-      `reset_pipeline()` при переключении; кнопка «➜ 🛠» (`back_to_development_btn`)
-      для возврата одной кнопкой.
-- [x] **9.4.1 Крупные модели:** `recommended_model` подстветка (★) в analyst-селекторе
-      через `PipelineSelectors.set_recommended_model`. Для «Обучения» рекомендован
-      `qwen2.5-14b-instruct-q4_k_m`.
-- [x] `ProfileEditorDialog` — редактор пользовательских профилей (клон/удаление/сброс
-      встроенных), меню `View → Профили` (checkable) + `View → Редактор профилей…`.
-      Багфикс: `_on_profile_selected` сохраняет текущую форму перед переключением;
-      `_clone_profile` сохраняет форму перед клонированием.
+- [ ] **Чат — не вкладка, а базовый экран.** Перестроить `MainWindow._create_center_panel`:
+      корневой `QStackedWidget` или композиция «базовый виджет + опциональный `QTabWidget`».
+  - Состояние «нет открытых файлов»: виден только `ChatPanel` (без `QTabWidget`).
+  - Состояние «≥1 файл открыт»: сверху — `QTabBar` с файлами, под ней — `EditorWidget`;
+    чат переключается горячей клавишей / кнопкой «💬».
+  - Убрать вкладку «💬 Чат» из `QTabWidget` совсем. Убрать крестик у чата
+    (`_close_tab` больше не нужен как «защита индекса 0» — его нет).
+- [ ] **`QTabBar` только для файлов.** Каждая вкладка закрывается крестиком
+      (`QTabBar.setTabsClosable(True)`), `Ctrl+W`/`Ctrl+Shift+W` (уже реализованы в
+      `EditorWidget` контекстном меню).
+- [ ] **Авто-скрытие `QTabWidget`.** Когда `tab_count() == 0` — `QTabWidget.setVisible(False)`
+      (или `QStackedWidget.setCurrentWidget(chat)`). Когда открывается файл
+      (`EditorWidget.open_file`) — `setVisible(True)` и фокус на редактор.
+- [ ] **«💬 Чат» как кнопка-переключатель.** Отдельная кнопка (в тулбаре над вкладками
+      или в верхней панели ChatPanel) для возврата к чату из редактора. `Ctrl+Shift+C` уже есть.
+- [ ] **`EditorWidget.tab_count()` сигнал** `tabs_changed(int)` — чтобы `MainWindow` знал,
+      когда скрывать/показывать `QTabWidget`. Сейчас `tab_count()` — метод, а не сигнал.
+- [ ] **F4 работает независимо** от видимости `QTabWidget`: F4 управляет левой панелью
+      (структура проекта), а не вкладками. Проверить, что не конфликтует.
 
-### 9.5 Живой трейс и стриминг SLM (приоритет №1)
-- [x] **Стриминг `LocalLLMClient`**: `_generate` отдаёт `ChatChunk(part=TextPart(text=content),
-      event_type="delta")` на каждый токен; `start`/`end` по границам; tool calls — после
-      стрима (распознавание возможно только на полном тексте).
-- [x] `AgentLoop` обрабатывает события — `on_text_delta`/`on_reasoning_delta`/
-      `on_stream_start`/`on_stream_end` доходят до `ChatPanel._on_chunk`/`_on_thinking`.
-- [x] `ChatThoughtStream` — не только research, но и **Agent/Plan**:
-      `_ensure_thought_stream` создаёт при первом tool-call/status; в Chat — плоский
-      activity. **Не сворачивается автоматически** — пользователь решает.
-- [x] Индикатор «печатает / думает / выполняет» в статус-строке и на кнопке Stop —
-      `_set_activity_state` (`thinking`/`tool`/`streaming`/`error`/`cancelled`/`idle`),
-      `_STOP_BUTTON_BG` меняет фон кнопки Stop (янтарный/синий/зелёный/тёмно-красный/серый).
-- [x] Tool calls — карточками в пузыре **сразу, до выполнения** (`_on_tool_started` →
-      `_ensure_assistant_widget().append_tool_call`); `AgentLoop` вызывает `on_tool_start`
-      до `ask_first`. Результат — ✓/✗ и «▸ Показать полностью» для длинных observation
-      (`_truncate_preview`, `_full_browser`).
-- [x] **Авто-скролл:** `ui/widgets/auto_scroll.py::AutoScrollArea` — порог 32 px,
-      кнопка «▼ Вниз», sticky-режим. Используется в ChatPanel.
+**Затрагивает:** `ui/main_window.py::_create_center_panel`, `_close_tab`, `_show_chat_tab`,
+`_show_editor_tab`; `ui/web_editor/editor_widget.py` (новый сигнал `tabs_changed`);
+`ui/chat/panel.py` (кнопка «вернуться к чату»).
 
-### 9.6 Чат и сообщения
-- [x] Композитный пузырь: `ReasoningWidget` + `TextWidget` + `ToolCallCard`.
-      **Карточка `write_file` — diff-сводка** (`+N −M`), три кнопки:
-      **«📂 Открыть в редакторе»**, **«🔍 Показать diff»** (Monaco DiffEditor),
-      **«↩ Откатить»** (с подтверждением). `tools/file_ops.py::write_file` возвращает
-      `dict{_llm_text, status, path, is_new_file, original_content, written_content, diff,
-      lines_added, lines_removed, syntax_error}`; `ToolResult.metadata` прокидывается
-      через `AgentLoop.on_tool_result` → `AgentChatThread.tool_executed(str, str, bool, object)`.
-- [x] **Поле ввода:** автодополнение `@`-тегов (`CommandCompleter`), Ctrl+Enter / Shift+Enter,
-      подсветка `@`-тегов, placeholder подсказки. Drag&drop и «Скрепка» — не реализованы
-      (связано с Фазой 5).
-- [x] **Stop/Continue** — заметные, с состоянием. Цвет фона Stop по `_STOP_BUTTON_BG`.
-- [x] **Markdown:** убраны лишние отступы в пузыре пользователя; таблицы под тему
-      (`_render_table(dark=...)`, `TextWidget.set_dark`, авто-детект по палитре).
-- [x] Менеджер сессий: клик → preview (`_on_selection_changed` + `QTextBrowser`),
-      экспорт (Markdown/HTML/TXT через `core/chat_export.py`), «Создать проект из
-      сессии» (`.ollidesk/chat_history.md`, `AGENTS.md`, обновление `recent_projects`).
+### 9.2 Структура проекта: автопоказ и F4
 
-### 9.7 Статус-бар и приборная панель
-- [x] **Статус-бар внизу — всегда на виду:**
-      `ui/widgets/status_dashboard.py::StatusDashboard`:
-      - **бэкенд** (SLM/Ollama/Резерв) кликабельно для переключения;
-      - **pipeline** (planner + analyst) кликабельно для управления SLM;
-      - **tok/s**;
-      - **RAG** (кол-во чанков / статус);
-      - **tools** (активность текущего запроса).
-      На каждом элементе — tooltip.
-- [~] **Активность над полем чата** (`tool_status_label`) — оставлен как transient
-      для текущего запроса; дублирования с дашбордом нет (tools — глобально,
-      tool_status_label — про текущий прогон).
-- [x] Убраны `ollama_status_label`/`backend_status_label`/`pipeline_status_label`/
-      `status_label` как отдельные сущности — сведены в `StatusDashboard`.
-      Удалён мёртвый `_update_ollama_status`; `_on_ollama_checked` реализован.
-- [ ] **Прогресс индексации**: ETA, очередь файлов, отмена.
+**Боль:** «Если через файл меню открывается проект, то автоматически должна отображаться
+его структура, которую потом можно скрыть по F4».
 
-### 9.8 Редактор и diff
-- [x] Редактор — **отдельная вкладка** (EditorWidget с собственным QTabBar).
-- [x] `write_file` из агента: карточка в чате с diff-сводкой и кнопками
-      «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить» (9.6.1).
-- [x] Подсветка изменённых файлов в дереве (`GitStatusDelegate`, 2.3), клик —
-      diff в редакторе при `AppConfig.open_modified_as_diff=True`
-      (`FileTreeController._on_clicked` + `_is_file_modified`).
-- [x] `EditorWidget.show_git_diff_for_file` (HEAD ↔ рабочая копия) через
-      `tools/git_ops.py::read_file_at_head` + `get_git_status_for_file`.
-      `show_diff_from_texts` для diff-карточки. Горячая клавиша `Ctrl+D` в редакторе.
+- [ ] **При открытии проекта через `File → Открыть проект`** (`_do_open_project`) —
+      `left_panel.setVisible(True)` и `config.show_project_tree = True`. Сейчас
+      `_do_open_project` восстанавливает `show_project_tree` из конфига (по умолчанию
+      `False`), из-за чего первое открытие показывает скрытую панель.
+- [ ] **При открытии через `@dir`** (`_on_directory_attach_requested`) — аналогично:
+      показать структуру (пользователь только что «прикрепил» каталог — логично
+      увидеть его содержимое).
+- [ ] **`File → Открыть недавний`** — то же поведение.
+- [ ] **F4** (уже работает) — скрывает/показывает; состояние персистится в
+      `config.show_project_tree`. Проверить синхронизацию с кнопкой «📁» в ChatPanel
+      (сейчас синхронизируется через `_toggle_project_structure` — оставить).
+- [ ] **Отдельный «режим открытия»:** если пользователь открывает проект впервые —
+      структура видна; если это просто переключение между проектами и пользователь
+      ранее скрыл панель — уважать `config.show_project_tree`. Логика:
+      `show_on_first_open = not config.recent_projects or project_path not in config.recent_projects`.
 
-### 9.9 Горячие клавиши и палитра команд
-- [x] **Ctrl+Shift+P — палитра команд** (`ui/command_registry.py::CommandRegistry`,
-      `ui/widgets/command_palette.py::CommandPalette`):
-      «Открыть проект», «Переключить профиль», «Переключить бэкенд»,
-      «Показать/скрыть дерево», «Новый чат», «Настройки SLM», «Замер
-      производительности», «Экспорт чата», «Редактор промптов», «Менеджер сессий»,
-      «Переключить тему», «Настройки агента», «Выход», «О программе».
-      Глобальный shortcut через `QShortcut` + пункт меню `View → Палитра команд…`.
-- [x] **Глобальные:** `Ctrl+O`, `Ctrl+Shift+C/E`, `F4`, `Ctrl+T`, `Ctrl+Shift+P`,
-      `Ctrl+Shift+X` (экспорт). F2/Del/Ctrl+C/X/V/N/R — только в фокусе дерева
-      (`Qt.ShortcutContext.WidgetWithChildrenShortcut` на `self.tree`).
+**Затрагивает:** `ui/main_window.py::_do_open_project`, `_on_directory_attach_requested`,
+`_on_project_tree_toggled`.
 
-### 9.10 Производительность UI
-- [x] **Виртуализация длинных чатов** через `CollapsedPlaceholder`
-      (`ui/widgets/collapsed_placeholder.py`): при >80 «месседж-виджетов» старые
-      сворачиваются в placeholder «📜 N сообщений — ▸ показать». Клик разворачивает
-      порцию (`_RESTORE_BATCH=40`) — самые свежие. Порядок сохраняется.
-      `_suppress_collapse` в `load_history` — один проход O(n) вместо O(n²).
-- [x] Ленивая загрузка reasoning/tool-карточек: свернуты по умолчанию (`ReasoningWidget`
-      `collapse()` в `finalize()`); tool-card «▸ Показать полностью» — по клику.
-- [x] Не блокировать GUI-поток: стриминг SLM в отдельном потоке, `_BenchmarkThread`,
-      `_ModelPoolLoadThread` — везде `QThread`, GUI не блокируется.
+### 9.3 Модели: поиск на HF, отдельный конфиг, подсветка coder
 
-### 9.11 Минимальные тесты UI
-- [x] `tests/ui/test_auto_scroll.py` — 12 кейсов: порог 32 px, sticky↔not-sticky,
-      `scroll_to_bottom_if_sticky`, `scroll_to_bottom_force`, `set_auto_scroll_enabled`,
-      `stick_changed`. Без `pytest-qt` — QApplication в module-scope.
-- [x] `tests/ui/test_theme_tokens.py` — ~50 кейсов: валидность hex, 15 пар WCAG AA × 2 темы
-      (30 проверок), 45 QSS-селекторов × 2 темы (90 проверок), «QSS собирается из
-      токенов», «нет хардкод-hex в QSS», `_contrast_ratio` sanity (21:1 для white/black).
-- [x] `pytest-qt` **не подключаем** — по плану 9.11. UI-тесты используют
-      `QApplication.instance() or QApplication([])` в module-scope фикстуре.
+#### 9.3.1 Поиск моделей на HuggingFace
 
-### 9.12 Порядок работ в Фазе 9
-**Все шаги 1–10 закрыты** (см. 9.1–9.11 + 2.4). Фаза 9 завершена.
-Остались задачи вне порядка 9.12:
-- Цвет заголовка окна (Windows) — открытая косметика.
-- Авто-детект темы ОС — открытая фича.
-- Drag&drop в поле ввода — Фаза 5.
+**Боль:** «Возможность поиска моделей на huggingface. Ввожу фрагменты названия → поиск →
+список → клик → подробное описание → кнопка скачать».
+
+- [ ] **Вкладка «Поиск HF»** в `SLMModelsDialog` (или отдельный `HFDialog`):
+  - `QLineEdit` (поисковый запрос) + `QPushButton("Искать")` + `QComboBox` фильтра
+    (`gguf` / `chat` / `coder` / `reasoning`).
+  - `QListWidget` результатов (id, downloads, likes, размер первого `.gguf`).
+  - `QTextBrowser` — карточка модели (описание из `cardData`, теги, лицензия, ссылка на HF).
+  - `QPushButton("Скачать")` — вызывает `download_model(repo_id, filename)`
+    (уже есть в `agents/download_slm.py`).
+- [ ] **Бэкенд:** `HfApi.list_models(search=query, filter="gguf", sort="downloads",
+      direction=-1, limit=50)`; `HfApi.model_info(repo_id, cardData=True)` для описания;
+      `HfApi.list_repo_files(repo_id)` для списка `.gguf`-файлов. Тонкая обёртка —
+      `agents/hf_search.py`.
+- [ ] **Оффлайн-режим:** при недоступности HF — сообщение в `status_label` и fallback
+      на локальный список; не падать.
+- [ ] **Интеграция с `download_slm`:** после скачивания — добавить запись в
+      `slm_models.yaml` (см. 9.3.3) и обновить `_populate` в диалоге.
+
+**Затрагивает:** `ui/dialogs/slm_models_dialog.py` (новая вкладка), новый
+`agents/hf_search.py`, `agents/download_slm.py` (без изменений).
+
+#### 9.3.2 Подсветка coder-моделей в режиме разработки
+
+**Боль:** «Если я в режиме разработки, при выборе моделей должны подсвечиваться другим
+цветом или жирным coder-модели для разработки».
+
+- [ ] **`SLMModelInfo.tags: list[str]`** — добавить поле (например, `["coder"]`,
+      `["reasoning"]`, `["chat"]`, `["embed"]`). Заполняется в `slm_models.yaml`
+      вручную или из HF-карточки (`cardData.tags`).
+- [ ] **`PipelineSelectors.refresh_models`:** если `self._profile.id == "development"` —
+      для моделей с `"coder" in tags` применять `QFont.setBold(True)` и цвет
+      (например, `#d4a373`) через `setItemData(Qt.FontRole, ...)` /
+      `setItemData(Qt.ForegroundRole, ...)`.
+- [ ] **В `ProfilesSelector`** — то же правило: в профиле «Разработка» показывать
+      coder-модели с префиксом `⚡` или `★`.
+- [ ] **`ProfileConfig.recommended_model`** — уже есть; добавить
+      `ProfileConfig.coder_models: list[str]` (id) для явной рекомендации.
+
+**Затрагивает:** `core/config.py::SLMModelInfo`, `core/profiles.py::ProfileConfig`,
+`ui/widgets/pipeline_selectors.py`, `ui/widgets/profiles_selector.py`.
+
+#### 9.3.3 Модели и tier — в отдельный файл конфигурации
+
+**Боль:** «Не хранить жёстко модели и tier в коде, а создать файл конфигурации… хранить
+рядом с файлом конфигурации приложения, потому что сам config.yaml стал не читаем».
+
+- [ ] **`~/.ollidesk/slm_models.yaml`** — новый файл, список `SLMModelInfo` в YAML.
+  - Схема: `id`, `repo`, `file`, `display_name`, `size_mb`, `kind` (`chat`/`embed`),
+    `n_ctx`, `tier`, `tags`, `description`, `recommended_profile` (опционально).
+  - **Миграция при первом запуске:** если файла нет — записать из `_DEFAULT_SLM_MODELS`
+    (в `core.config` оставить только как fallback для миграции; затем удалить или
+    пометить deprecated).
+  - **Чтение:** `load_config()` подхватывает `slm_models.yaml` в
+    `SLMConfig.available_models`; при отсутствии — fallback на `_DEFAULT_SLM_MODELS`
+    + предупреждение в лог.
+  - **Запись:** `SLMModelsDialog` (добавление/удаление/редактирование),
+    `_add_custom_model`, `_on_download_finished` — пишут в `slm_models.yaml` через
+    `save_slm_models()`.
+- [ ] **`config.yaml` похудеет**: `slm.available_models` больше не хранится там
+      (только в `slm_models.yaml`); `slm.selected_model`, `planner_model_id`,
+      `analyst_model_id` остаются в `config.yaml` (это выбор пользователя, не каталог).
+- [ ] **`schema_version` в `slm_models.yaml`** — для будущих миграций.
+- [ ] **Редактор в UI:** `SLMModelsDialog` получает режим «Редактировать YAML»
+      (открыть в `EditorWidget` или `QPlainTextEdit`); после сохранения — валидация
+      через `SLMModelInfo(**data)`.
+- [ ] **Объединить `PullThread` и `_DownloadThread`** (см. 2.3): обе загрузки —
+      через единый `_DownloadThread` + запись в `slm_models.yaml`.
+
+**Затрагивает:** `core/config.py` (`SLMConfig`, `_DEFAULT_SLM_MODELS` → миграция),
+новый `core/slm_models_io.py` (load/save/validate), `ui/dialogs/slm_models_dialog.py`,
+`core/config.py::ConfigLoader.save_config` (не пишет `available_models`).
+
+### 9.4 Git-интеграция в режиме разработки
+
+**Боль:** «В режиме разработки программа могла читать git diff и понимать изменения в
+ветках и хранить в профиле проекта состояние или хэш на какой ветке сейчас контекст.
+Агент должен уметь делать точечные изменения в коде проекта и делать осмысленные коммиты,
+если это явно не запрещено».
+
+- [ ] **`tools/git_ops.py`:**
+  - `get_current_branch(repo_path) -> str`
+  - `get_branch_hash(repo_path) -> str` (`rev-parse HEAD`)
+  - `get_uncommitted_diff(repo_path) -> str` (`git diff` + `git diff --cached`)
+  - `get_branch_diff(repo_path, base, target) -> str` (`git diff base..target`)
+  - `get_recent_commits(repo_path, limit=10) -> list[dict]`
+  - `commit(repo_path, message, files=None) -> str` (агентский коммит; `git add` + `git commit`).
+- [ ] **`state/project_settings.py`:** новые поля `git_branch: str`, `git_hash: str`,
+      `git_last_sync: str` (ISO). Сохраняются при `_save_project_settings` (уже есть)
+      и обновляются при открытии проекта / перед каждым запросом агента.
+- [ ] **`AgentContext.git_context: str`** — блок вида:
+      ```
+      Ветка: feature/x (hash abc1234)
+      Последние коммиты: …
+      Незакоммиченные изменения (diff --stat):
+        src/foo.py | 12 +++++---
+      ```
+      Добавляется в системный промпт в режиме `development` (в `_build_system_prompt` /
+      `_TOOL_USE_INSTRUCTION`).
+- [ ] **Новый инструмент `git_commit`** (ASK_FIRST, AGENT mode):
+  - Аргументы: `message: str`, `files: list[str] | None` (по умолчанию — все изменённые).
+  - Возвращает `dict{_llm_text, commit_hash, branch, files_committed}`.
+  - В `ProfileConfig.tool_policies` для `development` — `git_commit: "ask_first"`;
+    в `research`/`learning` — `excluded`.
+- [ ] **Запрет по умолчанию:** если в `ProfileConfig` не задан `git_commit`, —
+      `excluded` (агент не коммитит без явного разрешения). В `development` — `ask_first`.
+- [ ] **Точечные изменения:** уже есть `write_file` + diff-карточка (9.5.3). Добавить
+      в промпт агента явное правило: «При правке — читай diff перед коммитом; коммить
+      только свои изменения, не `git add -A` без явного запроса».
+- [ ] **`ProjectSettings.git_branch/hash`** — показывать в `StatusDashboard` (отдельный
+      индикатор «🌿 branch@hash», см. 9.8).
+
+**Затрагивает:** `tools/git_ops.py`, `tools/git_ops_tool.py` (новый инструмент),
+`state/project_settings.py`, `agents/agent_loop.py` (`git_context` в промпт),
+`core/profiles.py` (`git_commit` policy), `ui/widgets/status_dashboard.py`,
+`tools/registry.py::ALL_TOOLS`.
+
+### 9.5 Чат: редизайн и «живой» UI
+
+**Боль 1:** «Сам чат, отступы, фон, кнопки, облака — всё убогое и больше похоже на кашу».
+
+**Боль 2:** «Если открыть кнопку рассуждения — его высота фиксирована, новый текст скрывает,
+нужно пролистывать самому. Должно всё сдвигаться само, быть понятно и интерактивно.
+Требует полного переосмысления».
+
+**Боль 3:** «Логи намного информативнее UI. Много скрыто, пользователь не понимает,
+почему программа не отвечает. UI должен быть "живым"».
+
+#### 9.5.1 Визуальный редизайн пузыря
+
+- [ ] **Пересмотр `ChatMessageItem._build_ui`:**
+  - Единый spacing-токен (`SPACE.md` = 8 px) между секциями (reasoning / text / tool cards).
+  - Внутренние отступы пузыря — 12 px (сейчас `padding: 6px 12px` — тесно).
+  - Разделители: тонкая линия `border-top: 1px solid border` между reasoning и text.
+  - Заголовок «Ассистент» — вынести в отдельную строку с иконкой и временем (опционально),
+    не сливать с текстом.
+  - Для user-пузыря — выравнивание вправо, `max-width: 80%`, фон `surface_alt`,
+    скругление `RADIUS.lg`.
+  - Убрать `QFrame#_bubble` со `background: transparent` у assistant — сделать лёгкий фон
+    `surface` с `border-radius`, чтобы пузырь читался.
+- [ ] **Единый стиль кнопок в чате** (Copy, «Показать полностью», «Открыть», «Откатить»,
+      «Показать diff»): один `QSS`-класс, один размер, один hover. Сейчас у каждой кнопки
+      свой inline-стиль.
+- [ ] **Tool-карточки — компактнее:** заголовок в одну строку (icon + `name(args)` + статус),
+      preview в 2 строки, кнопки — только при hover или после раскрытия.
+- [ ] **Тёмная/светлая тема для чата:** проверить, что `TextWidget` (markdown) и
+      `ToolCallCard` не «слепнут» при светлой теме. Сейчас `TextWidget` авто-детектит
+      по палитре, но `ToolCallCard` — нет (`background: rgba(120,120,140,0.06)` —
+      невидимо на белом).
+- [ ] **Код-блоки** — кнопка «Копировать» в правом верхнем углу (сейчас только общий
+      Copy сообщения).
+- [ ] **Длинные пути в tool-карточках** — обрезка с `…`, полный путь в tooltip.
+
+#### 9.5.2 Reasoning-виджет: авто-высота и авто-скролл
+
+- [ ] **`ReasoningWidget`:** убрать `setFixedHeight(h)` в `_refresh_browser`. Высота
+      должна расти по контенту (как `TextWidget._adjust_height`), но с **максимумом**
+      (например, 40 % высоты чата) и **внутренним авто-скроллом** к последнему токену.
+- [ ] **Авто-скролл внутри `ReasoningWidget`:** при `append_text` —
+      `self._browser.verticalScrollBar().setValue(maximum())`, чтобы новые токены были
+      видны без ручного скролла. Внешний чат при этом тоже сдвигается (AutoScrollArea).
+- [ ] **Сворачивание по умолчанию:** в research/agent — свёрнут, в чате — развёрнут
+      (по `_show_reasoning`). Поведение уже есть, но высота ломает UX.
+- [ ] **Плавное появление:** `QPropertyAnimation` на `maximumHeight` при разворачивании/
+      сворачивании (0 → auto), 150 мс.
+
+#### 9.5.3 «Живой» UI: события из логов в интерфейсе
+
+- [ ] **`core/event_bus.py::EventBus`** — синглтон `QObject` с сигналом
+      `event_emitted(str, dict)`. Модули эмитят структурированные события:
+  - `rag.search.started` / `rag.search.found` / `rag.search.empty`
+  - `llm.request.sent` / `llm.first_token` / `llm.generation.done`
+    (с `ttft_ms`, `tokens_per_sec`)
+  - `tool.started` / `tool.finished` / `tool.error`
+  - `phase.changed` (research: RECON → DEEP_DIVE → …)
+  - `index.started` / `index.progress` / `index.finished`
+  - `slm.loading` / `slm.loaded` / `slm.failed`
+  - `orchestrator.event` (уже есть `on_event` в `Orchestrator.run`)
+- [ ] **`core/logger.py`:** добавить loguru-sink, который для `level >= INFO` эмитит
+      `EventBus.event_emitted("log", {level, message, source})`. Так **все** текущие
+      логи становятся видимыми в UI без переписывания модулей.
+- [ ] **`ui/widgets/live_events.py::LiveEventsPanel`:**
+  - `QPlainTextEdit` (read-only) или `QTextBrowser` с цветными строками по уровню.
+  - Встроен в `ChatPanel` под `status_label` (сворачиваемый, высота 120 px, авто-скролл).
+  - Или отдельная вкладка «📡 События» (если чат не вкладка — см. 9.1, то лучше панель).
+  - Кнопка «Очистить», чекбокс «Только важное» (фильтр по `level >= WARNING` +
+    структурированные события).
+- [ ] **Индикатор «программа работает»:** в `StatusDashboard` — анимированная точка
+      (пульсация `QTimer` 500 мс) пока `_generating = True`; тултип — последнее событие
+      из `EventBus`. Решает боль «не понимаю, почему не отвечает».
+- [ ] **Прогресс по этапам** вместо «🤔 Думает…»: `status_label` показывает этап
+      (`🔍 Поиск по коду → 📖 Чтение 3 файлов → 🧠 Генерация (TTFT 1.2 с) → ✍️ 42 tok/s`).
+      Источник — `EventBus`.
+- [ ] **`ChatThoughtStream`** — уже реализует часть этого для research/agent; расширить
+      на все режимы (в Chat — плоский `LiveEventsPanel`, в Agent/Plan —
+      `ChatThoughtStream` + `LiveEventsPanel` для системных событий).
+
+**Затрагивает:** новый `core/event_bus.py`, `core/logger.py`, новый
+`ui/widgets/live_events.py`, `ui/chat/panel.py` (встроить панель, подписаться),
+`ui/widgets/status_dashboard.py` (пульсация + tooltip), `agents/orchestrator.py`
+(уже эмитит — пробросить в `EventBus`), `fs/vector_store.py` (`rag.search.*`),
+`agents/agent_loop.py` (`tool.*`, `llm.*`).
+
+#### 9.5.4 Прочие UX-фиксы чата
+
+- [ ] **Кнопка «Стоп»** — заметнее (красный фон уже есть в `_STOP_BUTTON_BG`);
+      добавить пульсацию при `streaming`.
+- [ ] **Индикатор «прокручено вверх»** — `AutoScrollArea` уже показывает «▼ Вниз»;
+      добавить счётчик новых сообщений на кнопке (`▼ Вниз (3)`).
+- [ ] **Markdown-таблицы в чате** — проверить на светлой теме (сейчас
+      `_render_table(dark=...)` — ок, но `TextWidget` авто-детект может ошибаться при
+      смене темы на лету; подписаться на `theme_changed`).
+
+### 9.6 История и восстановление сессий
+
+**Боль:** «Проблема с восстановлением истории. Сейчас не отображается то, что было
+сформировано при прошлом запросе. Сам запрос сохраняется, а вот история — нет».
+
+- [ ] **Диагностика:** `_on_agent_finish` (`ui/chat/panel.py`) и `_send_finished`
+      создают `ChatMessage(role="assistant", content=result)` — только `TextPart`.
+      Reasoning и tool_calls, накопленные в виджете, теряются. В research-режиме
+      `_on_agent_finish` вообще не сохраняет финальный ответ (только паспорт).
+- [ ] **Фикс 1 — аккумулировать parts при стриминге:**
+  - В `ChatPanel.__init__` — `self._current_assistant_parts: list[MessagePart] = []`.
+  - В `_on_chunk` — `self._current_assistant_parts.append(TextPart(text=content))`
+    (или аккумулировать строку и создавать `TextPart` один раз в конце — эффективнее).
+  - В `_on_thinking` — `ReasoningPart`.
+  - В `_on_tool_started` — `ToolCallPart(calls=[ToolCall(...)])` или `ToolResultPart`
+    после `_on_tool_executed`.
+  - В `_on_agent_finish` — `assistant_message = ChatMessage(role="assistant",
+    parts=self._current_assistant_parts)`; сохранить в `session_store` и `self._messages`.
+- [ ] **Фикс 2 — research-режим:** в `_on_agent_finish` (research-ветка) — сохранить
+      `summary["final_answer"]` как `TextPart` в `ChatMessage` и записать в сессию.
+      Плюс сохранить `hypotheses` как структурированный блок (опционально — `TextPart`
+      с markdown-таблицей).
+- [ ] **Фикс 3 — `load_history`:** убедиться, что `session_store.get_history`
+      восстанавливает `parts_json` (уже реализовано в
+      `state/session_store.py::_parse_parts`); проверить, что
+      `ChatMessage(parts=parts, tool_call_id=..., name=...)` корректно рендерится в
+      `ChatMessageItem` при `load_history`.
+- [ ] **Фикс 4 — `_send_finished`** (старый путь, если ещё используется): та же логика
+      аккумуляции parts.
+- [ ] **Тест:** `tests/ui/test_history_restore.py` — создать сессию, эмулировать
+      стриминг (text + reasoning + tool_call), вызвать `_on_agent_finish`, перезагрузить
+      через `get_history`, проверить, что все parts на месте.
+
+**Затрагивает:** `ui/chat/panel.py` (`_on_chunk`, `_on_thinking`, `_on_tool_started`,
+`_on_tool_executed`, `_on_agent_finish`, `_send_finished`, `load_history`),
+`state/session_store.py` (уже готов).
+
+### 9.7 Мультимодальность в UI (backend — в Фазе 5)
+
+- [ ] **Drag&drop в поле ввода** (`ChatPanel.input_edit`): файлы (изображения, PDF,
+      аудио) → `_attach_file` / `_attach_document`.
+- [ ] **Кнопка «📎 Скрепка»** рядом с полем ввода: `QFileDialog` с фильтром по
+      поддерживаемым типам.
+- [ ] **Превью изображений** в пузыре user-сообщения (если `ChatMessage.images` не пуст) —
+      миниатюра + клик для полного размера.
+- [ ] **Индикатор распознавания** (OCR/STT): прогресс-бар в `DocumentPreviewDialog`
+      для длинных PDF/аудио.
+- [ ] **Аудио-плеер** в пузыре (если прикреплено аудио) — `QMediaPlayer` +
+      кнопка play/pause.
+- [ ] **Мультимедиа-кэш** — `~/.ollidesk/media_cache/` с хэшем файла → извлечённый
+      текст; при повторном прикреплении — не пересчитывать.
+
+Backend-часть (экстракторы, OCR, STT, vision) — остаётся в **Фазе 5**, только
+вызовы из UI здесь.
+
+### 9.8 Темы, прогресс, остальное (бывшие пункты 9.1/9.7 + UX из других фаз)
+
+- [ ] **Цвет title bar в тёмной теме (Windows)** — `DwmSetWindowAttribute(
+      DWMWA_USE_IMMERSIVE_DARK_MODE)` (предпочтительно) либо frameless + собственный
+      title bar.
+- [ ] **Авто-детект темы ОС** + ручное переключение в настройках.
+- [ ] **Прогресс индексации:** ETA (по средней скорости), очередь файлов (список в
+      tooltip), кнопка «Отменить» (сейчас только «Переиндексировать» = запуск заново).
+- [ ] **Сплит «чат + редактор»** — если после 9.1 чат не вкладка, то возможен
+      `QSplitter` «чат слева / редактор справа» (отложено, но в 9.1 архитектура
+      `QStackedWidget` + `QTabWidget` это позволяет).
+- [ ] **Метрики инструментов в статус-бар** (из 4.6): `_stats` в `ToolRegistry`
+      (calls/errors/by_tool) → tooltip к `tools` в `StatusDashboard`.
+- [ ] **Warning о `n_gpu_layers` в UI** (из 4.6): в `StatusDashboard` при загрузке SLM —
+      tooltip с `n_ctx`, `n_gpu_layers`, `vram_used_mb`, `ram_used_mb`, `kv_cache_type`
+      (из `OptimizedParams`).
+- [ ] **Индикатор git-ветки** в `StatusDashboard` (из 9.4): `🌿 feature/x@abc1234`.
+- [ ] **Кэш web-поиска** (из бэклога): namespace `rag` в `SearchCache` — чтобы
+      RAG-ответы кэшировались.
+
+### 9.9 Порядок работ в Фазе 9 (новый)
+
+Приоритет — по боли пользователя:
+
+1. **9.6 История** (bug, ломает доверие) — 1–2 дня.
+2. **9.1 Стационарные вкладки** (архитектурная правка, разблокирует 9.5.3) — 2–3 дня.
+3. **9.5.2 Reasoning-виджет** (bug, ломает UX) — 1 день.
+4. **9.5.3 Живой UI** (`EventBus` + `LiveEventsPanel`) — 3–5 дней.
+5. **9.5.1 Визуальный редизайн пузыря** — 3–5 дней.
+6. **9.3 Модели** (поиск HF + `slm_models.yaml` + подсветка coder) — 5–7 дней.
+7. **9.4 Git-интеграция** (`git_context` + `git_commit` + `ProjectSettings`) — 3–5 дней.
+8. **9.2 Автопоказ структуры** — 1 день.
+9. **9.7 Мультимодальность в UI** — 3–5 дней (после backend Фазы 5).
+10. **9.8 Остальное** — по мере.
+
+**Критерий готовности фазы:** пользователь открывает проект → видит структуру; задаёт
+вопрос → видит все этапы (RAG → LLM → TTFT → токены → tool calls) в живой панели;
+reasoning растёт сам; после перезагрузки история (включая reasoning и tool calls) на
+месте; модели ищутся на HF и лежат в `slm_models.yaml`; в режиме разработки coder-модели
+подсвечены; агент знает ветку/hash и умеет коммитить (с подтверждением).
 
 ---
 
 ## Приоритеты и порядок
 
-1. **Фаза 2.1** (протокол бэкенда — типизация `vector_store`/`search_cache`/`hypotheses`)
+1. **Фаза 9** (UX/UI) — **главный приоритет**. Внутри — порядок 9.9: сначала баги
+   (9.6, 9.5.2), потом архитектура (9.1), потом «живой UI» (9.5.3), потом редизайн
+   (9.5.1), потом модели (9.3) и Git (9.4).
+2. **Фаза 2.1** (протокол бэкенда — типизация `vector_store`/`search_cache`/`hypotheses`)
    — фундамент для Фаз 5, 7. Фаза 2.2 (реестр инструментов) завершена: `_build_registry`
    работает через `tools.registry.ALL_TOOLS`, `chat_auto_tools` в `AppConfig`,
    `is_mutating`/`category` в `@tool`.
-2. **Фаза 9** (редизайн UI/UX) — **закрыта** (см. разделы 9.1–9.11).
 3. **Фаза 2.4** (`panel.py` → `backends.py` + `research.py`) — **закрыта**:
    миксины `BackendsMixin` + `ResearchMixin`, MRO `ChatPanel(QWidget, BackendsMixin,
    ResearchMixin)`, тест `test_panel_mro.py`.
-4. **Фаза 6** (UX) — закрыта через Фазу 9.
-5. **Фазы 5, 7** — по остаточному времени.
+4. **Фаза 4.7.B** (замеры) — **инструмент готов** (`agents/benchmark.py`, `View → Замер
+   производительности…`). Цифры собираются пользователем на его железе; инструмент
+   экспортирует CSV/Markdown для `docs/BENCHMARK.md`.
+5. **Фаза 4.7.D** (ModelPool обёрткой, модель закреплена за сессией) — базовая часть уже
+   сделана (planner/analyst), осталась стратегия «модель за сессией».
+6. **Фаза 5** (backend мультимодальности) — параллельно с 9.7.
+7. **Фаза 7** (расширяемость) — после 9.
+8. **Фаза 8** (релиз) — финализация.
 
 **Отдельно — порядок по локальным моделям** (Фаза 4.7). Ключевая поправка к порядку
 фаз: надёжность ReAct (4.6) идёт **до** интеллектуального выбора моделей. Стратегии
@@ -908,8 +1058,8 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 
 **Отдельно — порядок по интерфейсу агента** (Фаза 4.8). Завершены модель данных
 (`MessagePart`), композитный пузырь, `run_shell_command`, метаданные инструментов,
-**стриминг SLM по токенам (9.5)**, **серый трейс в Agent/Plan (9.5.3)**,
-**tool-cards до выполнения (9.5.7)**.
+**стриминг SLM по токенам (9.5.2)**, **серый трейс в Agent/Plan (9.5.2)**,
+**tool-cards до выполнения (9.5.3)**.
 
 ---
 
@@ -929,7 +1079,8 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
       отслеживаются, но новые такие же будут скрыты. Переименовать правила на `/Notes.md`.
 - [ ] Добавить `pyright`/`basedpyright` как второй тайпчекер (VS Code).
 - [ ] Убрать `.idea/` из репозитория (уже в `.gitignore`, но проверить `git ls-files`).
-- [ ] Кэш web-поиска: расширить на RAG-ответы (общий `SearchCache` с namespace).
+- [x] **Кэш web-поиска: расширить на RAG-ответы** (общий `SearchCache` с namespace) —
+      см. 9.8.
 - [x] **Целевая версия Python**: `requires-python` поднят до `>=3.12`, `ruff`/`mypy`
       нацелены на `py312`, `ui/dialogs/wizard.py` использует `typing.override` (3.12+).
 - [x] **Чтение больших файлов фрагментами**: `tools/file_ops.py::read_file(path, offset, limit)`
@@ -965,10 +1116,10 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 
 Обновил сохранение структуры и форматирования. Основные правки:
 
-1. **Диагностика / Статус SLM-стриминга**: `LocalLLMClient._generate` стримит — реализовано (9.5).
+1. **Диагностика / Статус SLM-стриминга**: `LocalLLMClient._generate` стримит — реализовано (9.5.2).
 2. **`agents/local_llm_client.py`** — стриминг `TextPart` на каждый токен, `start`/`end`, tool-calls после стрима; `_DEFAULT_TEMPERATURE = 0.0` + `_TEMPERATURE_BY_OP`.
 3. **`ui/chat/panel.py`** → миксины `BackendsMixin` (`ui/chat/backends.py`) + `ResearchMixin` (`ui/chat/research.py`). Поля — в `ChatPanel.__init__`, MRO — QWidget первым.
-4. **`ui/chat/message_item.py`** — `ToolCallCard` теперь с diff-режимом для `write_file` (📂/🔍/↩), `_truncate_preview`, `_escape_diff`.
+4. **`ui/chat/message_item.py`** — `ToolCallCard` теперь с diff-режимом для `write_file` (📂/🔍/↩), `_truncate_preview`, `_escape_diff`; **reasoning-виджет** — переработан в 9.5.2 (авто-высота, авто-скролл, плавное появление).
 5. **`fs/vector_store.py`** — `search(categories=...)` (пост-RRF фильтр по `code`/`docs`), `_DOC_LANGUAGES` включает pdf/docx/pptx/xlsx/rtf.
 6. **`agents/history_compactor.py`** — три ступени (reasoning → tool → реплики).
 7. **`agents/tool_registry.py`** — `ErrorCategory`, `ToolResult.error_category`, `ToolResult.metadata`, `is_mutating`/`category`, приём `dict` от инструментов.
@@ -978,22 +1129,22 @@ Forge) — **вне объёма OlliDesk**: отдельный движок и 
 11. **`ui/chat/threads.py`** — `_BenchmarkThread`, `AgentChatThread.tool_executed` с 4-м аргументом `metadata`, `_ModelPoolLoadThread` с per-role timeout 90 с.
 12. **`ui/dialogs/tool_confirmation_dialog.py`** — `_coerce_value`, `QTableWidget`-редактор аргументов.
 13. **`core/sandbox.py`** — `SandboxedPathResolver`.
-14. **`core/config.py`** — `profiles`/`active_profile`/`show_project_tree`/`show_pipeline_selectors`/`open_modified_as_diff`/`index_documents`/`max_document_size_mb`/`document_ocr`; `_GLOBAL_ONLY_KEYS` расширен; `_sync_builtin_profiles` (валидатор).
-15. **`core/profiles.py`** (новый) — `ProfileConfig`, `ProfileToolPolicies`, `_DEFAULT_PROFILES`, `default_profiles()`, `builtin_profile_ids()`, `get_default_profile()`, `get_profile_by_id()`. `recommended_model` в каждом встроенном профиле.
+14. **`core/config.py`** — `profiles`/`active_profile`/`show_project_tree`/`show_pipeline_selectors`/`open_modified_as_diff`/`index_documents`/`max_document_size_mb`/`document_ocr`; `_GLOBAL_ONLY_KEYS` расширен; `_sync_builtin_profiles` (валидатор). **9.3.3** — `available_models` переезжает в `slm_models.yaml`.
+15. **`core/profiles.py`** (новый) — `ProfileConfig`, `ProfileToolPolicies`, `_DEFAULT_PROFILES`, `default_profiles()`, `builtin_profile_ids()`, `get_default_profile()`, `get_profile_by_id()`. `recommended_model` в каждом встроенном профиле. **9.3.2** — добавляется `coder_models: list[str]`. **9.4** — `git_commit: "ask_first"` в `development`, `excluded` в `research`/`learning`.
 16. **`core/chat_commands.py`** (новый) — реестр `@`-команд (`ALL_COMMANDS`, `COMMAND_TAGS`, `detect_active_command`, `match_commands`, `get_command`).
 17. **`core/chat_export.py`** (новый) — `export_to_markdown`, `export_to_html`, `_plain_to_html`.
 18. **`fs/document_extractors.py`** (новый) — `extract_document`, `is_document`, `language_for_document`, `SUPPORTED_EXTENSIONS`, `_ocr_pdf`.
 19. **`agents/benchmark.py`** (новый) — `run_benchmark`, `BenchmarkPrompt`, `BenchmarkResult`, `BenchmarkRow`, `LoadTimeRow`, `save_csv`, `to_markdown`, `BENCHMARK_PROMPTS`.
-20. **`tools/git_ops.py`** — `read_file_at_head`, `get_git_status_for_file`.
-21. **`ui/widgets/`** (новые) — `auto_scroll.py::AutoScrollArea`, `status_dashboard.py::StatusDashboard`, `pipeline_selectors.py::PipelineSelectors`, `profiles_selector.py::ProfilesSelector`, `command_completer.py::CommandCompleter`, `command_palette.py::CommandPalette`, `collapsed_placeholder.py::CollapsedPlaceholder`.
+20. **`tools/git_ops.py`** — `read_file_at_head`, `get_git_status_for_file`. **9.4** — `get_current_branch`, `get_branch_hash`, `get_uncommitted_diff`, `get_branch_diff`, `get_recent_commits`, `commit`.
+21. **`ui/widgets/`** (новые) — `auto_scroll.py::AutoScrollArea`, `status_dashboard.py::StatusDashboard`, `pipeline_selectors.py::PipelineSelectors`, `profiles_selector.py::ProfilesSelector`, `command_completer.py::CommandCompleter`, `command_palette.py::CommandPalette`, `collapsed_placeholder.py::CollapsedPlaceholder`. **9.5.3** — `live_events.py::LiveEventsPanel`.
 22. **`ui/command_registry.py`** (новый) — `CommandRegistry`, `PaletteCommand`.
 23. **`ui/dialogs/`** — новые: `agent_settings_dialog.py`, `benchmark_dialog.py`, `document_preview_dialog.py`, `export_chat_dialog.py`, `profile_editor_dialog.py`.
 24. **`ui/theme.py`** — полностью переработан: `ColorTokens`/`TypographyTokens`/`SpacingTokens`/`RadiusTokens`, `_build_qss`, `get_colors`, `get_stylesheet`, `DARK_STYLESHEET`/`LIGHT_STYLESHEET`.
 25. **`ui/menus.py`** — добавлены сигналы/пункты: `export_chat_requested`, `profile_selected(str)`, `profile_editor_requested`, `benchmark_requested`, `command_palette_requested`.
-26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`, `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`, `agents/critic.py`, `agents/benchmark.py`, `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`, `fs/document_extractors.py`, `ui/widgets/*`, `ui/chat/backends.py`, `ui/chat/research.py`).
-27. **§5 «Пайплайн»** — убран устаревший роутинг «всегда ReAct»: research-вопросы уходят в `Orchestrator`, обычные — в `AgentLoop`; описан fallback при таймауте/ошибке.
+26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`, `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`, `agents/critic.py`, `agents/benchmark.py`, `agents/hf_search.py` (9.3.1), `core/event_bus.py` (9.5.3), `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`, `core/slm_models_io.py` (9.3.3), `fs/document_extractors.py`, `fs/image_extractors.py` (Фаза 5), `fs/audio_extractors.py` (Фаза 5), `fs/video_extractors.py` (Фаза 5), `ui/widgets/*`, `ui/chat/backends.py`, `ui/chat/research.py`).
+27. **§5 «Пайплайн»** — убран устаревший роутинг «всегда ReAct»: research-вопросы уходят в `Orchestrator`, обычные — в `AgentLoop`; описан fallback при таймауте/ошибке. **9.5.3** — все этапы эмитят события в `EventBus`, UI показывает их в `LiveEventsPanel`.
 28. **§6 «Соглашения»** — `requires-python >= 3.12`, `typing.override` в `wizard.py`.
-29. **§7 «Как добавить инструмент»** — `tools/registry.py::ALL_TOOLS` как фактическая точка регистрации.
-30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`): `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py`, `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`, `test_shell_ops.py`.
+29. **§7 «Как добавить инструмент»** — `tools/registry.py::ALL_TOOLS` как фактическая точка регистрации. **9.4** — `git_commit` добавлен в `ALL_TOOLS` (ASK_FIRST, AGENT-only).
+30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`): `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py`, `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`, `test_shell_ops.py`. **9.5.3** — `test_event_bus.py`, `test_live_events.py`. **9.6** — `test_history_restore.py`. **9.3.3** — `test_slm_models_io.py`.
 31. **§10 «Документация»** — без изменений в структуре (все файлы актуальны).
-32. **§12 «Подводные камни»** — дополнено: CPU-only analyst cap `n_ctx=8192`, `MessagePart`/`with_content`/`model_copy`-ограничение, `run_shell_command` — единственный инструмент с побочными эффектами вне файлов проекта, `_suppress_collapse` в `load_history` (один проход O(n)), `CollapsedPlaceholder` — виджеты остаются в памяти (только удалены из layout).
+32. **§12 «Подводные камни»** — дополнено: CPU-only analyst cap `n_ctx=8192`, `MessagePart`/`with_content`/`model_copy`-ограничение, `run_shell_command` — единственный инструмент с побочными эффектами вне файлов проекта, `_suppress_collapse` в `load_history` (один проход O(n)), `CollapsedPlaceholder` — виджеты остаются в памяти (только удалены из layout). **9.1** — чат больше не вкладка, `QTabWidget` скрывается при `tab_count() == 0`. **9.6** — `_current_assistant_parts` аккумулирует части при стриминге; без этого история теряет reasoning/tool_calls. **9.5.2** — `ReasoningWidget` использует авто-высоту с максимумом (40 % чата) и внутренним авто-скроллом; `setFixedHeight` больше не применяется.
