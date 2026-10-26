@@ -138,7 +138,7 @@ class ModelRouter:
             else f"Эмбеддинги: {self._embed_preference.name}"
         )
 
-    def _client_for(self, backend: BackendType) -> Any:
+    def _client_for(self, backend: BackendType) -> LLMBackend | None:
         """Клиент для указанного типа бэкенда, если он доступен."""
         if backend is BackendType.OLLAMA and self._ollama is not None:
             return self._ollama
@@ -179,7 +179,7 @@ class ModelRouter:
         return self._active_backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM)
 
     @property
-    def active_client(self) -> Any:
+    def active_client(self) -> LLMBackend | None:
         """Возвращает активный клиент."""
         if self._active_backend == BackendType.OLLAMA:
             return self._ollama
