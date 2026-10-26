@@ -1326,4 +1326,204 @@ reasoning растёт сам; после перезагрузки истори�
 
 - [ ] **`tools/test_ops.py::run_tests`** (capability `shell`, `ask_first`, AGENT-only):
   - Аргументы: `framework: Literal["pytest","unittest","dotnet","go","npm"]`,
-    `target: str | None`, `timeout_s: int
+    `target: str | None`, `timeout_s: int = 120`.
+  - Запускает соответствующую команду в `project_root`, парсит вывод в структуру:
+    `{passed, failed, errors, skipped, failures: list[{test, message, file, line}]}`.
+  - Возвращает `dict{_llm_text, summary, failures}` — UI рисует failures как карточки
+    с jump-to-line в редакторе.
+  - При таймауте — `ToolResult(is_error=True, error_category=RETRY_LATER,
+    content="Тесты превысили таймаут …")`.
+- [ ] **`ProfileConfig.run_tests_after_edit: bool = True`** для `development` —
+      после `write_file`/`apply_patch` агент **сам** предлагает запустить тесты
+      (но подтверждение — через `ask_first`).
+- [ ] **В `_TOOL_USE_INSTRUCTION`** — правило: «После правки `.py`/`.cs`/`.go`/
+      `.ts` — запусти `run_tests`. Если тесты упали — исправь и повтори, но не более
+      N раз».
+
+### 10.3 LSP для coding-цикла
+
+- [ ] **`agents/lsp_bridge.py`** уже есть (`definition`, `references`); интегрировать
+      в `fs/intel/`:
+  - `ProjectIntel` при построении call graph использует LSP `references` для
+    `class`/`method`/`function` (опционально, при `enable_lsp=True`).
+  - Новый инструмент `find_references(symbol, file=None, line=None)` — capability `fs.read`,
+    `auto`. Возвращает `dict{_llm_text, references: list[{file, line, preview}]}`.
+- [ ] **`_TOOL_USE_INSTRUCTION`:** «Для поиска использований используй
+      `find_references`; для поиска определения — `ProjectIntel`/`search_codebase`».
+- [ ] **Fallback без LSP:** если LSP-сервер не установлен — `find_references` работает
+      через BM25+vector (search_codebase по имени символа), помечает результат
+      как «эвристика».
+
+### 10.4 Verifier в обычном AgentLoop
+
+- [ ] **`agents/verifier.py`** уже есть (`verify(answer, graph, evidence,
+      known_paths, known_symbols, strict)`); подключить в `AgentLoop._final_call_no_tools`:
+  - После сбора `final_text` — вызвать `verify(...)`.
+  - Если `ver.ok == False` и `research_mode` или `coding_task` — не отдавать ответ,
+    а сделать **один** регенерационный вызов с `regen_hint` (как в `Orchestrator.run`).
+  - Если и второй ответ не проходит — отдать второй с явной пометкой
+    `⚠️ не подтверждено: …`.
+- [ ] **Coding-режим:** после `apply_patch`/`write_file` + `run_tests` — прогнать
+      verifier по путям/символам в ответе; пустые блоки и «из головы» имена —
+      регенерация.
+
+### 10.5 Coding Bench OlliDesk
+
+- [ ] **`tests/bench/`** — набор из 20 задач на мини-репозиториях:
+  - 5 Python (pytest), 5 C# (MSTest), 5 TypeScript (vitest), 5 Go (go test).
+  - Каждая задача: `repo/` + `task.md` + `tests/` + `expected.patch`.
+  - Метрики: `pass@1` по тестам, `tool_success_rate`, `invalid_args_rate`,
+    `time_to_answer_s`, `ttft_ms`.
+- [ ] **`scripts/run_coding_bench.py`** — запускает `AgentLoop`/`Orchestrator` на каждой
+      задаче, пишет `bench_results.jsonl`, считает агрегаты.
+- [ ] **Цель:** `pass@1` +20–30 % к текущему, `invalid_args_rate ≤ 2 %`,
+      `tool_success_rate ≥ 95 %`.
+
+### 10.6 Model routing для кодинга
+
+- [ ] **Профиль «Разработка»** → coder-модель (`tags: ["coder"]`, см. 9.3.2):
+      `qwen2.5-coder-7b-instruct` / `qwen2.5-coder-14b-instruct` /
+      `qwen2.5-coder-32b-instruct` (по доступной RAM/VRAM).
+- [ ] **Planner 3B GPU / Analyst 7B–32B CPU** — уже есть.
+- [ ] **Fallback:** если coder-модели нет — обычная `qwen2.5-7b-instruct`, пометить
+      в `StatusDashboard` «⚠️ coder-модель не выбрана».
+- [ ] **`_TOOL_USE_INSTRUCTION`:** «Ты — coding-ассистент. Читай файлы порциями,
+      правь через `apply_patch`, запускай `run_tests`, проверяй `find_references`.
+      Не выдумывай пути и имена — используй `ProjectIntel`».
+
+### 10.7 Coding-цикл в Orchestrator
+
+- [ ] **`Orchestrator.run`** для `task in {"write_code","refactor_plan","bug_analysis"}`
+      использует расширенный флоу:
+      `classify → plan → collect → apply_patch → run_tests → fix_loop → verify → critique`.
+  - `fix_loop` — до 3 итераций `apply_patch → run_tests`; при провале — `verify` +
+    `regen` с `fix_hint`.
+- [ ] **`RunResult`** расширяется: `tests_passed`, `tests_failed`, `patches: list[dict]`,
+      `iterations: int`.
+
+**DoD фазы:** на Coding Bench pass@1 заметно выше; после правки файла агент умеет
+запускать тесты и исправлять ошибки; verifier ловит галлюцинации путей; LSP используется
+для reference lookup; coder-модель выбирается автоматически по профилю.
+
+---
+
+## Приоритеты и порядок
+
+**OlliDesk 2.0 — приоритеты сверху вниз.**
+
+1. **Фаза 0.1 — Стабилизация и безопасность** (1–2 недели):
+   shell allowlist, redaction, история 2.0, reasoning 2.0, model selection fix.
+2. **Фаза 2.5–2.9 — Ядро 2.0** (2–4 недели):
+   EventBus, ToolSpec v2, Policy Engine, Application Services, AsyncResource.
+3. **Фаза 9.1–9.6 — UX/UI 2.0** (3–5 недель):
+   чат не вкладка, LiveEventsPanel, редизайн пузыря, reasoning 2.0, история 2.0.
+4. **Фаза 9.3 + 9.4 — Модели и Git** (2–3 недели):
+   HF search, `slm_models.yaml`, coder-теги, `git_context`, `git_commit`.
+5. **Фаза 10 — Кодирование и проверяемые инструменты** (3–5 недель):
+   `apply_patch`, `run_tests`, LSP, verifier в AgentLoop, Coding Bench.
+6. **Фаза 7 — Расширяемость** (Plugin API, потом MCP) — после стабилизации ядра.
+7. **Фаза 5 + 9.7 — Мультимодальность** (backend + UI).
+8. **Фаза 8 — Релиз и качество** (CI windows-latest, PyInstaller, README).
+
+**Порядок по локальным моделям** (Фаза 4.7 + 9.3): сначала `ModelCatalog` (9.3.3) и
+HF search (9.3.1), затем coder-теги (9.3.2), затем routing (10.6). Цифры — из
+`agents/benchmark.py`, публикуются в `docs/BENCHMARK.md`.
+
+**Порядок по интерфейсу агента** (Фаза 4.8 + 2.5 + 10): сначала `EventBus` (2.5),
+затем `LiveEventsPanel` (9.5.3), затем `verifier` в AgentLoop (10.4) и
+`run_tests` (10.2) — только после этого имеет смысл включать `run_tests_after_edit`.
+
+---
+
+## Быстрый бэклог (мелочи)
+
+- [x] `ruff` вместо `black`/`isort` — сделано: black и isort удалены из обеих групп
+      зависимостей и из конфигурации, `ruff format` + правило I001 закрывают обе задачи.
+- [ ] **`uv.lock` рассинхронизирован с `pyproject.toml`**: объявлен `llama-cpp-python>=0.3.0`
+      (и транзитивный `diskcache`), в локе их нет. Любой `uv run` / `uv sync` молча
+      переписывает лок, и правка попадает в случайный коммит. Перегенерировать один раз
+      и держать лок в коммитах; причина — в лок собран до добавления SLM-зависимости.
+- [x] Дубликат `duckduckgo-search` + `ddgs` — подтвердилось: оба экспортируют `DDGS`
+      с разными типами, из-за чего mypy давал `assignment` в `tools/web_search.py`.
+      Устаревший пакет удалён из зависимостей.
+- [ ] `pyproject.toml` → `hatchling` вместо `setuptools` (упростит сборку wheel).
+- [ ] `.gitignore` игнорирует `Notes.md`/`Roadmap.md`/`Model.md` по имени — файлы уже
+      отслеживаются, но новые такие же будут скрыты. Переименовать правила на `/Notes.md`.
+- [ ] Добавить `pyright`/`basedpyright` как второй тайпчекер (VS Code).
+- [ ] Убрать `.idea/` из репозитория (уже в `.gitignore`, но проверить `git ls-files`).
+- [x] **Кэш web-поиска: расширить на RAG-ответы** (общий `SearchCache` с namespace) —
+      см. 9.8.
+- [x] **Целевая версия Python**: `requires-python` поднят до `>=3.12`, `ruff`/`mypy`
+      нацелены на `py312`, `ui/dialogs/wizard.py` использует `typing.override` (3.12+).
+- [x] **Чтение больших файлов фрагментами**: `tools/file_ops.py::read_file(path, offset, limit)`
+      поддерживает `offset`/`limit` с жёстким диапазоном
+      `[MIN_READ_CHUNK_CHARS=4000, MAX_READ_FILE_CHUNK_CHARS=30000]`,
+      `DEFAULT_READ_CHUNK_CHARS=12000` и хинт о продолжении в хвосте результата.
+      `tools/attached_files.py::read_attached_file` использует тот же механизм.
+      Возможность реализована в объёме, достаточном для чтения больших файлов.
+- [x] **Опциональные зависимости `[docs]`** — парсеры PDF/DOCX/PPTX/XLSX/RTF
+      (`pdfplumber`, `pypdf`, `python-docx`, `python-pptx`, `openpyxl`, `striprtf`,
+      `pdf2image`). Для OCR сканов нужен системный Poppler.
+
+---
+
+## Что было удалено (для справки)
+
+- **Фаза 1** (1.1–1.5) — полностью завершена: версия из `_version.py`, `ruff`/`mypy` в CI, chroma-граница в `fs/chroma_adapter.py`, удаление мёртвого кода, политика тестов.
+- **Фаза 3** — RAG завершена: гибридный поиск, реранкинг, раздельные эмбеддинги, path-aware RAG, `fs/intel/`.
+- **Фаза 4** — Контекст и промпты завершены: компактор, `core/budget.py`, `AGENTS.md`, фазы/гипотезы.
+- **4.6.A** — базовая надёжность ReAct.
+- **4.7.A** — `VectorStore` через `Embedder`-протокол, `last_stats`, `n_threads`.
+- **4.7.C** — стратегии выбора моделей «поглощены профилями (9.4)».
+- **4.8.A** — `MessagePart`-модель и событийный `ChatChunk`.
+- **4.8.B** — композитный пузырь (`ReasoningWidget` + `TextWidget` + `ToolCallCard`).
+- **4.8.C** — `run_shell_command` (ASK_FIRST, AGENT-only, чёрный список, песочница).
+  **В OlliDesk 2.0** — заменён на allowlist + dangerous mode (0.1.1).
+- **4.8.D** — метаданные `is_mutating`/`category` в `@tool`.
+
+Кросс-ссылки в оставшихся разделах обновлены: диагностическая таблица (без «см. 1.5»), Фаза 4.6 (без пункта «Сейчас»), Фаза 4.7 (без «4.7.C»), Фаза 4.8 (без 4.8.A–D), «Приоритеты» (без `run_shell_command`-параграфа), «Быстрый бэклог» (без ссылок на 1.2/1.3).
+
+**Новые архивные записи (OlliDesk 2.0):**
+- **0.1.1** (shell allowlist), **0.1.2** (redaction), **0.1.3** (история + reasoning), **0.1.4** (model selection) — по завершении переезжают сюда.
+- **2.5** (EventBus), **2.6** (ToolSpec v2), **2.7** (Policy Engine), **2.8** (Application Services), **2.9** (AsyncResource) — по завершении.
+- **9.3.1–9.3.3** (HF search, coder tags, `slm_models.yaml`), **9.4** (git_context + `git_commit`), **9.5.2** (reasoning 2.0), **9.6** (история 2.0), **9.5.3** (LiveEventsPanel) — по завершении.
+- **10.1–10.7** (кодирование) — по завершении.
+
+---
+
+## AGENTS.md — что изменилось
+
+Обновил сохранение структуры и форматирования. Основные правки (OlliDesk 2.0):
+
+1. **Диагностика / Статус SLM-стриминга**: `LocalLLMClient._generate` стримит — реализовано (9.5.2).
+2. **`agents/local_llm_client.py`** — стриминг `TextPart` на каждый токен, `start`/`end`, tool-calls после стрима; `_DEFAULT_TEMPERATURE = 0.0` + `_TEMPERATURE_BY_OP`.
+3. **`ui/chat/panel.py`** → миксины `BackendsMixin` (`ui/chat/backends.py`) + `ResearchMixin` (`ui/chat/research.py`). Поля — в `ChatPanel.__init__`, MRO — QWidget первым.
+4. **`ui/chat/message_item.py`** — `ToolCallCard` теперь с diff-режимом для `write_file` (📂/🔍/↩), `_truncate_preview`, `_escape_diff`; **reasoning-виджет** — переработан в 0.1.3 (авто-высота, авто-скролл, плавное появление).
+5. **`fs/vector_store.py`** — `search(categories=...)` (пост-RRF фильтр по `code`/`docs`), `_DOC_LANGUAGES` включает pdf/docx/pptx/xlsx/rtf; EventBus-эмиты `rag.search.*` (2.5).
+6. **`agents/history_compactor.py`** — три ступени (reasoning → tool → реплики).
+7. **`agents/tool_registry.py`** — `ErrorCategory`, `ToolResult.error_category`, `ToolResult.metadata`, `is_mutating`/`category`, приём `dict` от инструментов; **в 2.6** — `ToolSpec` + `capabilities`, **в 2.7** — `effective_policy`.
+8. **`tools/shell_ops.py`** — **в 0.1.1** allowlist вместо `_BLACKLIST`, dangerous mode, audit log; `MAX_OUTPUT_CHARS=5000`, `MAX_TIMEOUT_S=300` (без изменений).
+9. **`state/session_store.py`** — `parts_json` + идемпотентная миграция.
+10. **`ui/main_window.py`** — контроллеры `FileTreeController`/`IndexingController`/`AppMenuBar`, `_do_check_ollama` на `_OllamaCheckThread`, `_stop_all_threads` без `new_event_loop`, `_toggle_backend`, `_on_project_tree_toggled`, `_on_ollama_checked`, `_toggle_side_panel` → `AgentSettingsDialog`, `_open_benchmark`, `_open_profile_editor`, `_on_show_diff`, `_install_global_shortcuts`, `_register_palette_commands`, `_on_menu_profile_selected`, `_export_chat`, `_show_file_diff`.
+11. **`ui/chat/threads.py`** — `_BenchmarkThread`, `AgentChatThread.tool_executed` с 4-м аргументом `metadata`, `_ModelPoolLoadThread` с per-role timeout 90 с.
+12. **`ui/dialogs/tool_confirmation_dialog.py`** — `_coerce_value`, `QTableWidget`-редактор аргументов.
+13. **`core/sandbox.py`** — `SandboxedPathResolver`; **в 0.1.2** — расширенные `_DENIED_PARTS` (`.env`, `*.pem`, `*.key`, `id_rsa*`).
+14. **`core/config.py`** — `profiles`/`active_profile`/`show_project_tree`/`show_pipeline_selectors`/`open_modified_as_diff`/`index_documents`/`max_document_size_mb`/`document_ocr`; `_GLOBAL_ONLY_KEYS` расширен; `_sync_builtin_profiles` (валидатор). **9.3.3** — `available_models` переезжает в `slm_models.yaml`.
+15. **`core/profiles.py`** (новый) — `ProfileConfig`, `ProfileToolPolicies`, `_DEFAULT_PROFILES`, `default_profiles()`, `builtin_profile_ids()`, `get_default_profile()`, `get_profile_by_id()`. `recommended_model` в каждом встроенном профиле. **9.3.2** — добавляется `coder_models: list[str]`. **9.4** — `git_commit: "ask_first"` в `development`, `excluded` в `research`/`learning`.
+16. **`core/chat_commands.py`** (новый) — реестр `@`-команд (`ALL_COMMANDS`, `COMMAND_TAGS`, `detect_active_command`, `match_commands`, `get_command`).
+17. **`core/chat_export.py`** (новый) — `export_to_markdown`, `export_to_html`, `_plain_to_html`.
+18. **`fs/document_extractors.py`** (новый) — `extract_document`, `is_document`, `language_for_document`, `SUPPORTED_EXTENSIONS`, `_ocr_pdf`.
+19. **`agents/benchmark.py`** (новый) — `run_benchmark`, `BenchmarkPrompt`, `BenchmarkResult`, `BenchmarkRow`, `LoadTimeRow`, `save_csv`, `to_markdown`, `BENCHMARK_PROMPTS`.
+20. **`tools/git_ops.py`** — `read_file_at_head`, `get_git_status_for_file`. **9.4** — `get_current_branch`, `get_branch_hash`, `get_uncommitted_diff`, `get_branch_diff`, `get_recent_commits`, `commit`.
+21. **`ui/widgets/`** (новые) — `auto_scroll.py::AutoScrollArea`, `status_dashboard.py::StatusDashboard`, `pipeline_selectors.py::PipelineSelectors`, `profiles_selector.py::ProfilesSelector`, `command_completer.py::CommandCompleter`, `command_palette.py::CommandPalette`, `collapsed_placeholder.py::CollapsedPlaceholder`. **2.5** — `live_events.py::LiveEventsPanel`. **9.5.3** — подключение к EventBus.
+22. **`ui/command_registry.py`** (новый) — `CommandRegistry`, `PaletteCommand`.
+23. **`ui/dialogs/`** — новые: `agent_settings_dialog.py`, `benchmark_dialog.py`, `document_preview_dialog.py`, `export_chat_dialog.py`, `profile_editor_dialog.py`.
+24. **`ui/theme.py`** — полностью переработан: `ColorTokens`/`TypographyTokens`/`SpacingTokens`/`RadiusTokens`, `_build_qss`, `get_colors`, `get_stylesheet`, `DARK_STYLESHEET`/`LIGHT_STYLESHEET`.
+25. **`ui/menus.py`** — добавлены сигналы/пункты: `export_chat_requested`, `profile_selected(str)`, `profile_editor_requested`, `benchmark_requested`, `command_palette_requested`.
+26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`, `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`, `agents/critic.py`, `agents/benchmark.py`, `agents/hf_search.py` (9.3.1), `core/event_bus.py` (2.5), `core/policy.py` (2.7), `core/services/*` (2.8), `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`, `core/redaction.py` (0.1.2), `core/slm_models_io.py` (9.3.3), `fs/document_extractors.py`, `fs/image_extractors.py` (Фаза 5), `fs/audio_extractors.py` (Фаза 5), `fs/video_extractors.py` (Фаза 5), `tools/test_ops.py` (10.2), `ui/widgets/live_events.py` (2.5), `ui/widgets/*`, `ui/state/async_resource.py` (2.9), `ui/chat/backends.py`, `ui/chat/research.py`).
+27. **§5 «Пайплайн»** — убран устаревший роутинг «всегда ReAct»: research-вопросы уходят в `Orchestrator`, обычные — в `AgentLoop`; описан fallback при таймауте/ошибке. **2.5** — все этапы эмитят события в `EventBus`, UI показывает их в `LiveEventsPanel`. **10.7** — Orchestrator для coding-задач использует расширенный флоу с `apply_patch`/`run_tests`/`fix_loop`.
+28. **§6 «Соглашения»** — `requires-python >= 3.12`, `typing.override` в `wizard.py`.
+29. **§7 «Как добавить инструмент»** — `tools/registry.py::ALL_TOOLS` как фактическая точка регистрации. **9.4** — `git_commit` добавлен в `ALL_TOOLS` (ASK_FIRST, AGENT-only, capability `git`). **10.1** — `apply_patch` (capability `fs.write`). **10.2** — `run_tests` (capability `shell`). **10.3** — `find_references` (capability `fs.read`).
+30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`): `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py`, `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`, `test_shell_ops.py`, `test_event_bus.py` (2.5), `test_policy.py` (2.7), `test_tool_spec.py` (2.6), `test_async_resource.py` (2.9), `test_history_restore.py` (9.6), `test_redaction.py` (0.1.2), `test_shell_allowlist.py` (0.1.1), `test_slm_models_io.py` (9.3.3), `test_hf_search.py` (9.3.1), `test_coding_bench.py` (10.5).
+31. **§10 «Документация»** — без изменений в структуре (все файлы актуальны); добавлены `docs/SECURITY.md` (0.1.1), `docs/BENCHMARK.md` (10.5), `docs/CODING_BENCH.md` (10.5).
+32. **§12 «Подводные камни»** — дополнено: CPU-only analyst cap `n_ctx=8192`, `MessagePart`/`with_content`/`model_copy`-ограничение, `run_shell_command` — единственный инструмент с побочными эффектами вне файлов проекта, `_suppress_collapse` в `load_history` (один проход O(n)), `CollapsedPlaceholder` — виджеты остаются в памяти (только удалены из layout). **9.1** — чат больше не вкладка, `QTabWidget` скрывается при `tab_count() == 0`. **9.6** — `_current_assistant_parts` аккумулирует части при стриминге; без этого история теряет reasoning/tool_calls. **9.5.2** — `ReasoningWidget` использует авто-высоту с максимумом (40 % чата) и внутренним авто-скроллом; `setFixedHeight` больше не применяется. **0.1.1** — `run_shell_command` требует dangerous mode для произвольных команд; allowlist — единственный штатный путь. **2.5** — EventBus-sink может блокировать GUI, если подписчик синхронный и тяжёлый; подписчики должны быть неблокирующими. **2.6** — capabilities проверяются **до** выполнения; `timeout_s` соблюдается через `asyncio.wait_for`. **2.7** — приоритет policy: security > profile > config > decorator. **10.1** — `apply_patch` не пишет файл, если контекст не совпал; `write_file` — только для новых файлов. **10.2** — `run_tests` парсит вывод, но не гарантирует 100 % покрытия фреймворков; fallback — сырой stdout. **10.4** — verifier может «зациклиться» на регенерации; лимит — 1 повтор.
