@@ -1466,6 +1466,7 @@ class MainWindow(QMainWindow):
             tools_enabled={
                 name: policy != ToolPolicy.EXCLUDED for name, policy in self.chat_panel.tool_policies.items()
             },
+            allow_arbitrary_shell=bool(getattr(self.config, "allow_arbitrary_shell", False)),
             parent=self,
         )
         dialog.settings_applied.connect(self._on_agent_settings_applied)
@@ -1515,6 +1516,9 @@ class MainWindow(QMainWindow):
             self.rag_check.blockSignals(True)
             self.rag_check.setChecked(bool(settings.get("rag_enabled", True)))
             self.rag_check.blockSignals(False)
+
+        # 0.1.1: dangerous mode для shell.
+        self.config.allow_arbitrary_shell = bool(settings.get("allow_arbitrary_shell", False))
 
         try:
             from core.config import save_config

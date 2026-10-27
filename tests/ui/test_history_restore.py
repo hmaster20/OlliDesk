@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -28,7 +30,11 @@ def panel(qapp, tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     p = ChatPanel(session_store=store, base_url="http://localhost:11434", model="test")
     p.set_session_id(store.create_session("global"))
+    # См. комментарий в test_history_save.py — изолируем GPU от QWebEngine-тестов.
+    p._detect_backends = lambda: None  # type: ignore[method-assign]
     yield p
+    with contextlib.suppress(Exception):
+        p.shutdown()
     p.deleteLater()
 
 

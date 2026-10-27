@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
@@ -30,8 +32,13 @@ def panel(qapp, tmp_path):
 
     store = SessionStore(tmp_path / "sessions.db")
     p = ChatPanel(session_store=store, base_url="http://localhost:11434", model="test")
-    # По умолчанию активен SLM — не трогаем.
+    # См. комментарий в test_history_save.py — изолируем GPU от QWebEngine-тестов.
+    p._detect_backends = lambda: None  # type: ignore[method-assign]
+    # По умолчанию active_backend в тесте будет RULE_BASED — тесты, которые
+    # хотят SLM/Ollama, выставляют _active_backend через monkeypatch.
     yield p
+    with contextlib.suppress(Exception):
+        p.shutdown()
     p.deleteLater()
 
 

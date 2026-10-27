@@ -10,6 +10,7 @@ _current_assistant_parts), а не только из TextPart.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -36,7 +37,14 @@ def panel(qapp, tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     p = ChatPanel(session_store=store, base_url="http://localhost:11434", model="test")
     p.set_session_id(store.create_session("global"))
+    # Отключаем фоновую загрузку SLM. QTimer.singleShot(100, self._detect_backends)
+    # в ChatPanel.__init__ — статический таймер (без parent), выстреливает
+    # через 100 мс даже после teardown и запускает реальную Llama() → захват
+    # CUDA/GPU. Это «травит» последующие QWebEngine-тесты (чёрный экран, зависание).
+    p._detect_backends = lambda: None  # type: ignore[method-assign]
     yield p
+    with contextlib.suppress(Exception):
+        p.shutdown()
     p.deleteLater()
 
 

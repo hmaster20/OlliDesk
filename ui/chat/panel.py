@@ -56,6 +56,7 @@ from core.context_budget import attached_char_budget, rag_char_budget, truncate_
 from core.model_registry import ModelInfo, ModelRegistry
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
+from core.security import SecurityPolicy
 from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from tools.attached_files import AttachedFileStore
@@ -337,7 +338,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._apply_initial_profile()
         self._update_model_selector_visibility()
         self._update_pipeline_status()
-        QTimer.singleShot(100, self._detect_backends)
+        # 0.1.x: таймер привязан к self — deleteLater()/shutdown() его отменяет.
+        # Раньше был QTimer.singleShot(100, self._detect_backends) — статическая
+        # форма, которая выстреливала даже после удаления ChatPanel и стартовала
+        # реальную Llama() (захват CUDA), ломая QWebEngine-тесты и закрытие окна.
+        self._detect_backends_timer = QTimer(self)
+        self._detect_backends_timer.setSingleShot(True)
+        self._detect_backends_timer.timeout.connect(self._detect_backends)
+        self._detect_backends_timer.start(100)
 
     # ---------------------------------------------------------
     # Детект и загрузка бэкендов
@@ -1633,6 +1641,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         agents_context = load_agents_context(self.project_root)
         merged_rag = "\n\n".join(filter(None, [self._attached_context(), self._rag_context or ""]))
 
+        # 0.1.1: политика безопасности — прокидывается в инструменты
+        # через AgentContext.security (run_shell_command, web_search).
+        try:
+            _cfg = load_config()
+            security = SecurityPolicy(
+                allow_arbitrary_shell=bool(getattr(_cfg, "allow_arbitrary_shell", False)),
+            )
+        except Exception:
+            security = SecurityPolicy()
+
         context = AgentContext(
             system_prompt=combined,
             rag_context=merged_rag,
@@ -1643,11 +1661,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             vector_store=self.vector_store,
             num_ctx=self._router.num_ctx,
             mode=AgentMode.CHAT,
-            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
             search_cache=raw_cache,
             attached_files=self._attached_files if self._attached_files else None,
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
+            security=security,
         )
 
         client = self._router.active_client
@@ -1767,6 +1785,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         agents_context = load_agents_context(self.project_root)
         merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
 
+        # 0.1.1: политика безопасности — см. _do_chat.
+        try:
+            _cfg = load_config()
+            security = SecurityPolicy(
+                allow_arbitrary_shell=bool(getattr(_cfg, "allow_arbitrary_shell", False)),
+            )
+        except Exception:
+            security = SecurityPolicy()
+
         context = AgentContext(
             system_prompt=combined,
             rag_context=merged_rag,
@@ -1777,11 +1804,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             vector_store=self.vector_store,
             num_ctx=self._router.num_ctx,
             mode=mode,
-            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
             search_cache=raw_cache,
             attached_files=self._attached_files if self._attached_files else None,
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
+            security=security,
         )
 
         self._current_assistant_content = ""

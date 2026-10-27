@@ -755,6 +755,8 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "document_ocr",
         # [9.8] Поведение редактора — глобальное, не per-project.
         "open_modified_as_diff",
+        # [0.1.1] Dangerous mode — глобальная политика безопасности.
+        "allow_arbitrary_shell",
     }
 )
 
@@ -862,6 +864,12 @@ class AppConfig(BaseModel):
     # По умолчанию False — обычное открытие; diff доступен через
     # контекстное меню и Ctrl+D в редакторе.
     open_modified_as_diff: bool = False
+    # [0.1.1] Разрешить произвольные shell-команды (dangerous mode).
+    # По умолчанию False — run_shell_command работает только по allowlist
+    # (Test-Path, Get-Content, git status, python -m pytest, …).
+    # Включается через ⚙ → Безопасность или config.yaml. Даже при включении
+    # чёрный список (rm -rf, format, …) продолжает блокировать.
+    allow_arbitrary_shell: bool = False
     # [9.3] Показывать ли верхнюю панель со статусами Planner/Analyst.
     show_pipeline_selectors: bool = True
     # [9.4] Профили использования.

@@ -43,6 +43,7 @@ from core.context_budget import (
     truncate_to_chars,
 )
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
+from core.security import SecurityPolicy
 
 # Максимальное число чтений одного файла, после которого цикл считает это
 # застреванием. Дублируется с `investigation._MAX_READS_PER_FILE`, но здесь
@@ -67,8 +68,8 @@ class AgentContext:
     `object`. `hypotheses` — конкретный `HypothesisStore` (без цикла:
     `agents.hypotheses` не импортирует `agents.agent_loop`).
 
-    Это устраняет `hasattr(...)`-проверки в `AgentLoop` и `type: ignore`
-    на местах использования — mypy теперь ловит несовместимые реализации.
+    0.1.1: добавлено ``security`` — политика безопасности, которая
+    прокидывается в инструменты через ``extra_kwargs`` (см. AgentLoop.run).
     """
 
     system_prompt: str = ""
@@ -85,6 +86,8 @@ class AgentContext:
     search_cache: SearchCacheLike | None = None
     attached_files: AttachedFilesLike | None = None
     hypotheses: HypothesisStore | None = None
+    # 0.1.1: allow_arbitrary_shell, redaction_enabled и пр.
+    security: "SecurityPolicy | None" = None
 
 
 # --- System prompt ---------------------------------------------------------
@@ -1084,6 +1087,8 @@ class AgentLoop:
                         extra["attached_files"] = context.attached_files
                     if context.hypotheses:
                         extra["hypotheses"] = context.hypotheses
+                    if context.security:
+                        extra["security"] = context.security
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content

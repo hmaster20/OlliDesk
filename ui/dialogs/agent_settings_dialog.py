@@ -43,11 +43,12 @@ class AgentSettingsDialog(QDialog):
         show_reasoning: bool = True,
         rag_enabled: bool = True,
         tools_enabled: dict[str, bool] | None = None,
+        allow_arbitrary_shell: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройки агента")
-        self.setMinimumSize(440, 580)
+        self.setMinimumSize(440, 720)
         self._build_ui(
             temperature=temperature,
             max_tokens=max_tokens,
@@ -56,6 +57,7 @@ class AgentSettingsDialog(QDialog):
             show_reasoning=show_reasoning,
             rag_enabled=rag_enabled,
             tools_enabled=tools_enabled or {},
+            allow_arbitrary_shell=allow_arbitrary_shell,
         )
 
     def _build_ui(
@@ -68,6 +70,7 @@ class AgentSettingsDialog(QDialog):
         show_reasoning: bool,
         rag_enabled: bool,
         tools_enabled: dict[str, bool],
+        allow_arbitrary_shell: bool = False,
     ) -> None:
         layout = QVBoxLayout(self)
 
@@ -139,6 +142,23 @@ class AgentSettingsDialog(QDialog):
         self.rag_check.setChecked(rag_enabled)
         layout.addWidget(self.rag_check)
 
+        # --- 0.1.1: Безопасность ---
+        security_group = QGroupBox("Безопасность")
+        security_layout = QVBoxLayout(security_group)
+        self.allow_arbitrary_shell_check = QCheckBox(
+            "Разрешить произвольные shell-команды (dangerous mode)"
+        )
+        self.allow_arbitrary_shell_check.setChecked(allow_arbitrary_shell)
+        self.allow_arbitrary_shell_check.setToolTip(
+            "По умолчанию run_shell_command работает только по allowlist "
+            "(Test-Path, Get-Content, git status, python -m pytest, …). "
+            "Включение dangerous mode разрешает произвольные команды, "
+            "но разрушительные (rm -rf, format, shutdown, …) всё равно "
+            "блокируются. Каждый вызов пишется в ~/.ollidesk/audit.db."
+        )
+        security_layout.addWidget(self.allow_arbitrary_shell_check)
+        layout.addWidget(security_group)
+
         layout.addStretch()
 
         # Кнопки.
@@ -163,6 +183,7 @@ class AgentSettingsDialog(QDialog):
             "show_reasoning": self.show_reasoning_check.isChecked(),
             "rag_enabled": self.rag_check.isChecked(),
             "tools": {k: cb.isChecked() for k, cb in self._tool_checkboxes.items()},
+            "allow_arbitrary_shell": self.allow_arbitrary_shell_check.isChecked(),
         }
 
     def _on_apply(self) -> None:

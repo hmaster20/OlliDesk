@@ -58,6 +58,9 @@ class SecurityPolicy:
     allow_lsp_download: bool = True  # dev-инструменты из allowlist
     lsp_download_size_mb_warn: int = 50  # порог «большой объём» → спросить/фон
     redaction_enabled: bool = True
+    # 0.1.1: dangerous mode для run_shell_command. По умолчанию False —
+    # работаем только по allowlist. Включается явно в ⚙ → Безопасность.
+    allow_arbitrary_shell: bool = False
 
     def effective_web_mode(self) -> NetworkMode:
         if self.confidential:
@@ -78,8 +81,8 @@ class SecurityPolicy:
             confidential=bool(d.get("confidential", False)),
             allow_lsp_download=bool(net.get("lsp_download", True)),
             lsp_download_size_mb_warn=int(net.get("lsp_download_size_mb_warn", 50)),
+            allow_arbitrary_shell=bool(d.get("allow_arbitrary_shell", False)),
         )
-
 
 def assert_outbound_allowed(url: str) -> None:
     """Гард: любой исходящий HTTP обязан попасть в allowlist.

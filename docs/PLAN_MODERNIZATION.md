@@ -76,15 +76,18 @@ Windows-приложение на PySide6.
 | **Git-контекст в промпте (ветка, hash, diff)** | ❌ | `AgentContext` не содержит `git_context`; `ProjectSettings` не хранит branch/hash (9.4) |
 | **`git_commit` как инструмент агента** | ❌ | `tools/git_ops.py` умеет только `create_snapshot`/`undo_last_snapshot` (9.4) |
 | **«Живой» UI: события из логов в интерфейсе** | ❌ | `EventBus` отсутствует; `status_label` показывает только «🤔 Думает…» (2.5, 9.5.3) |
-| **Auto-height reasoning-виджет** | ⚠️ | `ReasoningWidget.setFixedHeight(min(max(40, line_count*16+8), 240))` — тесно (9.5.2) |
-| **Восстановление истории с reasoning/tool_calls** | ⚠️ | `_on_agent_finish` сохраняет только `TextPart`; reasoning/tool_calls теряются (9.6) |
+| **Auto-height reasoning-виджет** | ✅ | `ReasoningWidget._compute_max_height()` — авто-высота с потолком 40 % viewport, внутренний авто-скролл, `QPropertyAnimation` (0.1.3a) |
+| **Восстановление истории с reasoning/tool_calls** | ✅ | `_build_assistant_message` (`0.1.3b`) + `_render_assistant_parts` (`0.1.3c`); `ChatMessage(parts=[...])` сохраняется в `SessionStore` |
 | **Drag&drop файлов в чат** | ❌ | Работают только `@file`/`@dir`/`@path` (9.7) |
 | **Превью изображений/аудио в пузыре** | ❌ | `ChatMessage.images` не используется в UI (9.7) |
 | **EventBus / структурированные события** | ❌ | Нет `core/event_bus.py` (2.5) |
 | **ToolSpec v2: capabilities + timeout + idempotent** | ❌ | `@tool` знает только `name`/`description`/`policy`/`modes`/`is_mutating`/`category` (2.6) |
 | **Policy Engine (единая точка авторизации)** | ❌ | Политики раскиданы по `_apply_config_policies`, `ProfileToolPolicies`, декоратору (2.7) |
 | **Audit log инструментов** | ❌ | Нет БД `audit.db` (Фаза 0.1) |
-| **Shell allowlist (а не чёрный список)** | ⚠️ | `tools/shell_ops.py::_BLACKLIST` — чёрный список; allowlist отсутствует (Фаза 0.1) |
+| **Shell allowlist (а не чёрный список)** | ✅ | `tools/shell_ops.py::_ALLOWLIST_RE` + `SecurityPolicy.allow_arbitrary_shell` (dangerous mode) + чёрный список сохраняется (0.1.1) |
+| **Audit log инструментов** | ✅ | `core/audit.py::AuditLog` → `~/.ollidesk/audit.db`: timestamp, tool, args_hash, policy, approved, result_hash, error, dangerous (0.1.1) |
+| **Модель за сессией / явный выбор** | ✅ | `_settings_payload` фильтрует `model` по `active_backend`; `_suppress_model_save` в `set_model` (0.1.4) |
+| **Изоляция тестов ChatPanel** | ✅ | Фикстуры подавляют `_detect_backends`; `QTimer` в `ChatPanel.__init__` привязан к `self` (0.1.5) |
 | **`apply_patch` (unified diff вместо полного `write_file`)** | ❌ | `write_file` перезаписывает файл целиком (Фаза 10) |
 | **`run_tests` tool** | ❌ | Нет инструмента запуска тестов (Фаза 10) |
 | **Verifier в обычном AgentLoop** | ⚠️ | `agents/verifier.py` есть только для Orchestrator (Фаза 10) |
@@ -95,78 +98,129 @@ Windows-приложение на PySide6.
 | Тесты UI / state | ✅ | `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py` |
 
 ---
-
 ## Фаза 0.1 — Стабилизация и безопасность (OlliDesk 2.0)
 
-**Ближайшая цель: 1–2 недели.** Закрывает самые опасные и раздражающие дефекты.
-Это фундамент, без которого остальные фазы 2.0 не имеют смысла.
+**Фаза почти закрыта.** Реализованы 0.1.1, 0.1.3a/b/c, 0.1.4, 0.1.5.
+Осталось — 0.1.2 (redaction секретов). До завершения 0.1.2 безопасно
+считать, что секреты могут утекать в логи/LLM; shell уже защищён.
 
-### 0.1.1 Shell hardening
+### 0.1.1 Shell allowlist + audit log — `[x]`
 
-- [ ] **Allowlist вместо чёрного списка.** `tools/shell_ops.py`: заменить `_BLACKLIST`
-      на `_ALLOWLIST_PATTERNS` — разрешены только безопасные команды:
-      `Test-Path`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Measure-Object`,
-      `Get-Location`, `Resolve-Path`, `Get-FileHash`, `python -m pytest`,
-      `python -m py_compile`, `git status`, `git diff`, `git log`, `git show`,
-      `git branch`, `git rev-parse`, `dotnet test`, `go test`, `npm test`.
-- [ ] **Dangerous mode** — отдельный флаг `SecurityPolicy.allow_arbitrary_shell = False`
-      (в `core/security.py`). Включается **только** явным чекбоксом в
-      `AgentSettingsDialog` + подтверждением в диалоге. Каждый вызов — в audit log
-      с пометкой `dangerous=True`. По умолчанию — выключено.
-- [ ] **Запрет обхода через `cmd /c`, `powershell -EncodedCommand`, `iex`, `| iex`,
-      `Invoke-Expression`, `curl | bash`, `iwr | iex`** — при попытке возвращать
-      `Ошибка: команда заблокирована allowlist-политикой` (а не выполнять).
-- [ ] **`run_shell_command` без `project_root` — отказ**, даже при `dangerous mode`
-      (уже частично реализовано, довести до явного теста).
-- [ ] **Тесты:** `tests/tools/test_shell_allowlist.py` — allowlist, dangerous mode,
-      audit entries.
+- [x] **Allowlist вместо чёрного списка.** `tools/shell_ops.py::_ALLOWLIST_RE`
+      пропускает только безопасные команды: `Test-Path`, `Get-ChildItem`,
+      `Get-Content`, `Select-String`, `Measure-Object`, `Get-Location`,
+      `Resolve-Path`, `Get-FileHash`,
+      `python -m pytest|py_compile|unittest|mypy|ruff`,
+      `git status|diff|log|show|branch|rev-parse|describe`,
+      `dotnet test`, `go test`, `npm test`.
+- [x] **Dangerous mode.** `SecurityPolicy.allow_arbitrary_shell: bool = False`
+      в `core/security.py`; включается явным чекбоксом в
+      `AgentSettingsDialog` (группа «Безопасность»), хранится в
+      `AppConfig.allow_arbitrary_shell` и включён в `_GLOBAL_ONLY_KEYS`.
+- [x] **Чёрный список (`_BLACKLIST`) сохранён** как дополнительный слой:
+      даже в dangerous mode блокируются `rm -rf`, `Remove-Item -Recurse -Force`,
+      `format`, `shutdown`, `reg add`, `Set-ItemProperty`, `curl | iex`,
+      `iwr | iex`, `Invoke-WebRequest | iex`.
+- [x] **`core/audit.py::AuditLog`** — SQLite-журнал `~/.ollidesk/audit.db`:
+      timestamp, tool, args_hash, policy, approved, result_hash, error, dangerous.
+      Хеши — не сами данные.
+- [x] **`run_shell_command` пишет в audit каждый вызов:** успех, ошибка,
+      отказ allowlist, отказ blacklist. `dangerous=True` — только в dangerous mode.
+- [x] **`AgentContext.security: SecurityPolicy | None`** — политика
+      прокидывается в инструменты через `extra_kwargs`; используется
+      `run_shell_command` и `web_search` (последний раньше всегда работал с
+      дефолтной `SecurityPolicy()` — теперь исправлено).
+- [x] **`ui/dialogs/agent_settings_dialog.py`** — чекбокс «Разрешить
+      произвольные shell-команды (dangerous mode)».
+- [x] **Тесты:** `tests/core/test_audit.py` (6 кейсов), `tests/tools/test_shell_allowlist.py`
+      (8 кейсов: allowlist принимает/отклоняет, dangerous mode разрешает,
+      dangerous mode блокирует blacklist, пустая команда, без project_root,
+      успешный вызов пишется в audit как `approved=True`).
 
-### 0.1.2 Секреты и redaction
+### 0.1.2 Redaction секретов — `[ ]` (следующий шаг)
 
 - [ ] **`core/redaction.py`** — единая точка вырезания секретов:
-      API-ключи (`sk-…`, `hf_…`, `ghp_…`), JWT, пароли из URL, приватные ключи
-      (`-----BEGIN … PRIVATE KEY-----`), env-переменные с секретными именами.
-- [ ] **Redaction в логах** (loguru sink), **в tool-аргументах** (перед отправкой в LLM)
-      и **в результатах** инструментов (перед отдачей в UI/сессии).
-- [ ] **Запрет `.env`, `.git/config`, `*.pem`, `*.key`, `id_rsa*`** в `read_file`/
-      `list_directory`/`search_codebase` (через `SandboxedPathResolver._DENIED_PARTS`
-      расширить + capability `fs.secrets` для явного доступа с подтверждением).
-- [ ] **`web_search` hygiene** — уже есть в `tools/web_search_hygiene.py`; расширить
-      паттерны под `.env`-переменные и JWT.
+      API-ключи (`sk-…`, `hf_…`, `ghp_…`, `xoxb-…`), JWT, пароли из URL,
+      `-----BEGIN … PRIVATE KEY-----`, env-переменные с секретными именами
+      (`PASSWORD=`, `SECRET_KEY=`, `TOKEN=`).
+- [ ] **Redaction в логах** (loguru sink), **в tool-аргументах** (перед
+      отправкой в LLM) и **в результатах** инструментов (перед отдачей в UI/сессии).
+- [ ] **Запрет `.env`, `.git/config`, `*.pem`, `*.key`, `id_rsa*`** в
+      `read_file`/`list_directory`/`search_codebase` — через расширение
+      `SandboxedPathResolver._DENIED_PARTS`; полный доступ — через capability
+      `secrets` (откладываем до Фазы 2.6).
+- [ ] **`web_search` hygiene** — уже есть в `tools/web_search_hygiene.py`;
+      расширить паттерны под `.env`-переменные и JWT.
+- [ ] **Тесты:** `tests/core/test_redaction.py` (15+ кейсов).
 
-### 0.1.3 История и reasoning
+### 0.1.3a Reasoning 2.0 (авто-высота + авто-скролл + анимация) — `[x]`
 
-- [ ] **История 2.0 — аккумуляция parts в ChatPanel.** `self._current_assistant_parts:
-      list[MessagePart]`. В `_on_chunk` — `TextPart`, `_on_thinking` — `ReasoningPart`,
-      `_on_tool_started`/`_on_tool_executed` — `ToolCallPart`/`ToolResultPart`.
-      В `_on_agent_finish` — `ChatMessage(role="assistant", parts=self._current_assistant_parts)`.
-- [ ] **Research-ветка:** в `_on_agent_finish` (research) сохранять
-      `summary["final_answer"]` как `TextPart` + `hypotheses` как `TextPart`-markdown.
-- [ ] **`load_history`:** убедиться, что `parts_json` рендерится в `ChatMessageItem`
-      без потерь.
-- [ ] **Тест:** `tests/ui/test_history_restore.py` — text + reasoning + tool_call →
-      finish → reload → все части на месте.
-- [ ] **Reasoning 2.0 — авто-высота.** `ReasoningWidget._refresh_browser`: убрать
-      `setFixedHeight(h)`, использовать `TextWidget._adjust_height`-паттерн
-      (auto-height с `max = 40% от высоты чата`) + внутренний авто-скролл к последнему
-      токену (`_browser.verticalScrollBar().setValue(maximum())`).
-- [ ] **Reasoning 2.0 — плавное появление** `QPropertyAnimation` на `maximumHeight`
-      (0 → auto), 150 мс, только для разворачивания/сворачивания.
+- [x] **`ReasoningWidget._compute_max_height()`** — потолок 40 % viewport
+      ближайшего `QScrollArea`, fallback на высоту окна, `_FALLBACK_MAX_HEIGHT = 480`.
+- [x] **`_refresh_browser` больше не вызывает `setFixedHeight(h)`**;
+      `setMaximumHeight(cap)` + рост по контенту.
+- [x] **Внутренний авто-скролл к последнему токену** при `append_text`.
+- [x] **`QPropertyAnimation` на `maximumHeight`** (150 мс); `_animate_height`
+      обрабатывает вырожденный случай `start == target` (иначе в PySide6
+      `finished` не приходит и тело не скрывается).
+- [x] **`resizeEvent`** — пересчёт cap при ресайзе окна, если не идёт анимация.
+- [x] **Тесты:** `tests/ui/test_reasoning_widget.py` (7 кейсов).
 
-### 0.1.4 Модель за сессией / явный выбор
+### 0.1.3b История 2.0 — сохранение parts — `[x]`
 
-- [ ] **`ModelSelection.trackSessionCommit`** — ждать **оба** ack'а (agent + model),
-      откатывать только matching draft. См. §4.6.
-- [ ] **Явный выбор пользователя** в `SLMModelsDialog`/`PipelineSelectors` выключает
-      `auto_select_model` (уже есть в `_activate_selected`, довести до общего API).
-- [ ] **`last_model` не перетирается** при смене режима в Chat-режиме (уже сделано
-      через `_emit_settings_changed`, но проверить сценарий «SLM + Ollama disabled»).
-- [ ] **`SLMConfig.auto_select_model=False`** не запускает `select_best_model()` в
-      `_detect_and_load_slm` — уже сделано, покрыть тестом.
+- [x] **`ChatPanel._current_assistant_parts` + `_current_assistant_text` +
+      `_current_assistant_reasoning`** — аккумуляторы текущего ответа.
+- [x] **`_on_thinking` копит reasoning независимо от `_show_reasoning`** —
+      история не теряет `reasoning_content` при выключенном тумблере.
+- [x] **`_on_chunk` / `_on_tool_started` / `_on_tool_executed`** аккумулируют
+      `TextPart` / `ToolCallPart` / `ToolResultPart`.
+- [x] **`_build_assistant_message(fallback_text)`** собирает
+      `ChatMessage(parts=[ReasoningPart?, TextPart?, *tool_parts])`.
+- [x] **`_on_agent_finish`** (обычная и research-ветка) и **`_send_finished`**
+      сохраняют через `_build_assistant_message`.
+- [x] **`_on_orchestrator_result`** — `ChatMessage(parts=[TextPart(...)])`
+      (Оркестратор не стримит через `_on_chunk`).
+- [x] **Тесты:** `tests/ui/test_history_save.py` (4 кейса).
 
-**DoD:** shell не выполняет произвольные команды без dangerous mode; секреты не
-утекают в LLM/логи; история после перезапуска содержит reasoning и tool_calls;
-reasoning не обрезается; модели не «перескакивают» при явном выборе.
+### 0.1.3c История 2.0 — восстановление — `[x]`
+
+- [x] **`_render_assistant_parts(msg)`** — восстановление композитного пузыря
+      из `msg.parts`: reasoning → text → tool_call → tool_result (матчинг
+      `ToolResultPart` с последней pending-карточкой по `name`).
+- [x] **`load_history`** использует `_render_assistant_parts` для assistant-сообщений
+      с непустым `parts`; для остальных — fallback на `_add_message(role, content)`.
+- [x] **Тесты:** `tests/ui/test_history_restore.py` (4 кейса).
+
+### 0.1.4 Модель за сессией / явный выбор — `[x]`
+
+- [x] **`_settings_payload()`** — единая точка фильтра: `model` включается в
+      payload только если `active_backend == OLLAMA`. Раньше
+      `_save_current_settings` (вызывался из `_on_model_changed`) эмитил `model`
+      всегда, и `MainWindow._on_chat_settings_changed` перетирал
+      `config.last_model` именем Ollama-модели даже когда активна SLM.
+- [x] **`set_model` под `_suppress_model_save`** — программная установка модели
+      (восстановление `last_model` при открытии проекта) не триггерит сохранение.
+- [x] **`SLMModelsDialog._activate_selected`** уже выключал `auto_select_model`
+      при явном выборе — покрыто тестом.
+- [x] **Тесты:** `tests/ui/test_model_selection.py` (6 кейсов).
+
+### 0.1.5 Изоляция тестов ChatPanel — `[x]`
+
+- [x] **`QTimer.singleShot(100, self._detect_backends)` в `ChatPanel.__init__`**
+      заменён на `QTimer(self)` с `timeout.connect(...)` — таймер привязан к
+      `self` и отменяется при `deleteLater()`/`shutdown()`. Раньше статическая
+      форма таймера выстреливала даже после удаления панели и стартовала
+      реальную `Llama()` (захват CUDA), ломая QWebEngine-тесты (чёрный экран,
+      зависание `make test`).
+- [x] **Фикстуры ChatPanel** в `tests/ui/test_history_save.py`,
+      `tests/ui/test_history_restore.py`, `tests/ui/test_model_selection.py`
+      подавляют `_detect_backends` и вызывают `shutdown()` в teardown
+      через `contextlib.suppress`.
+
+**DoD фазы (после 0.1.2):** shell не выполняет произвольные команды без
+dangerous mode; секреты не утекают в LLM/логи; история после перезапуска
+содержит reasoning и tool_calls; reasoning не обрезается; модели не
+«перескакивают» при явном выборе.
 
 ---
 
@@ -1168,9 +1222,9 @@ diff в редакторе `Ctrl+D`, замеры производительно
 
 #### 9.5.3 «Живой» UI: события из логов в интерфейсе
 
-- [x] **`core/event_bus.py::EventBus`** — синглтон `QObject` с сигналом
+- [ ] **`core/event_bus.py::EventBus`** — синглтон `QObject` с сигналом
       `event_emitted(str, dict)`. См. **2.5**.
-- [x] **`core/logger.py`:** loguru-sink для `level >= INFO` → EventBus. См. **2.5**.
+- [ ] **`core/logger.py`:** loguru-sink для `level >= INFO` → EventBus. См. **2.5**.
 - [ ] **`ui/widgets/live_events.py::LiveEventsPanel`:**
   - `QPlainTextEdit` (read-only) или `QTextBrowser` с цветными строками по уровню.
   - Встроен в `ChatPanel` под `status_label` (сворачиваемый, высота 120 px, авто-скролл).
@@ -1281,7 +1335,7 @@ Backend-часть (экстракторы, OCR, STT, vision) — остаётс
 
 Приоритет — по боли пользователя:
 
-1. **0.1.3 История + 0.1.4 Reasoning** (bug, ломает доверие и UX) — 1–2 дня.
+1. ✅ **0.1.3 История + 0.1.4 Reasoning** (bug, ломает доверие и UX) — закрыто.
 2. **9.1 Стационарные вкладки** (архитектурная правка, разблокирует 9.5.3) — 2–3 дня.
 3. **2.5 EventBus + 9.5.3 Живой UI** (`LiveEventsPanel`, пульсация, статусы по этапам) — 3–5 дней.
 4. **9.5.1 Визуальный редизайн пузыря** — 3–5 дней.
@@ -1411,8 +1465,10 @@ reasoning растёт сам; после перезагрузки истори�
 
 **OlliDesk 2.0 — приоритеты сверху вниз.**
 
-1. **Фаза 0.1 — Стабилизация и безопасность** (1–2 недели):
-   shell allowlist, redaction, история 2.0, reasoning 2.0, model selection fix.
+1. **Фаза 0.1 — Стабилизация и безопасность** — почти закрыта:
+   0.1.1 (shell allowlist + audit), 0.1.3a/b/c (Reasoning 2.0 + История 2.0),
+   0.1.4 (model selection), 0.1.5 (изоляция тестов) — ✅. Осталось — 0.1.2
+   (redaction секретов) — следующий шаг. См. §Фаза 0.1.
 2. **Фаза 2.5–2.9 — Ядро 2.0** (2–4 недели):
    EventBus, ToolSpec v2, Policy Engine, Application Services, AsyncResource.
 3. **Фаза 9.1–9.6 — UX/UI 2.0** (3–5 недель):
@@ -1484,9 +1540,12 @@ HF search (9.3.1), затем coder-теги (9.3.2), затем routing (10.6).
 Кросс-ссылки в оставшихся разделах обновлены: диагностическая таблица (без «см. 1.5»), Фаза 4.6 (без пункта «Сейчас»), Фаза 4.7 (без «4.7.C»), Фаза 4.8 (без 4.8.A–D), «Приоритеты» (без `run_shell_command`-параграфа), «Быстрый бэклог» (без ссылок на 1.2/1.3).
 
 **Новые архивные записи (OlliDesk 2.0):**
-- **0.1.1** (shell allowlist), **0.1.2** (redaction), **0.1.3** (история + reasoning), **0.1.4** (model selection) — по завершении переезжают сюда.
+- ✅ **0.1.1** (shell allowlist + audit), **0.1.3a** (Reasoning 2.0),
+  **0.1.3b** (История 2.0 — сохранение), **0.1.3c** (История 2.0 — восстановление),
+  **0.1.4** (модель за сессией), **0.1.5** (изоляция тестов ChatPanel) — закрыты.
+- **0.1.2** (redaction) — следующий шаг.
 - **2.5** (EventBus), **2.6** (ToolSpec v2), **2.7** (Policy Engine), **2.8** (Application Services), **2.9** (AsyncResource) — по завершении.
-- **9.3.1–9.3.3** (HF search, coder tags, `slm_models.yaml`), **9.4** (git_context + `git_commit`), **9.5.2** (reasoning 2.0), **9.6** (история 2.0), **9.5.3** (LiveEventsPanel) — по завершении.
+- **9.3.1–9.3.3** (HF search, coder tags, `slm_models.yaml`), **9.4** (git_context + `git_commit`), **9.5.3** (LiveEventsPanel) — по завершении.
 - **10.1–10.7** (кодирование) — по завершении.
 
 ---
@@ -1520,10 +1579,39 @@ HF search (9.3.1), затем coder-теги (9.3.2), затем routing (10.6).
 23. **`ui/dialogs/`** — новые: `agent_settings_dialog.py`, `benchmark_dialog.py`, `document_preview_dialog.py`, `export_chat_dialog.py`, `profile_editor_dialog.py`.
 24. **`ui/theme.py`** — полностью переработан: `ColorTokens`/`TypographyTokens`/`SpacingTokens`/`RadiusTokens`, `_build_qss`, `get_colors`, `get_stylesheet`, `DARK_STYLESHEET`/`LIGHT_STYLESHEET`.
 25. **`ui/menus.py`** — добавлены сигналы/пункты: `export_chat_requested`, `profile_selected(str)`, `profile_editor_requested`, `benchmark_requested`, `command_palette_requested`.
-26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`, `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`, `agents/critic.py`, `agents/benchmark.py`, `agents/hf_search.py` (9.3.1), `core/event_bus.py` (2.5), `core/policy.py` (2.7), `core/services/*` (2.8), `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`, `core/redaction.py` (0.1.2), `core/slm_models_io.py` (9.3.3), `fs/document_extractors.py`, `fs/image_extractors.py` (Фаза 5), `fs/audio_extractors.py` (Фаза 5), `fs/video_extractors.py` (Фаза 5), `tools/test_ops.py` (10.2), `ui/widgets/live_events.py` (2.5), `ui/widgets/*`, `ui/state/async_resource.py` (2.9), `ui/chat/backends.py`, `ui/chat/research.py`).
+26. **§4 «Пакеты»** — синхронизировано с текущим кодом (`fs/intel/`,
+    `agents/orchestrator.py`, `agents/evidence.py`, `agents/verifier.py`,
+    `agents/critic.py`, `agents/benchmark.py`, `agents/hf_search.py` (9.3.1),
+    **`core/audit.py`** (0.1.1, реализован), **`core/security.py`** —
+    `SecurityPolicy.allow_arbitrary_shell` (0.1.1), **`core/config.py`** —
+    `AppConfig.allow_arbitrary_shell` в `_GLOBAL_ONLY_KEYS` (0.1.1),
+    `core/event_bus.py` (2.5), `core/policy.py` (2.7), `core/services/*` (2.8),
+    `core/profiles.py`, `core/chat_commands.py`, `core/chat_export.py`,
+    `core/redaction.py` (0.1.2), `core/slm_models_io.py` (9.3.3),
+    `fs/document_extractors.py`, `fs/image_extractors.py` (Фаза 5),
+    `fs/audio_extractors.py` (Фаза 5), `fs/video_extractors.py` (Фаза 5),
+    `tools/test_ops.py` (10.2), `tools/shell_ops.py::_ALLOWLIST_RE` (0.1.1),
+    `ui/widgets/live_events.py` (2.5), `ui/widgets/*`,
+    `ui/state/async_resource.py` (2.9), `ui/chat/backends.py`, `ui/chat/research.py`).
 27. **§5 «Пайплайн»** — убран устаревший роутинг «всегда ReAct»: research-вопросы уходят в `Orchestrator`, обычные — в `AgentLoop`; описан fallback при таймауте/ошибке. **2.5** — все этапы эмитят события в `EventBus`, UI показывает их в `LiveEventsPanel`. **10.7** — Orchestrator для coding-задач использует расширенный флоу с `apply_patch`/`run_tests`/`fix_loop`.
 28. **§6 «Соглашения»** — `requires-python >= 3.12`, `typing.override` в `wizard.py`.
 29. **§7 «Как добавить инструмент»** — `tools/registry.py::ALL_TOOLS` как фактическая точка регистрации. **9.4** — `git_commit` добавлен в `ALL_TOOLS` (ASK_FIRST, AGENT-only, capability `git`). **10.1** — `apply_patch` (capability `fs.write`). **10.2** — `run_tests` (capability `shell`). **10.3** — `find_references` (capability `fs.read`).
-30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`): `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`, `test_activity_state.py`, `test_command_registry.py`, `test_collapsed_placeholder.py`, `test_chat_commands.py`, `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`, `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`, `test_profiles.py`, `test_tool_confirmation_coerce.py`, `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`, `test_shell_ops.py`, `test_event_bus.py` (2.5), `test_policy.py` (2.7), `test_tool_spec.py` (2.6), `test_async_resource.py` (2.9), `test_history_restore.py` (9.6), `test_redaction.py` (0.1.2), `test_shell_allowlist.py` (0.1.1), `test_slm_models_io.py` (9.3.3), `test_hf_search.py` (9.3.1), `test_coding_bench.py` (10.5).
+30. **§9 «Тесты»** — актуальный список покрытых модулей (см. `tests/`):
+    `test_auto_scroll.py`, `test_theme_tokens.py`, `test_tool_call_card.py`,
+    `test_activity_state.py`, `test_command_registry.py`,
+    `test_collapsed_placeholder.py`, `test_chat_commands.py`,
+    `test_chat_export.py`, `test_document_extractors.py`, `test_benchmark.py`,
+    `test_git_ops.py`, `test_file_ops_diff.py`, `test_panel_mro.py`,
+    `test_profiles.py`, `test_tool_confirmation_coerce.py`,
+    `test_project_settings.py`, `test_session_store.py`, `test_sandbox.py`,
+    `test_shell_ops.py`.
+    **Закрытые в Фазе 0.1:** `test_audit.py` (0.1.1), `test_shell_allowlist.py`
+    (0.1.1), `test_reasoning_widget.py` (0.1.3a), `test_history_save.py`
+    (0.1.3b), `test_history_restore.py` (0.1.3c), `test_model_selection.py`
+    (0.1.4).
+    **`[план]`:** `test_event_bus.py` (2.5), `test_policy.py` (2.7),
+    `test_tool_spec.py` (2.6), `test_async_resource.py` (2.9),
+    `test_redaction.py` (0.1.2), `test_slm_models_io.py` (9.3.3),
+    `test_hf_search.py` (9.3.1), `test_coding_bench.py` (10.5).
 31. **§10 «Документация»** — без изменений в структуре (все файлы актуальны); добавлены `docs/SECURITY.md` (0.1.1), `docs/BENCHMARK.md` (10.5), `docs/CODING_BENCH.md` (10.5).
 32. **§12 «Подводные камни»** — дополнено: CPU-only analyst cap `n_ctx=8192`, `MessagePart`/`with_content`/`model_copy`-ограничение, `run_shell_command` — единственный инструмент с побочными эффектами вне файлов проекта, `_suppress_collapse` в `load_history` (один проход O(n)), `CollapsedPlaceholder` — виджеты остаются в памяти (только удалены из layout). **9.1** — чат больше не вкладка, `QTabWidget` скрывается при `tab_count() == 0`. **9.6** — `_current_assistant_parts` аккумулирует части при стриминге; без этого история теряет reasoning/tool_calls. **9.5.2** — `ReasoningWidget` использует авто-высоту с максимумом (40 % чата) и внутренним авто-скроллом; `setFixedHeight` больше не применяется. **0.1.1** — `run_shell_command` требует dangerous mode для произвольных команд; allowlist — единственный штатный путь. **2.5** — EventBus-sink может блокировать GUI, если подписчик синхронный и тяжёлый; подписчики должны быть неблокирующими. **2.6** — capabilities проверяются **до** выполнения; `timeout_s` соблюдается через `asyncio.wait_for`. **2.7** — приоритет policy: security > profile > config > decorator. **10.1** — `apply_patch` не пишет файл, если контекст не совпал; `write_file` — только для новых файлов. **10.2** — `run_tests` парсит вывод, но не гарантирует 100 % покрытия фреймворков; fallback — сырой stdout. **10.4** — verifier может «зациклиться» на регенерации; лимит — 1 повтор.
