@@ -19,11 +19,12 @@ ChatPanel.__init__ явно.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import QLabel
 
 from agents.download_slm import get_model_paths
@@ -57,7 +58,10 @@ class BackendsMixin:
     _ollama_check_thread: _OllamaCheckThread | None
 
     status_label: QLabel
-    backend_status_changed: Signal
+    backend_status_changed: Any  # Signal(str)
+
+    # --- NEW: методы ChatPanel, которые вызывает BackendsMixin ---
+    _update_model_selector_visibility: Callable[[], None]
 
     # ------------------------------------------------------------------
     # Публичный API: перезагрузка SLM

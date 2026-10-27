@@ -147,7 +147,7 @@ def update_hypothesis(
         allowed = ", ".join(sorted(_VALID_STATUSES))
         return f"Ошибка: недопустимый статус '{status}'. Разрешены: {allowed}."
 
-    h = store.update(hypothesis_id, status=status, evidence=evidence or "")  # type: ignore[arg-type]
+    h = store.update(hypothesis_id, status=status, evidence=evidence or "")
     if h is None:
         return f"Ошибка: гипотеза '{hypothesis_id}' не найдена."
 

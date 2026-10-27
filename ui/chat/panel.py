@@ -312,7 +312,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
         # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
         # последовательны (start→result), поэтому одной ссылки достаточно.
-        self._active_tool_card = None
+        self._active_tool_card: ToolCallCard | None = None
         # [9.5.4] Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
 
@@ -674,12 +674,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         }
 
     def _project_rules(self) -> str:
-        """Правила проекта + системный промпт профиля (9.4)."""
+        """Правила проекта + системный промпт профиля."""
         base = read_project_rules(self.project_root)
-        profile_prompt = (self._profile.system_prompt or "").strip() if self._profile else ""
-        if profile_prompt:
-            return "\n\n".join(filter(None, [base, f"[Профиль: {self._profile.name}]\n{profile_prompt}"]))
-        return base
+        profile = self._profile
+        if profile is None:
+            return base
+        profile_prompt = (profile.system_prompt or "").strip()
+        if not profile_prompt:
+            return base
+        return "\n\n".join(filter(None, [base, f"[Профиль: {profile.name}]\n{profile_prompt}"]))
 
     def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
         self._ensure_project_scan()
@@ -1082,7 +1085,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         try:
             self.input_edit.setPlainText(new_text)
             cursor = self.input_edit.textCursor()
-            cursor.movePosition(Qt.TextCursor.MoveOperation.End)
+            cursor.movePosition(QTextCursor.MoveOperation.End)
             self.input_edit.setTextCursor(cursor)
         finally:
             self.input_edit.blockSignals(False)

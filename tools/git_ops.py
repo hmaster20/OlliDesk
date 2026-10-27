@@ -110,7 +110,8 @@ def read_file_at_head(repo_path: Path | str, file_path: Path | str) -> str | Non
         return None
 
     try:
-        return repo.git.show(f"HEAD:{rel}")
+        content: str = repo.git.show(f"HEAD:{rel}")
+        return content
     except Exception:
         # Файл не в HEAD (новый), git-ошибка, таймаут — тихий None.
         return None
@@ -143,7 +144,7 @@ def get_git_status_for_file(repo_path: Path | str, file_path: Path | str) -> str
 
     try:
         # `--porcelain` возвращает строки "XY path". Ищем наш файл.
-        out = repo.git.status("--porcelain", "--", rel)
+        out: str = repo.git.status("--porcelain", "--", rel)
     except Exception:
         return None
     if not out:

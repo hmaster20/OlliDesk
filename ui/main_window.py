@@ -24,6 +24,7 @@
 
 import asyncio
 import contextlib
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -743,7 +744,7 @@ class MainWindow(QMainWindow):
                     hint="Закрыть OlliDesk",
                     shortcut="Ctrl+Q",
                     group="File",
-                    callback=self.close,
+                    callback=self._exit_from_palette,
                 ),
             ]
         )
@@ -819,7 +820,10 @@ class MainWindow(QMainWindow):
                         label=f"Профиль: {p.icon} {p.name}",
                         hint=p.description[:80] if p.description else "",
                         group="Профиль",
-                        callback=lambda _pid=p.id, _p=p: self._apply_profile_from_palette(_p),
+                        # partial вместо lambda: mypy выводит сигнатуру Callable[[], None]
+                        # из bound-метода и одного аргумента. Lambda с default-arg
+                        # сбивает inference («Cannot infer type of lambda»).
+                        callback=partial(self._apply_profile_from_palette, p),
                     )
                 )
         except Exception:
@@ -920,6 +924,15 @@ class MainWindow(QMainWindow):
         if self._palette_dialog is None:
             self._palette_dialog = CommandPalette(self._palette_registry, self)
         self._palette_dialog.open_fresh()
+
+    def _exit_from_palette(self) -> None:
+        """Хелпер для палитры: закрывает окно (без возврата bool).
+
+        `QWidget.close()` возвращает bool (принято ли событие), а
+        `PaletteCommand.callback` ждёт `Callable[[], None]`. Оборачиваем,
+        чтобы не «тащить» bool-возврат в API палитры.
+        """
+        self.close()
 
     def _toggle_project_tree_from_palette(self) -> None:
         """Хелпер для палитры: переключает видимость дерева проекта."""

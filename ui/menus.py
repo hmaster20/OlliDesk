@@ -33,7 +33,7 @@ from __future__ import annotations
 from loguru import logger
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QMenuBar
+from PySide6.QtWidgets import QMenu, QMenuBar
 
 from core.config import AppConfig, save_config
 
@@ -75,10 +75,11 @@ class AppMenuBar(QMenuBar):
     def __init__(self, config: AppConfig, parent=None) -> None:
         super().__init__(parent)
         self._config = config
-        self._recent_menu = None
+        # QMenu создаётся в _build_file_menu; здесь только объявляем тип,
+        # чтобы `_refresh_recent_menu` и `set_config` видели QMenu, а не None.
+        self._recent_menu: QMenu | None = None
         self._recent_actions: list[QAction] = []
 
-        # checkable-действия — доступны MainWindow для программной синхронизации
         self.project_structure_action: QAction | None = None
         self.confirm_web_search_action: QAction | None = None
 

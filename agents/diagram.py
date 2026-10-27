@@ -88,7 +88,7 @@ def _to_layers(
     roots: Sequence[str],
 ) -> list[list[GraphNode]]:
     """Слои по расстоянию от корней (BFS по directed-рёбрам imports/references/depends_on/includes/provisions)."""
-    fwd = defaultdict(list)
+    fwd: defaultdict[str, list[str]] = defaultdict(list)
     for e in edges:
         if e.kind in {
             "imports",
@@ -122,7 +122,7 @@ def _to_layers(
     # только обратным belongs_to), докладываем undirected-BFS, иначе схема
     # вырождается в один слой из одних файлов.
     if len(layer) < len({n.id for n in nodes}):
-        und = defaultdict(list)
+        und: defaultdict[str, list[str]] = defaultdict(list)
         for e in edges:
             und[e.source].append(e.target)
             und[e.target].append(e.source)

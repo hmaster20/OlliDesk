@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,13 +23,13 @@ from loguru import logger
 from PySide6.QtCore import QTimer, Slot
 
 from agents.model_pool import ModelPool, Role
-from agents.ollama_client import TextPart
+from agents.ollama_client import MessagePart, TextPart
 from agents.orchestrator import Orchestrator, RunResult
 from core.budget import ApproxCounter
 
 if TYPE_CHECKING:
-    pass
-
+    from agents.ollama_client import ChatMessage
+    from ui.chat.message_item import ChatMessageItem
 
 class ResearchMixin:
     """Методы ChatPanel для research-режима и двухмодельного пайплайна."""
@@ -51,6 +52,24 @@ class ResearchMixin:
     vector_store: Any
     project_root: str
     status_label: Any  # QLabel
+
+    # --- NEW: поля, использованные в _reset_research_state / _on_orchestrator_result ---
+    _current_assistant_parts: list[MessagePart]
+    _current_assistant_text: str
+    _current_assistant_reasoning: str
+    _current_assistant_content: str
+    _current_thinking_content: str
+    _last_assistant_widget: ChatMessageItem | None
+    _session_id: str | None
+    _messages: list[ChatMessage]
+    session_store: Any
+    scroll_layout: Any
+
+    # --- NEW: методы ChatPanel, которые вызывает ResearchMixin ---
+    _scroll_to_bottom: Callable[[], None]
+    _sync_dashboard: Callable[[], None]
+    _reset_send_button: Callable[[], None]
+    pipeline_status_changed: Any  # Signal(str)
 
     # ------------------------------------------------------------------
     # Сброс research-состояния (вызывается перед каждым запросом).
@@ -99,8 +118,8 @@ class ResearchMixin:
 
         if self._current_thought_stream is None:
             self._current_thought_stream = ChatThoughtStream()
-            self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-                self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+            self.scroll_layout.insertWidget(
+                self.scroll_layout.count() - 1,
                 self._current_thought_stream,
             )
 
@@ -116,7 +135,7 @@ class ResearchMixin:
                 "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
             )
 
-        QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     @Slot()
     def _on_final_answer_started(self) -> None:
@@ -165,11 +184,11 @@ class ResearchMixin:
         except Exception as e:
             logger.warning(f"Не удалось построить паспорт исследования: {e}")
             return
-        self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-            self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+        self.scroll_layout.insertWidget(
+            self.scroll_layout.count() - 1,
             widget,
         )
-        QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     # ------------------------------------------------------------------
     # Индикатор пайплайна
@@ -234,10 +253,10 @@ class ResearchMixin:
 
         # Приборная панель.
         if self._dashboard is not None:
-            self._sync_dashboard()  # type: ignore[attr-defined]
+            self._sync_dashboard()
 
         # Сигнал наружу (MainWindow).
-        self.pipeline_status_changed.emit(text)  # type: ignore[attr-defined]
+        self.pipeline_status_changed.emit(text)
 
     def _pipeline_tooltip(self) -> str:
         """Подробности о загруженных planner/analyst для tooltip."""
@@ -371,20 +390,18 @@ class ResearchMixin:
         from ui.chat.message_item import ChatDiagramItem
 
         try:
-            if self._last_assistant_widget is not None:  # type: ignore[attr-defined]
-                self._last_assistant_widget.finalize()  # type: ignore[attr-defined]
+            if self._last_assistant_widget is not None:
+                self._last_assistant_widget.finalize()
 
             # Сохраняем assistant-сообщение в историю (0.1.3b).
-            # Оркестратор не стримит через _on_chunk, поэтому собираем
-            # ChatMessage напрямую из TextPart(result.answer).
             if result.answer:
                 assistant_message = ChatMessage(
                     role="assistant",
                     parts=[TextPart(text=result.answer)],
                 )
-                self._messages.append(assistant_message)  # type: ignore[attr-defined]
-                if self._session_id:  # type: ignore[attr-defined]
-                    self.session_store.save_message(  # type: ignore[attr-defined]
+                self._messages.append(assistant_message)
+                if self._session_id:
+                    self.session_store.save_message(
                         self._session_id,
                         assistant_message,
                     )
@@ -395,8 +412,8 @@ class ResearchMixin:
                     result.ascii_diagram or "",
                     result.mermaid_diagram or "",
                 )
-                self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-                    self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+                self.scroll_layout.insertWidget(
+                    self.scroll_layout.count() - 1,
                     diagram_item,
                 )
 
@@ -414,14 +431,14 @@ class ResearchMixin:
                     summary += f" · без доказательств: {unsupported}"
                 self._add_message("system", summary)  # type: ignore[attr-defined]
 
-            QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._scroll_to_bottom)
         except Exception:
             logger.exception("_on_orchestrator_result failed")
         finally:
-            self._reset_send_button()  # type: ignore[attr-defined]
-            self._current_assistant_content = ""  # type: ignore[attr-defined]
-            self._current_thinking_content = ""  # type: ignore[attr-defined]
-            self._last_assistant_widget = None  # type: ignore[attr-defined]
+            self._reset_send_button()
+            self._current_assistant_content = ""
+            self._current_thinking_content = ""
+            self._last_assistant_widget = None
             self._current_thought_stream = None
             self._pending_final_answer = ""
             self._last_research_summary = None

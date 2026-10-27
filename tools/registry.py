@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from tools import (
     attached_files,
     codebase_search,
@@ -24,7 +27,10 @@ from tools import (
 )
 
 # Список всех инструментов для явной регистрации.
-ALL_TOOLS = [
+# Аннотация `list[Callable[..., Any]]` нужна, чтобы mypy не выводил для
+# декорированных функций тип `function` (он несовместим с сигнатурой
+# `ToolRegistry.register(func: Callable[..., Any])`).
+ALL_TOOLS: list[Callable[..., Any]] = [
     # file_ops
     file_ops.read_file,
     file_ops.list_directory,

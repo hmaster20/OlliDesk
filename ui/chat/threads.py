@@ -3,8 +3,9 @@
 import asyncio
 import json
 import threading
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from PySide6.QtCore import QThread, Signal
@@ -23,6 +24,10 @@ from agents.orchestrator import Orchestrator, RunResult
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
 from fs.vector_store import SearchResult
+
+if TYPE_CHECKING:
+    from agents.slm_optimizer import OptimizedParams
+
 
 # Лимит времени Orchestrator. Синтез 7B на CPU занимает 200-250 с,
 # поэтому 5 минут не хватало даже без регенерации.
@@ -362,15 +367,14 @@ class RagSearchThread(QThread):
         query: str,
         n_results: int = 5,
         file_filter: list[str] | None = None,
-        categories: list[str] | None = None,
+        categories: Sequence[str] | None = None,
     ):
         super().__init__()
         self.vector_store = vector_store
         self.query = query
         self.n_results = n_results
         self.file_filter = file_filter
-        # [9.4] Категории RAG из профиля (code / docs / оба).
-        self.categories = categories
+        self.categories: list[str] | None = list(categories) if categories is not None else None
 
     def run(self):
         try:
@@ -469,7 +473,7 @@ class _SLMLoadThread(QThread):
         n_batch: int = 512,
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
-        params: object | None = None,  # OptimizedParams | None
+        params: "OptimizedParams | None" = None,
     ):
         super().__init__()
         self.chat_path = chat_path
@@ -479,7 +483,7 @@ class _SLMLoadThread(QThread):
         self.n_batch = n_batch
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
-        self.params = params
+        self.params: OptimizedParams | None = params
 
     def run(self):
         try:

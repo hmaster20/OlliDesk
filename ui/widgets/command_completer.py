@@ -45,7 +45,7 @@ class CommandCompleter(QCompleter):
         )
 
         # Активация: клик/Enter в popup.
-        self.activated[str].connect(self._on_activated)
+        self.activated.connect(self._on_activated)
 
     # ------------------------------------------------------------------
     # Публичный API

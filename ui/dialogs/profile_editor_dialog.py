@@ -396,7 +396,7 @@ class ProfileEditorDialog(QDialog):
             builtin=current.builtin,
             agent_mode=self.mode_combo.currentData() or "agent",
             rag_enabled=self.rag_check.isChecked(),
-            rag_categories=rag_categories,  # type: ignore[arg-type]
+            rag_categories=rag_categories,
             system_prompt=self.prompt_edit.toPlainText().strip(),
             show_reasoning=self.reasoning_check.isChecked(),
             agent_max_iterations=int(self.agent_iters_spin.value()),
