@@ -8,6 +8,8 @@ from typing import Any, TextIO, cast
 from loguru import logger
 
 from core import redaction
+from core.event_bus import EventBus
+from core.events import EventKind
 
 
 class _SafeStream:
@@ -118,6 +120,33 @@ def _redact_filter(record: dict) -> bool:
         pass
     return True
 
+def _event_bus_sink(record: dict) -> None:
+    """Зеркалит loguru-record в EventBus (2.5).
+
+    Фильтр по уровню — на уровне sink'а (`level="INFO"` в `logger.add`),
+    но проверка дублируется для документации и на случай, если sink
+    подключат через `logger.add(_event_bus_sink)` без явного `level=`.
+
+    Внутри — только то, что нужно UI: level, message, source, timestamp.
+    Никаких `record["extra"]` — они не для UI. Секреты уже вырезаны
+    `_redact_filter` (0.1.2), повторная редокция не нужна.
+
+    Любая ошибка глушится: sink не должен валить логирование.
+    """
+    try:
+        level_no = record["level"].no
+        if level_no < 20:  # INFO
+            return
+        msg = record.get("message", "")
+        if not isinstance(msg, str):
+            return
+        payload: dict = {
+            "level": record["level"].name,
+            "message": msg,
+            "source": f"{record['name']}:{record['function']}",
+            "timestamp": record["time"].strftime("%H:%M:%S"),
+        }
+        EventBus.instance().emit(EventKind.LOG.value, payload)
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
@@ -173,4 +202,16 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
         catch=True,
         filter=_redact_filter,  # 0.1.2
+    )
+
+    # 2.5: EventBus-sink — INFO+ уходит в UI (LiveEventsPanel).
+    # `filter=_redact_filter` применять НЕ нужно: loguru вызывает filter
+    # для каждого sink'а на том же record, поэтому к моменту вызова
+    # EventBus-sink'а `record["message"]` уже отредактирован (соседним
+    # sink'ом). Если формат `{message}` — берём готовую строку.
+    logger.add(
+        _event_bus_sink,
+        level="INFO",
+        format="{message}",  # sink форматирует message сам; format не используется
+        catch=True,
     )
