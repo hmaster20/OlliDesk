@@ -14,6 +14,7 @@
 
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,8 @@ from core.context_budget import (
     system_prompt_char_budget,
     truncate_to_chars,
 )
+from core.event_bus import emit_event
+from core.events import EventKind, args_hash
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
 from core.security import SecurityPolicy
 
@@ -883,6 +886,17 @@ class AgentLoop:
             messages = self._compact_history(messages)
 
             try:
+                emit_event(
+                    EventKind.LLM_REQUEST_SENT.value,
+                    {
+                        "model": self.model,
+                        "backend": type(self.client).__name__,
+                        "n_messages": len(messages),
+                    },
+                )
+                llm_started_at = time.perf_counter()
+                first_token_emitted = False
+
                 stream = self.client.chat(
                     model=self.model,
                     messages=messages,
@@ -904,12 +918,34 @@ class AgentLoop:
 
                     part = chunk.part
                     if isinstance(part, ReasoningPart) and part.text:
+                        if not first_token_emitted:
+                            first_token_emitted = True
+                            emit_event(
+                                EventKind.LLM_FIRST_TOKEN.value,
+                                {
+                                    "model": self.model,
+                                    "ttft_ms": round(
+                                        (time.perf_counter() - llm_started_at) * 1000, 2
+                                    ),
+                                },
+                            )
                         # [4.8.E] Reasoning-delta — новый колбэк + on_thinking.
                         if on_reasoning_delta:
                             await on_reasoning_delta(part.text)
                         if on_thinking:
                             await on_thinking(part.text)
                     elif isinstance(part, TextPart) and part.text:
+                        if not first_token_emitted:
+                            first_token_emitted = True
+                            emit_event(
+                                EventKind.LLM_FIRST_TOKEN.value,
+                                {
+                                    "model": self.model,
+                                    "ttft_ms": round(
+                                        (time.perf_counter() - llm_started_at) * 1000, 2
+                                    ),
+                                },
+                            )
                         current_text += part.text
                         # [4.8.E] Text-delta — новый колбэк + маршрут
                         # (on_thought в research-фазе / on_token в финале).
@@ -921,6 +957,18 @@ class AgentLoop:
                             await on_token(part.text)
                     elif isinstance(part, ToolCallPart) and part.calls:
                         pending_tool_calls.extend(part.calls)
+
+                # 2.5: метрики завершённой генерации — только если не отменено.
+                if not self.client.is_cancelled:
+                    stats = getattr(self.client, "last_stats", None) or {}
+                    _done_payload: dict = {
+                        "model": self.model,
+                        "tokens": int(stats.get("tokens", 0)),
+                        "tokens_per_sec": float(stats.get("tokens_per_sec", 0.0)),
+                    }
+                    if stats.get("ttft_ms") is not None:
+                        _done_payload["ttft_ms"] = float(stats["ttft_ms"])
+                    emit_event(EventKind.LLM_GENERATION_DONE.value, _done_payload)
 
                 if self.client.is_cancelled:
                     logger.info("Запрос отменён пользователем")
@@ -1055,6 +1103,12 @@ class AgentLoop:
                     # пользователь видит карточку-запрос (⏳ pending)
                     # одновременно с диалогом подтверждения. При отказе
                     # карточка краснеет через on_tool_result(...).
+                    emit_event(
+                        EventKind.TOOL_STARTED.value,
+                        {"name": tc.name, "args_hash": args_hash(tc.arguments)},
+                    )
+                    tool_started_at = time.perf_counter()
+
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
 
@@ -1074,6 +1128,17 @@ class AgentLoop:
                             )
                             if on_tool_result:
                                 await on_tool_result(tc.name, "Отклонено пользователем", True, None)
+                            emit_event(
+                                EventKind.TOOL_FINISHED.value,
+                                {
+                                    "name": tc.name,
+                                    "duration_ms": round(
+                                        (time.perf_counter() - tool_started_at) * 1000, 2
+                                    ),
+                                    "is_error": True,
+                                    "error_category": "user_declined",
+                                },
+                            )
                             continue
 
                     extra: dict[str, object] = {}
@@ -1103,6 +1168,32 @@ class AgentLoop:
                             result.is_error,
                             result.metadata,
                         )
+
+                    # 2.5: события результата tool-call'а.
+                    _finished_payload: dict = {
+                        "name": result.name,
+                        "duration_ms": round(
+                            (time.perf_counter() - tool_started_at) * 1000, 2
+                        ),
+                        "is_error": result.is_error,
+                    }
+                    if result.error_category is not None:
+                        _finished_payload["error_category"] = result.error_category.value
+                    emit_event(EventKind.TOOL_FINISHED.value, _finished_payload)
+                    if result.is_error:
+                        emit_event(
+                            EventKind.TOOL_ERROR.value,
+                            {
+                                "name": result.name,
+                                "error_category": (
+                                    result.error_category.value
+                                    if result.error_category is not None
+                                    else "unknown"
+                                ),
+                                "message": (result.content or "")[:200],
+                            },
+                        )
+
                     messages.append(
                         _create_tool_result_message(
                             tc.id,

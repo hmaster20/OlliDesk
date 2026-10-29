@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from loguru import logger
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
+from core.event_bus import emit_event
+from core.events import EventKind
 from fs.indexer import FileIndexer, FileMetadata
 from fs.vector_store import VectorStore
 
@@ -66,7 +69,17 @@ class IndexingThread(QThread):
         asyncio.run(self._run_indexing())
 
     async def _run_indexing(self):
-        """Выполняет индексацию проекта."""
+        """Выполняет индексацию проекта (2.5: эмитит ``index.*`` в EventBus)."""
+        started_at = time.perf_counter()
+
+        def _emit_progress(current: int, total_: int) -> None:
+            """Дублирует Qt-сигнал и событие шины (2.5)."""
+            self.progress_updated.emit(current, total_)
+            emit_event(
+                EventKind.INDEX_PROGRESS.value,
+                {"current": current, "total": total_},
+            )
+
         try:
             # Инкрементальный скан
             new_or_modified, deleted = await self.indexer.incremental_scan(
@@ -75,6 +88,15 @@ class IndexingThread(QThread):
 
             total = len(new_or_modified)
             paths = [m.path for m in new_or_modified]
+
+            emit_event(
+                EventKind.INDEX_STARTED.value,
+                {
+                    "project_root": str(self.project_path),
+                    "total_files": total,
+                },
+            )
+
             # Если изменений нет и удалять нечего — не дёргаем прогресс
             # (эмитим (0, 0), панель поймёт и не покажет прогресс-бар).
             if total == 0 and not deleted:
@@ -85,10 +107,18 @@ class IndexingThread(QThread):
                 # Состояние не менялось — отдаём previous_state как есть.
                 self.state_ready.emit(dict(self.previous_state))
                 self.indexing_summary.emit([], [])
+                emit_event(
+                    EventKind.INDEX_FINISHED.value,
+                    {
+                        "indexed": 0,
+                        "deleted": 0,
+                        "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    },
+                )
                 self.indexing_finished.emit()
                 return
 
-            self.progress_updated.emit(0, total)
+            _emit_progress(0, total)
 
             # Удаляем чанки удаленных файлов
             if deleted:
@@ -100,7 +130,7 @@ class IndexingThread(QThread):
                 content = self.indexer.read_file_content(file_meta.absolute_path)
                 if not content:
                     # Документ не распознан / пустой — пропускаем без падения.
-                    self.progress_updated.emit(i + 1, total)
+                    _emit_progress(i + 1, total)
                     continue
                 chunks = self.indexer.chunk_file(content, file_meta.path, file_meta.mtime)
 
@@ -112,7 +142,7 @@ class IndexingThread(QThread):
                 if chunks:
                     await self.vector_store.add_chunks(chunks)
 
-                self.progress_updated.emit(i + 1, total)
+                _emit_progress(i + 1, total)
 
             # Актуальное состояние БЕЗ повторного sha256-скана всех файлов:
             # берём previous_state, вычитаем удалённые, добавляем изменённые.
@@ -125,6 +155,14 @@ class IndexingThread(QThread):
 
             self.state_ready.emit(new_state)
             self.indexing_summary.emit(paths, list(deleted))
+            emit_event(
+                EventKind.INDEX_FINISHED.value,
+                {
+                    "indexed": len(new_or_modified),
+                    "deleted": len(deleted),
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                },
+            )
             self.indexing_finished.emit()
         except Exception as e:
             self.indexing_error.emit(str(e))

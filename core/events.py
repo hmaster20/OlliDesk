@@ -15,9 +15,10 @@ Domain — префикс до первой точки (`tool`, `llm`, `rag`, �
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import NotRequired, TypedDict
-
 
 class EventKind(StrEnum):
     """Все виды событий OlliDesk.
@@ -166,6 +167,26 @@ class LogPayload(TypedDict):
     source: str  # "module:function"
     timestamp: str  # "HH:MM:SS"
 
+def args_hash(args: dict) -> str:
+    """Стабильный 16-символьный хеш аргументов tool-call'а.
+
+    Используется в ``tool.started``/``tool.finished`` (Stage B 2.5) и
+    в ``core.audit`` (0.1.1, там свой — но результат эквивалентен по
+    смыслу). ``sort_keys=True`` — аргументы одного вызова дают одинаковый
+    хеш независимо от порядка. ``default=str`` — fallback на несериализуемые
+    значения (Path и т.п.), чтобы функция никогда не бросала.
+
+    Args:
+        args: Аргументы tool-call'а (dict из `ToolCall.arguments`).
+
+    Returns:
+        16 hex-символов (sha256[0:16]).
+    """
+    try:
+        payload = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        payload = str(args)
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 __all__ = [
     "EventKind",
@@ -187,4 +208,5 @@ __all__ = [
     "ToolErrorPayload",
     "ToolFinishedPayload",
     "ToolStartedPayload",
+    "args_hash",
 ]

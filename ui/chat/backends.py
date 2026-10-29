@@ -31,6 +31,8 @@ from agents.download_slm import get_model_paths
 from agents.local_llm_client import LocalLLMClient
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import OllamaClient
+from core.event_bus import emit_event
+from core.events import EventKind
 from ui.chat.threads import (
     _OllamaCheckThread,
     _SLMDownloadThread,
@@ -276,6 +278,8 @@ class BackendsMixin:
         self._slm_client = client
         if not self._slm_model_name:
             self._slm_model_name = Path(client.model_path).stem
+        if not self._slm_model_id:
+            self._slm_model_id = Path(client.model_path).stem
         self._router.set_local_slm(client)
         self._router.set_slm_available(True)
         self._slm_loading = False
@@ -285,6 +289,15 @@ class BackendsMixin:
         self._emit_backend_status()
         # _update_pipeline_status — из ResearchMixin.
         self._update_pipeline_status()  # type: ignore[attr-defined]
+
+        # 2.5: событие «SLM загружена».
+        emit_event(
+            EventKind.SLM_LOADED.value,
+            {
+                "model_id": self._slm_model_id,
+                "load_ms": round(float(getattr(client, "load_ms", 0.0) or 0.0), 2),
+            },
+        )
 
     def _load_slm_async(
         self,
@@ -322,11 +335,21 @@ class BackendsMixin:
             info = slm.get_selected_info()
             if info is not None:
                 self._slm_model_name = info.display_name
+                self._slm_model_id = info.id
         except Exception as e:
             logger.debug(f"Не удалось прочитать SLM-параметры из конфига: {e}")
 
         self._slm_loading = True
         self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
+
+        # 2.5: событие «началась загрузка SLM».
+        emit_event(
+            EventKind.SLM_LOADING.value,
+            {
+                "model_id": self._slm_model_id or chat_path.name,
+                "path": str(chat_path),
+            },
+        )
 
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
@@ -406,6 +429,15 @@ class BackendsMixin:
         self._slm_loading = False
         logger.error(f"Ошибка загрузки SLM: {error_msg}")
         self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
+
+        # 2.5: событие «SLM не загрузилась».
+        emit_event(
+            EventKind.SLM_FAILED.value,
+            {
+                "model_id": self._slm_model_id or "?",
+                "error": error_msg,
+            },
+        )
 
     def _on_slm_downloaded(
         self,

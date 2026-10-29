@@ -284,6 +284,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
         self._slm_model_name = ""
+        self._slm_model_id = ""  # 2.5: id модели для событий slm.* (EventBus)
         self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
         # === двухмодельный пайплайн (Orchestrator) ===

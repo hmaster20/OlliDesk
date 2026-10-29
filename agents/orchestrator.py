@@ -28,6 +28,8 @@ from agents.evidence import EvidenceItem, EvidenceStore
 from agents.model_pool import ClientLike, ModelPool, Role
 from agents.verifier import VerifyResult, verify
 from core.budget import ApproxCounter, OpType, TokenCounter, plan_budget, trim_to_tokens
+from core.event_bus import emit_event
+from core.events import EventKind
 from fs.intel import GraphNode, ProjectIntel, analyze_project
 
 SMALL_PROJECT_FILES = 100
@@ -77,7 +79,20 @@ class Orchestrator:
         time_budget_s: float | None = None,
     ) -> RunResult:
         t0 = time.time()
-        ev = on_event or (lambda k, d: None)
+
+        def ev(kind: str, data: dict[str, Any]) -> None:
+            """Пробрасывает событие и в ``on_event``, и в ``EventBus`` (2.5).
+
+            ``on_event`` — существующий путь (Qt-сигнал → ``ChatPanel``);
+            ``EventBus`` — общая шина (LiveEventsPanel, Stage C).
+            """
+            if on_event is not None:
+                on_event(kind, data)
+            emit_event(
+                EventKind.ORCHESTRATOR_EVENT.value,
+                {"kind": kind, "data": data},
+            )
+
         ev("classify", {"query": user_query[:120]})
 
         task, scope = await self._classify(user_query)
