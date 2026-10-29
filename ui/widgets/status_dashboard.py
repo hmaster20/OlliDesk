@@ -18,7 +18,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from loguru import logger
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 # Цвета семантических индикаторов (в стиле «приборной панели»).
@@ -30,7 +31,12 @@ _C_INFO = "#d4a373"
 
 
 class _PillLabel(QLabel):
-    """Кликабельный статус-индикатор в стиле «pill»."""
+    """Кликабельный статус-индикатор в стиле «pill».
+
+    2.5: `set_pulse(True)` включает мигание точки (QTimer 500 мс,
+    toggle между двумя оттенками) — визуальный признак «программа
+    работает». Tooltip можно переопределить независимо от текста.
+    """
 
     clicked = Signal()
 
@@ -51,14 +57,47 @@ class _PillLabel(QLabel):
             " color: #d4a373;"
             "}"
         )
+        self._current_color: str = _C_OFF
+        self._current_text: str = ""
+        self._pulse_active: bool = False
+        self._pulse_on: bool = False
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(500)
+        self._pulse_timer.timeout.connect(self._on_pulse_tick)
 
     def set_state(self, text: str, color: str, tooltip: str = "") -> None:
         """Обновляет текст и цвет индикатора (цвет — как маркер)."""
-        self.setText(f'<span style="color:{color};">●</span> {text}')
-        self.setTextFormat(Qt.TextFormat.RichText)
+        self._current_text = text
+        self._current_color = color
+        self._apply()
+
+    def set_tooltip(self, tooltip: str) -> None:
+        """Только tooltip (текст/цвет не трогаются)."""
         if tooltip:
             self.setToolTip(tooltip)
-        self._current_color = color
+
+    def set_pulse(self, active: bool) -> None:
+        """Включает/выключает мигание точки."""
+        if active == self._pulse_active:
+            return
+        self._pulse_active = active
+        if active:
+            self._pulse_timer.start()
+        else:
+            self._pulse_timer.stop()
+            self._pulse_on = False
+            self._apply()
+
+    def _on_pulse_tick(self) -> None:
+        self._pulse_on = not self._pulse_on
+        self._apply()
+
+    def _apply(self) -> None:
+        color = self._current_color
+        if self._pulse_active and self._pulse_on:
+            color = "#f0d494"  # осветлённый цвет — «вспышка»
+        self.setText(f'<span style="color:{color};">●</span> {self._current_text}')
+        self.setTextFormat(Qt.TextFormat.RichText)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.button() == Qt.MouseButton.LeftButton:
@@ -79,6 +118,12 @@ class StatusDashboard(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+
+        # Индикатор активности (2.5): пульсирует пока идёт работа,
+        # tooltip — последнее событие из EventBus.
+        self.activity = _PillLabel("💤 idle")
+        self.activity.setToolTip("Активность: ожидание")
+        layout.addWidget(self.activity)
 
         # Бэкенд: SLM / Ollama / Резерв.
         self.backend = _PillLabel("backend")
@@ -117,6 +162,43 @@ class StatusDashboard(QWidget):
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 2.5: активность + последнее событие
+    # ------------------------------------------------------------------
+
+    _ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
+        "idle": ("💤 idle", _C_OFF),
+        "thinking": ("🤔 думает", _C_WARN),
+        "tool": ("🔧 tool", _C_INFO),
+        "streaming": ("✍️ стрим", _C_OK),
+        "error": ("❌ ошибка", _C_ERR),
+        "cancelled": ("⏹ стоп", _C_OFF),
+    }
+
+    def set_activity_state(self, state: str) -> None:
+        """Обновляет индикатор активности (2.5)."""
+        label, color = self._ACTIVITY_LABELS.get(state, ("●", _C_OFF))
+        self.activity.set_state(label, color)
+        self.activity.set_pulse(state in ("thinking", "tool", "streaming"))
+        if state == "idle":
+            self.activity.set_tooltip("Активность: ожидание")
+        elif state == "cancelled":
+            self.activity.set_tooltip("Остановлено пользователем")
+
+    def set_last_event_tooltip(self, kind: str, payload: dict) -> None:
+        """Tooltip индикатора активности — последнее событие (2.5)."""
+        text = f"{kind}"
+        msg = payload.get("message")
+        if isinstance(msg, str) and msg:
+            text += f": {msg[:120]}"
+        else:
+            # Показываем ключевые поля payload (без private-ключей).
+            for key in ("query", "name", "model_id", "model", "error"):
+                if payload.get(key):
+                    text += f": {str(payload[key])[:120]}"
+                    break
+        self.activity.set_tooltip(text)
 
     def set_backend(self, kind: str, display: str, model: str) -> None:
         """kind ∈ {'slm','ollama','rule','none'}."""

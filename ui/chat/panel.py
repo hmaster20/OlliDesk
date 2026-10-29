@@ -84,8 +84,9 @@ from ui.chat.threads import (
 from ui.widgets.auto_scroll import AutoScrollArea
 from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 from ui.widgets.command_completer import CommandCompleter
+from ui.widgets.live_events import LiveEventsPanel, QtEventBus
 from ui.widgets.pipeline_selectors import PipelineSelectors
-from ui.widgets.profiles_selector import ProfilesSelector
+from ui.widgets.profiles_selector import ProfilesSelectorf
 
 if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
@@ -308,6 +309,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._profile_chat_max_iters: int = 7
         # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
         self._dashboard = None
+        # 2.5: QtEventBus + LiveEventsPanel (создаются в _setup_ui).
+        self._qt_event_bus: QtEventBus | None = None
+        self.live_events_panel: LiveEventsPanel | None = None
 
         # [9.5.7] Активная tool-карточка: последняя созданная
         # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
@@ -964,6 +968,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        # 2.5: «живая» лента событий.
+        self.live_events_panel = LiveEventsPanel()
+        self._qt_event_bus = QtEventBus(self)
+        self._qt_event_bus.event_emitted.connect(self._on_bus_event)
+        layout.addWidget(self.live_events_panel)
 
         input_layout = QHBoxLayout()
 
@@ -2225,6 +2235,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._current_assistant_content = ""
             self._current_thinking_content = ""
 
+    @Slot(str, dict)
+    def _on_bus_event(self, kind: str, payload: dict) -> None:
+        """Принимает событие из ``QtEventBus`` (2.5).
+
+        Дублирует в ``LiveEventsPanel`` и (если дашборд есть) — в tooltip
+        индикатора активности.
+        """
+        if self.live_events_panel is not None:
+            self.live_events_panel.append_event(kind, payload)
+        if self._dashboard is not None:
+            self._dashboard.set_last_event_tooltip(kind, payload)
+
     @Slot(str)
     def _on_status_event(self, text: str):
         """[9.5.3] Статус — в серый трейс (Agent/Plan/research) или activity (Chat)."""
@@ -2516,6 +2538,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
         self._activity_state = state
         self.status_label.setText(full)
+
+        # 2.5: пульсация в StatusDashboard.
+        if self._dashboard is not None:
+            self._dashboard.set_activity_state(state)
 
         if self._generating:
             # Кнопка Stop: ■ + фон по состоянию.
@@ -3245,6 +3271,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
+        if self._qt_event_bus is not None:
+            with contextlib.suppress(Exception):
+                self._qt_event_bus.shutdown()
+            self._qt_event_bus = None
         if self._orchestrator is not None:
             with contextlib.suppress(Exception):
                 self._orchestrator = None
@@ -3421,6 +3451,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """MainWindow передаёт StatusDashboard после создания статус-бара."""
         self._dashboard = dashboard
         self._sync_dashboard()
+        # 2.5: синхронизация начального состояния активности.
+        if self._dashboard is not None:
+            self._dashboard.set_activity_state(self._activity_state)
 
     def _sync_dashboard(self) -> None:
         """Синхронизирует бэкенд/pipeline/tok/s с приборной панелью."""
