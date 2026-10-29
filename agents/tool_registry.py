@@ -11,6 +11,7 @@ from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError, create_model
 
 from agents.ollama_client import ToolCall, ToolSchema
+from core import redaction
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ToolExecutionError
 
@@ -305,7 +306,9 @@ class ToolRegistry:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,
-                    content=f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
+                    content=redaction.redact_only(
+                        f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
+                    ),
                     is_error=True,
                     error_category=ErrorCategory.FIX_ARGUMENTS,
                 )
@@ -322,8 +325,9 @@ class ToolRegistry:
 
             # [9.6.1] Инструмент может вернуть dict — тогда `_llm_text`
             # идёт в content (для LLM), остальные поля — в metadata (для UI).
-            # Строгий контракт: dict должен содержать `_llm_text` (str);
-            # если нет — JSON дампим в content, metadata = весь dict.
+            # 0.1.2: content проходит redaction (секреты не утекают в LLM/UI/сессию);
+            # metadata (diff, written_content, original_content) НЕ трогаем —
+            # это пользовательские файлы, third-party их не видит.
             if isinstance(result_content, dict):
                 llm_text = result_content.get("_llm_text")
                 if not isinstance(llm_text, str):
@@ -335,14 +339,14 @@ class ToolRegistry:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,
-                    content=llm_text,
+                    content=redaction.redact_only(llm_text),
                     metadata=metadata or None,
                 )
 
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=str(result_content),
+                content=redaction.redact_only(str(result_content)),
             )
         except ToolExecutionError:
             raise
@@ -351,7 +355,7 @@ class ToolRegistry:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: файл не найден: {e}",
+                content=redaction.redact_only(f"Ошибка: файл не найден: {e}"),
                 is_error=True,
                 error_category=ErrorCategory.DIFFERENT_PATH,
             )
@@ -360,7 +364,7 @@ class ToolRegistry:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: временная сетевая проблема: {e}",
+                content=redaction.redact_only(f"Ошибка: временная сетевая проблема: {e}"),
                 is_error=True,
                 error_category=ErrorCategory.RETRY_LATER,
             )
@@ -369,7 +373,7 @@ class ToolRegistry:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: {e}",
+                content=redaction.redact_only(f"Ошибка: {e}"),
                 is_error=True,
                 error_category=ErrorCategory.REPORT_TO_USER,
             )

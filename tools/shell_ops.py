@@ -193,6 +193,14 @@ async def run_shell_command(
 ) -> str:
     """Выполняет PowerShell-команду в песочнице проекта (0.1.1).
 
+    Порядок проверок:
+      1. Blacklist — ВСЕГДА (``rm -rf``, ``format``, ``shutdown /r``,
+         ``reg add``, ``curl | iex``). Не зависит от allowlist/dangerous mode.
+      2. Allowlist — по умолчанию разрешён только безопасный набор
+         (``Test-Path``, ``git status``, ``python -m pytest``, …).
+      3. Dangerous mode (``allow_arbitrary_shell=True``) — снимает
+         allowlist-ограничение, но blacklist остаётся.
+
     Args:
         command: Команда PowerShell.
         cwd: Рабочий каталог относительно ``project_root``. По умолчанию —
@@ -232,7 +240,33 @@ async def run_shell_command(
             "(pwsh) или включи Windows PowerShell (powershell.exe)."
         )
 
-    # 3. Политика: allowlist / dangerous mode / blacklist (0.1.1).
+        # 3. Blacklist — ВСЕГДА, независимо от allowlist и dangerous mode.
+    # `rm -rf /`, `format C:`, `shutdown /r`, `curl | iex` — разрушительные
+    # команды; сообщение должно явно говорить «чёрным списком», даже если
+    # они также не входят в allowlist. Пользователь сразу понимает причину.
+    # В dangerous mode поведение не меняется (там blacklist и раньше
+    # срабатывал через ветку 3a).
+    hit = _check_blacklist(command)
+    if hit is not None:
+        logger.warning(f"run_shell_command: blacklist hit ({hit}): {command[:120]}")
+        # `dangerous` в audit = был ли включён dangerous mode (не факт
+        # разрушительности — она уже зафиксирована в result="blacklist").
+        _audit(
+            command,
+            cwd,
+            approved=False,
+            result="blacklist",
+            is_error=True,
+            dangerous=sec.allow_arbitrary_shell,
+        )
+        return (
+            "Ошибка: команда отклонена чёрным списком разрушительных "
+            "операций (и не входит в allowlist безопасных shell-команд). "
+            "Переформулируй задачу без удаления/recurse-force/"
+            "записи в реестр/shutdown/pipe-to-iex."
+        )
+
+    # 4. Allowlist / dangerous mode.
     in_allowlist = _in_allowlist(command)
     dangerous = False
     if not in_allowlist:
@@ -251,20 +285,7 @@ async def run_shell_command(
             )
         dangerous = True
 
-    # 3a. Даже в dangerous mode — не пропускаем разрушительное.
-    if dangerous:
-        hit = _check_blacklist(command)
-        if hit is not None:
-            logger.warning(f"run_shell_command: blacklist hit ({hit}): {command[:120]}")
-            _audit(command, cwd, approved=False, result="blacklist",
-                   is_error=True, dangerous=True)
-            return (
-                "Ошибка: команда отклонена чёрным списком разрушительных "
-                "операций. Переформулируй задачу без удаления/recurse-force/"
-                "записи в реестр/shutdown/pipe-to-iex."
-            )
-
-    # 4. Нормализация таймаута.
+    # 5. Нормализация таймаута.
     try:
         t = int(timeout)
     except (TypeError, ValueError):
@@ -276,7 +297,7 @@ async def run_shell_command(
         f"dangerous={dangerous}, cmd={command[:200]}"
     )
 
-    # 5. Запуск.
+    # 6. Запуск.
     try:
         out, rc = await _run_powershell(ps_exe, command, work_dir, t)
     except FileNotFoundError as e:
@@ -289,17 +310,17 @@ async def run_shell_command(
                is_error=True, dangerous=dangerous)
         return f"Ошибка запуска команды: {e}"
 
-    # 6. Усечение вывода.
+    # 7. Усечение вывода.
     truncated = False
     if len(out) > MAX_OUTPUT_CHARS:
         out = out[:MAX_OUTPUT_CHARS]
         truncated = True
 
-    # 7. Audit log.
+    # 8. Audit log.
     _audit(command, cwd, approved=True, result=out,
            is_error=(rc != 0), dangerous=dangerous)
 
-    # 8. Ответ.
+    # 9. Ответ.
     header = f"$ {command}\n(exit {rc}, cwd {work_dir.name})"
     if dangerous:
         header += " [DANGEROUS MODE]"

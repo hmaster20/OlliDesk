@@ -10,14 +10,50 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from agents.ollama_client import ChatMessage, MessagePart
+from core import redaction
 
 _PARTS_ADAPTER: TypeAdapter[MessagePart] = TypeAdapter(MessagePart)
 
+def _redact_parts(parts: list[MessagePart]) -> list[dict]:
+    """Сериализует части, вырезая секреты из строковых значений (0.1.2).
+
+    Структура JSON сохраняется: ключи и типы не трогаются, редактируются
+    только строковые значения. Это гарантирует, что ``json.dumps`` даёт
+    валидный JSON, а ``_parse_parts`` может распарсить его обратно.
+
+    Зачем: аргументы ``write_file``/``apply_patch`` и результаты tool-call
+    могут содержать секреты (пользователь вставил токен в чат, модель
+    сгенерировала ``run_shell_command`` с секретом в env-переменной, …).
+    ``tool_registry.execute`` уже редактирует ``content`` перед отдачей в LLM,
+    но ``ToolCallPart.arguments`` попадают в сессию без изменений — эта
+    функция закрывает дыру.
+    """
+    out: list[dict] = []
+    for p in parts:
+        try:
+            dumped = p.model_dump(mode="json")
+            out.append(_redact_strings(dumped))
+        except Exception as e:
+            logger.warning(f"SessionStore: не удалось сериализовать part: {e}")
+            out.append({})
+    return out
+
+
+def _redact_strings(obj: Any) -> Any:
+    """Рекурсивно редактирует только строковые ЗНАЧЕНИЯ (ключи сохраняются)."""
+    if isinstance(obj, str):
+        return redaction.redact_only(obj)
+    if isinstance(obj, dict):
+        return {k: _redact_strings(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_strings(v) for v in obj]
+    return obj
 
 class SessionInfo(BaseModel):
     """Информация о сессии."""
@@ -84,17 +120,24 @@ class SessionStore:
         `parts_json` — источник истины для новых записей. `tool_call_id`
         и `name` — отдельные колонки: они принадлежат ChatMessage, а не
         parts, и раньше терялись при восстановлении истории.
+
+        0.1.2: и `content`, и `parts_json` проходят redaction. Секреты
+        (API-ключи, JWT, пароли в URL, env-переменные с секретными именами)
+        не попадают на диск. Редактируются только строковые значения
+        (ключи/структура сохраняются — JSON остаётся валидным).
         """
         now = datetime.now().isoformat()
         try:
             parts_json: str | None = json.dumps(
-                [p.model_dump(mode="json") for p in message.parts],
+                _redact_parts(message.parts),
                 ensure_ascii=False,
                 default=str,
             )
         except Exception as e:
             logger.warning(f"Не удалось сериализовать parts, сохраняю только content: {e}")
             parts_json = None
+
+        content = redaction.redact_only(message.content) if message.content else message.content
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -104,7 +147,7 @@ class SessionStore:
                 (
                     session_id,
                     message.role,
-                    message.content,
+                    content,
                     parts_json,
                     message.tool_call_id,
                     message.name,

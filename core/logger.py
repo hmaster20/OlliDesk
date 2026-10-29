@@ -7,6 +7,8 @@ from typing import Any, TextIO, cast
 
 from loguru import logger
 
+from core import redaction
+
 
 class _SafeStream:
     """Обёртка над sys.stderr, которая не падает при записи.
@@ -89,6 +91,33 @@ def _is_null_stream(stream: object) -> bool:
     except Exception:
         return True
 
+def _redact_filter(record: dict) -> bool:
+    """Loguru-filter: вырезает секреты из сообщения ДО форматирования.
+
+    Мутирует ``record["message"]`` in-place. Возвращает ``True`` всегда —
+    строку не отбрасываем, только чистим. Loguru применяет ``format``
+    ПОСЛЕ фильтра, поэтому ``{message}`` в format-строке получит уже
+    очищенный текст.
+
+    Покрывает ``logger.info(f"…{secret}…")``, ``logger.opt(exception=…)``
+    (только сообщение; сам трейсбек не чистим — см. §12 «Подводные камни»),
+    ``logger.bind(...)`` (тоже message).
+    """
+    try:
+        msg = record.get("message")
+        if isinstance(msg, str) and msg:
+            cleaned, hits = redaction.redact(msg)
+            if cleaned != msg:
+                record["message"] = cleaned
+                # Не логируем в тот же sink (рекурсия): пишем в debug-уровень
+                # напрямую в файл нельзя — sink ещё не отформатирован.
+                # Просто оставляем пометку в самом сообщении.
+                record["message"] = f"{cleaned}  [redacted:{','.join(hits)}]"
+    except Exception:
+        # Фильтр не должен ронять логирование ни при каких условиях.
+        pass
+    return True
+
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
@@ -129,6 +158,7 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
                 level=level,
                 format=fmt,
                 catch=True,
+                filter=_redact_filter,  # 0.1.2
             )
         except Exception:
             # stderr сломан окончательно — файл всё равно останется.
@@ -142,4 +172,5 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
         level=level,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
         catch=True,
+        filter=_redact_filter,  # 0.1.2
     )

@@ -9,7 +9,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
-from core.sandbox import SandboxedPathResolver  # NEW
+from core.sandbox import SandboxedPathResolver, is_denied_file  # 0.1.2
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
@@ -213,10 +213,11 @@ def list_directory(path: str, project_root: str = "") -> str:
         files: list[str] = []
         skipped = 0
         for entry in sorted(dir_path.iterdir(), key=lambda p: p.name.lower()):
-            if entry.name in _SKIP_NAMES:
+            if entry.name in _SKIP_NAMES or is_denied_file(entry.name):
                 skipped += 1
                 continue
             try:
+                ...
                 if entry.is_dir():
                     dirs.append(f"  {entry.name}/ — {_count_entries(entry)} элементов")
                 else:
@@ -312,7 +313,10 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
     Вне `ToolRegistry.execute` (прямой вызов) возвращает строку для
     обратной совместимости — но в проде всегда идёт через registry.
     """
-    file_path = SandboxedPathResolver(project_root).resolve(path)
+    # 0.1.2: allow_sensitive=True — агенту можно СОЗДАТЬ .env / .pem
+    # (пользователь попросил сгенерировать конфиг), но НЕ читать
+    # существующий секрет: read_file идёт без allow_sensitive.
+    file_path = SandboxedPathResolver(project_root).resolve(path, allow_sensitive=True)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
     if file_path.is_dir():
@@ -415,12 +419,11 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
     except Exception as e:
         return f"Ошибка записи файла: {e}"
 
-
-def _resolve_path(path: str, project_root: str = "") -> Path | None:
+def _resolve_path(path: str, project_root: str = "", *, allow_sensitive: bool = False) -> Path | None:
     """Устаревшая обёртка для обратной совместимости тестов.
 
     Реализация — `core.sandbox.SandboxedPathResolver`. Оставлена, чтобы
     существующие тесты `tests/tools/test_file_ops.py` продолжали
     импортировать это имя. Новый код должен использовать резолвер напрямую.
     """
-    return SandboxedPathResolver(project_root).resolve(path)
+    return SandboxedPathResolver(project_root).resolve(path, allow_sensitive=allow_sensitive)

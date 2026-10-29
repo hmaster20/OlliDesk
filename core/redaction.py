@@ -44,27 +44,48 @@ _PATTERNS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ),
     # --- Пароль в URL / DSN: scheme://user:password@host ---
     (
+        # (?!\[REDACTED) — маркер не должен матчиться повторно:
+        # без него `postgres://u:[REDACTED:url_password]@host`
+        # редактируется ещё раз (idempotency test).
         "url_password",
-        re.compile(r"(\b\w+://[^:/\s]+):([^@/\s]+)@"),
+        re.compile(r"(\b\w+://[^:/\s]+):((?!\[REDACTED)[^@/\s]+)@"),
         r"\1:[REDACTED:url_password]@",
     ),
     # --- Git remote с токеном: https://token@github.com/… ---
     (
         "git_token",
-        re.compile(r"(https?://)[^@/\s]+@"),
+        re.compile(r"(https?://)(?!\[REDACTED)[^@/\s]+@"),
         r"\1[REDACTED:git_token]@",
     ),
     # --- Env-переменные с секретными именами.
     # Заменяем значение, ключ оставляем (для отладки: видно, ЧТО утекало).
     (
+        # (1) `(?<![A-Za-z0-9])` вместо `\b`: `_` — word-char, поэтому
+        #     `\bTOKEN` не матчит `MY_API_KEY=…`; lookbehind по alnum
+        #     позволяет `_` перед ключом (префикс env-переменной).
+        # (2) `(['\"]?)(KEY)\1` — учёт кавычек вокруг ключа:
+        #     `"API_KEY": "value"` (JSON), `'PASSWORD': 'x'` (Python dict).
+        # (3) `(?!\[REDACTED)` перед значением — маркер не редактируется
+        #     повторно (idempotency test).
         "env_secret",
         re.compile(
-            r"\b(PASSWORD|PASSWD|SECRET|SECRET_KEY|TOKEN|ACCESS_TOKEN|REFRESH_TOKEN"
-            r"|API_KEY|APIKEY|PRIVATE_KEY|CLIENT_SECRET|AUTH_TOKEN)\s*[:=]\s*"
-            r"['\"]?([^\s'\"#]{6,})['\"]?",
+            r"(?<![A-Za-z0-9])"
+            r"(['\"]?)"
+            r"(PASSWORD|PASSWD|SECRET_KEY|SECRET|ACCESS_TOKEN|REFRESH_TOKEN"
+            r"|API_KEY|APIKEY|PRIVATE_KEY|CLIENT_SECRET|AUTH_TOKEN|TOKEN)"
+            r"\1"
+            r"(\s*[:=]\s*)"
+            r"(?!\[REDACTED)"
+            r"['\"]?"
+            r"([^\s'\"#]{6,})"
+            r"['\"]?",
             re.IGNORECASE,
         ),
-        r"\1=[REDACTED:env_secret]",
+        # \1 — opening quote вокруг ключа, \2 — имя ключа, \1 — closing,
+        # \3 — separator (`=`/`:` с пробелами). Значение заменяется целиком
+        # (значение с кавычками → маркер без кавычек; JSON-валидность
+        # не требуется — эти строки идут в логи, не в парсер JSON).
+        r"\1\2\1\3[REDACTED:env_secret]",
     ),
 )
 
