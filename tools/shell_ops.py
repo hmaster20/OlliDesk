@@ -183,6 +183,8 @@ def _audit(
     modes=[AgentMode.AGENT],
     is_mutating=True,
     category="shell",
+    capabilities=["shell", "fs.write"],  # shell может писать файлы
+    timeout_s=0.0,  # управляется параметром `timeout` внутри (max 300с)
 )
 async def run_shell_command(
     command: str,

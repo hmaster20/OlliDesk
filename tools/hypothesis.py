@@ -62,6 +62,8 @@ def _hypothesis_dict(h: Any) -> dict[str, Any]:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def record_hypothesis(
     statement: str,
@@ -121,6 +123,8 @@ def record_hypothesis(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def update_hypothesis(
     hypothesis_id: str,
@@ -172,6 +176,8 @@ def update_hypothesis(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def list_hypotheses(hypotheses: Any = None) -> str:
     """Возвращает список гипотез с их статусами.

@@ -254,6 +254,8 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
     ),
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["net"],
+    timeout_s=90.0,  # 4 стратегии по 20-25с
 )
 async def web_search(
     query: str,

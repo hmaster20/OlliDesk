@@ -85,6 +85,8 @@ def _count_entries(directory: Path) -> int:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=15.0,
 )
 def read_file(
     path: str,
@@ -194,6 +196,8 @@ def read_file(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=15.0,
 )
 def list_directory(path: str, project_root: str = "") -> str:
     """Возвращает содержимое директории в виде дерева одного уровня."""
@@ -296,6 +300,8 @@ def _verify_python_syntax(file_path: Path) -> str:
     modes=[AgentMode.AGENT],
     is_mutating=True,
     category="filesystem",
+    capabilities=["fs.write"],
+    timeout_s=30.0,
 )
 def write_file(path: str, content: str, project_root: str = "") -> str | dict[str, Any]:
     """Записывает содержимое в файл.

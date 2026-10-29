@@ -192,6 +192,8 @@ async def _geocode_city(city: str) -> tuple[float, float, str] | None:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["net"],
+    timeout_s=30.0,
 )
 async def get_weather(city: str) -> str:
     """Возвращает текущую погоду в городе.

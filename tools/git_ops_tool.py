@@ -10,6 +10,8 @@ from tools.git_ops import create_snapshot, get_git_status, undo_last_snapshot
     description="Показывает текущий статус Git-репозитория: ветка, изменённые файлы",
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["git"],
+    timeout_s=15.0,
 )
 def tool_git_status(project_root: str = "") -> str:
     """Возвращает статус Git-репозитория.
@@ -30,6 +32,9 @@ def tool_git_status(project_root: str = "") -> str:
     description="Создаёт Git-снапшот (stash) текущего состояния проекта",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
+    is_mutating=True,
+    capabilities=["git"],
+    timeout_s=15.0,
 )
 def tool_create_snapshot(project_root: str = "") -> str:
     """Создаёт снапшот текущего состояния проекта.
@@ -53,6 +58,9 @@ def tool_create_snapshot(project_root: str = "") -> str:
     description="Откатывает последний Git-снапшот (stash pop), восстанавливая предыдущее состояние",
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.AGENT],
+    is_mutating=True,
+    capabilities=["git"],
+    timeout_s=15.0,
 )
 def tool_undo_snapshot(project_root: str = "") -> str:
     """Откатывает последний снапшот.

@@ -112,6 +112,8 @@ def _end_of_day(value: str) -> float:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=120.0,  # RAG+rerank на слабом CPU может быть долгим
 )
 async def search_codebase(
     query: str,

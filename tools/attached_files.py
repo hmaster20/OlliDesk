@@ -159,6 +159,8 @@ class AttachedFileStore:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=10.0,
 )
 def read_attached_file(
     path: str,

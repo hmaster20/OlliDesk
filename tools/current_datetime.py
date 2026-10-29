@@ -40,6 +40,8 @@ _MONTHS_GEN = [
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=[],  # чистая in-memory операция без доступа
+    timeout_s=2.0,
 )
 def get_current_datetime() -> str:
     """Возвращает текущие дату и время.
