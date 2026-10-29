@@ -16,6 +16,8 @@ from typing import Final
 
 from loguru import logger
 
+from core import redaction
+
 
 class NetworkMode(StrEnum):
     """Режим исходящего трафика для web_search."""
@@ -114,8 +116,11 @@ _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
     ("rel_path_src", re.compile(r"\b[\w./\\-]+\.(?:cs|py|rb|tf|yml|yaml|hcl|csproj|sln|json|toml)\b")),
     ("dotnet_ns", re.compile(r"\b(?:LocalMessenger|Hmaster20)(?:\.[\w.]+)+\b")),
     (
-        "env_secret",
-        re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME|TOKEN|SECRET|PASSWORD|API[_-]?KEY)\b\s*[:=]", re.I),
+        # Только специфичные для проектов OlliDesk env-переменные.
+        # Общие секреты (TOKEN, SECRET, PASSWORD, API_KEY) — в core.redaction.
+        # Захватываем `key=value` целиком, чтобы не оставить значение.
+        "env_secret_project",
+        re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME)\s*[:=]\s*[^\s,;]+", re.I),
     ),
     (
         "host_or_ip",
@@ -130,22 +135,31 @@ _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
 def redact_query(text: str) -> tuple[str, list[str]]:
     """Вырезать чувствительное из поискового запроса.
 
+    Порядок:
+      1. ``core.redaction.redact`` — общие секреты (API-ключи, JWT,
+         приватные ключи, пароли в URL/DSN, env-переменные с секретными
+         именами). Заменяет значение, ключ оставляет — удобно для аудита.
+      2. Проектные паттерны этого модуля (``_PATTERNS``): номера договоров,
+         пути, IP, неймспейсы LocalMessenger, vault-ссылки.
+
     Returns:
         (очищенный_текст, список сработавших категорий). Пустой список
         категорий означает «утечек не найдено, можно слать».
     """
-    hits: list[str] = []
-    out = text
+    # 1. Общие секреты — единая точка в core.redaction (0.1.2).
+    out, hits = redaction.redact(text)
+
+    # 2. Проектные паттерны (номера договоров, пути, IP, …).
     for name, pat in _PATTERNS:
         if pat.search(out):
             hits.append(name)
             out = pat.sub("[REDACTED]", out)
+
     # Схлопываем пробелы после redact.
     out = re.sub(r"\s{2,}", " ", out).strip()
     if hits:
         logger.warning(f"web_search hygiene: redacted categories={hits}")
     return out, hits
-
 
 def is_neutral_query(text: str) -> bool:
     """True, если запрос состоит только из нейтральных технологий/ошибок.
