@@ -581,6 +581,8 @@ class MainWindow(QMainWindow):
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
+        self.menu_bar.memory_requested.connect(self._open_memory_dialog)
+
         # [9.9] Палитра команд.
         self.menu_bar.command_palette_requested.connect(self._open_command_palette)
 
@@ -1993,6 +1995,43 @@ class MainWindow(QMainWindow):
         self.chat_panel.update_model_list()
         self.chat_panel.update_models(self._available_models)
 
+    @Slot()
+    def _open_memory_dialog(self) -> None:
+        """4.3: открывает диалог просмотра/удаления памяти агента.
+
+        Если память отключена в конфиге — сообщаем и выходим; если
+        `ChatPanel` ещё не создал `MemoryService` — создаём через
+        `ChatPanel._ensure_memory_service`.
+        """
+        from core.config import load_config
+
+        try:
+            cfg = load_config()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать конфиг: {e}")
+            return
+        if not cfg.memory.enabled:
+            QMessageBox.information(
+                self,
+                "Память отключена",
+                "Включите память в настройках (⚙ → Память агента) или "
+                "в config.yaml: `memory.enabled: true`.",
+            )
+            return
+        if self.chat_panel is None:
+            return
+        service = self.chat_panel._ensure_memory_service()
+        if service is None:
+            QMessageBox.warning(
+                self,
+                "Память недоступна",
+                "Не удалось инициализировать SQLite. См. лог.",
+            )
+            return
+        from ui.dialogs.memory_dialog import MemoryDialog
+
+        dlg = MemoryDialog(service, self)
+        dlg.exec()
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog
 

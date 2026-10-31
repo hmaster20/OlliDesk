@@ -115,3 +115,43 @@ class AttachedFilesLike(Protocol):
     """
 
     def __bool__(self) -> bool: ...
+
+# ---------------------------------------------------------------------------
+# 4.3: память
+# ---------------------------------------------------------------------------
+
+
+class ReflectionLike(Protocol):
+    """Минимальный контракт рефлексии (совпадает с `Reflection`)."""
+
+    id: int | None
+    created_at: str
+    project_path: str
+    task_type: str
+    summary: str
+    outcome: str
+    tags: list[str]
+
+
+class RecallResultLike(Protocol):
+    """Минимальный контракт результата recall."""
+
+    reflections: Sequence[ReflectionLike]
+    hit: bool
+
+    def render_for_prompt(self, max_chars: int = 1200) -> str: ...
+
+
+class MemoryServiceLike(Protocol):
+    """Минимальный контракт `MemoryService` для `AgentContext`."""
+
+    def recall(
+        self,
+        query: str,
+        *,
+        top_k: int = 3,
+        project_path: str | None = None,
+        max_age_days: int = 90,
+    ) -> RecallResultLike: ...
+
+    def remember(self, reflection: ReflectionLike) -> int: ...

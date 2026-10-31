@@ -6,6 +6,11 @@ import json
 import os
 import re
 
+from core.services.memory_service import (
+    MemoryService,
+    Reflection,
+)
+
 os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -247,6 +252,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._hypotheses = HypothesisStore()
         self._hypothesis_widgets: dict[str, ChatHypothesisItem] = {}
+
+        # 4.3: эпизодическая память. Создаётся лениво (первое обращение
+        # к `_ensure_memory_service`), потому что SQLite-коннект не нужен
+        # в тестах без памяти.
+        self._memory_service: MemoryService | None = None
 
         # --- Новые поля для серого потока и паспорта ---
         self._research_mode_active: bool = False
@@ -1703,6 +1713,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
             security=security,
+            memory_service=self._ensure_memory_service(),
         )
 
         client = self._router.active_client
@@ -1847,6 +1858,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
             security=security,
+            memory_service=self._ensure_memory_service(),
         )
 
         self._current_assistant_content = ""
@@ -2353,9 +2365,107 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
         )
 
+    # ------------------------------------------------------------------
+    # [4.3] Память — запись рефлексии
+    # ------------------------------------------------------------------
+
+    def _build_reflection(
+        self,
+        *,
+        outcome: str,
+        summary_hint: str = "",
+    ) -> Reflection | None:
+        """Формирует Reflection для записи в память.
+
+        Источники:
+          * ``task_type`` — из режима: ``agent``→``code``, ``plan``→``research``,
+            ``chat``→``chat``;
+          * ``outcome`` — ``success`` при ``finish_reason=stop``,
+            ``partial`` при ``length``/``budget.exceeded``,
+            ``failure`` при ошибке;
+          * ``summary`` — краткий текст (из ``summary_hint`` или первого
+            сообщения пользователя, обрезанный до 500 символов);
+          * ``tags`` — из активного профиля (``development``/``research``/
+            ``learning``) и режима.
+
+        Возвращает ``None``, если нет смысла писать (пустой summary).
+        """
+        mode = self._current_mode()
+        task_type = {
+            AgentMode.AGENT: "code",
+            AgentMode.PLAN: "research",
+            AgentMode.CHAT: "chat",
+        }.get(mode, "other")
+
+        # Summary — из summary_hint или последнего user-сообщения.
+        summary = (summary_hint or "").strip()
+        if not summary:
+            last_user = next(
+                (m for m in reversed(self._messages) if m.role == "user"),
+                None,
+            )
+            if last_user is not None:
+                summary = (last_user.content or "").strip()
+        if not summary:
+            return None
+        # Ограничиваем длину и убираем переносы строк.
+        summary = " ".join(summary.split())[:500]
+
+        tags: list[str] = []
+        if self._profile is not None:
+            tags.append(self._profile.id)
+        tags.append(mode.value)
+
+        return Reflection(
+            id=None,
+            created_at="",  # MemoryService проставит текущее время
+            project_path=self.project_root or "",
+            task_type=task_type,
+            summary=summary,
+            outcome=outcome,
+            tags=tags,
+        )
+
+    def _remember_if_needed(
+        self,
+        *,
+        outcome: str,
+        summary_hint: str = "",
+    ) -> None:
+        """Записывает рефлексию, если включён ``auto_remember``.
+
+        Вызывается из `_on_agent_finished` (2.10) и `_send_finished`
+        (старый путь). ``auto_remember=False`` → ничего не пишет
+        (пользователь отключил в настройках).
+
+        ``summary_hint`` — например, первые 300 символов финального
+        ответа, чтобы рефлексия была осмысленной.
+        """
+        try:
+            cfg = load_config()
+            if not cfg.memory.enabled or not cfg.memory.auto_remember:
+                return
+        except Exception:
+            return
+        svc = self._ensure_memory_service()
+        if svc is None:
+            return
+        reflection = self._build_reflection(
+            outcome=outcome, summary_hint=summary_hint
+        )
+        if reflection is None:
+            return
+        try:
+            svc.remember(reflection)
+        except Exception:
+            logger.warning(
+                "4.3: не удалось записать рефлексию", exc_info=True
+            )
+
     @Slot(dict)
     def _on_agent_finished(self, payload: dict) -> None:
-        """Завершение прогона: причина остановки + финальный снимок бюджета."""
+        """Завершение прогона: причина остановки + снимок бюджета (2.10)
+        + запись рефлексии в память (4.3)."""
         reason = payload.get("finish_reason")
         budget = payload.get("budget")
         if self._dashboard is not None:
@@ -2368,6 +2478,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             f"iterations={payload.get('iterations')}, "
             f"elapsed={payload.get('elapsed_s')}с"
         )
+        # [4.3] Автоматическая рефлексия при успешном/частичном завершении.
+        # Не пишем при user_cancel (бессмысленно) и при ошибке.
+        if reason in (None, "stop", "length", "budget.exceeded"):
+            outcome = {
+                "stop": "success",
+                "length": "partial",
+                "budget.exceeded": "partial",
+            }.get(str(reason or "stop"), "success")
+            self._remember_if_needed(
+                outcome=outcome,
+                summary_hint=self._current_assistant_text[:300],
+            )
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
@@ -3394,9 +3516,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             with contextlib.suppress(Exception):
                 self._qt_event_bus.shutdown()
             self._qt_event_bus = None
-        if self._orchestrator is not None:
+        if self._memory_service is not None:
             with contextlib.suppress(Exception):
-                self._orchestrator = None
+                self._memory_service.close()
+            self._memory_service = None
+        if self._orchestrator is not None:
         if self._model_pool is not None:
             try:
                 loop = asyncio.new_event_loop()
@@ -3645,4 +3769,25 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         return "<br>".join(lines)
 
 
-# ---
+    def _ensure_memory_service(self) -> MemoryService | None:
+        """4.3: ленивое создание MemoryService.
+
+        Возвращает ``None``, если память отключена в конфиге
+        (``MemoryConfig.enabled=False``) или упала инициализация
+        (битый SQLite, права и т.п.) — в этом случае работа
+        продолжается без памяти, с warning в логе.
+        """
+        if self._memory_service is not None:
+            return self._memory_service
+        try:
+            cfg = load_config()
+            if not cfg.memory.enabled:
+                return None
+            self._memory_service = MemoryService()
+            return self._memory_service
+        except Exception:
+            logger.warning(
+                "4.3: MemoryService не инициализирован — память отключена",
+                exc_info=True,
+            )
+            return None

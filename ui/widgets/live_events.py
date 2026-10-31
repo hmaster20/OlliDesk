@@ -77,6 +77,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("index", "index"),
     ("budget", "budget"),
     ("agent", "agent"),
+    ("memory", "memory"),
     ("orchestrator", "orchestrator"),
 )
 
@@ -403,6 +404,16 @@ class LiveEventsPanel(QWidget):
                 f"{icon} Прогон завершён: {reason} "
                 f"({iterations} ит., {elapsed:.0f}с)"
             ), color
+
+        if kind == EventKind.MEMORY_RECALLED.value:
+            n = payload.get("n_results", 0)
+            q = str(payload.get("query", ""))[:80]
+            return f"🧠 Память: {n} рефлексий по «{q}»", _C_OTHER
+        if kind == EventKind.MEMORY_REMEMBERED.value:
+            task = payload.get("task_type", "?")
+            outcome = payload.get("outcome", "?")
+            mid = payload.get("id", "?")
+            return f"🧠 Память: записано #{mid} ({task}/{outcome})", _C_OTHER
 
         if kind == EventKind.ORCHESTRATOR_EVENT.value:
             sub = str(payload.get("kind") or "?")

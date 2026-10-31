@@ -782,19 +782,47 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "last_mode",
         "agent_max_iterations",
         "chat_max_iterations",
-        # [9.4] Профили — глобальные, не per-project.
         "profiles",
         "active_profile",
-        # [9.4] Документы — общий индекс, не per-project.
         "index_documents",
         "max_document_size_mb",
         "document_ocr",
-        # [9.8] Поведение редактора — глобальное, не per-project.
         "open_modified_as_diff",
-        # [0.1.1] Dangerous mode — глобальная политика безопасности.
         "allow_arbitrary_shell",
+        # 2.10
+        "soft_budget_time_s",
+        "soft_budget_tokens",
+        "soft_budget_iterations",
+        "memory",
     }
 )
+
+class MemoryConfig(BaseModel):
+    """4.3: эпизодическая память."""
+
+    enabled: bool = True
+    recall_top_k: int = 3
+    recall_max_age_days: int = 90
+    # Записывать рефлексию после каждой успешной задачи.
+    auto_remember: bool = True
+    # Показывать top-K рефлексий в system-промпте.
+    inject_into_prompt: bool = True
+    # Заглушка: реальное шифрование вне scope 4.3.
+    encrypt: bool = False
+
+    @field_validator("recall_top_k")
+    @classmethod
+    def _validate_top_k(cls, v: int) -> int:
+        if not 1 <= v <= 10:
+            raise ValueError(f"recall_top_k must be 1..10, got {v}")
+        return v
+
+    @field_validator("recall_max_age_days")
+    @classmethod
+    def _validate_age(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"recall_max_age_days must be >= 0, got {v}")
+        return v
 
 
 class AppConfig(BaseModel):
@@ -832,6 +860,7 @@ class AppConfig(BaseModel):
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [

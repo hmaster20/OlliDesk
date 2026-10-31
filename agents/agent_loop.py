@@ -193,7 +193,16 @@ class AgentContext:
     hypotheses: HypothesisStore | None = None
     # 0.1.1: allow_arbitrary_shell, redaction_enabled и пр.
     security: "SecurityPolicy | None" = None
+    # 4.3: эпизодическая память. Если задана — top-K релевантных
+    # рефлексий подмешиваются в system-промпт (блок «Память»),
+    # а после успешного ответа — записывается новая рефлексия.
+    # Тип — `Any`, чтобы `agents` не импортировал `core.services`
+    # (тест-дружелюбнее; протокол не нужен — методы вызываются точечно).
+    memory_service: "MemoryServiceLike | None" = None
 
+if TYPE_CHECKING:
+    from agents.protocols import MemoryServiceLike
+    from core.security import SecurityPolicy
 
 # --- System prompt ---------------------------------------------------------
 
@@ -392,6 +401,43 @@ def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента."""
     return bool(_REACT_SCAFFOLD_RE.search(text))
 
+def _build_memory_block(context: AgentContext) -> str:
+    """4.3: формирует блок «Память» из рефлексий MemoryService.
+
+    Логика:
+      * если ``memory_service`` не задан — пусто;
+      * если есть ``project_root`` — ищем рефлексии этого проекта;
+      * последняя user-реплика из ``messages_history`` недоступна на этом
+        этапе (в ``_build_system_prompt`` передаётся только контекст),
+        поэтому используем «сводку контекста»: project_name + первые
+        токены project_map. Этого достаточно, чтобы отсеять совсем
+        нерелевантное.
+
+    Возвращает готовый текст блока или пустую строку.
+    """
+    svc = context.memory_service
+    if svc is None:
+        return ""
+    # Собираем «запрос» из доступных полей (без прямой связи с user-текстом).
+    query_parts = [context.project_name or "", context.extra_rules or ""]
+    query = " ".join(p for p in query_parts if p).strip()
+    if not query:
+        return ""
+    try:
+        result = svc.recall(
+            query,
+            top_k=3,
+            project_path=context.project_root or None,
+        )
+    except Exception:
+        logger.debug("memory.recall упал — пропускаю блок памяти", exc_info=True)
+        return ""
+    if not result.hit or not result.reflections:
+        return ""
+    rendered = result.render_for_prompt(max_chars=1200)
+    if not rendered:
+        return ""
+    return f"Память (прошлые задачи, top-{len(result.reflections)}):\n{rendered}"
 
 def _project_block(context: AgentContext) -> str:
     """Собирает блок о проекте: имя и корень, от которого считаются пути."""
@@ -535,6 +581,10 @@ def _build_system_prompt(
         rendered = context.hypotheses.render_for_prompt()
         if rendered:
             variable.append(("hypotheses", f"Гипотезы исследования:\n{rendered}"))
+    # 4.3: память — top-K рефлексий, релевантных текущему запросу.
+    memory_block = _build_memory_block(context)
+    if memory_block:
+        variable.append(("memory", memory_block))
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:

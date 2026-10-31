@@ -63,6 +63,10 @@ class EventKind(StrEnum):
     BUDGET_EXCEEDED = "budget.exceeded"
     AGENT_FINISHED = "agent.finished"
 
+    # --- 4.3: эпизодическая память ---
+    MEMORY_RECALLED = "memory.recalled"
+    MEMORY_REMEMBERED = "memory.remembered"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -171,6 +175,23 @@ class LogPayload(TypedDict):
     source: str  # "module:function"
     timestamp: str  # "HH:MM:SS"
 
+# ---------------------------------------------------------------------------
+# 4.3: память
+# ---------------------------------------------------------------------------
+
+
+class MemoryRecalledPayload(TypedDict):
+    query: str
+    n_results: int
+    ids: list[int]
+
+
+class MemoryRememberedPayload(TypedDict):
+    id: int
+    task_type: str
+    outcome: str
+    tags: list[str]
+
 def args_hash(args: dict) -> str:
     """Стабильный 16-символьный хеш аргументов tool-call'а.
 
@@ -241,6 +262,8 @@ __all__ = [
     "LlmGenerationDonePayload",
     "LlmRequestSentPayload",
     "LogPayload",
+    "MemoryRecalledPayload",
+    "MemoryRememberedPayload",
     "OrchestratorEventPayload",
     "PhaseChangedPayload",
     "RagSearchEmptyPayload",
