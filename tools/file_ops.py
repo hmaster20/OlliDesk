@@ -9,7 +9,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
-from core.sandbox import SandboxedPathResolver, is_denied_file  # 0.1.2
+from core.sandbox import SandboxedPathResolver, is_denied_file
 from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
@@ -88,6 +88,7 @@ def _count_entries(directory: Path) -> int:
     capabilities=["fs.read"],
     timeout_s=15.0,
 )
+
 def read_file(
     path: str,
     offset: int = 0,
@@ -106,9 +107,18 @@ def read_file(
     Returns:
         Заголовок с диапазоном и размером, фрагмент, hint о продолжении.
     """
-    # NEW: единый резолвер вместо дублированной `_resolve_path`.
+    # единый резолвер вместо дублированной `_resolve_path`.
     file_path = SandboxedPathResolver(project_root).resolve(path)
     if not file_path:
+        # 0.1.2: различаем «вне песочницы» и «запрещённый секрет» —
+        # модель должна понимать, что путь корректен, но политика
+        # безопасности его блокирует.
+        raw = str(path or "").strip()
+        if raw and is_denied_file(Path(raw).name):
+            return (
+                f"Ошибка: файл '{Path(raw).name}' заблокирован политикой "
+                f"безопасности (секрет). Не пытайся его читать."
+            )
         return "Ошибка: путь вне допустимой директории"
 
     if not file_path.exists():
@@ -220,6 +230,13 @@ def list_directory(path: str, project_root: str = "") -> str:
             if entry.name in _SKIP_NAMES or is_denied_file(entry.name):
                 skipped += 1
                 continue
+            try:
+                if entry.is_dir():
+                    dirs.append(f"  {entry.name}/ — {_count_entries(entry)} элементов")
+                else:
+                    files.append(f"  {entry.name} — {_format_size(entry.stat().st_size)}")
+            except OSError:
+                (dirs if entry.is_dir() else files).append(f"  {entry.name}")
             try:
                 ...
                 if entry.is_dir():

@@ -1,8 +1,10 @@
 """Инструмент поиска по кодовой базе через RAG."""
 
 from datetime import date, datetime, time
+from pathlib import Path
 from typing import Any
 
+from core.sandbox import is_denied_file
 from loguru import logger
 
 from agents.tool_registry import tool
@@ -149,7 +151,16 @@ async def search_codebase(
             modified_before=before,
         )
 
+        # 0.1.2: не отдавать чанки из секретных файлов (.env, *.pem, …).
+        # Индексатор по умолчанию их и так не индексирует (ignored_patterns),
+        # но пользователь мог убрать паттерн — фильтруем на всякий случай.
+        results = [r for r in results if not is_denied_file(Path(r.file_path).name)]
+
         if not results:
+            return (
+                "Ничего не найдено (секретные файлы исключены политикой "
+                "безопасности)."
+            )
             # Диагностическое сообщение: подсказываем, какие значения
             # фильтра точно сработают, и что запрос вообще отработал.
             hint = ""

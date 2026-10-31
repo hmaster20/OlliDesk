@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import re
-from typing import Final
+import string
+from typing import Any, Final
 
 # (category, pattern, replacement)
 # `replacement` — строка с группами (`\1`, `\2`) или литерал.
@@ -138,4 +139,98 @@ def contains_secret(text: str) -> bool:
     return False
 
 
-__all__ = ["contains_secret", "redact", "redact_only"]
+# --- helpers для структурированных данных, исключений и эвристик (0.1.2) ---
+
+# Допустимые символы «токен-подобного» секрета: буквы, цифры, дефис,
+# подчёркивание. Точка, слэш, двоеточие — это не токен (путь / namespace).
+_TOKEN_CHARS: Final[frozenset[str]] = frozenset(string.ascii_letters + string.digits + "-_")
+
+
+def redact_dict(d: Any) -> Any:
+    """Рекурсивно редактирует строковые значения в dict/list.
+
+    Ключи НЕ редактируются — это структура (имя env-переменной, имя
+    инструмента, имя файла), её нужно сохранить. Редактируются только
+    значения, чтобы ``json.dumps`` оставался валидным JSON.
+
+    Args:
+        d: Любое значение (обычно ``dict``, но поддерживаются ``list``,
+            ``str`` и вложенные комбинации).
+
+    Returns:
+        Копия с отредактированными строками; нестроковые значения
+        (int, float, bool, None) возвращаются как есть.
+    """
+    if isinstance(d, str):
+        return redact_only(d)
+    if isinstance(d, dict):
+        return {k: redact_dict(v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [redact_dict(v) for v in d]
+    return d
+
+
+def redact_exc(e: BaseException) -> str:
+    """Безопасное строковое представление исключения (с redaction).
+
+    Args:
+        e: Любое исключение.
+
+    Returns:
+        Строка с redacted сообщением. Никогда не бросает (в отличие от
+        ``str(e)`` для «сломанных» исключений с битым ``__str__``).
+    """
+    try:
+        text = str(e)
+    except Exception:
+        text = ""
+    if not text:
+        text = type(e).__name__
+    return redact_only(text)
+
+
+def is_secret(value: str) -> bool:
+    """True, если значение похоже на секрет (эвристика).
+
+    Комбинирует ``contains_secret`` (явные паттерны — API-ключи, JWT,
+    приватные ключи, пароли в URL) с простой эвристикой «случайный
+    токен»:
+      * длина ≥ 32;
+      * без пробелов и переводов строк;
+      * только ``[A-Za-z0-9_-]`` (без ``/``, ``.``, ``:`` — это не токен);
+      * есть и буквы, и цифры (hex-строки без букв не ловим);
+      * ≥ 12 уникальных символов (исключает ``aaaa…`` и ``1234567890…``).
+
+    НЕ флагует hex-хеши коммитов, имена моделей и пути — они либо не
+    проходят по длине/алфавиту, либо содержат ``.``/``/``.
+
+    Args:
+        value: Проверяемое значение.
+
+    Returns:
+        True, если значение — секрет (по паттернам или по эвристике).
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if contains_secret(value):
+        return True
+    stripped = value.strip()
+    if len(stripped) < 32:
+        return False
+    if any(c.isspace() for c in stripped):
+        return False
+    if not all(c in _TOKEN_CHARS for c in stripped):
+        return False
+    if not (any(c.isalpha() for c in stripped) and any(c.isdigit() for c in stripped)):
+        return False
+    return len(set(stripped)) >= 12
+
+
+__all__ = [
+    "contains_secret",
+    "is_secret",
+    "redact",
+    "redact_dict",
+    "redact_exc",
+    "redact_only",
+]

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from core.redaction import contains_secret, redact, redact_only
+from core.redaction import (
+    contains_secret,
+    is_secret,
+    redact,
+    redact_dict,
+    redact_exc,
+    redact_only,
+)
 
 # ---------------------------------------------------------------------------
 # API-ключи
@@ -227,3 +234,122 @@ def test_redact_empty_string() -> None:
 
 def test_redact_only_empty_string() -> None:
     assert redact_only("") == ""
+
+# ---------------------------------------------------------------------------
+# redact_dict
+# ---------------------------------------------------------------------------
+
+
+def test_redact_dict_simple() -> None:
+    d = {"TOKEN": "abcdef123456", "name": "test"}
+    out = redact_dict(d)
+    assert "abcdef123456" not in out["TOKEN"]
+    assert out["name"] == "test"
+
+
+def test_redact_dict_nested() -> None:
+    d = {"outer": {"inner": "PASSWORD=hunter2hunter2"}}
+    out = redact_dict(d)
+    assert "hunter2hunter2" not in out["outer"]["inner"]
+
+
+def test_redact_dict_list() -> None:
+    d = {"items": ["TOKEN=abcdef123456", "clean value"]}
+    out = redact_dict(d)
+    assert "abcdef123456" not in out["items"][0]
+    assert out["items"][1] == "clean value"
+
+
+def test_redact_dict_preserves_keys() -> None:
+    """Ключи не редактируются — это структура."""
+    d = {"PASSWORD": "abcdef123456"}
+    out = redact_dict(d)
+    assert "PASSWORD" in out
+
+
+def test_redact_dict_non_str_values_unchanged() -> None:
+    d = {"count": 42, "flag": True, "nothing": None, "ratio": 3.14}
+    out = redact_dict(d)
+    assert out == d
+
+
+def test_redact_dict_top_level_string() -> None:
+    """redact_dict работает и для строки верхнего уровня."""
+    out = redact_dict("TOKEN=abcdef123456")
+    assert "abcdef123456" not in out
+
+
+# ---------------------------------------------------------------------------
+# redact_exc
+# ---------------------------------------------------------------------------
+
+
+def test_redact_exc_redacts_secret() -> None:
+    e = ValueError("connection failed: token=abcdef123456")
+    text = redact_exc(e)
+    assert "abcdef123456" not in text
+    assert "[REDACTED" in text
+
+
+def test_redact_exc_no_secret() -> None:
+    e = ValueError("simple error")
+    assert redact_exc(e) == "simple error"
+
+
+def test_redact_exc_empty_message() -> None:
+    e = ValueError()
+    assert redact_exc(e) == "ValueError"
+
+
+def test_redact_exc_broken_str() -> None:
+    class BrokenError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("boom")
+    e = BrokenError()
+    # Не падаем — fallback на type name.
+    assert redact_exc(e) == "BrokenError"
+
+
+# ---------------------------------------------------------------------------
+# is_secret
+# ---------------------------------------------------------------------------
+
+
+def test_is_secret_true_for_sk_key() -> None:
+    assert is_secret("sk-" + "x" * 30) is True
+
+
+def test_is_secret_true_for_jwt() -> None:
+    assert is_secret("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefghij") is True
+
+
+def test_is_secret_true_for_long_random_token() -> None:
+    # 32+ chars, [A-Za-z0-9_-], mixed case + digits, unique
+    token = "aB3-xY9_zP2-qR7-sT4-vW1-uK8-nM5"
+    assert is_secret(token) is True
+
+
+def test_is_secret_false_for_model_name() -> None:
+    # Имя модели содержит точки — не проходит по алфавиту.
+    assert is_secret("qwen2.5-coder-7b-instruct") is False
+
+
+def test_is_secret_false_for_path() -> None:
+    assert is_secret("agents/agent_loop.py") is False
+
+
+def test_is_secret_false_for_hex_commit_hash() -> None:
+    # Hex-хеш без букв в верхнем регистре не проходит по has_alpha.
+    assert is_secret("a" * 40) is False
+
+
+def test_is_secret_false_for_plain_text() -> None:
+    assert is_secret("Hello world, this is a normal sentence.") is False
+
+
+def test_is_secret_false_for_empty() -> None:
+    assert is_secret("") is False
+
+
+def test_is_secret_false_for_short_value() -> None:
+    assert is_secret("abc123") is False

@@ -576,11 +576,14 @@ class ToolRegistry:
                 error_category=ErrorCategory.RETRY_LATER,
             )
         except Exception as e:
-            logger.error(f"Ошибка выполнения инструмента {tool_call.name}: {e}")
+            # 0.1.2: redact_exc безопасно обрабатывает даже «битые» исключения
+            # (битый __str__), и редактирует секреты в тексте ошибки.
+            safe_error = redaction.redact_exc(e)
+            logger.error(f"Ошибка выполнения инструмента {tool_call.name}: {safe_error}")
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=redaction.redact_only(f"Ошибка: {e}"),
+                content=f"Ошибка: {safe_error}",
                 is_error=True,
                 error_category=ErrorCategory.REPORT_TO_USER,
             )
