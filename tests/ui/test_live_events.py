@@ -195,3 +195,67 @@ def test_full_pipeline(qapp) -> None:
     assert panel.event_count == 1
     assert "search_codebase" in dash.activity.toolTip()
     bus.shutdown()
+
+    def test_panel_domain_filter_hides_other_kinds(qapp) -> None:
+    """2.5: фильтр домена скрывает события из других доменов."""
+    from ui.widgets.live_events import LiveEventsPanel
+
+    panel = LiveEventsPanel()
+    # Выбираем домен "budget".
+    idx = panel._domain_combo.findData("budget")
+    panel._domain_combo.setCurrentIndex(idx)
+
+    panel.append_event(
+        EventKind.TOOL_STARTED.value,
+        {"name": "read_file", "args_hash": "abc"},
+    )
+    panel.append_event(
+        EventKind.BUDGET_WARNING.value,
+        {
+            "iterations": 8, "iterations_limit": 10,
+            "tokens": 800, "tokens_limit": 1000,
+            "time_s": 10.0, "time_limit_s": 100.0,
+            "status": "warning",
+        },
+    )
+
+    assert panel.event_count == 1
+    assert panel.latest_kind == EventKind.BUDGET_WARNING.value
+
+
+def test_panel_domain_filter_all_shows_everything(qapp) -> None:
+    """2.5: "all" пропускает все домены."""
+    from ui.widgets.live_events import LiveEventsPanel
+
+    panel = LiveEventsPanel()
+    panel.append_event(
+        EventKind.TOOL_STARTED.value,
+        {"name": "a", "args_hash": "b"},
+    )
+    panel.append_event(
+        EventKind.BUDGET_WARNING.value,
+        {
+            "iterations": 1, "iterations_limit": 10,
+            "tokens": 1, "tokens_limit": 1000,
+            "time_s": 1.0, "time_limit_s": 100.0,
+            "status": "warning",
+        },
+    )
+    assert panel.event_count == 2
+
+def test_panel_formats_agent_finished(qapp) -> None:
+    """2.5: agent.finished показывает причину и итерации."""
+    from ui.widgets.live_events import LiveEventsPanel
+
+    panel = LiveEventsPanel()
+    panel.append_event(
+        EventKind.AGENT_FINISHED.value,
+        {
+            "finish_reason": "budget.exceeded",
+            "iterations": 42,
+            "elapsed_s": 123.4,
+            "budget": {"status": "exceeded"},
+        },
+    )
+    assert panel.event_count == 1
+    assert panel.latest_kind == EventKind.AGENT_FINISHED.value

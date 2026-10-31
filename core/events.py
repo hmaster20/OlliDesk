@@ -21,7 +21,7 @@ from enum import StrEnum
 from typing import NotRequired, TypedDict
 
 class EventKind(StrEnum):
-    """Все виды событий OlliDesk.
+    """Все виды событий OlliDesk (2.5).
 
     Подписчики используют эти константы; добавление нового вида
     не ломает существующих (они фильтруют по `kind`).
@@ -58,9 +58,13 @@ class EventKind(StrEnum):
     # --- Orchestrator ---
     ORCHESTRATOR_EVENT = "orchestrator.event"
 
+    # --- 2.10 / 2.5: бюджет и завершение агента ---
+    BUDGET_WARNING = "budget.warning"
+    BUDGET_EXCEEDED = "budget.exceeded"
+    AGENT_FINISHED = "agent.finished"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
-
 
 # ---------------------------------------------------------------------------
 # Payload-контракты (TypedDict — type hints, не runtime-валидация)
@@ -188,7 +192,47 @@ def args_hash(args: dict) -> str:
         payload = str(args)
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
 
+# ---------------------------------------------------------------------------
+# 2.5 + 2.10: бюджет агента и причина остановки
+# ---------------------------------------------------------------------------
+
+
+class BudgetSnapshotPayload(TypedDict):
+    """Снимок ``SoftBudget`` — контракт для ``budget.warning/exceeded``
+    и вложенного поля ``agent.finished["budget"]``.
+
+    Совпадает с ``agents.agent_loop.SoftBudget.snapshot()`` 1:1.
+    """
+
+    iterations: int
+    iterations_limit: int
+    tokens: int
+    tokens_limit: int
+    time_s: float
+    time_limit_s: float
+    status: str  # "ok" | "warning" | "exceeded"
+
+
+class AgentFinishedPayload(TypedDict):
+    """Финальное событие прогона ``AgentLoop``.
+
+    Attributes:
+        finish_reason: ``"stop"`` | ``"length"`` | ``"budget.exceeded"``
+            | ``"user_cancel"`` | ``None`` (не было стрима).
+        budget: Снимок бюджета на момент остановки (может отсутствовать,
+            если прогон падал до создания ``SoftBudget``).
+        iterations: Фактические итерации.
+        elapsed_s: Wall-clock, секунды.
+    """
+
+    finish_reason: NotRequired[str]
+    budget: NotRequired[BudgetSnapshotPayload]
+    iterations: int
+    elapsed_s: float
+
 __all__ = [
+    "AgentFinishedPayload",
+    "BudgetSnapshotPayload",
     "EventKind",
     "IndexFinishedPayload",
     "IndexProgressPayload",

@@ -209,9 +209,13 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     # для каждого sink'а на том же record, поэтому к моменту вызова
     # EventBus-sink'а `record["message"]` уже отредактирован (соседним
     # sink'ом). Если формат `{message}` — берём готовую строку.
+    # 2.5 + 0.1.2: EventBus-sink идёт последним, но полагаться на порядок
+    # не будем — повторный filter идемпотентен (маркеры `[REDACTED:*]`
+    # не матчатся заново), поэтому безопасно применить его явно.
     logger.add(
         _event_bus_sink,
         level="INFO",
-        format="{message}",  # sink форматирует message сам; format не используется
+        format="{message}",
+        filter=_redact_filter,
         catch=True,
     )

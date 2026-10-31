@@ -213,3 +213,63 @@ def test_loguru_sink_redacts_secret() -> None:
     log_msgs = [p["message"] for k, p in events if k == "log"]
     assert not any("abcdef123456" in m for m in log_msgs)
     assert any("[REDACTED:env_secret]" in m for m in log_msgs)
+
+    # ---------------------------------------------------------------------------
+# 2.5: монотонный _seq
+# ---------------------------------------------------------------------------
+
+
+def test_seq_monotonic() -> None:
+    """Каждый emit получает _seq, счётчик монотонно растёт."""
+    received: list[int] = []
+    unsub = subscribe(None, lambda _k, p: received.append(p["_seq"]))
+    try:
+        emit_event("x.a", {})
+        emit_event("x.b", {})
+        emit_event("x.c", {})
+    finally:
+        unsub()
+    assert received == sorted(received)
+    assert len(set(received)) == 3
+
+
+def test_seq_in_copy_not_original() -> None:
+    """_seq добавляется в копию — оригинальный payload не мутируется."""
+    original = {"name": "read_file"}
+    unsub = subscribe("tool.started", lambda _k, p: None)
+    try:
+        emit_event("tool.started", original)
+    finally:
+        unsub()
+    assert "_seq" not in original
+    assert original == {"name": "read_file"}
+
+
+def test_seq_respected_if_present() -> None:
+    """Если эмиттер положил _seq сам — уважаем (не перезаписываем)."""
+    received: list[int] = []
+    unsub = subscribe("x.y", lambda _k, p: received.append(p["_seq"]))
+    try:
+        emit_event("x.y", {"_seq": 999})
+    finally:
+        unsub()
+    assert received == [999]
+
+
+def test_seq_survives_clear() -> None:
+    """clear() не сбрасывает счётчик — seq монотонен «за процесс»."""
+    bus = EventBus.instance()
+    received: list[int] = []
+    bus.clear()
+    unsub = bus.subscribe(None, lambda _k, p: received.append(p["_seq"]))
+    try:
+        bus.emit("a.b", {})
+        bus.clear()
+        unsub2 = bus.subscribe(None, lambda _k, p: received.append(p["_seq"]))
+        try:
+            bus.emit("a.c", {})
+        finally:
+            unsub2()
+    finally:
+        unsub()
+    assert received[0] < received[1]

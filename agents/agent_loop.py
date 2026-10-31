@@ -768,9 +768,10 @@ class AgentLoop:
     ) -> None:
         """Кладёт сводку research-прогона в `last_research_summary`.
 
-        [2.10] Дополнительно фиксирует причину остановки и снимок бюджета —
-        `AgentChatThread` эмитит их в сигнале ``agent_finished``, UI
-        показывает в `StatusDashboard`.
+        [2.10] Фиксирует причину остановки и снимок бюджета —
+        `AgentChatThread` эмитит их в Qt-сигнале ``agent_finished``.
+        [2.5] То же событие идёт в `EventBus` (``agent.finished``) —
+        видно в `LiveEventsPanel` и `StatusDashboard` без Qt-связи.
         """
         if research_mode:
             self.last_research_summary = self._make_research_summary(state, context)
@@ -778,6 +779,17 @@ class AgentLoop:
             self.last_research_summary = None
         self.last_finish_reason = finish_reason
         self.last_budget_snapshot = soft_budget.snapshot() if soft_budget else None
+
+        # [2.5] agent.finished — финальное событие прогона.
+        _payload: dict[str, Any] = {
+            "iterations": soft_budget.iteration_count if soft_budget else 0,
+            "elapsed_s": round(soft_budget.elapsed(), 1) if soft_budget else 0.0,
+        }
+        if finish_reason:
+            _payload["finish_reason"] = finish_reason
+        if self.last_budget_snapshot:
+            _payload["budget"] = self.last_budget_snapshot
+        emit_event(EventKind.AGENT_FINISHED.value, _payload)
 
     # ------------------------------------------------------------------
     # Финальный вызов без инструментов
@@ -1124,6 +1136,60 @@ class AgentLoop:
 
                     # [2.10] Учитываем потраченные completion-токены.
                     soft_budget.record(tokens=int(stats.get("tokens", 0)))
+
+                    # [2.5] Эмитим бюджетные события в EventBus.
+                    # Срабатывают один раз на переход (флаги *_emitted).
+                    _status = soft_budget.status()
+                    if (
+                        _status == BudgetStatus.WARNING
+                        and not soft_budget.warning_emitted
+                    ):
+                        soft_budget.warning_emitted = True
+                        _snap = soft_budget.snapshot()
+                        emit_event(EventKind.BUDGET_WARNING.value, _snap)
+                        if on_budget_warning is not None:
+                            await on_budget_warning(_snap)
+                    elif (
+                        _status == BudgetStatus.EXCEEDED
+                        and not soft_budget.exceeded_emitted
+                    ):
+                        soft_budget.exceeded_emitted = True
+                        _snap = soft_budget.snapshot()
+                        emit_event(EventKind.BUDGET_EXCEEDED.value, _snap)
+                        if on_budget_exceeded is not None:
+                            await on_budget_exceeded(_snap)
+                        # CHAT/PLAN: бюджет жёсткий — форсируем финал.
+                        # AGENT: только сигнал, продолжаем.
+                        if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
+                            if current_text:
+                                messages.append(
+                                    ChatMessage(role="assistant", content=current_text)
+                                )
+                            if (
+                                split_thoughts
+                                and on_final_answer_started is not None
+                                and not final_started_emitted
+                            ):
+                                final_started_emitted = True
+                                await on_final_answer_started()
+                            final_text = await self._final_call_no_tools(
+                                messages,
+                                context,
+                                on_token,
+                                on_thinking,
+                                on_status,
+                                reason="бюджет исчерпан",
+                                on_text_delta=on_text_delta,
+                                on_reasoning_delta=on_reasoning_delta,
+                                on_stream_start=on_stream_start,
+                                on_stream_end=on_stream_end,
+                            )
+                            self._finalize(
+                                research_mode, state, context,
+                                finish_reason="budget.exceeded",
+                                soft_budget=soft_budget,
+                            )
+                            return final_text or current_text
 
                     # [2.10] Сигнал о бюджете — один раз на переход.
                     status = soft_budget.status()

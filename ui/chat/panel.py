@@ -1502,6 +1502,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._generating = True
         self._set_button_stop()
         self._set_activity_state("thinking", "поиск по кодовой базе")
+        # [2.5] Сброс бюджета на новом прогоне — старый snapshot
+        # не должен «висеть» в дашборде.
+        if self._dashboard is not None:
+            self._dashboard.set_budget(None)
         self._rag_context = None
         self._rag_scope = self._query_scope(text)
 
@@ -1562,6 +1566,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._generating = True
         self._set_button_stop()
         self._set_activity_state("thinking", "агент запущен")
+        # [2.5] Сброс бюджета на новом прогоне.
+        if self._dashboard is not None:
+            self._dashboard.set_budget(None)
         self._rag_scope = self._query_scope(text)
 
         # [9.4] Профиль «Обучение» выключает RAG полностью.

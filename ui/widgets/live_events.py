@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -42,6 +43,9 @@ _IMPORTANT_KINDS: Final[frozenset[str]] = frozenset(
     {
         EventKind.TOOL_ERROR.value,
         EventKind.SLM_FAILED.value,
+        # 2.5 + 2.10: бюджет и завершение прогона — всегда видны.
+        EventKind.BUDGET_EXCEEDED.value,
+        EventKind.AGENT_FINISHED.value,
     }
 )
 
@@ -58,7 +62,23 @@ _C_LOG_ERROR = "#e06c75"
 _C_TOOL = "#7a9ac8"
 _C_RAG = "#9a9ac8"
 _C_SLM = "#c8a878"
+_C_BUDGET = "#e5c07b"
 _C_OTHER = "#a8a8b8"
+
+# 2.5: фильтр по домену — первый сегмент `kind` до точки.
+# Порядок важен для UX: «все» первым, остальные — по алфавиту.
+_DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
+    ("all", "Все"),
+    ("log", "log"),
+    ("tool", "tool"),
+    ("llm", "llm"),
+    ("rag", "rag"),
+    ("slm", "slm"),
+    ("index", "index"),
+    ("budget", "budget"),
+    ("agent", "agent"),
+    ("orchestrator", "orchestrator"),
+)
 
 
 class QtEventBus(QObject):
@@ -108,6 +128,7 @@ class LiveEventsPanel(QWidget):
         self._expanded = False
         self._count = 0
         self._important_only = False
+        self._domain_filter: str = "all"
         self._last_kind: str = ""
         self._last_payload: dict = {}
 
@@ -144,6 +165,16 @@ class LiveEventsPanel(QWidget):
         self._header_label.setTextFormat(Qt.TextFormat.RichText)
         self._header_label.setStyleSheet("font-size: 11px;")
         header.addWidget(self._header_label, stretch=1)
+
+        self._domain_combo = QComboBox()
+        self._domain_combo.setStyleSheet("font-size: 11px; color: #888;")
+        self._domain_combo.setToolTip(
+            "Фильтр по домену события (tool, llm, rag, budget, …)."
+        )
+        for key, label in _DOMAIN_FILTERS:
+            self._domain_combo.addItem(label, key)
+        self._domain_combo.currentIndexChanged.connect(self._on_domain_changed)
+        header.addWidget(self._domain_combo)
 
         self._important_check = QCheckBox("Только важное")
         self._important_check.setStyleSheet("font-size: 11px; color: #888;")
@@ -210,6 +241,11 @@ class LiveEventsPanel(QWidget):
         self._last_payload = payload
         self.latest_event.emit(kind, payload)
 
+        # 2.5: фильтр по домену (первый сегмент kind до точки).
+        if self._domain_filter != "all":
+            domain = kind.split(".", 1)[0]
+            if domain != self._domain_filter:
+                return
         if self._important_only and not self._is_important(kind, payload):
             return
 
@@ -252,6 +288,11 @@ class LiveEventsPanel(QWidget):
     @Slot(bool)
     def _on_important_toggled(self, _checked: bool) -> None:
         self._important_only = self._important_check.isChecked()
+
+    @Slot(int)
+    def _on_domain_changed(self, _index: int) -> None:
+        """2.5: смена фильтра домена — обновляет текущий вид."""
+        self._domain_filter = self._domain_combo.currentData() or "all"
 
     def _render_line(self, kind: str, payload: dict) -> None:
         text, color = self._format_line(kind, payload)
@@ -329,6 +370,45 @@ class LiveEventsPanel(QWidget):
         if kind == EventKind.LLM_GENERATION_DONE.value:
             tps = payload.get("tokens_per_sec", 0)
             return f"✅ Готово ({tps:.1f} tok/s)", _C_OTHER
+
+        # --- 2.5 + 2.10: бюджет и завершение агента ---
+        if kind == EventKind.BUDGET_WARNING.value:
+            return (
+                f"⚠️ Бюджет: {payload.get('iterations', 0)}/{payload.get('iterations_limit', 0)} ит., "
+                f"{payload.get('tokens', 0)}/{payload.get('tokens_limit', 0)} tok, "
+                f"{payload.get('time_s', 0):.0f}с"
+            ), _C_BUDGET
+        if kind == EventKind.BUDGET_EXCEEDED.value:
+            return (
+                f"⛔ Бюджет исчерпан: {payload.get('iterations', 0)} ит., "
+                f"{payload.get('tokens', 0)} tok, {payload.get('time_s', 0):.0f}с"
+            ), _C_LOG_ERROR
+        if kind == EventKind.AGENT_FINISHED.value:
+            reason = str(payload.get("finish_reason") or "?")
+            iterations = payload.get("iterations", 0)
+            elapsed = payload.get("elapsed_s", 0.0)
+            icon = {
+                "stop": "✅",
+                "length": "✂️",
+                "budget.exceeded": "⛔",
+                "user_cancel": "⏹",
+            }.get(reason, "•")
+            color = {
+                "stop": _C_OTHER,
+                "length": _C_BUDGET,
+                "budget.exceeded": _C_LOG_ERROR,
+                "user_cancel": _C_OTHER,
+            }.get(reason, _C_OTHER)
+            return (
+                f"{icon} Прогон завершён: {reason} "
+                f"({iterations} ит., {elapsed:.0f}с)"
+            ), color
+
+        if kind == EventKind.ORCHESTRATOR_EVENT.value:
+            sub = str(payload.get("kind") or "?")
+            data = payload.get("data") or {}
+            short = ", ".join(f"{k}={v}" for k, v in list(data.items())[:3])
+            return f"🎼 {sub}: {short}", _C_OTHER
 
         return f"{kind}: {payload}", _C_OTHER
 

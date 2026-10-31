@@ -300,3 +300,83 @@ class TestSoftBudget:
         assert result == "continued"
         assert len(calls) == 1  # exceeded сработал один раз
         assert loop.last_finish_reason == "stop"
+
+# ---------------------------------------------------------------------------
+# 2.5: budget.warning/exceeded/agent.finished идут в EventBus
+# ---------------------------------------------------------------------------
+
+
+async def test_budget_warning_in_event_bus():
+    """При превышении warning-порога — budget.warning в EventBus."""
+    from core.event_bus import EventBus, subscribe
+    from core.events import EventKind
+
+    EventBus.instance().clear()
+    received: list[dict] = []
+    unsub = subscribe(
+        EventKind.BUDGET_WARNING.value,
+        lambda _k, p: received.append(p),
+    )
+
+    class _TokenReportingClient(_ScriptedClient):
+        last_stats = {"tokens": 8, "tokens_per_sec": 1.0}
+
+    client = _TokenReportingClient(
+        [{"parts": [TextPart(text="a")], "finish_reason": "stop"}]
+    )
+    loop = AgentLoop(
+        client=cast(LLMBackend, client),
+        registry=cast(ToolRegistry, _FakeRegistry()),
+        model="m",
+    )
+    try:
+        await loop.run(
+            context=AgentContext(mode=AgentMode.AGENT),
+            messages_history=[],
+            on_token=_on_token,
+            on_tool_request=_approve,
+            max_iterations=10,
+            soft_budget=SoftBudget(iterations=100, tokens=10, time_s=100),
+        )
+    finally:
+        unsub()
+    assert len(received) == 1
+    assert received[0]["tokens"] == 8
+    assert received[0]["tokens_limit"] == 10
+    assert received[0]["status"] == "warning"
+
+
+async def test_agent_finished_in_event_bus():
+    """agent.finished эмитится в конце прогона с finish_reason."""
+    from core.event_bus import EventBus, subscribe
+    from core.events import EventKind
+
+    EventBus.instance().clear()
+    received: list[dict] = []
+    unsub = subscribe(
+        EventKind.AGENT_FINISHED.value,
+        lambda _k, p: received.append(p),
+    )
+
+    client = _ScriptedClient(
+        [{"parts": [TextPart(text="ok")], "finish_reason": "stop"}]
+    )
+    loop = AgentLoop(
+        client=cast(LLMBackend, client),
+        registry=cast(ToolRegistry, _FakeRegistry()),
+        model="m",
+    )
+    try:
+        await loop.run(
+            context=AgentContext(mode=AgentMode.AGENT),
+            messages_history=[],
+            on_token=_on_token,
+            on_tool_request=_approve,
+            max_iterations=10,
+        )
+    finally:
+        unsub()
+    assert len(received) == 1
+    assert received[0]["finish_reason"] == "stop"
+    assert "budget" in received[0]
+    assert received[0]["budget"]["status"] == "ok"

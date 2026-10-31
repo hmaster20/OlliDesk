@@ -36,3 +36,12 @@ def test_args_hash_length() -> None:
 def test_args_hash_empty_dict() -> None:
     """Пустой dict — стабильный, не падает."""
     assert args_hash({}) == args_hash({})
+
+def test_new_event_kinds_registered() -> None:
+    """2.5 + 2.10: бюджет, завершение агента и orchestrator.event."""
+    from core.events import EventKind
+
+    assert EventKind.BUDGET_WARNING.value == "budget.warning"
+    assert EventKind.BUDGET_EXCEEDED.value == "budget.exceeded"
+    assert EventKind.AGENT_FINISHED.value == "agent.finished"
+    assert EventKind.ORCHESTRATOR_EVENT.value == "orchestrator.event"

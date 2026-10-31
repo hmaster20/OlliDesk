@@ -1,4 +1,4 @@
-"""Потокобезопасный EventBus OlliDesk (2.5).
+"""Потокобезопасный EventBuss.
 
 Зачем: логи информативнее UI — пользователь не понимает, почему
 приложение «зависло», когда идёт RAG-поиск / tool-call / синтез 7B на
@@ -23,6 +23,7 @@ CPU. `EventBus` — единая точка, куда модули (`fs`, `agent
 
 from __future__ import annotations
 
+import itertools
 import threading
 from collections.abc import Callable
 
@@ -33,7 +34,17 @@ EventCallback = Callable[[str, dict], None]
 
 
 class EventBus:
-    """Потокобезопасный синглтон с подпиской по виду события."""
+    """Потокобезопасный синглтон с подпиской по виду события.
+
+    2.5: ``emit`` дописывает в payload ``_seq`` — монотонный счётчик
+    (``itertools.count()``), уникальный в пределах процесса. Нужен для:
+      * упорядочивания событий в трейсе (event sourcing-light);
+      * отладки гонок «пришло A, потом B, а не наоборот»;
+      * дедупликации при воспроизведении лога в UI.
+
+    ``_seq`` НЕ перезаписывает пользовательский ключ (если подписчик уже
+    положил ``_seq`` — уважаем его, но это ошибка использования).
+    """
 
     _instance: EventBus | None = None
     _instance_lock = threading.Lock()
@@ -41,9 +52,11 @@ class EventBus:
     def __init__(self) -> None:
         # dict[str | None, list[EventCallback]]: None — подписка на все.
         self._subscribers: dict[str | None, list[EventCallback]] = {}
-        # RLock, а не Lock: подписчик может рекурсивно вызвать subscribe
-        # (например, при первом событии зарегистрировать обработчик фазы).
+        # RLock, а не Lock: подписчик может рекурсивно вызвать subscribe.
         self._lock = threading.RLock()
+        # 2.5: монотонный seq. Не сбрасывается в clear() — «за всё время
+        # жизни процесса»; сброс делал бы трейс невалидным между тестами.
+        self._seq = itertools.count(1)
 
     # ------------------------------------------------------------------
     # Singleton
@@ -92,19 +105,27 @@ class EventBus:
         return unsubscribe
 
     def emit(self, kind: str, payload: dict) -> None:
-        """Эмитит событие синхронно из текущего потока.
+        """Эмитит событие синхронно из текущего потока (2.5 + seq).
 
-        Snapshot подписчиков берётся ПОД lock, сами callback'и вызываются
-        ВНЕ lock — иначе рекурсивный `emit()` из подписчика дал бы дедлок
-        на `_lock`.
+        Snapshot подписчиков берётся ПОД lock, callback'и вызываются ВНЕ
+        lock — иначе рекурсивный ``emit()`` из подписчика дал бы дедлок.
 
         Args:
             kind: Вид события (``core.events.EventKind``).
-            payload: Тело события (dict, контракт — см. `core.events`).
+            payload: Тело события (dict). Не мутируется — ``_seq``
+                добавляется в копию.
         """
         with self._lock:
             all_subs = list(self._subscribers.get(None, []))
             specific_subs = list(self._subscribers.get(kind, []))
+            seq = next(self._seq)
+
+        # 2.5: копия с _seq — оригинал остаётся «чистым» для эмиттера
+        # (он может использовать payload повторно или логировать его).
+        # Если эмиттер уже положил _seq — уважаем.
+        if "_seq" not in payload:
+            payload = {**payload, "_seq": seq}
+
         for cb in all_subs + specific_subs:
             try:
                 cb(kind, payload)
