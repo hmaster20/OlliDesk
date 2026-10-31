@@ -856,6 +856,22 @@ class AppConfig(BaseModel):
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
+    # [2.10] Мягкие бюджеты цикла агента. Жёсткий `max_iterations`
+    # больше не основной выход — `AgentLoop` идёт до `finish_reason=stop`
+    # или `user_cancel`, а бюджеты сигналят о «дорого/долго».
+    # `soft_budget_iterations` — safety net для AGENT; для CHAT/PLAN
+    # переопределяется `chat_max_iterations`/`agent_max_iterations`.
+    soft_budget_time_s: int = 600
+    soft_budget_tokens: int = 100_000
+    soft_budget_iterations: int = 100
+
+    @field_validator("soft_budget_time_s", "soft_budget_tokens", "soft_budget_iterations")
+    @classmethod
+    def validate_soft_budget(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"soft_budget must be >= 1, got {v}")
+        return v
+
     # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней
     # панели чата и F4). Дефолт — False, дерево скрыто.
     show_project_tree: bool = False

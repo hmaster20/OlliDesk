@@ -152,12 +152,18 @@ class StatusDashboard(QWidget):
         self.tools.setToolTip("Активность инструментов текущего запроса")
         layout.addWidget(self.tools)
 
+        # [2.10] Бюджет + причина остановки.
+        self.budget = _PillLabel("budget")
+        self.budget.setToolTip("Мягкий бюджет агента (итерации · токены · время)")
+        layout.addWidget(self.budget)
+
         # Начальное состояние.
         self.set_backend("slm", "SLM", "—")
         self.set_pipeline("💤", "не активирован")
         self.set_tok_per_sec(0.0)
         self.set_rag(0, "не проиндексирован")
         self.set_tools_active(False)
+        self.set_budget(None)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -241,6 +247,57 @@ class StatusDashboard(QWidget):
             self.tools.set_state(f"🔧 tools ({count})", _C_OK, "Инструменты активны")
         else:
             self.tools.set_state("🔧 tools", _C_OFF, "Инструменты не используются")
+
+    # ------------------------------------------------------------------
+    # [2.10] Бюджет агента и причина остановки
+    # ------------------------------------------------------------------
+
+    def set_budget(self, snapshot: dict | None) -> None:
+        """Обновляет индикатор бюджета.
+
+        Args:
+            snapshot: ``SoftBudget.snapshot()`` или ``None`` (сброс).
+                Ключи: ``iterations``, ``iterations_limit``, ``tokens``,
+                ``tokens_limit``, ``time_s``, ``time_limit_s``, ``status``.
+        """
+        if snapshot is None:
+            self.budget.set_state("— budget", _C_OFF, "Бюджет не активен")
+            return
+
+        status = str(snapshot.get("status", "ok"))
+        iterations = int(snapshot.get("iterations", 0))
+        iterations_limit = int(snapshot.get("iterations_limit", 0))
+        tokens = int(snapshot.get("tokens", 0))
+        time_s = float(snapshot.get("time_s", 0.0))
+
+        color = _C_OK if status == "ok" else _C_WARN if status == "warning" else _C_ERR
+        icon = "" if status == "ok" else "⚠️ " if status == "warning" else "⛔ "
+        text = f"{icon}{iterations}/{iterations_limit} ит."
+        tooltip = (
+            f"Итерации: {iterations}/{iterations_limit}\n"
+            f"Токены: {tokens}/{int(snapshot.get('tokens_limit', 0))}\n"
+            f"Время: {time_s:.0f}с/{int(snapshot.get('time_limit_s', 0))}с"
+        )
+        self.budget.set_state(text, color, tooltip)
+
+    def set_finish_reason(self, reason: str | None) -> None:
+        """Показывает причину остановки последнего прогона.
+
+        Args:
+            reason: ``"stop"`` | ``"length"`` | ``"budget.exceeded"`` |
+                ``"user_cancel"`` | ``None``.
+        """
+        if not reason:
+            return
+        labels = {
+            "stop": ("✅ завершено", _C_OK),
+            "length": ("✂️ обрезано (max_tokens)", _C_WARN),
+            "tool_calls": ("🔧 вызовы инструментов", _C_INFO),
+            "budget.exceeded": ("⛔ бюджет исчерпан", _C_ERR),
+            "user_cancel": ("⏹ отменено пользователем", _C_OFF),
+        }
+        text, color = labels.get(reason, (reason, _C_OFF))
+        self.budget.set_state(text, color, f"finish_reason={reason}")
 
     def set_tools_from_label(self, label: str) -> None:
         """Совместимость с текущим `tool_status_label.setText(...)`."""

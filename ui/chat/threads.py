@@ -99,6 +99,13 @@ class AgentChatThread(QThread):
     orchestrator_event = Signal(str, dict)
     orchestrator_result = Signal(object)  # RunResult
 
+    # --- [2.10] Бюджет и завершение агента ---
+    budget_warning = Signal(dict)  # SoftBudget.snapshot()
+    budget_exceeded = Signal(dict)  # SoftBudget.snapshot()
+    # {"finish_reason": str | None, "budget": dict | None,
+    #  "iterations": int, "elapsed_s": float}
+    agent_finished = Signal(dict)
+
     def __init__(
         self,
         client: LLMBackend,
@@ -109,6 +116,7 @@ class AgentChatThread(QThread):
         agent_mode: AgentMode,
         max_iterations: int = 10,
         orchestrator: Orchestrator | None = None,
+        soft_budget: SoftBudget | None = None,
     ):
         super().__init__()
         self.client = client
@@ -119,6 +127,7 @@ class AgentChatThread(QThread):
         self.agent_mode = agent_mode
         self.max_iterations = max_iterations
         self.orchestrator = orchestrator
+        self.soft_budget = soft_budget
 
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
@@ -215,6 +224,24 @@ class AgentChatThread(QThread):
         async def _on_stream_finish():
             self.stream_finished.emit()
 
+        # [2.10] Колбэки бюджета пробрасывают snapshot в сигналы UI.
+        async def _on_budget_warning(snapshot: dict) -> None:
+            self.budget_warning.emit(snapshot)
+
+        async def _on_budget_exceeded(snapshot: dict) -> None:
+            self.budget_exceeded.emit(snapshot)
+
+        # [2.10] SoftBudget строится из AppConfig; для CHAT/PLAN
+        # `iterations` переопределяется `max_iterations` внутри run().
+        from core.config import load_config
+        from agents.agent_loop import SoftBudget
+
+        try:
+            _cfg = load_config()
+           _budget = self.soft_budget
+        except Exception:
+            pass
+
         async def _run_with(client) -> tuple[str, AgentLoop]:
             loop = AgentLoop(client=client, registry=self.registry, model=self.model)
             from agents.investigation import is_research_question
@@ -223,7 +250,9 @@ class AgentChatThread(QThread):
                 (m for m in reversed(self.messages_history) if m.role == "user"),
                 None,
             )
-            self._research_mode = is_research_question(last_user_local.content if last_user_local else "")
+            self._research_mode = is_research_question(
+                last_user_local.content if last_user_local else ""
+            )
             self.research_mode_detected.emit(self._research_mode)
 
             result = await loop.run(
@@ -239,11 +268,23 @@ class AgentChatThread(QThread):
                 on_tool_result=self._on_tool_result,
                 on_thought=_on_thought if self._research_mode else None,
                 on_final_answer_started=(_on_final_started if self._research_mode else None),
-                # [4.8.E] низкоуровневые события
                 on_text_delta=_on_text_delta,
                 on_reasoning_delta=_on_reasoning_delta,
                 on_stream_start=_on_stream_start,
                 on_stream_end=_on_stream_finish,
+                # [2.10]
+                soft_budget=_budget,
+                on_budget_warning=_on_budget_warning,
+                on_budget_exceeded=_on_budget_exceeded,
+            )
+            # [2.10] Финальный сигнал с причиной остановки.
+            self.agent_finished.emit(
+                {
+                    "finish_reason": loop.last_finish_reason,
+                    "budget": loop.last_budget_snapshot,
+                    "iterations": _budget.iteration_count,
+                    "elapsed_s": round(_budget.elapsed(), 1),
+                }
             )
             return result, loop
 
@@ -260,13 +301,14 @@ class AgentChatThread(QThread):
 
             self.finish_received.emit(result)
         except AgentIterationLimitError:
-            # error_occurred НЕ эмитим: UI в _on_iteration_limit_exceeded
-            # показывает «⏸ Достигнут лимит» и кнопку «Продолжить». Дубль
-            # «❌ Ошибка агента: ...» только запутал бы пользователя —
-            # это не сбой, а исчерпание бюджета шагов.
+            # [2.10] Это уже не «лимит итераций» в старом смысле, а
+            # hard ceiling (safety net). UI показывает «⏸ Предел шагов»
+            # и кнопку «Продолжить до результата».
             self.iteration_limit_exceeded.emit()
         except Exception as e:
-            self.error_occurred.emit(f"Ошибка агента: {e}")
+            from core.redaction import redact_exc
+
+            self.error_occurred.emit(f"Ошибка агента: {redact_exc(e)}")
 
     # ------------------------------------------------------------------
     # Orchestrator-путь

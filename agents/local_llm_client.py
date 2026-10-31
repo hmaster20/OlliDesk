@@ -228,12 +228,13 @@ class LocalLLMClient:
 
             [9.5] Стримит TextPart на каждый токен. Tool calls парсятся
             на полном тексте после цикла и эмитятся одним ToolCallPart.
+            [2.10] Отслеживаем finish_reason из llama.cpp (choices[0]).
             """
-            # [9.5] start-event — симметрично OllamaClient.
             _safe_put(ChatChunk(event_type="start", done=False))
 
             cancelled = False
             full_text_parts: list[str] = []
+            finish_reason = "stop"  # llama.cpp по умолчанию = stop
             prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
             gen_started = time.perf_counter()
             first_token_at: float | None = None
@@ -254,7 +255,11 @@ class LocalLLMClient:
                         choices = cast(Any, chunk).get("choices") or []
                         if not choices:
                             continue
-                        delta = choices[0].get("delta") or {}
+                        choice = choices[0]
+                        finish = choice.get("finish_reason")
+                        if finish:
+                            finish_reason = str(finish)
+                        delta = choice.get("delta") or {}
                         content = str(delta.get("content") or "")
                         if not content:
                             continue
@@ -290,9 +295,6 @@ class LocalLLMClient:
                 )
 
                 # [9.5] Tool calls парсятся на полном тексте после стрима.
-                # Текст уже ушёл в UI дельтами; tool_call-карточка появится
-                # сверху неё. Это приемлемая цена за живой стрим — на SLM
-                # модель либо отдаёт текст, либо JSON-вызов, не оба сразу.
                 tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
                     tool_calls = self._parse_tool_calls(full_text, tools)
@@ -306,8 +308,13 @@ class LocalLLMClient:
                             done=False,
                         )
                     )
+                    # 2.10: model вызвала инструмент — это тоже «stop», но
+                    # AgentLoop проверит pending_tool_calls. Finish_reason
+                    # остаётся stop (llama.cpp обычно возвращает stop и
+                    # когда модель вызвала tool через JSON-разметку).
+                    finish_reason = "tool_calls"
 
-                _safe_put(ChatChunk(done=True, event_type="end"))
+                _safe_put(ChatChunk(done=True, event_type="end", finish_reason=finish_reason))
 
             except Exception as e:
                 logger.error(f"SLM generation error: {e}")

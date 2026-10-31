@@ -1010,6 +1010,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.continue_btn.clicked.connect(self._continue_after_limit)
         input_layout.addWidget(self.continue_btn)
 
+        self.continue_unlimited_btn = QPushButton("▶▶ До результата")
+        self.continue_unlimited_btn.setToolTip(
+            "Снять бюджеты по времени, токенам и итерациям. "
+            "Остановить можно только кнопкой «■»."
+        )
+        self.continue_unlimited_btn.setStyleSheet(
+            "font-size: 13px; padding: 8px 12px; background: #7a3f12;"
+            " color: white; border: none; border-radius: 4px;"
+        )
+        self.continue_unlimited_btn.setVisible(False)
+        self.continue_unlimited_btn.clicked.connect(self._continue_unlimited)
+        input_layout.addWidget(self.continue_unlimited_btn)
+
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
             "font-size: 14px; padding: 8px 20px; background: #1976d2;"
@@ -1586,7 +1599,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
 
-    def _do_chat(self, text: str, override_limit: int | None = None):
+    def _do_chat(
+        self, text: str, override_limit: int | None = None,
+        override_budget=None,
+    ):
         """Запускает ReAct-цикл в режиме Chat.
 
         Размер проекта определяет флоу:
@@ -1703,6 +1719,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             agent_mode=AgentMode.CHAT,
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
+            soft_budget=override_budget,
         )
         self._last_run_params = {
             "kind": "chat",
@@ -1838,6 +1855,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             agent_mode=mode,
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
+            soft_budget=override_budget,
         )
 
         self._last_run_params = {
@@ -1877,14 +1895,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
 
-        # [4.8.E] Низкоуровневые delta-события. Пока только для диагностики:
-        # UI по-прежнему получает токены через _on_chunk/_on_thinking,
-        # чтобы не дублировать композитный пузырь. Будущие потребители —
-        # TTFT-метрики, раздельная подсветка reasoning-блоков.
+        # [4.8.E] Низкоуровневые delta-события.
         self._agent_thread.text_delta.connect(self._on_text_delta_event)
         self._agent_thread.reasoning_delta.connect(self._on_reasoning_delta_event)
         self._agent_thread.stream_started.connect(self._on_stream_started_event)
         self._agent_thread.stream_finished.connect(self._on_stream_finished_event)
+
+        # [2.10] Бюджет и причина остановки.
+        self._agent_thread.budget_warning.connect(self._on_budget_warning)
+        self._agent_thread.budget_exceeded.connect(self._on_budget_exceeded)
+        self._agent_thread.agent_finished.connect(self._on_agent_finished)
 
         self._agent_thread.start()
 
@@ -2299,6 +2319,48 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _on_reasoning_delta_event(self, token: str) -> None:
         """[4.8.E] Reasoning-delta от AgentLoop. Аналогично, только лог."""
         logger.trace(f"reasoning_delta: {token[:40]!r}")
+
+    # ------------------------------------------------------------------
+    # [2.10] Бюджет агента
+    # ------------------------------------------------------------------
+
+    @Slot(dict)
+    def _on_budget_warning(self, snapshot: dict) -> None:
+        """Мягкое предупреждение: ≥80% по одной из осей бюджета."""
+        if self._dashboard is not None:
+            self._dashboard.set_budget(snapshot)
+        logger.info(
+            f"Бюджет warning: ит.={snapshot.get('iterations')}, "
+            f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
+        )
+
+    @Slot(dict)
+    def _on_budget_exceeded(self, snapshot: dict) -> None:
+        """Бюджет исчерпан (CHAT/PLAN — форсированный финал, AGENT — продолжаем)."""
+        if self._dashboard is not None:
+            self._dashboard.set_budget(snapshot)
+        if self._current_thought_stream is not None:
+            self._current_thought_stream.append_nudge("⛔ Бюджет исчерпан")
+        logger.warning(
+            f"Бюджет exceeded: ит.={snapshot.get('iterations')}, "
+            f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
+        )
+
+    @Slot(dict)
+    def _on_agent_finished(self, payload: dict) -> None:
+        """Завершение прогона: причина остановки + финальный снимок бюджета."""
+        reason = payload.get("finish_reason")
+        budget = payload.get("budget")
+        if self._dashboard is not None:
+            if budget:
+                self._dashboard.set_budget(budget)
+            if reason:
+                self._dashboard.set_finish_reason(reason)
+        logger.info(
+            f"Agent finished: reason={reason!r}, "
+            f"iterations={payload.get('iterations')}, "
+            f"elapsed={payload.get('elapsed_s')}с"
+        )
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
@@ -2727,16 +2789,60 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
-        """Прерываем возможный research-прогон..."""
+        """[2.10] Hard ceiling достигнут (safety net, а не «лимит»)."""
         self._reset_research_state()
         self._reset_send_button()
         self._show_activity(
-            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать агенту больше шагов."
+            "⏸ Достигнут предел шагов. «Продолжить» — ещё шаги, "
+            "«Продолжить до результата» — без бюджета."
         )
-        # [9.5.4] Индикатор: «лимит итераций» вместо общего idle.
-        self._set_activity_state("cancelled", "лимит итераций")
+        self._set_activity_state("cancelled", "предел шагов")
         self.continue_btn.setVisible(True)
         self.continue_btn.setEnabled(True)
+        if hasattr(self, "continue_unlimited_btn"):
+            self.continue_unlimited_btn.setVisible(True)
+            self.continue_unlimited_btn.setEnabled(True)
+
+    @Slot()
+    def _continue_unlimited(self) -> None:
+        """[2.10] «Продолжить до результата»: time=∞, tok=∞, iterations=∞.
+
+        Единственная остановка — `user_cancel`. Если модель зациклилась
+        на повторных tool_calls, `AgentLoop` сам сделает финальный синтез
+        (защита от повторов не снимается).
+        """
+        if self._generating:
+            return
+        params = self._last_run_params
+        if not params:
+            self.continue_btn.setVisible(False)
+            return
+
+        self.continue_btn.setVisible(False)
+        self._add_message(
+            "system",
+            "▶ Продолжаю до результата: бюджеты по времени/токенам/итерациям "
+            "сняты. Остановить можно кнопкой «■».",
+        )
+
+        # Огромные бюджеты — фактически «без лимита».
+        from agents.agent_loop import SoftBudget
+
+        unlimited = SoftBudget(
+            iterations=100_000,
+            tokens=10_000_000,
+            time_s=86_400.0,
+            warning_ratio=0.999,  # WARNING практически не сработает
+        )
+
+        if params["kind"] == "chat":
+            self._do_chat(params["text"], override_limit=100_000,
+                          override_budget=unlimited)
+        else:
+            self._do_agent(
+                params["text"], params["mode"], params["rag_context"],
+                override_limit=100_000, override_budget=unlimited,
+            )
 
     @Slot()
     def _continue_after_limit(self) -> None:

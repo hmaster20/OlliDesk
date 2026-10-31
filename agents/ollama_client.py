@@ -201,11 +201,20 @@ class ChatChunk(BaseModel):
     Основное хранилище — ``part`` + ``event_type``. ``content`` /
     ``reasoning_content`` / ``tool_calls`` — read-only свойства для обратной
     совместимости (см. `ChatMessage`).
+
+    **2.10**: поле ``finish_reason`` заполняется на завершающем
+    ``event_type="end"``-чанке. Значения: ``"stop"`` (естественное
+    завершение), ``"length"`` (модель обрезалась по ``max_tokens``),
+    ``"tool_calls"`` (модель вызвала инструмент; на практике совпадает
+    с ``"stop"`` + ``ToolCallPart``), а также значения Ollama
+    (``"load"``, ``"unload"``). ``None`` — клиент не сообщил причину
+    (эвристика в `AgentLoop`: ``stop``, если нет ``tool_calls``).
     """
 
     part: MessagePart | None = None
     event_type: Literal["start", "delta", "end", "tool_call"] | None = None
     done: bool = False
+    finish_reason: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -218,39 +227,7 @@ class ChatChunk(BaseModel):
             data.pop("reasoning_content", None)
             data.pop("tool_calls", None)
             return data
-
-        reasoning = data.pop("reasoning_content", None)
-        content = data.pop("content", None)
-        tool_calls = data.pop("tool_calls", None)
-        if reasoning:
-            data["part"] = {"kind": "reasoning", "text": reasoning}
-            data.setdefault("event_type", "delta")
-        elif content:
-            data["part"] = {"kind": "text", "text": content}
-            data.setdefault("event_type", "delta")
-        elif tool_calls:
-            data["part"] = {"kind": "tool_call", "calls": tool_calls}
-            data.setdefault("event_type", "tool_call")
-        return data
-
-    @property
-    def content(self) -> str:
-        if isinstance(self.part, TextPart):
-            return self.part.text
-        return ""
-
-    @property
-    def reasoning_content(self) -> str:
-        if isinstance(self.part, ReasoningPart):
-            return self.part.text
-        return ""
-
-    @property
-    def tool_calls(self) -> list[ToolCall] | None:
-        if isinstance(self.part, ToolCallPart):
-            return self.part.calls or None
-        return None
-
+        ...
 
 class ToolSchema(BaseModel):
     """JSON-схема инструмента для Ollama."""
@@ -445,6 +422,8 @@ class OllamaClient:
                             continue
                         if self._cancel_requested:
                             logger.info("Ollama stream cancelled by user")
+                            # 2.10: отмена — не «length», а явный None.
+                            # AgentLoop проверит is_cancelled и вернёт "Отменено".
                             yield ChatChunk(event_type="end", done=True)
                             return
                         try:
@@ -460,11 +439,20 @@ class OllamaClient:
                             yield chunk
 
                         if data.get("done"):
-                            yield ChatChunk(event_type="end", done=True)
+                            # 2.10: finish_reason из Ollama (done_reason).
+                            # Значения: "stop" | "length" | "load" | "unload".
+                            # None — старая Ollama, без поля.
+                            yield ChatChunk(
+                                event_type="end",
+                                done=True,
+                                finish_reason=data.get("done_reason"),
+                            )
                             return
 
-                # Поток закрылся без done — крайний случай (OOM/разрыв).
-                yield ChatChunk(event_type="end", done=True)
+                # Поток закрылся без done — крайний случай (OOM/обрыв сети).
+                # 2.10: считаем "length", чтобы AgentLoop не ушёл в бесконечный
+                # retry с тем же промптом.
+                yield ChatChunk(event_type="end", done=True, finish_reason="length")
             else:
                 response = await client.post(
                     f"{self.base_url}/api/chat",
@@ -478,7 +466,11 @@ class OllamaClient:
                 message = data.get("message") or {}
                 for chunk in self._chunks_from_ollama_message(message):
                     yield chunk
-                yield ChatChunk(event_type="end", done=True)
+                yield ChatChunk(
+                    event_type="end",
+                    done=True,
+                    finish_reason=data.get("done_reason"),
+                )
 
         # ВАЖНО: порядок except — от самого специфичного к общему.
         # HTTPStatusError (404/400/5xx) приходит напрямую от httpx, когда
