@@ -231,13 +231,22 @@ class LocalLLMClient:
             [2.10] Отслеживаем finish_reason из llama.cpp (choices[0]).
             """
             _safe_put(ChatChunk(event_type="start", done=False))
-
             cancelled = False
             full_text_parts: list[str] = []
-            finish_reason = "stop"  # llama.cpp по умолчанию = stop
+            finish_reason = "stop"
             prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
             gen_started = time.perf_counter()
             first_token_at: float | None = None
+
+            # [4.2] Prefix caching: сколько токенов уже в KV до вызова.
+            # llama.cpp сам найдёт общий префикс с предыдущим вызовом;
+            # `self.llm.n_tokens` = текущий размер KV. После вызова
+            # увеличится на новые prompt-токены + сгенерированное.
+            try:
+                cache_reads_before = int(self.llm.n_tokens)
+            except Exception:
+                cache_reads_before = 0
+
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
@@ -266,7 +275,6 @@ class LocalLLMClient:
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                         full_text_parts.append(content)
-                        # [9.5] Стрим каждого токена сразу.
                         _safe_put(
                             ChatChunk(
                                 part=TextPart(text=content),
@@ -277,16 +285,50 @@ class LocalLLMClient:
 
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
+                # [4.2] Метрики prefix caching.
+                try:
+                    total_kv_after = int(self.llm.n_tokens)
+                except Exception:
+                    total_kv_after = 0
+
                 if cancelled:
-                    self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
+                    self.last_stats = self._make_stats(
+                        prompt_chars, 0, gen_ms, None, cancelled=True
+                    )
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
                     _safe_put(ChatChunk(done=True, event_type="end"))
                     return
 
                 full_text = "".join(full_text_parts)
                 tokens = self._count_tokens(full_text)
-                ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
-                self.last_stats = self._make_stats(prompt_chars, tokens, gen_ms, ttft_ms)
+                ttft_ms = (
+                    (first_token_at - gen_started) * 1000
+                    if first_token_at is not None
+                    else None
+                )
+
+                # prompt_tokens = total_after - tokens (то, что уже в KV,
+                # включая переиспользованное и новое). cache_reads — из
+                # ранее закешированного префикса.
+                prompt_tokens = max(0, total_kv_after - tokens) if tokens else total_kv_after
+                cache_reads = min(cache_reads_before, prompt_tokens)
+                cache_writes = max(0, prompt_tokens - cache_reads)
+
+                self.last_stats = self._make_stats(
+                    prompt_chars,
+                    tokens,
+                    gen_ms,
+                    ttft_ms,
+                    cache_reads=cache_reads,
+                    cache_writes=cache_writes,
+                )
+                logger.info(
+                    f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
+                    f"({tokens / (gen_ms / 1000):.1f} ток/с)"
+                    + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
+                    + f", промпт ~{prompt_chars} симв., "
+                    f"cache: {cache_reads} reads / {cache_writes} writes"
+                )
                 logger.info(
                     f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
                     f"({tokens / (gen_ms / 1000):.1f} ток/с)"
@@ -416,6 +458,9 @@ class LocalLLMClient:
         gen_ms: float,
         ttft_ms: float | None,
         cancelled: bool = False,
+        *,
+        cache_reads: int = 0,
+        cache_writes: int = 0,
     ) -> dict[str, Any]:
         seconds = gen_ms / 1000
         return {
@@ -425,6 +470,9 @@ class LocalLLMClient:
             "ttft_ms": round(ttft_ms) if ttft_ms is not None else None,
             "tokens_per_sec": round(tokens / seconds, 1) if seconds > 0 and tokens else 0.0,
             "cancelled": cancelled,
+            # [4.2] prefix caching
+            "cache_reads": cache_reads,
+            "cache_writes": cache_writes,
         }
 
     # --- Tool-call parsing ---

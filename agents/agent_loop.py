@@ -632,11 +632,22 @@ class AgentLoop:
     # ------------------------------------------------------------------
 
     def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """Прореживает промпт, если он не помещается в окно модели."""
+        """Прореживает промпт, если он не помещается в окно модели.
+
+        [4.2] Передаёт ``hot_window_tokens`` — компактор не трогает
+        хвост диалога, укладывающийся в этот бюджет. Так результаты
+        недавних tool-calls не теряются, и модель не повторяет вызовы.
+        """
         num_ctx = getattr(self.client, "num_ctx", None)
         if not isinstance(num_ctx, int) or num_ctx <= 0:
             return messages
-        return compact_history(messages, num_ctx)
+        from core.context_budget import hot_window_tokens
+
+        return compact_history(
+            messages,
+            num_ctx,
+            hot_window_tokens=hot_window_tokens(num_ctx),
+        )
 
     @staticmethod
     def _tool_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:

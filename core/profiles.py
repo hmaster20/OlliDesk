@@ -18,6 +18,7 @@
 (режим: chat/plan/agent) — это ортогональные вещи.
 """
 
+from pydantic import BaseModel, Field, field_validator
 from __future__ import annotations
 
 from typing import Literal
@@ -89,12 +90,24 @@ class ProfileConfig(BaseModel):
 
     recommended_model: str = ""
 
-    # 4.1: парк моделей по ролям. Пустой dict → автовыбор через
-    # `agents.slm_selector.select_park` (tier/VRAM/RAM).
+    # 4.1: парк моделей по ролям.
     park_roles: dict[str, str] = Field(default_factory=dict)
 
+    # 4.2: желаемое окно контекста для ролей парка.
+    # 0 — не ограничивать (используем то, что даёт `optimize` по RAM/VRAM).
+    # Для CPU-аналитика: 16384 (research) / 32768 (development) /
+    # 65536 (deep). Не «жёсткий cap», а hint: оптимизатор берёт
+    # `min(n_ctx_hint, budget_by_ram)`.
+    n_ctx_hint: int = 8192
+
+    @field_validator("n_ctx_hint")
+    @classmethod
+    def _validate_n_ctx_hint(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"n_ctx_hint must be >= 0, got {v}")
+        return v
+
 _DEFAULT_PROFILES: list[dict] = [
-    {
     {
         "id": "development",
         "name": "Разработка",
@@ -122,6 +135,9 @@ _DEFAULT_PROFILES: list[dict] = [
             "verifier": "qwen2.5-3b-instruct-q4_k_m",
             "coder": "qwen3-coder-30b-a3b-instruct-q4_k_m",
         },
+        # 4.2: 32k — code-reading и apply_patch требуют большого окна.
+        # Оптимизатор урежет до budget_by_ram, если RAM не хватит.
+        "n_ctx_hint": 32768,
         "tool_policies": {
             "write_file": "ask_first",
             "create_snapshot": "ask_first",
@@ -159,6 +175,8 @@ _DEFAULT_PROFILES: list[dict] = [
             "planner": "qwen2.5-3b-instruct-q4_k_m",
             "analyst": "qwen2.5-7b-instruct-q5_k_m",
         },
+        # 4.2: 16k — хватает на hypothesis-проверки и паспорт.
+        "n_ctx_hint": 16384,
         "tool_policies": {
             "write_file": "excluded",
             "create_snapshot": "excluded",
@@ -199,6 +217,8 @@ _DEFAULT_PROFILES: list[dict] = [
         "park_roles": {
             "analyst": "qwen2.5-14b-instruct-q4_k_m",
         },
+        # 4.2: 8k — диалог без инструментов, длинная история не нужна.
+        "n_ctx_hint": 8192,
         "tool_policies": {
             "read_file": "excluded",
             "list_directory": "excluded",

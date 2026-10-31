@@ -691,14 +691,16 @@ class _ModelPoolLoadThread(QThread):
             # 4.1: парк моделей по ролям из активного профиля.
             try:
                 cfg = load_config()
-                park_roles = dict(cfg.profiles[0].park_roles) if cfg.profiles else {}
-                # Находим активный профиль.
+                park_roles = {}
+                profile_n_ctx_hint = 0
                 for p in cfg.profiles:
                     if p.id == cfg.active_profile:
                         park_roles = dict(p.park_roles)
+                        profile_n_ctx_hint = int(p.n_ctx_hint)
                         break
             except Exception:
                 park_roles = {}
+                profile_n_ctx_hint = 0
 
             if park_roles:
                 park = select_park(profile_park_roles=park_roles)
@@ -735,8 +737,15 @@ class _ModelPoolLoadThread(QThread):
                 self.progress.emit(
                     f"Оптимизация {role.value}: {info.display_name} (device={device})"
                 )
+                # [4.2] n_ctx_hint из профиля (или 0 — без ограничения).
+                n_hint = profile_n_ctx_hint if profile_n_ctx_hint > 0 else None
                 try:
-                    params = optimize(path, target_n_ctx=8192, device=device)
+                    params = optimize(
+                        path,
+                        target_n_ctx=8192,
+                        device=device,
+                        n_ctx_hint=n_hint,
+                    )
                 except Exception as e:
                     logger.exception(f"optimize {role.value} failed")
                     self.error.emit(f"optimize {role.value} failed: {e}")

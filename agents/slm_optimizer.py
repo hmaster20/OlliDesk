@@ -283,9 +283,12 @@ def optimize(
     model_path: Path,
     *,
     hw: HardwareProfile | None = None,
-    target_n_ctx: int = 8192,  # было 32768 — провоцировало 32k на CPU
+    target_n_ctx: int = 8192,
     model_size_mb: int | None = None,
     device: str | None = None,
+    # [4.2] Мягкий hint желаемого окна (из ProfileConfig.n_ctx_hint).
+    # Эффективный n_ctx = min(n_ctx_hint_or_target, budget_by_ram).
+    n_ctx_hint: int | None = None,
 ) -> OptimizedParams:
     """Считает оптимальные параметры для модели на данном железе.
 
@@ -308,6 +311,11 @@ def optimize(
     if model_size_mb <= 0:
         model_size_mb = 4000
 
+    # [4.2] target_n_ctx становится верхней границей, если задан hint.
+    # 0 в hint означает «без ограничения сверху» (использовать target_n_ctx).
+    if n_ctx_hint is not None and n_ctx_hint > 0:
+        target_n_ctx = min(target_n_ctx, n_ctx_hint)
+
     notes: list[str] = []
     gpu = hw.best_gpu
     usable_vram = gpu.usable_vram_mb if gpu else 0
@@ -327,7 +335,11 @@ def optimize(
             notes.append(f"Модель целиком на GPU (VRAM ≈ {vram_used} МБ)")
             if flash:
                 notes.append("FlashAttention включён")
-
+            if n_ctx_hint is not None and n_ctx > n_ctx_hint > 0:
+                notes.append(
+                    f"[4.2] n_ctx {n_ctx} -> {n_ctx_hint} (profile n_ctx_hint)"
+                )
+                n_ctx = n_ctx_hint
             params = OptimizedParams(
                 n_ctx=n_ctx,
                 n_gpu_layers=-1,
@@ -371,27 +383,46 @@ def optimize(
         usable_vram,
     )
 
-    # device="CPU": жёстко обнуляем GPU-слои, даже если VRAM хватает.
+    # device="CPU": жёстко обнуляем GPU-слои.
     if device == "CPU" and n_gpu_layers != 0:
         notes.append(f"device=CPU: принудительно n_gpu_layers=0 (было {n_gpu_layers})")
         n_gpu_layers = 0
         vram_used = 0
         ram_used = model_size_mb + kv_mb
 
-    # === [D1] CPU-only: жёсткий потолок контекста ради TTFT/throughput ===
+    # === [4.2] CPU-only: не «жёсткий потолок 8192», а budget_by_ram ===
     if n_gpu_layers == 0:
-        if n_ctx > 8192:
-            notes.append(f"[D1] CPU-only: n_ctx {n_ctx} -> 8192 (TTFT)")
-            n_ctx = 8192
-        # Квантизованный V-кэш требует Flash Attention, на CPU его нет.
+        # Раньше здесь был жёсткий cap 8192 «ради TTFT». Для больших окон
+        # (32k/64k) это душило модель. Теперь:
+        #   * kv_type для CPU — f16 (квантизованный KV требует flash_attn,
+        #     которого на CPU нет в llama-cpp-python);
+        #   * n_ctx ограничивается бюджетом RAM: используем `budget_by_ram`
+        #     (см. ниже) — сколько KV-кэша влезает в доступную RAM;
+        #   * если hint задан — не превышаем hint.
         if kv_type != "f16":
             notes.append(
-                f"CPU-only: kv {kv_type} -> f16 (квантизованный KV требует flash_attn, недоступного на CPU)"
+                f"CPU-only: kv {kv_type} -> f16 (квантизованный KV требует flash_attn)"
             )
             kv_type = "f16"
+        budget_by_ram = _budget_by_ram_ctx(
+            meta=meta,
+            kv_type=kv_type,
+            available_ram_mb=usable_ram,
+            model_size_mb=model_size_mb,
+        )
+        if budget_by_ram > 0 and n_ctx > budget_by_ram:
+            notes.append(
+                f"[4.2] CPU-only: n_ctx {n_ctx} -> {budget_by_ram} (budget_by_ram)"
+            )
+            n_ctx = budget_by_ram
+        if n_ctx_hint is not None and n_ctx > n_ctx_hint > 0:
+            notes.append(
+                f"[4.2] CPU-only: n_ctx {n_ctx} -> {n_ctx_hint} (profile hint)"
+            )
+            n_ctx = n_ctx_hint
         if n_batch > 512:
             n_batch = 512
-            notes.append("[D1] CPU-only: n_batch -> 512")
+            notes.append("[4.2] CPU-only: n_batch -> 512")
         kv_mb = _kv_mb(meta, kv_type, n_ctx)
         vram_used, ram_used = 0, model_size_mb + kv_mb
 
@@ -438,4 +469,45 @@ def optimize(
     return params
 
 
-#
+def _budget_by_ram_ctx(
+    *,
+    meta: GGUFMeta,
+    kv_type: str,
+    available_ram_mb: int,
+    model_size_mb: int,
+    output_reserve_mb: int = 400,
+) -> int:
+    """[4.2] Сколько n_ctx влезает в доступную RAM для CPU-only.
+
+    ``available_ram_mb`` — это уже за вычетом ``RAM_RESERVE_MB``. Дополнительно
+    вычитаем ``output_reserve_mb`` (compute-буферы llama.cpp на CPU) и
+    размер модели (веса уже в RAM). Остаток — бюджет под KV-кэш.
+
+    Args:
+        meta: Метаданные модели (нужен ``kv_bytes_per_token_*``).
+        kv_type: ``"f16"`` или ``"q8_0"``.
+        available_ram_mb: Свободная RAM после резерва ОС, МБ.
+        model_size_mb: Размер модели (весов), МБ.
+        output_reserve_mb: Резерв под compute-буферы, МБ.
+
+    Returns:
+        Рекомендуемый ``n_ctx``, кратный 512 (вниз). ``0`` — если RAM
+        не хватает даже на модель + минимальный буфер (вызывающий код
+        оставит исходный ``n_ctx`` — это будет ошибка конфигурации,
+        пользователь увидит OOM).
+    """
+    free_for_kv_mb = available_ram_mb - model_size_mb - output_reserve_mb
+    if free_for_kv_mb <= 0:
+        logger.warning(
+            f"budget_by_ram: RAM не хватает даже на веса модели "
+            f"(available={available_ram_mb}, model={model_size_mb})"
+        )
+        return 0
+    per_tok = (
+        meta.kv_bytes_per_token_fp16 if kv_type == "f16" else meta.kv_bytes_per_token_q8
+    )
+    if per_tok <= 0:
+        return 0
+    raw_ctx = (free_for_kv_mb * 1024 * 1024) // per_tok
+    # Округляем вниз до 512.
+    return max(MIN_N_CTX, (raw_ctx // 512) * 512)

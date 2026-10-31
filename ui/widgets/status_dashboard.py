@@ -157,6 +157,11 @@ class StatusDashboard(QWidget):
         self.budget.setToolTip("Мягкий бюджет агента (итерации · токены · время)")
         layout.addWidget(self.budget)
 
+        # [4.2] Prefix caching: сколько токенов переиспользуется из KV.
+        self.cache = _PillLabel("cache")
+        self.cache.setToolTip("Prefix caching: reads/writes в KV-кэше")
+        layout.addWidget(self.cache)
+
         # Начальное состояние.
         self.set_backend("slm", "SLM", "—")
         self.set_pipeline("💤", "не активирован")
@@ -164,6 +169,7 @@ class StatusDashboard(QWidget):
         self.set_rag(0, "не проиндексирован")
         self.set_tools_active(False)
         self.set_budget(None)
+        self.set_cache(0, 0)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -298,6 +304,35 @@ class StatusDashboard(QWidget):
         }
         text, color = labels.get(reason, (reason, _C_OFF))
         self.budget.set_state(text, color, f"finish_reason={reason}")
+
+    # ------------------------------------------------------------------
+    # [4.2] Prefix caching
+    # ------------------------------------------------------------------
+
+    def set_cache(self, reads: int, writes: int) -> None:
+        """Показывает статистику prefix caching последнего ответа.
+
+        Args:
+            reads: Сколько токенов промпта уже было в KV (переиспользовано).
+            writes: Сколько токенов промпта обработано заново.
+
+        Note:
+            llama.cpp переиспользует KV по общему префиксу; значения —
+            эвристика (``self.llm.n_tokens`` до/после вызова). Для Ollama
+            всегда ``0/0`` — поле не заполняется.
+        """
+        if reads == 0 and writes == 0:
+            self.cache.set_state("— cache", _C_OFF, "Prefix caching не активен")
+            return
+        total = max(1, reads + writes)
+        hit_pct = int(100 * reads / total)
+        icon = "⚡" if hit_pct >= 50 else "—"
+        text = f"{icon} cache {reads}/{writes}"
+        tooltip = (
+            f"Prefix caching: {reads} reads / {writes} writes\n"
+            f"Hit rate: {hit_pct}% (уже в KV / обработано заново)"
+        )
+        self.cache.set_state(text, _C_OK if hit_pct >= 50 else _C_WARN, tooltip)
 
     def set_tools_from_label(self, label: str) -> None:
         """Совместимость с текущим `tool_status_label.setText(...)`."""

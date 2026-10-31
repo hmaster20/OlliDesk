@@ -2371,7 +2371,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
-        """[4.8.E] Конец стрима модели — обновляем tok/s в приборной панели."""
+        """[4.8.E + 4.2] Конец стрима: tok/s и prefix cache в дашборде."""
         logger.trace("stream_finished")
         if self._dashboard is None:
             return
@@ -2380,6 +2380,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         tps = stats.get("tokens_per_sec", 0.0)
         with contextlib.suppress(TypeError, ValueError):
             self._dashboard.set_tok_per_sec(float(tps))
+        # [4.2] prefix caching (для SLM; для Ollama — 0/0)
+        with contextlib.suppress(TypeError, ValueError):
+            self._dashboard.set_cache(
+                int(stats.get("cache_reads", 0)),
+                int(stats.get("cache_writes", 0)),
+            )
 
     # ------------------------------------------------------------------
     # [9.5.3] Серый трейс в обычном Agent/Plan (не только research)
