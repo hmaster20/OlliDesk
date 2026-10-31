@@ -28,6 +28,7 @@ from agents.download_slm import (
     is_model_installed,
 )
 from core.config import AppConfig, SLMModelInfo, save_config
+from core.slm_models_io import save_slm_models
 
 # Модульный реестр активных скачиваний: держит сильные ссылки на QThread
 # до завершения, чтобы GC не уничтожил объект во время работы.
@@ -467,6 +468,7 @@ class SLMModelsDialog(QDialog):
         """
         self.config.slm.auto_select_model = checked
         save_config(self.config)
+        save_slm_models(self.config.slm.available_models)
         self._changed = True
         logger.info(f"SLM: auto_select_model = {checked} (selected_model='{self.config.slm.selected_model}')")
         if checked:
@@ -508,6 +510,7 @@ class SLMModelsDialog(QDialog):
             logger.info(f"SLM: пользователь явно выбрал '{info.id}' — auto_select_model переключён в False")
 
         save_config(self.config)
+        save_slm_models(self.config.slm.available_models)
         self._changed = True
 
         msg = f"✅ Активная модель: {info.display_name}"
@@ -581,6 +584,7 @@ class SLMModelsDialog(QDialog):
         )
         self.config.slm.available_models.append(new_info)
         save_config(self.config)
+        save_slm_models(self.config.slm.available_models)
         self._changed = True
 
         logger.info(f"SLM: добавлена пользовательская модель id={model_id!r}, repo={repo!r}, file={file!r}")

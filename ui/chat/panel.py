@@ -3583,17 +3583,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         else:
             self._dashboard.set_backend("none", "Нет", "—")
 
-        # Pipeline.
+        # Pipeline (4.1: показываем все загруженные роли).
         if self._orchestrator is not None and self._model_pool is not None:
             try:
-                ps = self._model_pool.spec(Role.PLANNER)
-                an = self._model_pool.spec(Role.ANALYST)
-                self._dashboard.set_pipeline(
-                    "⚡",
-                    f"{ps.model_id} + {an.model_id}",
-                    f"planner={ps.model_id} (GPU, n_ctx={ps.n_ctx})\n"
-                    f"analyst={an.model_id} (CPU, n_ctx={an.n_ctx})",
-                )
+                roles = self._model_pool.loaded_roles()
+                if not roles:
+                    self._dashboard.set_pipeline("⏸", "пул пуст")
+                else:
+                    primary = [
+                        r.value
+                        for r in roles
+                        if r in (Role.ROUTER, Role.PLANNER, Role.CODER)
+                    ]
+                    short = " + ".join(primary) if primary else roles[0].value
+                    tooltip_lines = []
+                    for r in roles:
+                        try:
+                            spec = self._model_pool.spec(r)
+                            tooltip_lines.append(
+                                f"{r.value}={spec.model_id} "
+                                f"({spec.device}, n_ctx={spec.n_ctx})"
+                            )
+                        except Exception:
+                            tooltip_lines.append(f"{r.value}=?")
+                    self._dashboard.set_pipeline(
+                        "⚡", short, "\n".join(tooltip_lines)
+                    )
             except Exception:
                 self._dashboard.set_pipeline("⚡", "готов")
         elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
