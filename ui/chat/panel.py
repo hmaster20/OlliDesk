@@ -2265,6 +2265,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             card.revert_requested.connect(self._on_revert_write_file)
             # [9.8] «Показать diff» — Monaco DiffEditor.
             card.show_diff_requested.connect(self._on_show_tool_diff)
+            # [10.9] Откат файлового снапшота.
+            card.snapshot_undo_requested.connect(self._on_undo_file_snapshot)
 
         # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
         # следующий текст пойдёт в новый пузырь (это новый ответ модели).
@@ -3791,3 +3793,31 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 exc_info=True,
             )
             return None
+
+    @Slot(str)
+    def _on_undo_file_snapshot(self, snapshot_id: str) -> None:
+        """[10.9] Откатывает файл из снапшота."""
+        from PySide6.QtWidgets import QMessageBox
+
+        if not snapshot_id:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Откатить файл?",
+            f"Восстановить файл из снапшота {snapshot_id}?\n\n"
+            f"Текущее содержимое будет потеряно.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from tools.git_ops import restore_snapshot
+
+            restored = restore_snapshot(snapshot_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось откатить:\n{e}")
+            return
+        self.status_label.setText(
+            f"↩ Восстановлено файлов: {len(restored)}"
+        )
+        logger.info(f"undo snapshot {snapshot_id}: {restored}")

@@ -234,6 +234,10 @@ _TOOL_USE_INSTRUCTION = """
 Когда какой инструмент:
   • содержимое/структура проекта — read_file (offset/limit), list_directory,
     search_codebase
+  • ПРАВКА существующего файла — apply_patch с минимальным контекстом
+    (не write_file!). Перед apply_patch прочитай файл через read_file
+    и передай sha256 (первые 8+ hex) как expected_hash.
+  • НОВЫЙ файл или ПОЛНАЯ замена — write_file (только для этого)
   • текущие дата и время         — get_current_datetime
   • погода в городе              — get_weather
   • курсы валют                  — get_exchange_rate

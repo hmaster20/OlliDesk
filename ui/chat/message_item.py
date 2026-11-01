@@ -877,10 +877,12 @@ class ToolCallCard(QWidget):
     """
 
     # [9.6.1] Сигналы diff-режима `write_file`.
-    open_in_editor_requested = Signal(str)  # path
-    revert_requested = Signal(dict)  # {"path", "original_content", "is_new_file"}
+    open_in_editor_requested = Signal(str)
+    revert_requested = Signal(dict)
     # [9.8] Показать diff в Monaco DiffEditor (третья кнопка).
-    show_diff_requested = Signal(dict)  # {"path", "original", "modified", "language"}
+    show_diff_requested = Signal(dict)
+    # [10.9] Откат файлового снапшота.
+    snapshot_undo_requested = Signal(str)
 
     _ICONS: dict[str, str] = {
         "read_file": "📖",
@@ -1006,6 +1008,24 @@ class ToolCallCard(QWidget):
         body.addWidget(self._full_browser)
 
         self._apply_state_style()
+
+    def _add_lsp_link(self, line: int, col: int, msg: str, path: str) -> None:
+        """Кликабельная ссылка на LSP-ошибку (jump-to-line в редакторе)."""
+        link = QPushButton(f"  стр. {line}:{col} — {msg}")
+        link.setCursor(Qt.CursorShape.PointingHandCursor)
+        link.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        link.setStyleSheet(
+            "QPushButton { background: transparent; border: none;"
+            " text-align: left; color: #6ba3d6;"
+            " font-family: 'Consolas', monospace; font-size: 11px;"
+            " padding: 0 20px; }"
+            " QPushButton:hover { text-decoration: underline; color: #8bc0f0; }"
+        )
+        link.clicked.connect(
+            lambda _checked=False, ln=line, p=path:
+            self.open_in_editor_requested.emit(f"{p}:{ln}")
+        )
+        self._body_layout.addWidget(link)
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -1179,6 +1199,45 @@ class ToolCallCard(QWidget):
                 " font-size: 11px; padding: 2px 0 2px 20px;"
             )
             self._body_layout.addWidget(err_label)
+
+        # [10.8] LSP-диагностика — красный блок с jump-to-line.
+        lsp_errors = meta.get("lsp_errors") or []
+        if lsp_errors:
+            lsp_header = QLabel(f"⚠️ LSP: {len(lsp_errors)} ошибок")
+            lsp_header.setStyleSheet(
+                "color: #e06c75; font-weight: 600; font-size: 11px;"
+                " padding: 2px 0 2px 20px;"
+            )
+            self._body_layout.addWidget(lsp_header)
+            for err in lsp_errors[:5]:
+                line = err.get("line", "?")
+                col = err.get("column", "?")
+                msg = str(err.get("message", ""))[:200]
+                self._add_lsp_link(line, col, msg, path)
+            if len(lsp_errors) > 5:
+                more = QLabel(f"… ещё {len(lsp_errors) - 5}")
+                more.setStyleSheet(
+                    "color: #888; font-size: 11px; padding: 0 20px;"
+                )
+                self._body_layout.addWidget(more)
+
+        # [10.9] Кнопка «↩ Откатить снапшот», если есть snapshot_id.
+        snapshot_id = str(meta.get("snapshot_id") or "")
+        if snapshot_id:
+            snap_btn = QPushButton(f"↩ Откатить (snapshot {snapshot_id[:15]}…)")
+            snap_btn.setToolTip(
+                "Восстановить файл из снапшота, сделанного перед записью."
+            )
+            snap_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid #444;"
+                " border-radius: 10px; color: #e5c07b; font-size: 11px;"
+                " padding: 2px 10px; }"
+                " QPushButton:hover { background: rgba(229,192,123,0.15); }"
+            )
+            snap_btn.clicked.connect(
+                lambda _checked=False, sid=snapshot_id: self.snapshot_undo_requested.emit(sid)
+            )
+            self._body_layout.addWidget(snap_btn)
 
             # Кнопки: «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить».
         btn_row = QHBoxLayout()

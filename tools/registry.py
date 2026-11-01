@@ -49,7 +49,8 @@ ALL_TOOLS: list[Callable[..., Any]] = [
     # git_ops_tool
     git_ops_tool.tool_git_status,
     git_ops_tool.tool_create_snapshot,
-    git_ops_tool.tool_undo_snapshot,
+    # git_ops_tool.tool_undo_snapshot,
+    git_ops_tool.tool_undo_file_snapshot,
     # attached_files (register unconditionally; ChatPanel filters by availability)
     attached_files.read_attached_file,
     # hypothesis
