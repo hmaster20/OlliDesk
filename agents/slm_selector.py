@@ -339,3 +339,91 @@ def select_pair_park(hw: HardwareProfile | None = None) -> dict[Role, SLMModelIn
     if pair.get("analyst"):
         result[Role.ANALYST] = pair["analyst"]
     return result
+
+# ---------------------------------------------------------------------------
+# 10.6: coder-модель для coding-задач
+# ---------------------------------------------------------------------------
+
+
+def select_coder(
+    hw: HardwareProfile | None = None,
+    *,
+    profile_coder_models: list[str] | None = None,
+    allow_fallback: bool = True,
+) -> SLMModelInfo | None:
+    """Выбирает coder-модель для coding-задач (10.6).
+
+    Приоритет:
+      1. ``profile_coder_models`` (``ProfileConfig.coder_models`` — список id).
+         Первая установленная и влезающая модель.
+      2. Авто: первый тег ``coder``, влезающий в VRAM; иначе — тег ``coder``,
+         влезающий в RAM; максимальный tier.
+      3. Fallback (если ``allow_fallback=True``): обычная chat-модель
+         (tier 2, влезает в RAM) — помечается как ``None`` coder, но
+         вызывающий код может взять её для роли ``ANALYST``.
+
+    Args:
+        hw: Профиль железа (по умолчанию собирается один раз).
+        profile_coder_models: Список id из ``ProfileConfig.coder_models``.
+        allow_fallback: ``True`` — вернуть обычную chat-модель, если
+            coder-модели нет. ``False`` — вернуть ``None``.
+
+    Returns:
+        ``SLMModelInfo`` coder-модели или ``None`` (если ничего нет).
+    """
+    from agents.download_slm import is_model_installed
+
+    hw = hw or get_hardware_profile()
+    cfg = load_config()
+    candidates = cfg.slm.get_chat_models()
+    if not candidates:
+        return None
+
+    fits = [_score_model(m, hw) for m in candidates]
+
+    # 1. Явные id из профиля.
+    if profile_coder_models:
+        for model_id in profile_coder_models:
+            info = cfg.slm.get_model_by_id(model_id)
+            if info is None:
+                logger.warning(
+                    f"select_coder: профиль ссылается на {model_id!r}, "
+                    f"но в каталоге такой нет"
+                )
+                continue
+            if not is_model_installed(info.file):
+                logger.info(
+                    f"select_coder: {model_id!r} не установлена — пропускаю"
+                )
+                continue
+            return info
+
+    # 2. Авто: coder-тег, максимальный tier, влезает в VRAM/RAM.
+    coder_fits = [f for f in fits if "coder" in f.info.tags]
+    coder_fits.sort(
+        key=lambda f: (f.fits_vram, f.fits_ram, f.info.tier),
+        reverse=True,
+    )
+    if coder_fits:
+        best = coder_fits[0]
+        logger.info(
+            f"select_coder: {best.info.id} "
+            f"(tier={best.info.tier}, "
+            f"{'VRAM' if best.fits_vram else 'RAM'})"
+        )
+        return best.info
+
+    # 3. Fallback на обычную chat-модель.
+    if allow_fallback:
+        chat_fits = sorted(
+            (f for f in fits if f.fits_ram),
+            key=lambda f: f.info.tier,
+            reverse=True,
+        )
+        if chat_fits:
+            logger.info(
+                f"select_coder: coder-модели нет, fallback на "
+                f"{chat_fits[0].info.id}"
+            )
+            return chat_fits[0].info
+    return None

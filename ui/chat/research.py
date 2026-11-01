@@ -429,7 +429,38 @@ class ResearchMixin:
                 )
                 if unsupported:
                     summary += f" · без доказательств: {unsupported}"
+            # [10.7] Coding-флоу: показываем прогресс тестов и патчи.
+            if result.coding_flow:
+                tests_ok = (
+                    result.tests_failed == 0 and result.tests_errors == 0
+                )
+                icon = "✅" if tests_ok else "❌"
+                summary = (
+                    f"{icon} Coding: {result.tests_passed} passed"
+                )
+                if result.tests_failed:
+                    summary += f", {result.tests_failed} failed"
+                if result.tests_errors:
+                    summary += f", {result.tests_errors} errors"
+                summary += f" · итераций: {result.iterations}"
+                if result.patches:
+                    applied_ok = sum(
+                        1 for p in result.patches if p.get("status") == "ok"
+                    )
+                    summary += f" · патчей: {applied_ok}/{len(result.patches)}"
                 self._add_message("system", summary)  # type: ignore[attr-defined]
+
+                # Патчи с ошибками — отдельным блоком.
+                failed_patches = [
+                    p for p in result.patches if p.get("status") == "error"
+                ]
+                if failed_patches:
+                    lines = ["⚠️ Не применены патчи:"]
+                    for p in failed_patches:
+                        lines.append(
+                            f"  • {p.get('path', '?')}: {p.get('error', '')}"
+                        )
+                    self._add_message("system", "\n".join(lines))  # type: ignore[attr-defined]
 
             QTimer.singleShot(0, self._scroll_to_bottom)
         except Exception:

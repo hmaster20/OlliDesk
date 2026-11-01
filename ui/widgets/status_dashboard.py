@@ -168,8 +168,14 @@ class StatusDashboard(QWidget):
         self.set_tok_per_sec(0.0)
         self.set_rag(0, "не проиндексирован")
         self.set_tools_active(False)
+        # [10.6] Coder-модель для coding-задач.
+        self.coder = _PillLabel("coder")
+        self.coder.setToolTip("Coder-модель (выбирается профилем)")
+        layout.addWidget(self.coder)
+
         self.set_budget(None)
         self.set_cache(0, 0)
+        self.set_coder("⚡", "coder", "—")
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -187,6 +193,25 @@ class StatusDashboard(QWidget):
         "error": ("❌ ошибка", _C_ERR),
         "cancelled": ("⏹ стоп", _C_OFF),
     }
+
+    # ------------------------------------------------------------------
+    # [10.6] Coder-модель
+    # ------------------------------------------------------------------
+
+    def set_coder(self, icon: str, label: str, model_name: str) -> None:
+        """Показывает coder-модель.
+
+        Args:
+            icon: ``"⚡"`` (coder) | ``"⚠️"`` (fallback / нет модели).
+            label: ``"coder"`` | ``"coder (fallback)"`` | …
+            model_name: Человекочитаемое имя модели.
+        """
+        color = _C_OK if icon == "⚡" else _C_WARN
+        text = f"{icon} {label}"
+        tooltip = f"Модель: {model_name}"
+        if icon != "⚡":
+            tooltip += "\nСкачайте coder-модель через «View → Локальные модели»."
+        self.coder.set_state(text, color, tooltip)
 
     def set_activity_state(self, state: str) -> None:
         """Обновляет индикатор активности (2.5)."""

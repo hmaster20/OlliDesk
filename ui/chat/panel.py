@@ -3752,6 +3752,33 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
 
+        # [10.6] Индикатор coder-модели.
+        try:
+            from agents.slm_selector import select_coder
+            from core.config import load_config as _load_cfg
+
+            _cfg = _load_cfg()
+            _profile_coders: list[str] = []
+            for _p in _cfg.profiles:
+                if _p.id == _cfg.active_profile:
+                    _profile_coders = list(_p.coder_models)
+                    break
+            coder_info = select_coder(profile_coder_models=_profile_coders)
+            if coder_info is not None:
+                is_coder = "coder" in coder_info.tags
+                icon = "⚡" if is_coder else "⚠️"
+                label = "coder" if is_coder else "coder (fallback)"
+                self._dashboard.set_coder(
+                    icon, label, coder_info.display_name
+                )
+            else:
+                self._dashboard.set_coder(
+                    "⚠️", "coder (нет модели)", "Скачайте coder-модель"
+                )
+        except Exception:
+            logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
+
+
     @staticmethod
     def _build_registry_model_tooltip(info: ModelInfo) -> str:
         """HTML-tooltip для пункта главного селектора моделей (Ollama)."""

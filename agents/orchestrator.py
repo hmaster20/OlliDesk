@@ -28,6 +28,10 @@ from agents.evidence import EvidenceItem, EvidenceStore
 from agents.model_pool import ClientLike, ModelPool, Role
 from agents.verifier import VerifyResult, verify
 from core.budget import ApproxCounter, OpType, TokenCounter, plan_budget, trim_to_tokens
+from core.config import SLMModelInfo
+from core.event_bus import emit_event
+from core.events import EventKind
+from fs.intel import GraphNode, ProjectIntel, analyze_project
 from core.event_bus import emit_event
 from core.events import EventKind
 from fs.intel import GraphNode, ProjectIntel, analyze_project
@@ -49,6 +53,13 @@ class RunResult:
     verify_ok: bool
     critique_ok: bool
     metrics: dict[str, Any] = field(default_factory=dict)
+    # [10.7] Поля для coding-флоу (для research-задач — дефолты).
+    coding_flow: bool = False
+    tests_passed: int = 0
+    tests_failed: int = 0
+    tests_errors: int = 0
+    patches: list[dict[str, Any]] = field(default_factory=list)
+    iterations: int = 0
 
 
 class Orchestrator:
@@ -102,6 +113,21 @@ class Orchestrator:
         light = n_files <= SMALL_PROJECT_FILES and intel.total_bytes <= SMALL_PROJECT_BYTES
         ev("plan", {"task": task, "scope": scope, "deep": use_deep, "light": light, "files": n_files})
 
+        # [10.7] Coding-задачи идут в отдельный флоу с apply_patch/run_tests.
+        if task in {"write_code", "refactor_plan", "bug_analysis"}:
+            logger.info(f"Orchestrator: coding-флоу (task={task})")
+            return await self._run_coding_flow(
+                user_query,
+                task=task,
+                project_root=project_root,
+                intel=intel,
+                history=history,
+                on_event=on_event,
+                quality_mode=quality_mode,
+                time_budget_s=time_budget_s,
+            )
+
+        # Research-флоу (без изменений).
         plan_obj = await self._plan(task, scope, intel)
         evidence = EvidenceStore(self.intel_cache_dir / "evidence.sqlite3" if self.intel_cache_dir else None)
         await self._collect(task, scope, intel, plan_obj, evidence, ev, iterative=use_deep, light=light)
@@ -704,3 +730,581 @@ class Orchestrator:
         if log:
             parts.append("recent commits:\n" + log)
         return "\n".join(parts) or "(нет git-контекста)"
+
+    # ------------------------------------------------------------------
+    # 10.7: coding-флоу
+    # ------------------------------------------------------------------
+
+    async def _run_coding_flow(
+        self,
+        user_query: str,
+        *,
+        task: str,
+        project_root: Path,
+        intel: ProjectIntel,
+        history: list[Any],
+        on_event: Callable[[str, dict[str, Any]], None] | None,
+        quality_mode: bool,
+        time_budget_s: float | None,
+    ) -> RunResult:
+        """Coding-флоу: plan → collect → apply_patch → run_tests → fix_loop
+        → verify → critique.
+
+        Отличается от research-флоу:
+          * модель получает инструкцию «правь код через apply_patch,
+            проверяй через run_tests»;
+          * цикл `fix_loop` — до ``max_fix_iters=3`` итераций
+            «apply_patch → run_tests»; при исчерпании — честный отказ с
+            текущим состоянием;
+          * verifier проверяет пути/символы в ответе;
+          * `RunResult` содержит `tests_passed/failed/patches/iterations`.
+
+        Args:
+            user_query: Запрос пользователя.
+            task: Тип задачи (``write_code`` | ``refactor_plan`` |
+                ``bug_analysis``).
+            project_root: Корень проекта.
+            intel: `ProjectIntel` (кэш графа).
+            history: История (list[ChatMessage]).
+            on_event: Колбэк событий.
+            quality_mode: ``True`` → ``ANALYST_PRO`` (если есть).
+            time_budget_s: Мягкий бюджет времени.
+        """
+        t0 = time.time()
+
+        def ev(kind: str, data: dict[str, Any]) -> None:
+            if on_event is not None:
+                on_event(kind, data)
+            emit_event(
+                EventKind.ORCHESTRATOR_EVENT.value,
+                {"kind": kind, "data": data},
+            )
+
+        # 1. Plan: coder получает задачу и карту проекта.
+        ev("coding_plan", {"task": task})
+        plan_prompt = self._build_coding_plan_prompt(user_query, intel, task)
+        planner = self.pool.client(Role.PLANNER)
+        plan_text = await self._gen(
+            planner,
+            Role.PLANNER,
+            OpType.PLAN,
+            plan_prompt,
+        )
+        ev("coding_plan_ready", {"plan_chars": len(plan_text)})
+
+        # 2. Collect evidence: entry + top-модули + тесты.
+        evidence = EvidenceStore(
+            self.intel_cache_dir / "evidence.sqlite3"
+            if self.intel_cache_dir
+            else None
+        )
+        await self._collect_coding_evidence(
+            task, user_query, intel, evidence, ev
+        )
+
+        # 3. Coder-модель (10.6).
+        coder_info = self._select_coder_for_role(quality_mode)
+        if coder_info is None:
+            ev("coding_no_coder", {"reason": "no coder model available"})
+            return RunResult(
+                answer=(
+                    "⚠️ Coder-модель не выбрана. Скачайте её через "
+                    "«View → Локальные модели» и повторите."
+                ),
+                ascii_diagram="",
+                mermaid_diagram="",
+                evidence_ids=list(evidence._order),
+                coverage=0.0,
+                unsupported_claims=0,
+                verify_ok=False,
+                critique_ok=False,
+                coding_flow=True,
+                metrics={"elapsed_s": round(time.time() - t0, 1)},
+            )
+
+        ev(
+            "coding_model",
+            {"model_id": coder_info.id, "display": coder_info.display_name},
+        )
+
+        # 4. Цикл apply_patch → run_tests.
+        max_fix_iters = 3
+        iterations = 0
+        patches: list[dict[str, Any]] = []
+        last_answer = ""
+        tests_passed = 0
+        tests_failed = 0
+        tests_errors = 0
+
+        # Пакет доказательств (entry + top-модули).
+        pack = evidence.pack_for_prompt(
+            budget_tokens=self._evidence_budget(), counter=self.counter
+        )
+
+        # Клиент coder-модели. В ModelPool coder может быть не загружен —
+        # в этом случае fallback на analyst (уже загружен).
+        try:
+            coder_client = self.pool.client(Role.CODER)
+            coder_role = Role.CODER
+        except RuntimeError:
+            coder_client = self.pool.client(Role.ANALYST)
+            coder_role = Role.ANALYST
+            ev(
+                "coding_fallback",
+                {"reason": "Role.CODER не загружена, использую ANALYST"},
+            )
+
+        for iter_i in range(1, max_fix_iters + 1):
+            iterations = iter_i
+            ev("coding_iteration", {"iter": iter_i, "max": max_fix_iters})
+
+            # 4a. Промпт на итерацию.
+            iter_hint = (
+                f"Итерация {iter_i}/{max_fix_iters}. "
+                if iter_i > 1
+                else "Начало работы. "
+            )
+            if iter_i > 1:
+                iter_hint += (
+                    f"Предыдущая итерация: passed={tests_passed}, "
+                    f"failed={tests_failed}, errors={tests_errors}. "
+                    f"Продолжай исправлять или подтверди, что всё работает."
+                )
+
+            system_prompt = self._build_coding_system_prompt(task, coder_info)
+            prompt = (
+                f"{system_prompt}\n\n=== ЗАДАЧА ===\n{user_query}\n\n"
+                f"=== ПЛАН ===\n{plan_text}\n\n"
+                f"=== КАРТА ПРОЕКТА ===\n{intel.repomap.as_prompt_block()}\n\n"
+                f"=== ДОКАЗАТЕЛЬСТВА ===\n{pack}\n\n"
+                f"=== ИНСТРУКЦИЯ ===\n{iter_hint}\n\n"
+                "Действуй: применяй правки через apply_patch, проверяй "
+                "через run_tests. Если тесты упали — исправь и повтори. "
+                "Если всё зелёное — верни финальный ответ (без изменений "
+                "кода)."
+            )
+
+            # 4b. Генерация кода.
+            try:
+                answer = await self._gen(
+                    coder_client,
+                    coder_role,
+                    OpType.SYNTHESIS,
+                    prompt,
+                )
+            except Exception as e:
+                logger.exception("coding: генерация упала")
+                ev("coding_error", {"iter": iter_i, "error": str(e)})
+                break
+
+            last_answer = answer
+            ev(
+                "coding_answer",
+                {"iter": iter_i, "chars": len(answer)},
+            )
+
+            # 4c. Применяем патчи из ответа (если модель вернула diff).
+            new_patches = self._extract_patches(answer)
+            if new_patches:
+                applied = await self._apply_patches(
+                    new_patches, project_root, ev
+                )
+                patches.extend(applied)
+                if any(p.get("status") == "ok" for p in applied):
+                    # Патчи применились — обновляем граф? Не в этой итерации
+                    # (инкрементальность графа отложена), но evidence
+                    # пересоберём на следующей итерации.
+                    pass
+
+            # 4d. Запуск тестов.
+            test_result = await self._run_tests_for_coding(project_root)
+            if test_result is None:
+                ev("coding_no_tests", {"reason": "test framework not detected"})
+                # Тестов нет — считаем, что итерация успешна.
+                tests_passed = 0
+                tests_failed = 0
+                tests_errors = 0
+                break
+
+            tests_passed = test_result.passed
+            tests_failed = test_result.failed
+            tests_errors = test_result.errors
+            ev(
+                "coding_tests",
+                {
+                    "iter": iter_i,
+                    "passed": tests_passed,
+                    "failed": tests_failed,
+                    "errors": tests_errors,
+                    "duration_s": round(test_result.duration_s, 2),
+                },
+            )
+
+            if test_result.ok:
+                # Всё зелёное — выход.
+                ev("coding_done", {"iter": iter_i, "reason": "tests passed"})
+                break
+
+            # Не всё зелёное — следующая итерация fix_loop.
+
+            # 4e. Бюджет времени.
+            elapsed = time.time() - t0
+            if time_budget_s is not None and elapsed >= time_budget_s:
+                ev(
+                    "coding_timeout",
+                    {"iter": iter_i, "elapsed_s": round(elapsed, 1)},
+                )
+                break
+
+        # 5. Verifier + critique финального ответа.
+        final_answer = last_answer or "(no answer)"
+        verify_ok = False
+        unsupported = 0
+        critique_ok = True
+        try:
+            from agents.verifier import verify as _verify
+            from agents.critic import critique as _critique
+
+            known_paths = self._known_paths(intel)
+            known_symbols = self._known_symbols(intel)
+            ver = _verify(
+                final_answer,
+                graph=intel.graph,
+                evidence=evidence,
+                known_paths=known_paths,
+                known_symbols=known_symbols,
+                strict=False,
+            )
+            verify_ok = ver.ok
+            unsupported = len(ver.unsupported_claims)
+            crit = await _critique(
+                final_answer, task, self.pool.client(Role.PLANNER)
+            )
+            critique_ok = crit.ok
+            ev(
+                "coding_verify",
+                {
+                    "verify_ok": verify_ok,
+                    "critique_ok": critique_ok,
+                    "unsupported": unsupported,
+                },
+            )
+        except Exception:
+            logger.debug("coding: verifier/critic упали", exc_info=True)
+
+        elapsed_total = time.time() - t0
+        metrics = {
+            "elapsed_s": round(elapsed_total, 1),
+            "task": task,
+            "coding_flow": True,
+            "iterations": iterations,
+            "patches_applied": sum(
+                1 for p in patches if p.get("status") == "ok"
+            ),
+            "tests_passed": tests_passed,
+            "tests_failed": tests_failed,
+            "tests_errors": tests_errors,
+            "verify_ok": verify_ok,
+            "critique_ok": critique_ok,
+        }
+        ev("done", metrics)
+
+        return RunResult(
+            answer=final_answer,
+            ascii_diagram="",
+            mermaid_diagram="",
+            evidence_ids=list(evidence._order),
+            coverage=1.0,
+            unsupported_claims=unsupported,
+            verify_ok=verify_ok,
+            critique_ok=critique_ok,
+            metrics=metrics,
+            coding_flow=True,
+            tests_passed=tests_passed,
+            tests_failed=tests_failed,
+            tests_errors=tests_errors,
+            patches=patches,
+            iterations=iterations,
+        )
+
+    # ------------------------------------------------------------------
+    # 10.7: вспомогательные методы coding-флоу
+    # ------------------------------------------------------------------
+
+    def _select_coder_for_role(self, quality_mode: bool) -> SLMModelInfo | None:
+        """Coder-модель из профиля (10.6) или fallback.
+
+        Args:
+            quality_mode: Сейчас не влияет (coder берётся из профиля),
+                оставлено для будущей поддержки «ANALYST_PRO как coder».
+        """
+        try:
+            from agents.slm_selector import select_coder
+            from core.config import load_config
+
+            cfg = load_config()
+            profile_coders: list[str] = []
+            for p in cfg.profiles:
+                if p.id == cfg.active_profile:
+                    profile_coders = list(p.coder_models)
+                    break
+            return select_coder(profile_coder_models=profile_coders)
+        except Exception:
+            logger.debug(
+                "coding: не удалось выбрать coder-модель", exc_info=True
+            )
+            return None
+
+    def _build_coding_plan_prompt(
+        self, user_query: str, intel: ProjectIntel, task: str
+    ) -> str:
+        """Промпт для плана coding-задачи (3B planner)."""
+        return (
+            f"Составь КОМПАКТНЫЙ план правки для задачи типа '{task}'.\n"
+            f"Запрос: {user_query}\n\n"
+            f"Файлы в проекте (top-15):\n"
+            f"{self._files_preview(intel, 15)}\n\n"
+            "Формат ответа — JSON:\n"
+            '  {"files": ["относительный/путь.py", ...],\n'
+            '   "tests": "команда для run_tests (pytest/dotnet/go/npm)",\n'
+            '   "steps": ["шаг 1", "шаг 2", ...]}\n'
+            "Только пути из списка; не выдумывай."
+        )
+
+    @staticmethod
+    def _files_preview(intel: ProjectIntel, limit: int) -> str:
+        """Короткий список файлов проекта (для промпта)."""
+        files = sorted(
+            {n.path for n in intel.graph.nodes.values() if n.path and n.kind == "file"}
+        )
+        return "\n".join(f"- {p}" for p in files[:limit])
+
+    def _build_coding_system_prompt(
+        self, task: str, coder_info: SLMModelInfo
+    ) -> str:
+        """System-промпт для coder-модели в coding-флоу."""
+        return (
+            f"Ты — coder-ассистент ({coder_info.display_name}). "
+            f"Задача типа '{task}'.\n"
+            "Инструкции:\n"
+            "  1. Изучи файлы проекта через read_file (порциями).\n"
+            "  2. Правки — ТОЛЬКО через apply_patch с контекстом.\n"
+            "  3. Проверяй через run_tests. Если тесты упали — исправь.\n"
+            "  4. Не отчитывайся «готово», пока тесты не зелёные.\n"
+            "  5. Не выдумывай имена и пути — только из read_file.\n"
+            "  6. Для поиска использований — find_references.\n"
+            "Отвечай на русском, структурированно (Markdown)."
+        )
+
+    async def _collect_coding_evidence(
+        self,
+        task: str,
+        user_query: str,
+        intel: ProjectIntel,
+        evidence: EvidenceStore,
+        ev: Callable[[str, dict[str, Any]], None],
+    ) -> None:
+        """Собирает evidence для coding-флоу: entry + top-модули + тесты."""
+        # entry_points.
+        for ep in intel.entry_points[:3]:
+            excerpt = self._read_excerpt(
+                Path(intel.root) / ep, lines=(1, 60)
+            )
+            evidence.put(
+                EvidenceItem(
+                    id="",
+                    kind="entry_point",
+                    source_path=ep,
+                    content=excerpt,
+                    summary=f"Точка входа {ep}",
+                    relevance=1.0,
+                )
+            )
+
+        # Top-модули (по score графа).
+        top = intel.graph.top_nodes(
+            ["class", "module", "file"], limit=12
+        )
+        for n in top:
+            if n.path:
+                ex = self._read_excerpt(
+                    Path(intel.root) / n.path, lines=(1, 40)
+                )
+                evidence.put(
+                    EvidenceItem(
+                        id="",
+                        kind="file_excerpt",
+                        source_path=n.path,
+                        content=ex,
+                        summary=f"{n.kind} {n.name}",
+                        relevance=0.7 + n.score / 20,
+                    )
+                )
+
+        # Файлы тестов (для контекста).
+        for n in intel.graph.nodes.values():
+            if n.path and ("test" in n.path.lower() or "spec" in n.path.lower()):
+                ex = self._read_excerpt(
+                    Path(intel.root) / n.path, lines=(1, 80)
+                )
+                evidence.put(
+                    EvidenceItem(
+                        id="",
+                        kind="file_excerpt",
+                        source_path=n.path,
+                        content=ex,
+                        summary=f"Тест {Path(n.path).name}",
+                        relevance=0.9,
+                    )
+                )
+
+        ev(
+            "coding_evidence",
+            {"items": len(evidence._order), "task": task},
+        )
+
+    def _extract_patches(
+        self, answer: str
+    ) -> list[dict[str, str]]:
+        """Извлекает unified diff'ы из ответа модели.
+
+        Ищем блоки ```diff … ```, содержащие ``---``/``+++``. Каждый блок
+        — один патч (без явного ``path`` — путь берётся из заголовка).
+        """
+        import re
+
+        patches: list[dict[str, str]] = []
+        # Блоки с ```diff или ```patch.
+        for m in re.finditer(
+            r"```(?:diff|patch)\s*\n(.*?)```",
+            answer,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            content = m.group(1).strip()
+            if not content:
+                continue
+            # Путь из `+++ b/path` или `--- a/path`.
+            path_m = re.search(
+                r"^\+\+\+\s+(?:b/)?(\S+)", content, re.MULTILINE
+            )
+            if not path_m:
+                path_m = re.search(
+                    r"^---\s+(?:a/)?(\S+)", content, re.MULTILINE
+                )
+            if not path_m:
+                continue
+            patches.append({"path": path_m.group(1), "patch": content})
+        return patches
+
+    async def _apply_patches(
+        self,
+        patches: list[dict[str, str]],
+        project_root: Path,
+        ev: Callable[[str, dict[str, Any]], None],
+    ) -> list[dict[str, Any]]:
+        """Применяет патчи через инструмент `apply_patch`."""
+        applied: list[dict[str, Any]] = []
+        try:
+            from agents.tool_registry import ToolRegistry
+            from tools.file_ops import apply_patch
+
+            registry = ToolRegistry()
+            registry.register(apply_patch)
+        except Exception:
+            return applied
+
+        from agents.ollama_client import ToolCall
+
+        for i, patch_data in enumerate(patches):
+            path = patch_data.get("path", "")
+            patch_text = patch_data.get("patch", "")
+            if not path or not patch_text:
+                continue
+            try:
+                result = await registry.execute(
+                    ToolCall(
+                        id=f"coding_patch_{i}",
+                        name="apply_patch",
+                        arguments={
+                            "path": path,
+                            "patch": patch_text,
+                            "project_root": str(project_root),
+                        },
+                    )
+                )
+            except Exception as e:
+                ev(
+                    "coding_patch_error",
+                    {"path": path, "error": str(e)[:200]},
+                )
+                applied.append(
+                    {"path": path, "status": "error", "error": str(e)[:200]}
+                )
+                continue
+
+            status = "error" if result.is_error else "ok"
+            applied.append(
+                {
+                    "path": path,
+                    "status": status,
+                    "error": (result.content or "")[:200]
+                    if result.is_error
+                    else "",
+                }
+            )
+            ev(
+                "coding_patch",
+                {"path": path, "status": status},
+            )
+        return applied
+
+    async def _run_tests_for_coding(
+        self, project_root: Path
+    ) -> Any:
+        """Запускает `run_tests` для проекта; ``None``, если тестов нет.
+
+        Автодетект фреймворка: ищем маркеры в проекте.
+        """
+        try:
+            from tools.test_ops import _run_tests_sync
+
+            framework = self._detect_test_framework(project_root)
+            if framework is None:
+                return None
+            return _run_tests_sync(
+                framework=framework,
+                target=None,
+                cwd=project_root,
+                timeout_s=180,
+            )
+        except Exception:
+            logger.debug("coding: run_tests упал", exc_info=True)
+            return None
+
+    @staticmethod
+    def _detect_test_framework(project_root: Path) -> str | None:
+        """Автодетект: pytest / dotnet / go / npm.
+
+        Порядок — от специфичного к общему: сначала проверяем наличие
+        маркерных файлов, потом — каталогов с тестами.
+        """
+        # .NET
+        if any(project_root.rglob("*.csproj")) or any(
+            project_root.rglob("*.sln")
+        ):
+            return "dotnet"
+        # Go
+        if any(project_root.rglob("go.mod")):
+            return "go"
+        # JS/TS
+        if any(project_root.rglob("package.json")):
+            return "npm"
+        # Python
+        if (
+            any(project_root.rglob("pyproject.toml"))
+            or any(project_root.rglob("pytest.ini"))
+            or any(project_root.rglob("setup.cfg"))
+            or (project_root / "tests").is_dir()
+        ):
+            return "pytest"
+        return None

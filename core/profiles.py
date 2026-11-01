@@ -105,6 +105,10 @@ class ProfileConfig(BaseModel):
     # инструмента — на усмотрение модели, ASK_FIRST-подтверждение.
     run_tests_after_edit: bool = False
 
+    # [10.6] Явные id coder-моделей (список приоритетов). Если пусто —
+    # `agents.slm_selector.select_coder` возьмёт первую с тегом "coder".
+    coder_models: list[str] = Field(default_factory=list)
+
     @field_validator("n_ctx_hint")
     @classmethod
     def _validate_n_ctx_hint(cls, v: int) -> int:
@@ -140,6 +144,12 @@ _DEFAULT_PROFILES: list[dict] = [
             "verifier": "qwen2.5-3b-instruct-q4_k_m",
             "coder": "qwen3-coder-30b-a3b-instruct-q4_k_m",
         },
+        "coder_models": [
+            "qwen3-coder-30b-a3b-instruct-q4_k_m",
+            "qwen2.5-coder-14b-instruct-q5_k_m",
+            "qwen2.5-coder-7b-instruct-q6_k",
+            "qwen2.5-coder-7b-instruct-q4_k_m",
+        ],
         # 4.2: 32k — code-reading и apply_patch требуют большого окна.
         # Оптимизатор урежет до budget_by_ram, если RAM не хватит.
         "n_ctx_hint": 32768,
