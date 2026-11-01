@@ -238,6 +238,12 @@ _TOOL_USE_INSTRUCTION = """
     (не write_file!). Перед apply_patch прочитай файл через read_file
     и передай sha256 (первые 8+ hex) как expected_hash.
   • НОВЫЙ файл или ПОЛНАЯ замена — write_file (только для этого)
+  • ПРОВЕРКА после правки — run_tests. После изменения .py/.cs/.go/.ts
+  • ПОИСК ИСПОЛЬЗОВАНИЙ — find_references. Перед удалением/переименованием
+    символа проверь, где он используется. Если LSP-сервер не установлен —
+    результат помечается «эвристика», относись к нему с осторожностью.
+    ОБЯЗАТЕЛЬНО запусти run_tests. Если тесты упали — исправь и повтори
+    (не более 3 раз). Не отчитывайся «готово», пока тесты не зелёные.
   • текущие дата и время         — get_current_datetime
   • погода в городе              — get_weather
   • курсы валют                  — get_exchange_rate
@@ -1658,6 +1664,30 @@ class AgentLoop:
             if current_text:
                 messages.append(ChatMessage(role="assistant", content=current_text))
 
+            # [10.4] Verifier: проверяем финальный ответ по графу/evidence.
+            # Если есть `context.vector_store`/`context.project_map` и
+            # ответ похож на архитектурный (research/coding) — проверяем
+            # пути и символы. При провале делаем ОДНУ регенерацию, при
+            # повторном провале — отдаём ответ с явной пометкой.
+            current_text = await self._verify_and_maybe_regen(
+                final_text=current_text,
+                messages=messages,
+                context=context,
+                state=state,
+                research_mode=research_mode,
+                is_synthesis_phase=is_synthesis_phase,
+                on_token=on_token,
+                on_thinking=on_thinking,
+                on_status=on_status,
+                on_text_delta=on_text_delta,
+                on_reasoning_delta=on_reasoning_delta,
+                on_stream_start=on_stream_start,
+                on_stream_end=on_stream_end,
+                split_thoughts=split_thoughts,
+                on_final_answer_started=on_final_answer_started,
+                final_started_emitted=final_started_emitted,
+            )
+
             self._finalize(
                 research_mode, state, context,
                 finish_reason=finish_reason or "stop",
@@ -1711,3 +1741,209 @@ class AgentLoop:
             raise AgentIterationLimitError(
                 f"Агент превысил safety net ({_hard_ceiling} итераций)"
             ) from e
+
+    # ------------------------------------------------------------------
+    # 10.4: верификация финального ответа
+    # ------------------------------------------------------------------
+
+    async def _verify_and_maybe_regen(
+        self,
+        *,
+        final_text: str,
+        messages: list[ChatMessage],
+        context: AgentContext,
+        state: InvestigationState,
+        research_mode: bool,
+        is_synthesis_phase: bool,
+        on_token: Callable[[str], Awaitable[None]],
+        on_thinking: Callable[[str], Awaitable[None]] | None,
+        on_status: Callable[[str], Awaitable[None]] | None,
+        on_text_delta: Callable[[str], Awaitable[None]] | None,
+        on_reasoning_delta: Callable[[str], Awaitable[None]] | None,
+        on_stream_start: Callable[[], Awaitable[None]] | None,
+        on_stream_end: Callable[[], Awaitable[None]] | None,
+        split_thoughts: bool,
+        on_final_answer_started: Callable[[], Awaitable[None]] | None,
+        final_started_emitted: bool,
+    ) -> str:
+        """Проверяет ответ verifier'ом и (один раз) регенерирует при провале.
+
+        Условия запуска:
+          * ``context.vector_store`` или ``context.project_map`` заданы
+            (есть чем проверять);
+          * ответ непустой и длиннее 80 символов (короткие «привет» не
+            проверяем — это не архитектурный ответ);
+          * ``self.last_finish_reason`` пока не установлен — иначе
+            (финальный вызов, лимит) регенерация бессмысленна.
+
+        Логика:
+          1. Строим `known_paths` и `known_symbols` из `project_map`
+             (парсим пути и CamelCase-имена).
+          2. Вызываем `agents.verifier.verify(final_text, ...)`.
+          3. Если `ok` — возвращаем `final_text` без изменений.
+          4. Если провал:
+             a. ОДИН раз делаем регенерацию с `regen_hint` («убери пути
+                вне индекса / добавь [Ei]-ссылки …»).
+             b. Если второй ответ проходит — возвращаем его.
+             c. Если снова провал — добавляем в конец явную пометку
+                «⚠️ не подтверждено: …» и возвращаем.
+        """
+        # Не верифицируем, если нечего проверять.
+        if not (context.vector_store or context.project_map):
+            return final_text
+        if not final_text or len(final_text) < 80:
+            return final_text
+
+        try:
+            from agents.evidence import EvidenceStore
+            from agents.verifier import verify as _verify
+            from fs.intel.graph import DependencyGraph
+        except Exception:
+            return final_text
+
+        known_paths = _extract_known_paths(context.project_map)
+        known_symbols = _extract_known_symbols(context.project_map)
+        if not known_paths and not known_symbols:
+            return final_text
+
+        evidence = EvidenceStore()  # in-memory, без БД
+        try:
+            ver = _verify(
+                final_text,
+                graph=DependencyGraph(),
+                evidence=evidence,
+                known_paths=known_paths,
+                known_symbols=known_symbols,
+                strict=False,
+            )
+        except Exception:
+            logger.debug("verifier упал — пропускаю", exc_info=True)
+            return final_text
+
+        if ver.ok:
+            return final_text
+
+        # Провал — одна регенерация.
+        logger.info(f"verifier: провал ({ver.summary()}); регенерация")
+        if on_status:
+            await on_status(f"🔄 Проверка ответа: {ver.summary()} — переформулирую…")
+
+        if split_thoughts and on_final_answer_started is not None and not final_started_emitted:
+            await on_final_answer_started()
+
+        regen_prompt = (
+            "\n\nТвой предыдущий ответ НЕ прошёл верификацию.\n"
+            f"Проблемы: {ver.summary()}\n\n"
+            "Исправь ответ и верни ТОЛЬКО новый текст (без пояснений "
+            "о правках). Требования:\n"
+            "  • Все пути — из проекта (не выдумывай).\n"
+            "  • Все имена классов/функций — из проекта.\n"
+            "  • Если сомневаешься в факте — напиши «не подтверждено».\n"
+        )
+        messages.append(ChatMessage(role="assistant", content=final_text))
+        messages.append(ChatMessage(role="user", content=regen_prompt.strip()))
+
+        try:
+            regen_text = ""
+            stream = self.client.chat(
+                model=self.model, messages=messages, tools=None, stream=True
+            )
+            async for chunk in stream:
+                if self.client.is_cancelled:
+                    return final_text
+                part = chunk.part
+                if isinstance(part, ReasoningPart) and part.text:
+                    if on_reasoning_delta:
+                        await on_reasoning_delta(part.text)
+                    if on_thinking:
+                        await on_thinking(part.text)
+                elif isinstance(part, TextPart) and part.text:
+                    regen_text += part.text
+                    if on_text_delta:
+                        await on_text_delta(part.text)
+                    await on_token(part.text)
+        except Exception as e:
+            logger.warning(f"verifier: регенерация упала ({e}); отдаю первый ответ")
+            return final_text
+
+        # Проверяем второй ответ.
+        try:
+            ver2 = _verify(
+                regen_text,
+                graph=DependencyGraph(),
+                evidence=evidence,
+                known_paths=known_paths,
+                known_symbols=known_symbols,
+                strict=False,
+            )
+        except Exception:
+            ver2 = ver
+
+        # Если улучшилось — берём второй ответ.
+        if ver2.ok or len(ver2.missing_paths) < len(ver.missing_paths):
+            return regen_text
+
+        # Оба плохи — возвращаем первый с явной пометкой.
+        return (
+            final_text
+            + "\n\n---\n\n⚠️ **Не подтверждено верификатором:** "
+            + "; ".join(
+                filter(
+                    None,
+                    [
+                        (
+                            f"пути вне индекса: {ver.missing_paths[:5]}"
+                            if ver.missing_paths
+                            else ""
+                        ),
+                        (
+                            f"символы вне графа: {ver.unknown_symbols[:5]}"
+                            if ver.unknown_symbols
+                            else ""
+                        ),
+                    ],
+                )
+            )
+            + ".\n\nПроверь эти пути/имена вручную через `search_codebase`."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10.4: хелперы для извлечения known_paths/known_symbols из project_map
+# ---------------------------------------------------------------------------
+
+
+_PATH_IN_MAP_RE = re.compile(
+    r"(?m)^\s*[\w./\\-]+\.(?:py|js|ts|tsx|jsx|cs|rb|go|tf|hcl|md|json|yaml|yml|toml)"
+)
+_CAMEL_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]{2,})\b")
+
+
+def _extract_known_paths(project_map: str) -> set[str]:
+    """Извлекает пути файлов из карты проекта.
+
+    ``project_map`` — это «Структура проекта:\\n  dir/\\n    file.py …».
+    Возвращаем только basename'ы и относительные пути — то, что
+    употребимо в ответе модели.
+    """
+    if not project_map:
+        return set()
+    paths: set[str] = set()
+    for m in _PATH_IN_MAP_RE.finditer(project_map):
+        p = m.group(0).strip().replace("\\", "/")
+        if p:
+            paths.add(p)
+            # basename тоже.
+            paths.add(p.rsplit("/", 1)[-1])
+    return paths
+
+
+def _extract_known_symbols(project_map: str) -> set[str]:
+    """Извлекает CamelCase-идентификаторы из карты проекта.
+
+    project_map для карты не содержит определений классов, но в L1-блоке
+    (если есть) — имена символов уже проставлены. Парсим их.
+    """
+    if not project_map:
+        return set()
+    return {m.group(1) for m in _CAMEL_RE.finditer(project_map)}

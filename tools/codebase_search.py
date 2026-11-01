@@ -187,3 +187,156 @@ async def search_codebase(
     except Exception as e:
         logger.error(f"Ошибка поиска по коду: {e}")
         return f"Ошибка поиска: {e}"
+
+from pathlib import Path
+
+from core.sandbox import is_denied_file
+
+
+@tool(
+    name="find_references",
+    description=(
+        "Ищет использования символа (класс/функция/метод) в коде проекта. "
+        "Использует LSP (если сервер языка установлен) или RAG-поиск по "
+        "имени как fallback.\n\n"
+        "Примеры:\n"
+        "  find_references(symbol='send_message')\n"
+        "  find_references(symbol='Config', file='core/config.py', line=42)\n\n"
+        "Возвращает список вхождений с путями и строками. Если LSP "
+        "недоступен — помечает результат «эвристика»."
+    ),
+    policy=ToolPolicy.AUTO,
+    modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=60.0,
+)
+async def find_references(
+    symbol: str,
+    file: str | None = None,
+    line: int = 0,
+    vector_store: Any = None,
+    project_root: str = "",
+) -> str:
+    """Ищет использования символа.
+
+    Args:
+        symbol: Имя символа (``send_message``, ``Config``, …).
+        file: Файл, где символ объявлен (для LSP-precise-запроса).
+            ``None`` → только эвристика.
+        line: Строка объявления (1-based). ``0`` → эвристика.
+        vector_store: RAG-store (инжектится).
+        project_root: Корень проекта (для LSP).
+
+    Returns:
+        Текст с найденными вхождениями или сообщение об отсутствии.
+    """
+    if not symbol or not symbol.strip():
+        return "Ошибка: пустое имя символа."
+    symbol = symbol.strip()
+    logger.debug(
+        f"find_references: symbol={symbol!r}, file={file!r}, line={line}"
+    )
+
+    # 1. Пробуем LSP (precise).
+    if file and line > 0:
+        try:
+            from agents.lsp_bridge import LspBridge
+
+            bridge = LspBridge._get_default()
+            if bridge is not None:
+                from pathlib import Path as _Path
+
+                fpath = _Path(file)
+                language = None
+                if not fpath.is_absolute() and project_root:
+                    fpath = _Path(project_root) / fpath
+                # LSP 0-based: line-1, character=0 (начало строки).
+                refs = await _try_lsp_references(
+                    bridge, fpath, line - 1, language
+                )
+                if refs:
+                    return _format_lsp_references(symbol, refs)
+        except Exception as e:
+            logger.debug(f"find_references: LSP упал ({e}); fallback")
+
+    # 2. Fallback: RAG-поиск по имени.
+    if vector_store is None:
+        return (
+            f"LSP-сервер недоступен, а RAG не подключён — не могу найти "
+            f"использования {symbol!r}. Открой проект для индексации."
+        )
+    try:
+        results = await vector_store.search(
+            symbol, n_results=15, path_prefix=None
+        )
+    except Exception as e:
+        return f"Ошибка поиска: {e}"
+
+    # Фильтруем секреты и пустые результаты.
+    results = [
+        r for r in (results or [])
+        if not is_denied_file(Path(r.file_path).name)
+        and symbol in r.chunk.content
+    ]
+    if not results:
+        return (
+            f"Эвристический поиск: {symbol!r} не найден. "
+            f"(LSP-сервер не установлен; поиск по имени среди чанков.)"
+        )
+
+    lines: list[str] = [
+        f"Эвристический поиск (LSP недоступен): {len(results)} вхождений "
+        f"{symbol!r}",
+        "",
+    ]
+    for i, r in enumerate(results[:15], 1):
+        # Найдём строку внутри чанка с символом для точной навигации.
+        local_line = 0
+        for offset, ln in enumerate(r.chunk.content.splitlines()):
+            if symbol in ln:
+                local_line = r.chunk.start_line + offset
+                break
+        lines.append(
+            f"  {i}. {r.file_path}:{local_line or r.chunk.start_line} "
+            f"— {r.chunk.content.strip().splitlines()[0][:120]}"
+        )
+    return "\n".join(lines)
+
+
+async def _try_lsp_references(
+    bridge: Any,
+    file_path: Path,
+    line: int,
+    language: str | None,
+) -> list[dict]:
+    """Обёртка: LSP references через async-метод моста."""
+    # LspBridge.references(language, file, line, col) — async.
+    if language is None:
+        from agents.lsp_bridge import _language_for_path
+
+        language = _language_for_path(file_path) or ""
+    if not language:
+        return []
+    try:
+        return await bridge.references(
+            language, str(file_path), line, 0,
+            project_root=str(file_path.parent),
+        )
+    except Exception as e:
+        logger.debug(f"LSP references упал: {e}")
+        return []
+
+
+def _format_lsp_references(symbol: str, refs: list[dict]) -> str:
+    """Форматирует LSP-ответ в текст для LLM."""
+    lines = [f"LSP: {len(refs)} использований {symbol!r}", ""]
+    for i, ref in enumerate(refs[:30], 1):
+        uri = ref.get("uri") or ref.get("targetUri") or ""
+        # file:///path → path
+        path = uri.replace("file:///", "").replace("file://", "")
+        rng = ref.get("range") or {}
+        start = (rng.get("start") or {}).get("line", 0)
+        lines.append(f"  {i}. {path}:{start + 1}")
+    if len(refs) > 30:
+        lines.append(f"  … ещё {len(refs) - 30}")
+    return "\n".join(lines)

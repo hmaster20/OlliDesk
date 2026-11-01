@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from tools import test_ops, codebase_search
 
 from tools import (
     attached_files,
@@ -59,4 +60,7 @@ ALL_TOOLS: list[Callable[..., Any]] = [
     hypothesis.list_hypotheses,
     # shell_ops
     shell_ops.run_shell_command,
+    test_ops.run_tests,
+    codebase_search.search_codebase,
+    codebase_search.find_references,
 ]

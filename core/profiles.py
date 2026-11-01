@@ -100,6 +100,11 @@ class ProfileConfig(BaseModel):
     # `min(n_ctx_hint, budget_by_ram)`.
     n_ctx_hint: int = 8192
 
+    # [10.2] Предлагать run_tests после правки кода. Влияет только на
+    # подсказку в промпте (см. `_TOOL_USE_INSTRUCTION`); сам вызов
+    # инструмента — на усмотрение модели, ASK_FIRST-подтверждение.
+    run_tests_after_edit: bool = False
+
     @field_validator("n_ctx_hint")
     @classmethod
     def _validate_n_ctx_hint(cls, v: int) -> int:
@@ -145,6 +150,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "web_search": "ask_first",
             "run_shell_command": "ask_first",
         },
+        "run_tests_after_edit": True,
     },
     {
         "id": "research",
@@ -187,6 +193,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "update_hypothesis": "auto",
             "list_hypotheses": "auto",
         },
+        "run_tests_after_edit": False,
     },
     {
         "id": "learning",
@@ -238,6 +245,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "list_hypotheses": "excluded",
             "run_shell_command": "excluded",
         },
+        "run_tests_after_edit": False,
     },
 ]
 
