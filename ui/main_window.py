@@ -1549,6 +1549,30 @@ class MainWindow(QMainWindow):
                     MCPManager.instance().shutdown_sync()
                 except Exception:
                     logger.debug("MCP shutdown failed", exc_info=True)
+        # [2.11] browser_control.
+        b_mode = str(settings.get("browser_mode", "isolated"))
+        b_ack = bool(settings.get("browser_full_ack", False))
+        if b_mode == "full" and not b_ack:
+            # Защита: без ack не переключаем.
+            logger.warning(
+                "browser: full без явного подтверждения — откатываю на isolated"
+            )
+            b_mode = "isolated"
+            b_ack = False
+        self.config.browser.mode = b_mode  # type: ignore[assignment]
+        self.config.browser.full_access_acknowledged = b_ack
+        # Закрываем текущий backend — при следующем browser_* пересоздастся.
+        try:
+            from tools.browser_ops import shutdown_browser
+            import asyncio as _aio
+
+            _loop = _aio.new_event_loop()
+            try:
+                _loop.run_until_complete(shutdown_browser())
+            finally:
+                _loop.close()
+        except Exception:
+            logger.debug("browser shutdown на смене режима", exc_info=True)
 
         try:
             from core.config import save_config

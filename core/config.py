@@ -789,13 +789,13 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "document_ocr",
         "open_modified_as_diff",
         "allow_arbitrary_shell",
-        # 2.10
         "soft_budget_time_s",
         "soft_budget_tokens",
         "soft_budget_iterations",
         "memory",
         "session_overrides",
         "mcp",
+        "browser",
     }
 )
 
@@ -826,6 +826,40 @@ class MemoryConfig(BaseModel):
             raise ValueError(f"recall_max_age_days must be >= 0, got {v}")
         return v
 
+class BrowserConfig(BaseModel):
+    """Настройки browser_control (2.11).
+
+    Attributes:
+        mode: Режим доступа.
+            * ``isolated`` — отдельный профиль Chromium, никакого доступа
+              к кукам/логинам реального браузера. Публичные страницы.
+            * ``extension`` — через браузерное расширение (Playwright MCP
+              Bridge). Пользователь явно разрешает вкладки.
+            * ``full`` — CDP к копии реального профиля. Все сессии.
+              Только по явному согласию; красное предупреждение.
+        dedicated_profile_path: Где хранится изолированный профиль.
+        extension_bridge_port: Порт WebSocket для режима ``extension``.
+        full_access_acknowledged: Пользователь явно подтвердил ``full``.
+            Пока ``False``, ``mode="full"`` не активируется — при попытке
+            переключения UI показывает диалог.
+        headless: Запускать ли браузер в headless-режиме. Для ``isolated``
+            лучше ``False`` — пользователь видит, что делает агент.
+    """
+
+    mode: Literal["isolated", "extension", "full"] = "isolated"
+    dedicated_profile_path: str = "~/.ollidesk/browser_profile"
+    extension_bridge_port: int = 8765
+    full_access_acknowledged: bool = False
+    headless: bool = False
+
+    @field_validator("extension_bridge_port")
+    @classmethod
+    def _validate_port(cls, v: int) -> int:
+        if not 1024 <= v <= 65535:
+            raise ValueError(
+                f"extension_bridge_port must be 1024..65535, got {v}"
+            )
+        return v
 
 class MCPServerConfig(BaseModel):
     """Один MCP-сервер (7).
@@ -896,6 +930,7 @@ class AppConfig(BaseModel):
     # в YAML (это runtime-состояние).
     session_overrides: dict[str, ToolPolicy] = Field(default_factory=dict)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)

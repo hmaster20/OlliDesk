@@ -204,6 +204,60 @@ class AgentSettingsDialog(QDialog):
 
         layout.addWidget(mcp_group)
 
+        # [2.11] browser_control.
+        browser_group = QGroupBox("Браузер (browser_control)")
+        browser_layout = QVBoxLayout(browser_group)
+
+        _cfg_b = None
+        try:
+            from core.config import load_config as _load_cfg_b
+
+            _cfg_b = _load_cfg_b()
+        except Exception:
+            pass
+
+        current_mode = _cfg_b.browser.mode if _cfg_b else "isolated"
+        current_ack = (
+            _cfg_b.browser.full_access_acknowledged if _cfg_b else False
+        )
+
+        self._browser_mode_combo = QComboBox()
+        self._browser_mode_combo.addItem(
+            "🔒 isolated — отдельный профиль (безопасно)", "isolated"
+        )
+        self._browser_mode_combo.addItem(
+            "🔗 extension — через расширение (вкладки с разрешения)", "extension"
+        )
+        self._browser_mode_combo.addItem(
+            "⚠️ full — доступ ко всем сессиям (опасно)", "full"
+        )
+        _idx = self._browser_mode_combo.findData(current_mode)
+        if _idx >= 0:
+            self._browser_mode_combo.setCurrentIndex(_idx)
+        self._browser_mode_combo.currentIndexChanged.connect(
+            self._on_browser_mode_changed
+        )
+        browser_layout.addWidget(self._browser_mode_combo)
+
+        hint = QLabel(
+            "isolated: публичные страницы без ваших куков. "
+            "extension: нужен Playwright MCP Bridge, вкладки — с разрешения. "
+            "full: CDP к копии реального профиля, все сессии; каждое действие "
+            "в audit log."
+        )
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setWordWrap(True)
+        browser_layout.addWidget(hint)
+
+        self._browser_full_ack_check = QCheckBox(
+            "Подтверждаю полный доступ (режим «full»)"
+        )
+        self._browser_full_ack_check.setChecked(bool(current_ack))
+        self._browser_full_ack_check.setVisible(current_mode == "full")
+        browser_layout.addWidget(self._browser_full_ack_check)
+
+        layout.addWidget(browser_group)
+
         layout.addStretch()
 
         # Кнопки.
@@ -230,6 +284,8 @@ class AgentSettingsDialog(QDialog):
             "tools": {k: cb.isChecked() for k, cb in self._tool_checkboxes.items()},
             "allow_arbitrary_shell": self.allow_arbitrary_shell_check.isChecked(),
             "mcp_enabled": self._mcp_enabled_check.isChecked(),
+            "browser_mode": self._browser_mode_combo.currentData(),
+            "browser_full_ack": self._browser_full_ack_check.isChecked(),
         }
 
     def _on_apply(self) -> None:
@@ -238,6 +294,22 @@ class AgentSettingsDialog(QDialog):
     def _on_accept(self) -> None:
         self._on_apply()
         self.accept()
+
+    @Slot(int)
+    def _on_browser_mode_changed(self, _index: int) -> None:
+        """[2.11] При выборе «full» — показать чекбокс согласия."""
+        mode = self._browser_mode_combo.currentData()
+        self._browser_full_ack_check.setVisible(mode == "full")
+        if mode == "full":
+            QMessageBox.warning(
+                self,
+                "Полный доступ к браузеру",
+                "Агент получит доступ ко всем вашим сессиям "
+                "(включая авторизованные сайты).\n\n"
+                "Защита: каждое действие пишется в audit log. "
+                "Для активации поставьте галочку ниже.",
+                QMessageBox.StandardButton.Ok,
+            )
 
 
 __all__ = ["AgentSettingsDialog"]

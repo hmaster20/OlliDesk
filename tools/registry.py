@@ -16,6 +16,7 @@ from tools import test_ops, codebase_search
 
 from tools import (
     attached_files,
+    browser_ops,
     codebase_search,
     current_datetime,
     exchange_rate,
@@ -23,6 +24,7 @@ from tools import (
     git_ops_tool,
     hypothesis,
     shell_ops,
+    test_ops,
     weather,
     web_search,
 )
@@ -63,4 +65,11 @@ ALL_TOOLS: list[Callable[..., Any]] = [
     test_ops.run_tests,
     codebase_search.search_codebase,
     codebase_search.find_references,
+    shell_ops.run_shell_command,
+    # [2.11] browser_*
+    browser_ops.browser_open,
+    browser_ops.browser_snapshot,
+    browser_ops.browser_click,
+    browser_ops.browser_fill,
+    browser_ops.browser_close,
 ]

@@ -81,6 +81,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("orchestrator", "orchestrator"),
     ("policy", "policy"),
     ("mcp", "mcp"),
+    ("browser", "browser"),
 )
 
 
@@ -447,6 +448,16 @@ class LiveEventsPanel(QWidget):
             data = payload.get("data") or {}
             short = ", ".join(f"{k}={v}" for k, v in list(data.items())[:3])
             return f"🎼 {sub}: {short}", _C_OTHER
+
+        if kind == EventKind.BROWSER_ACTION.value:
+            action = payload.get("action", "?")
+            mode = payload.get("mode", "?")
+            extra = ""
+            if "url" in payload:
+                extra = f" {str(payload['url'])[:80]}"
+            elif "selector" in payload:
+                extra = f" {str(payload['selector'])[:60]}"
+            return f"🌐 browser.{action}{extra} ({mode})", _C_OTHER
 
         return f"{kind}: {payload}", _C_OTHER
 

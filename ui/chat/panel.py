@@ -3601,6 +3601,17 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             except Exception:
                 pass
             self._model_pool = None
+        # [2.11] Закрываем браузер.
+        try:
+            from tools.browser_ops import shutdown_browser
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(shutdown_browser())
+            finally:
+                loop.close()
+        except Exception:
+            logger.debug("browser shutdown failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # [9.3] Селекторы Planner/Analyst
@@ -3847,6 +3858,31 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 )
         except Exception:
             logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
+
+        # [2.11] Режим браузера.
+        try:
+            from agents.browser_client import (
+                is_playwright_available,
+            )
+            from core.config import load_config as _load_cfg_browser
+
+            _cfg_b = _load_cfg_browser()
+            mode = _cfg_b.browser.mode
+            # Для extension нужен websockets; для isolated/full — playwright.
+            if mode == "extension":
+                try:
+                    import websockets  # noqa: F401
+
+                    available = True
+                except ImportError:
+                    available = False
+            else:
+                available = is_playwright_available()
+            self._dashboard.set_browser(mode, available=available)
+        except Exception:
+            logger.debug(
+                "Не удалось обновить browser-индикатор", exc_info=True
+            )
 
 
     @staticmethod

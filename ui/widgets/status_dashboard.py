@@ -173,9 +173,17 @@ class StatusDashboard(QWidget):
         self.coder.setToolTip("Coder-модель (выбирается профилем)")
         layout.addWidget(self.coder)
 
+        # [2.11] Режим браузера.
+        self.browser = _PillLabel("browser")
+        self.browser.setToolTip(
+            "Режим browser_control: isolated / extension / full / off"
+        )
+        layout.addWidget(self.browser)
+
         self.set_budget(None)
         self.set_cache(0, 0)
         self.set_coder("⚡", "coder", "—")
+        self.set_browser("isolated", available=False)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -363,5 +371,38 @@ class StatusDashboard(QWidget):
         """Совместимость с текущим `tool_status_label.setText(...)`."""
         self.tools.set_state(label, _C_OK if "актив" in label.lower() else _C_WARN, label)
 
+    # ------------------------------------------------------------------
+    # [2.11] Режим браузера
+    # ------------------------------------------------------------------
+
+    def set_browser(self, mode: str, *, available: bool = True) -> None:
+        """Показывает режим браузера.
+
+        Args:
+            mode: ``isolated`` | ``extension`` | ``full``.
+            available: ``False`` — playwright/websockets не установлены.
+        """
+        if not available:
+            self.browser.set_state(
+                "— browser", _C_OFF, "playwright/websockets не установлены"
+            )
+            return
+        color = {
+            "isolated": _C_OK,
+            "extension": _C_INFO,
+            "full": _C_ERR,  # красный — максимальный доступ
+        }.get(mode, _C_OFF)
+        icon = {
+            "isolated": "🔒",
+            "extension": "🔗",
+            "full": "⚠️",
+        }.get(mode, "•")
+        text = f"{icon} browser: {mode}"
+        tooltip = {
+            "isolated": "Изолированный профиль Chromium. Без доступа к вашим кукам/логинам.",
+            "extension": "Через расширение. Только вкладки, которые вы разрешили.",
+            "full": "CDP к копии реального профиля. Все ваши сессии доступны.",
+        }.get(mode, "")
+        self.browser.set_state(text, color, tooltip)
 
 __all__ = ["StatusDashboard"]

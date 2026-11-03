@@ -76,6 +76,9 @@ class EventKind(StrEnum):
     MCP_TOOL_CALLED = "mcp.tool_called"
     MCP_ERROR = "mcp.error"
 
+    # --- 2.11: browser ---
+    BROWSER_ACTION = "browser.action"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
