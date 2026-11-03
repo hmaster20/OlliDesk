@@ -1714,6 +1714,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             extra_rules=self._project_rules(),
             security=security,
             memory_service=self._ensure_memory_service(),
+            # [2.7] Единая точка авторизации.
+            profile=self._profile,
+            app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
         )
 
         client = self._router.active_client
@@ -1859,6 +1862,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             extra_rules=self._project_rules(),
             security=security,
             memory_service=self._ensure_memory_service(),
+            # [2.7] Единая точка авторизации.
+            profile=self._profile,
+            app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
         )
 
         self._current_assistant_content = ""
@@ -1932,15 +1938,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ---------------------------------------------------------
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
-        """Собирает реестр из декларативного ALL_TOOLS.
+        """Собирает реестр из декларативного ALL_TOOLS (2.7: без политик).
 
-        * `read_attached_file` регистрируется, только если есть прикреплённые
-          файлы (инструмент бесполезен без store).
-        * В CHAT-режиме политики инструментов из `cfg.chat_auto_tools`
-          принудительно ставятся в AUTO. Если конфиг не читается —
-          используется встроенный `_CHAT_AUTO_TOOLS`.
-        * `cfg.tool_policies` и явные `set_policy` из UI применяются
-          последними и могут переопределить AUTO/ASK_FIRST.
+        Политика per-tool больше не применяется через ``set_policy`` —
+        её считает `ToolRegistry.get_effective_policy` (единая точка
+        авторизации, `core/policy.py::effective_policy`). Здесь только
+        регистрация инструментов и фильтрация по доступности.
+
+        ``CHAT-режим``: ``chat_auto_tools`` из конфига прокидывается в
+        ``session_overrides`` (`ChatPanel._current_session_overrides`),
+        чтобы `effective_policy` их учитывал. Явные ``set_policy`` из UI
+        (`self.tool_policies`) сохраняются как последний слой —
+        используются как есть, если `effective_policy` не нашёл другого
+        override.
         """
         from tools.registry import ALL_TOOLS
 
@@ -1955,22 +1965,34 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 continue
             registry.register(tool_func)
 
-        if mode == AgentMode.CHAT:
-            try:
-                cfg = load_config()
-                auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
-            except Exception as e:
-                logger.debug(f"chat_auto_tools: fallback на встроенный список: {e}")
-                auto_tools = list(_CHAT_AUTO_TOOLS)
-            for name in auto_tools:
-                registry.set_policy(name, ToolPolicy.AUTO)
-
-        self._apply_config_policies(registry)
-
-        for tool_name, policy in self.tool_policies.items():
-            registry.set_policy(tool_name, policy)
-
+        # `set_policy` больше не нужен для авторизации: `effective_policy`
+        # берёт profile/config/session. Оставляем только явные override
+        # из UI (`self.tool_policies`) — они попадают в `session_overrides`.
+        # CHAT-режим: `chat_auto_tools` из конфига также учитываются как
+        # session-override (см. `_current_session_overrides`).
         return registry
+
+    def _current_session_overrides(self) -> dict[str, ToolPolicy]:
+        """Возвращает per-session overrides для `effective_policy`.
+
+        Объединяет:
+          * `chat_auto_tools` из конфига, когда режим CHAT (2.7 + 9.6);
+          * `self.tool_policies` — явные `set_tool_policy` из UI;
+          * `config.session_overrides` — per-session из конфига.
+        """
+        overrides: dict[str, ToolPolicy] = dict(self.tool_policies)
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = None
+        if self._current_mode() == AgentMode.CHAT and cfg is not None:
+            auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
+            for name in auto_tools:
+                overrides.setdefault(name, ToolPolicy.AUTO)
+        if cfg is not None:
+            for name, policy in cfg.session_overrides.items():
+                overrides[name] = policy
+        return overrides
 
     def _apply_config_policies(self, registry: ToolRegistry) -> None:
         try:
@@ -2014,6 +2036,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
+
+        # [2.7] Per-session override: «Разрешить на сессию» → пишем в
+        # `AppConfig.session_overrides`, следующий вызов этого инструмента
+        # в текущей сессии не спросит подтверждения.
+        dialog.session_allow_requested.connect(
+            lambda tool_name, _dlg=dialog: self._allow_tool_for_session(tool_name)
+        )
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
@@ -2022,6 +2052,25 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         else:
             if self._agent_thread:
                 self._agent_thread.respond_to_tool(False)
+
+    def _allow_tool_for_session(self, tool_name: str) -> None:
+        """[2.7] Добавляет инструмент в `session_overrides` текущей сессии."""
+        try:
+            cfg = load_config()
+            cfg.session_overrides[tool_name] = ToolPolicy.AUTO
+            # Кладём в кэш ChatPanel на случай, если следующий прогон
+            # пересоздаст AgentContext.
+            self.tool_policies[tool_name] = ToolPolicy.AUTO
+            logger.info(f"Session override: {tool_name} = auto")
+            emit_event(
+                EventKind.POLICY_OVERRIDE.value,
+                {"tool": tool_name, "policy": "auto", "scope": "session"},
+            )
+        except Exception:
+            logger.warning(
+                f"Не удалось установить session override для {tool_name}",
+                exc_info=True,
+            )
 
     @Slot(str, str, bool, object)
     def _on_tool_executed(
@@ -3848,3 +3897,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             f"↩ Восстановлено файлов: {len(restored)}"
         )
         logger.info(f"undo snapshot {snapshot_id}: {restored}")
+
+    def _safe_load_config(self):
+        """Возвращает `AppConfig` или ``None`` (не блокирует прогон)."""
+        try:
+            return load_config()
+        except Exception:
+            logger.debug(
+                "Не удалось прочитать конфиг для effective_policy",
+                exc_info=True,
+            )
+            return None

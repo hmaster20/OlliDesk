@@ -67,6 +67,9 @@ class EventKind(StrEnum):
     MEMORY_RECALLED = "memory.recalled"
     MEMORY_REMEMBERED = "memory.remembered"
 
+    # --- 2.7: policy ---
+    POLICY_OVERRIDE = "policy.override"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 

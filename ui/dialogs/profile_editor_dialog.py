@@ -162,6 +162,30 @@ class ProfileEditorDialog(QDialog):
         self.mode_combo.addItem("🤖 Agent (полный доступ)", "agent")
         behavior_form.addRow("Режим агента:", self.mode_combo)
 
+        # [9.12] Уровень свободы.
+        self.freedom_combo = QComboBox()
+        self.freedom_combo.addItem(
+            "🔒 safe — только чтение, shell/git/browser запрещены", "safe"
+        )
+        self.freedom_combo.addItem(
+            "🔍 research — чтение + web, shell/git/browser запрещены", "research"
+        )
+        self.freedom_combo.addItem(
+            "🛠 development — запись auto, shell/git ask_first", "development"
+        )
+        self.freedom_combo.addItem(
+            "🌐 open — всё auto (shell ask_first, secrets никогда)", "open"
+        )
+        self.freedom_combo.setToolTip(
+            "Матрица политик по capabilities (core/policy.py::_FREEDOM_MATRIX). "
+            "«open» даёт максимальную свободу, но shell всё равно спрашивает, "
+            "а .env/*.pem/id_rsa* недоступны всегда."
+        )
+        self.freedom_combo.currentIndexChanged.connect(
+            self._on_freedom_changed
+        )
+        behavior_form.addRow("Свобода:", self.freedom_combo)
+
         self.rag_check = QCheckBox("Включить RAG-контекст")
         behavior_form.addRow("RAG:", self.rag_check)
 
@@ -346,6 +370,12 @@ class ProfileEditorDialog(QDialog):
             self.recommended_model_edit.setText(profile.recommended_model)
             self.prompt_edit.setPlainText(profile.system_prompt)
 
+            # [9.12] Свобода.
+            freedom = getattr(profile, "freedom_level", "development")
+            idx = self.freedom_combo.findData(freedom)
+            if idx >= 0:
+                self.freedom_combo.setCurrentIndex(idx)
+
             policies = profile.tool_policies.model_dump()
             for key, combo in self._tool_combos.items():
                 value = policies.get(key, "auto")
@@ -403,6 +433,7 @@ class ProfileEditorDialog(QDialog):
             chat_max_iterations=int(self.chat_iters_spin.value()),
             tool_policies=ProfileToolPolicies(**policies_dict),
             recommended_model=self.recommended_model_edit.text().strip(),
+            freedom_level=self.freedom_combo.currentData() or "development",
         )
 
     def _persist_current_from_form(self) -> bool:
@@ -421,6 +452,35 @@ class ProfileEditorDialog(QDialog):
     # ------------------------------------------------------------------
     # Действия
     # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _on_freedom_changed(self, _index: int) -> None:
+        """[9.12] Подтверждение для «open»."""
+        if self._updating:
+            return
+        if self.freedom_combo.currentData() != "open":
+            return
+        reply = QMessageBox.warning(
+            self,
+            "Свобода «open»",
+            "Агент получит полный доступ к shell, интернету, git и браузеру.\n\n"
+            "Защита:\n"
+            "  • shell — всегда запрашивает подтверждение;\n"
+            "  • .env/*.pem/id_rsa* — недоступны всегда;\n"
+            "  • каждый вызов пишется в audit log.\n\n"
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            # Откатываем на development.
+            idx = self.freedom_combo.findData("development")
+            if idx >= 0:
+                self._updating = True
+                try:
+                    self.freedom_combo.setCurrentIndex(idx)
+                finally:
+                    self._updating = False
 
     def _clone_profile(self) -> None:
         if self._current_profile_id is None:

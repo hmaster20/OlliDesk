@@ -79,6 +79,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("agent", "agent"),
     ("memory", "memory"),
     ("orchestrator", "orchestrator"),
+    ("policy", "policy"),
 )
 
 
@@ -420,6 +421,12 @@ class LiveEventsPanel(QWidget):
             data = payload.get("data") or {}
             short = ", ".join(f"{k}={v}" for k, v in list(data.items())[:3])
             return f"🎼 {sub}: {short}", _C_OTHER
+
+        if kind == EventKind.POLICY_OVERRIDE.value:
+            tool = payload.get("tool", "?")
+            policy = payload.get("policy", "?")
+            scope = payload.get("scope", "?")
+            return f"🔒 {tool}: {policy} ({scope})", _C_OTHER
 
         return f"{kind}: {payload}", _C_OTHER
 

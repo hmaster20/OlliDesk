@@ -794,6 +794,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "soft_budget_tokens",
         "soft_budget_iterations",
         "memory",
+        "session_overrides",  # 2.7 (хотя и не пишется в YAML)
     }
 )
 
@@ -857,6 +858,10 @@ class AppConfig(BaseModel):
             "list_hypotheses",
         ]
     )
+    # [2.7] Per-session override политик. Сбрасывается при закрытии
+    # сессии. Ключ — имя инструмента, значение — policy. Не пишется
+    # в YAML (это runtime-состояние).
+    session_overrides: dict[str, ToolPolicy] = Field(default_factory=dict)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)

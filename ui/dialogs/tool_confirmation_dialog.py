@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -31,6 +31,9 @@ from PySide6.QtWidgets import (
 
 class ToolConfirmationDialog(QDialog):
     """Диалог подтверждения вызова инструмента."""
+
+    # [2.7] Пользователь разрешил инструмент на текущую сессию.
+    session_allow_requested = Signal(str)  # tool_name
 
     def __init__(
         self,
@@ -53,6 +56,7 @@ class ToolConfirmationDialog(QDialog):
 
         self._approved = False
         self._arguments = dict(arguments)
+        self._tool_name = tool_name
         self._setup_ui(tool_name, tool_description)
 
     def _setup_ui(self, tool_name: str, tool_description: str):
@@ -101,6 +105,19 @@ class ToolConfirmationDialog(QDialog):
         reject_btn.setStyleSheet("padding: 6px 16px;")
         reject_btn.clicked.connect(self.reject)
         btn_layout.addWidget(reject_btn)
+
+        # [2.7] Разрешить на эту сессию — добавляет в session_overrides.
+        allow_session_btn = QPushButton("📌 Разрешить на сессию")
+        allow_session_btn.setToolTip(
+            "Разрешить этот инструмент на текущую сессию "
+            "(сбрасывается при закрытии чата)."
+        )
+        allow_session_btn.setStyleSheet(
+            "padding: 6px 16px; background: #4a6741; color: #fff;"
+            " border: none; border-radius: 4px;"
+        )
+        allow_session_btn.clicked.connect(self._approve_session)
+        btn_layout.addWidget(allow_session_btn)
 
         approve_btn = QPushButton("✅ Выполнить")
         approve_btn.setStyleSheet(
@@ -274,3 +291,9 @@ class ToolConfirmationDialog(QDialog):
     def get_arguments(self) -> dict:
         """Возвращает (возможно, отредактированные) аргументы."""
         return self._arguments
+
+    def _approve_session(self) -> None:
+        """[2.7] Подтверждает и разрешает инструмент на текущую сессию."""
+        self._approved = True
+        self.session_allow_requested.emit(self._tool_name)
+        self.accept()

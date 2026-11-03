@@ -17,6 +17,12 @@ from core import redaction
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ToolExecutionError
 
+if TYPE_CHECKING:
+    from core.config import AppConfig
+    from core.policy import EffectivePolicy
+    from core.profiles import ProfileConfig
+    from core.security import SecurityPolicy
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -413,6 +419,46 @@ class ToolRegistry:
         if isinstance(policy_val, ToolPolicy):
             return policy_val
         return ToolPolicy.AUTO
+
+    def get_effective_policy(
+        self,
+        tool_name: str,
+        *,
+        profile: "ProfileConfig | None" = None,
+        security: "SecurityPolicy | None" = None,
+        config: "AppConfig | None" = None,
+        session_overrides: dict[str, ToolPolicy] | None = None,
+        current_mode: AgentMode | None = None,
+    ) -> "EffectivePolicy":
+        """Возвращает `EffectivePolicy` с учётом всех слоёв (2.7).
+
+        Args:
+            tool_name: Имя инструмента.
+            profile: Активный профиль (``ProfileConfig``).
+            security: Политика безопасности (``SecurityPolicy``).
+            config: Глобальный конфиг (``AppConfig``).
+            session_overrides: Per-session override пользователя.
+            current_mode: Текущий режим (``AgentMode``).
+
+        Returns:
+            `EffectivePolicy`. Неизвестный инструмент → ``EXCLUDED``
+            с reason ``"unknown"``.
+        """
+        from core.policy import EffectivePolicy, effective_policy
+
+        spec = self.try_get_spec(tool_name)
+        if spec is None:
+            return EffectivePolicy(
+                policy=ToolPolicy.EXCLUDED, allowed=False, reason="unknown"
+            )
+        return effective_policy(
+            spec,
+            profile=profile,
+            security=security,
+            config=config,
+            session_overrides=session_overrides,
+            current_mode=current_mode,
+        )
 
     def get_description(self, tool_name: str) -> str:
         """Возвращает описание инструмента."""

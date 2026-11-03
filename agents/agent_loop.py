@@ -49,6 +49,12 @@ from core.events import EventKind, args_hash
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
 from core.security import SecurityPolicy
 
+if TYPE_CHECKING:
+    from agents.protocols import MemoryServiceLike
+    from core.config import AppConfig
+    from core.profiles import ProfileConfig
+    from core.security import SecurityPolicy
+
 # Максимальное число чтений одного файла, после которого цикл считает это
 # застреванием. Дублируется с `investigation._MAX_READS_PER_FILE`, но здесь
 # используется как «жёсткий стоп» на уровне исполнения tool_call.
@@ -199,6 +205,10 @@ class AgentContext:
     # Тип — `Any`, чтобы `agents` не импортировал `core.services`
     # (тест-дружелюбнее; протокол не нужен — методы вызываются точечно).
     memory_service: "MemoryServiceLike | None" = None
+    # [2.7] Активный профиль и конфиг — для `effective_policy`. Если не
+    # заданы — используется только security + decorator.
+    profile: "ProfileConfig | None" = None
+    app_config: "AppConfig | None" = None
 
 if TYPE_CHECKING:
     from agents.protocols import MemoryServiceLike
@@ -1464,11 +1474,61 @@ class AgentLoop:
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
 
-                    policy = self.registry.get_policy(tc.name)
+                    # [2.7] Единая точка авторизации.
+                    session_overrides = (
+                        context.app_config.session_overrides
+                        if context.app_config is not None
+                        else None
+                    )
+                    effective = self.registry.get_effective_policy(
+                        tc.name,
+                        profile=context.profile,
+                        security=context.security,
+                        config=context.app_config,
+                        session_overrides=session_overrides,
+                        current_mode=context.mode,
+                    )
 
-                    if policy == ToolPolicy.ASK_FIRST:
+                    if not effective.allowed:
+                        logger.warning(
+                            f"Инструмент {tc.name} заблокирован "
+                            f"политикой ({effective.reason})"
+                        )
+                        messages.append(
+                            _create_tool_result_message(
+                                tc.id,
+                                tc.name,
+                                (
+                                    f"⛔ Инструмент {tc.name} заблокирован "
+                                    f"политикой: {effective.reason}. "
+                                    f"Используй другой подход или смени профиль."
+                                ),
+                                is_error=True,
+                            )
+                        )
+                        if on_tool_result:
+                            await on_tool_result(
+                                tc.name,
+                                f"Заблокировано политикой ({effective.reason})",
+                                True,
+                                None,
+                            )
+                        emit_event(
+                            EventKind.TOOL_FINISHED.value,
+                            {
+                                "name": tc.name,
+                                "duration_ms": 0,
+                                "is_error": True,
+                                "error_category": "policy_blocked",
+                            },
+                        )
+                        continue
+
+                    if effective.policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
-                        approved = await on_tool_request(tc.name, description, tc.arguments)
+                        approved = await on_tool_request(
+                            tc.name, description, tc.arguments
+                        )
                         if not approved:
                             messages.append(
                                 _create_tool_result_message(
@@ -1506,6 +1566,11 @@ class AgentLoop:
                         extra["hypotheses"] = context.hypotheses
                     if context.security:
                         extra["security"] = context.security
+                    # [2.7] Профиль и конфиг — для effective_policy.
+                    if context.profile is not None:
+                        extra["profile"] = context.profile
+                    if context.app_config is not None:
+                        extra["app_config"] = context.app_config
 
                     result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content

@@ -109,6 +109,20 @@ class ProfileConfig(BaseModel):
     # `agents.slm_selector.select_coder` возьмёт первую с тегом "coder".
     coder_models: list[str] = Field(default_factory=list)
 
+    # [9.12] Уровень свободы агента. Матрица политик по capabilities
+    # (`_FREEDOM_MATRIX` в `core/policy.py`). Самый сильный слой после
+    # `security` и `secrets`.
+    #
+    # safe        — shell/git/browser запрещены; net только ask_first.
+    # research    — shell/git/browser запрещены; net auto; запись ask_first.
+    # development — запись auto; shell/git/browser ask_first; net ask_first.
+    # open        — всё auto, кроме shell (ask_first) и secrets (always excluded).
+    #
+    # Уровень «open» требует явного подтверждения (см. `ui/dialogs/profile_editor_dialog.py`).
+    freedom_level: Literal["safe", "research", "development", "open"] = (
+        "development"
+    )
+
     @field_validator("n_ctx_hint")
     @classmethod
     def _validate_n_ctx_hint(cls, v: int) -> int:
@@ -153,6 +167,8 @@ _DEFAULT_PROFILES: list[dict] = [
         # 4.2: 32k — code-reading и apply_patch требуют большого окна.
         # Оптимизатор урежет до budget_by_ram, если RAM не хватит.
         "n_ctx_hint": 32768,
+        # [9.12] Development: запись auto, shell/git ask_first.
+        "freedom_level": "development",
         "tool_policies": {
             "write_file": "ask_first",
             "create_snapshot": "ask_first",
@@ -193,6 +209,8 @@ _DEFAULT_PROFILES: list[dict] = [
         },
         # 4.2: 16k — хватает на hypothesis-проверки и паспорт.
         "n_ctx_hint": 16384,
+        # [9.12] Research: только чтение; запись/инструменты ask_first.
+        "freedom_level": "research",
         "tool_policies": {
             "write_file": "excluded",
             "create_snapshot": "excluded",
@@ -236,6 +254,8 @@ _DEFAULT_PROFILES: list[dict] = [
         },
         # 4.2: 8k — диалог без инструментов, длинная история не нужна.
         "n_ctx_hint": 8192,
+        # [9.12] Learning: инструменты запрещены (всё excluded в tool_policies).
+        "freedom_level": "safe",
         "tool_policies": {
             "read_file": "excluded",
             "list_directory": "excluded",
