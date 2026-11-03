@@ -1534,6 +1534,21 @@ class MainWindow(QMainWindow):
 
         # 0.1.1: dangerous mode для shell.
         self.config.allow_arbitrary_shell = bool(settings.get("allow_arbitrary_shell", False))
+        # [7] MCP: включение/выключение.
+        mcp_enabled = bool(settings.get("mcp_enabled", False))
+        if self.config.mcp.enabled != mcp_enabled:
+            self.config.mcp.enabled = mcp_enabled
+            if mcp_enabled:
+                # Перезапускаем инициализацию MCP.
+                if self.chat_panel is not None:
+                    self.chat_panel._start_mcp_init()
+            else:
+                try:
+                    from tools.mcp_ops import MCPManager
+
+                    MCPManager.instance().shutdown_sync()
+                except Exception:
+                    logger.debug("MCP shutdown failed", exc_info=True)
 
         try:
             from core.config import save_config

@@ -362,6 +362,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._detect_backends_timer.timeout.connect(self._detect_backends)
         self._detect_backends_timer.start(100)
 
+        # [7] Фоновая инициализация MCP-серверов.
+        self._mcp_init_thread: QThread | None = None
+        self._start_mcp_init()
+
     # ---------------------------------------------------------
     # Детект и загрузка бэкендов
     # ---------------------------------------------------------
@@ -1970,6 +1974,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # из UI (`self.tool_policies`) — они попадают в `session_overrides`.
         # CHAT-режим: `chat_auto_tools` из конфига также учитываются как
         # session-override (см. `_current_session_overrides`).
+        # [7] MCP-инструменты (ленивая регистрация, если менеджер готов).
+        try:
+            from tools.mcp_ops import register_mcp_tools
+
+            n_mcp = register_mcp_tools(registry)
+            if n_mcp:
+                logger.debug(f"MCP: {n_mcp} инструментов зарегистрировано")
+        except Exception:
+            logger.debug("MCP registration failed", exc_info=True)
+
         return registry
 
     def _current_session_overrides(self) -> dict[str, ToolPolicy]:
@@ -3571,6 +3585,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             with contextlib.suppress(Exception):
                 self._memory_service.close()
             self._memory_service = None
+        # [7] Закрываем MCP-серверы.
+        try:
+            from tools.mcp_ops import MCPManager
+
+            MCPManager.instance().shutdown_sync()
+        except Exception:
+            logger.debug("MCP shutdown failed", exc_info=True)
         if self._orchestrator is not None:
         if self._model_pool is not None:
             try:
@@ -3908,3 +3929,65 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 exc_info=True,
             )
             return None
+
+    # ------------------------------------------------------------------
+    # [7] MCP
+    # ------------------------------------------------------------------
+
+    def _start_mcp_init(self) -> None:
+        """Запускает инициализацию MCP-серверов в фоне."""
+        try:
+            cfg = load_config()
+        except Exception:
+            return
+        if not cfg.mcp.enabled or not cfg.mcp.servers:
+            return
+
+        enabled = [s for s in cfg.mcp.servers if s.enabled]
+        if not enabled:
+            return
+
+        from PySide6.QtCore import QThread, Signal as _Signal
+
+        class _MCPInitThread(QThread):
+            """Фоновый поток инициализации MCP (7).
+
+            Не блокирует GUI: `MCPManager.initialize_sync` создаёт свой
+            event loop, общается с subprocess'ами по stdio.
+            """
+
+            done = _Signal(int, int)  # connected, total
+            error = _Signal(str)
+
+            def __init__(self, configs):
+                super().__init__()
+                self._configs = configs
+
+            def run(self) -> None:
+                try:
+                    from tools.mcp_ops import MCPManager
+
+                    mgr = MCPManager.instance()
+                    mgr.initialize_sync(self._configs)
+                    total = len(self._configs)
+                    connected = len(mgr._clients)
+                    self.done.emit(connected, total)
+                except Exception as e:
+                    logger.exception("MCP init thread failed")
+                    self.error.emit(str(e))
+
+        thread = _MCPInitThread(enabled)
+        thread.done.connect(self._on_mcp_initialized)
+        thread.error.connect(
+            lambda msg: logger.warning(f"MCP init error: {msg}")
+        )
+        thread.start()
+        self._mcp_init_thread = thread
+
+    @Slot(int, int)
+    def _on_mcp_initialized(self, connected: int, total: int) -> None:
+        """Пост-обработка инициализации MCP в GUI-потоке."""
+        self.status_label.setText(
+            f"✅ MCP: подключено {connected}/{total} серверов"
+        )
+        logger.info(f"MCP: {connected}/{total} серверов готовы")

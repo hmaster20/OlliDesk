@@ -80,6 +80,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("memory", "memory"),
     ("orchestrator", "orchestrator"),
     ("policy", "policy"),
+    ("mcp", "mcp"),
 )
 
 
@@ -416,17 +417,36 @@ class LiveEventsPanel(QWidget):
             mid = payload.get("id", "?")
             return f"🧠 Память: записано #{mid} ({task}/{outcome})", _C_OTHER
 
-        if kind == EventKind.ORCHESTRATOR_EVENT.value:
-            sub = str(payload.get("kind") or "?")
-            data = payload.get("data") or {}
-            short = ", ".join(f"{k}={v}" for k, v in list(data.items())[:3])
-            return f"🎼 {sub}: {short}", _C_OTHER
-
         if kind == EventKind.POLICY_OVERRIDE.value:
             tool = payload.get("tool", "?")
             policy = payload.get("policy", "?")
             scope = payload.get("scope", "?")
             return f"🔒 {tool}: {policy} ({scope})", _C_OTHER
+
+        if kind == EventKind.MCP_CONNECTED.value:
+            name = payload.get("server_name", "?")
+            n = payload.get("n_tools", 0)
+            return f"🔌 MCP: {name} ({n} tools)", _C_OTHER
+        if kind == EventKind.MCP_DISCONNECTED.value:
+            name = payload.get("server_name", "?")
+            return f"🔌 MCP: {name} отключён", _C_OTHER
+        if kind == EventKind.MCP_TOOL_CALLED.value:
+            name = payload.get("server_name", "?")
+            tool = payload.get("tool_name", "?")
+            dur = payload.get("duration_ms", 0)
+            ok = not payload.get("is_error", False)
+            mark = "✓" if ok else "✗"
+            return f"🔌 {name}/{tool} {mark} ({dur} ms)", _C_OTHER
+        if kind == EventKind.MCP_ERROR.value:
+            name = payload.get("server_name", "?")
+            err = str(payload.get("error", ""))[:120]
+            return f"🔌 MCP {name}: {err}", _C_LOG_ERROR
+
+        if kind == EventKind.ORCHESTRATOR_EVENT.value:
+            sub = str(payload.get("kind") or "?")
+            data = payload.get("data") or {}
+            short = ", ".join(f"{k}={v}" for k, v in list(data.items())[:3])
+            return f"🎼 {sub}: {short}", _C_OTHER
 
         return f"{kind}: {payload}", _C_OTHER
 

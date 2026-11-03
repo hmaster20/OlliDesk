@@ -365,6 +365,47 @@ class ToolRegistry:
             f"timeout={meta['timeout_s']}s)"
         )
 
+    def register_spec(
+        self,
+        spec: ToolSpec,
+        func: Callable[..., Any],
+        *,
+        validator: type[BaseModel] | None = None,
+    ) -> None:
+        """Регистрирует готовый `ToolSpec` + callable (7: MCP-инструменты).
+
+        В отличие от `register`, здесь нет `@tool`-декоратора: спецификация
+        приходит извне (MCP-манифест сервера). `func` — async или sync
+        callable; сигнатура принимает **kwargs, соответствующие
+        `spec.schema["properties"]`.
+
+        Args:
+            spec: Immutable-контракт инструмента.
+            func: Callable. Для MCP — async-обёртка над `MCPClient.call_tool`.
+            validator: Pydantic-модель аргументов (опционально). Для MCP
+                не используется — валидация на стороне сервера.
+        """
+        self._specs[spec.name] = spec
+        self._tools[spec.name] = {
+            "name": spec.name,
+            "description": spec.description,
+            "policy": spec.policy,
+            "modes": list(spec.modes),
+            "is_mutating": spec.is_mutating,
+            "category": spec.category,
+            "capabilities": spec.capabilities,
+            "timeout_s": spec.timeout_s,
+            "max_output_chars": spec.max_output_chars,
+            "idempotent": spec.idempotent,
+            "func": func,
+            "schema": spec.schema,
+            "validator": validator,
+        }
+        logger.debug(
+            f"Зарегистрирован ToolSpec: {spec.name} "
+            f"(policy={spec.policy.value}, caps={sorted(spec.capabilities)})"
+        )
+
     # ------------------------------------------------------------------
     # 2.6: доступ к immutable ToolSpec
     # ------------------------------------------------------------------

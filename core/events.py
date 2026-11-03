@@ -70,6 +70,12 @@ class EventKind(StrEnum):
     # --- 2.7: policy ---
     POLICY_OVERRIDE = "policy.override"
 
+    # --- 7: MCP ---
+    MCP_CONNECTED = "mcp.connected"
+    MCP_DISCONNECTED = "mcp.disconnected"
+    MCP_TOOL_CALLED = "mcp.tool_called"
+    MCP_ERROR = "mcp.error"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -195,6 +201,33 @@ class MemoryRememberedPayload(TypedDict):
     outcome: str
     tags: list[str]
 
+# ---------------------------------------------------------------------------
+# 7: MCP
+# ---------------------------------------------------------------------------
+
+
+class McpConnectedPayload(TypedDict):
+    server_name: str
+    n_tools: int
+    server_info: dict
+
+
+class McpDisconnectedPayload(TypedDict):
+    server_name: str
+    reason: NotRequired[str]
+
+
+class McpToolCalledPayload(TypedDict):
+    server_name: str
+    tool_name: str
+    duration_ms: float
+    is_error: bool
+
+
+class McpErrorPayload(TypedDict):
+    server_name: str
+    error: str
+
 def args_hash(args: dict) -> str:
     """Стабильный 16-символьный хеш аргументов tool-call'а.
 
@@ -278,5 +311,9 @@ __all__ = [
     "ToolErrorPayload",
     "ToolFinishedPayload",
     "ToolStartedPayload",
+    "McpConnectedPayload",
+    "McpDisconnectedPayload",
+    "McpToolCalledPayload",
+    "McpErrorPayload",
     "args_hash",
 ]

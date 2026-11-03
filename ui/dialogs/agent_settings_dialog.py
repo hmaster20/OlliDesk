@@ -159,6 +159,51 @@ class AgentSettingsDialog(QDialog):
         security_layout.addWidget(self.allow_arbitrary_shell_check)
         layout.addWidget(security_group)
 
+        # [7] MCP.
+        try:
+            from core.config import load_config as _load_cfg
+
+            _cfg = _load_cfg()
+        except Exception:
+            _cfg = None
+
+        mcp_group = QGroupBox("MCP-серверы")
+        mcp_layout = QVBoxLayout(mcp_group)
+
+        self._mcp_enabled_check = QCheckBox(
+            "Включить MCP (Model Context Protocol)"
+        )
+        self._mcp_enabled_check.setChecked(
+            bool(_cfg and _cfg.mcp.enabled)
+        )
+        self._mcp_enabled_check.setToolTip(
+            "MCP-серверы дают доступ к внешним инструментам "
+            "(файлы, git, поиск, …) через единый протокол. "
+            "По умолчанию выключено."
+        )
+        mcp_layout.addWidget(self._mcp_enabled_check)
+
+        # Список серверов (простое текстовое представление).
+        servers_text = ""
+        if _cfg and _cfg.mcp.servers:
+            servers_text = "\n".join(
+                f"  • {s.name}: {s.command} {' '.join(s.args)} "
+                f"[{', '.join(s.capabilities)}]"
+                for s in _cfg.mcp.servers
+            )
+        servers_label = QLabel(
+            f"Серверы ({len(_cfg.mcp.servers) if _cfg else 0}):\n"
+            f"{servers_text or '  (нет — добавьте в config.yaml: mcp.servers)'}"
+        )
+        servers_label.setStyleSheet(
+            "color: #888; font-family: 'Consolas', monospace;"
+            " font-size: 11px; padding: 4px 8px;"
+        )
+        servers_label.setWordWrap(True)
+        mcp_layout.addWidget(servers_label)
+
+        layout.addWidget(mcp_group)
+
         layout.addStretch()
 
         # Кнопки.
@@ -184,6 +229,7 @@ class AgentSettingsDialog(QDialog):
             "rag_enabled": self.rag_check.isChecked(),
             "tools": {k: cb.isChecked() for k, cb in self._tool_checkboxes.items()},
             "allow_arbitrary_shell": self.allow_arbitrary_shell_check.isChecked(),
+            "mcp_enabled": self._mcp_enabled_check.isChecked(),
         }
 
     def _on_apply(self) -> None:

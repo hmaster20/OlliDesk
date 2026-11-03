@@ -794,7 +794,8 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "soft_budget_tokens",
         "soft_budget_iterations",
         "memory",
-        "session_overrides",  # 2.7 (хотя и не пишется в YAML)
+        "session_overrides",
+        "mcp",
     }
 )
 
@@ -825,6 +826,38 @@ class MemoryConfig(BaseModel):
             raise ValueError(f"recall_max_age_days must be >= 0, got {v}")
         return v
 
+
+class MCPServerConfig(BaseModel):
+    """Один MCP-сервер (7).
+
+    Attributes:
+        name: Уникальное имя (``"filesystem"``, ``"github"``).
+        command: Исполняемый файл (``"npx"``, ``"python"``, ``"uvx"``).
+        args: Аргументы.
+        env: Дополнительные переменные окружения (секреты — сюда).
+        cwd: Рабочий каталог (``None`` — cwd родителя).
+        enabled: Включён ли сервер.
+        capabilities: Whitelist capabilities для инструментов сервера.
+            Если MCP-инструмент заявляет capability вне списка — инструмент
+            заблокирован (`effective_policy` вернёт `excluded`).
+            ``secrets`` здесь не работает: он всегда excluded (2.7).
+    """
+
+    name: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    enabled: bool = True
+    capabilities: list[str] = Field(default_factory=lambda: ["fs.read"])
+
+
+class MCPConfig(BaseModel):
+    """Настройки MCP (7)."""
+
+    enabled: bool = False  # по умолчанию выключено — пользователь явно включает
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+    connect_timeout_s: int = 30
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""
@@ -862,6 +895,8 @@ class AppConfig(BaseModel):
     # сессии. Ключ — имя инструмента, значение — policy. Не пишется
     # в YAML (это runtime-состояние).
     session_overrides: dict[str, ToolPolicy] = Field(default_factory=dict)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
