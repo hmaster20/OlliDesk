@@ -424,6 +424,19 @@ class LiveEventsPanel(QWidget):
             scope = payload.get("scope", "?")
             return f"🔒 {tool}: {policy} ({scope})", _C_OTHER
 
+        if kind == EventKind.SEARCH_PROVIDER_USED.value:
+            provider = payload.get("provider", "?")
+            n = payload.get("n_results", 0)
+            dur = payload.get("duration_ms", 0)
+            return f"🔍 search via {provider} ({n} результатов, {dur} ms)", _C_OTHER
+        if kind == EventKind.SEARCH_CHAIN_EXHAUSTED.value:
+            attempted = payload.get("attempted") or []
+            return (
+                f"🔍 search: все провайдеры упали "
+                f"({', '.join(str(a) for a in attempted)})",
+                _C_LOG_ERROR,
+            )
+
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")
             n = payload.get("n_tools", 0)

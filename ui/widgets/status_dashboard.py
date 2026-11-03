@@ -180,10 +180,16 @@ class StatusDashboard(QWidget):
         )
         layout.addWidget(self.browser)
 
+        # [2.13] Провайдер поиска.
+        self.search = _PillLabel("search")
+        self.search.setToolTip("Цепочка поиска: первый доступный провайдер")
+        layout.addWidget(self.search)
+
         self.set_budget(None)
         self.set_cache(0, 0)
         self.set_coder("⚡", "coder", "—")
         self.set_browser("isolated", available=False)
+        self.set_search("", available=False)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -404,5 +410,31 @@ class StatusDashboard(QWidget):
             "full": "CDP к копии реального профиля. Все ваши сессии доступны.",
         }.get(mode, "")
         self.browser.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [2.13] Провайдер поиска
+    # ------------------------------------------------------------------
+
+    def set_search(self, provider: str, *, available: bool = True) -> None:
+        """Показывает провайдера, который отработает первым.
+
+        Args:
+            provider: ``"searxng"`` / ``"openserp"`` / ``"yandex"`` /
+                ``"ollama"`` / ``"ddg"``.
+            available: ``False`` — ни один не настроен.
+        """
+        if not available or not provider:
+            self.search.set_state(
+                "— search", _C_OFF, "Ни один провайдер не настроен"
+            )
+            return
+        color = _C_OK if provider in ("searxng", "openserp") else _C_WARN
+        text = f"🔍 search: {provider}"
+        tooltip = (
+            f"Первый в цепочке: {provider}\n"
+            f"Если упадёт — перейдёт к следующему.\n"
+            f"Настроить: config.yaml → search.providers"
+        )
+        self.search.set_state(text, color, tooltip)
 
 __all__ = ["StatusDashboard"]

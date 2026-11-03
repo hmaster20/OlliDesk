@@ -3883,6 +3883,20 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.debug(
                 "Не удалось обновить browser-индикатор", exc_info=True
             )
+        # [2.13] Провайдер поиска (первый доступный в цепочке).
+        try:
+            from agents.search_providers import build_chain
+            from core.config import load_config as _load_cfg_search
+
+            _cfg_s = _load_cfg_search()
+            chain = build_chain(_cfg_s.search)
+            provider = chain[0].name if chain else ""
+            available = bool(chain)
+            self._dashboard.set_search(provider, available=available)
+        except Exception:
+            logger.debug(
+                "Не удалось обновить search-индикатор", exc_info=True
+            )
 
 
     @staticmethod

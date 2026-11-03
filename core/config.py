@@ -796,6 +796,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "session_overrides",
         "mcp",
         "browser",
+        "search",
     }
 )
 
@@ -859,6 +860,67 @@ class BrowserConfig(BaseModel):
             raise ValueError(
                 f"extension_bridge_port must be 1024..65535, got {v}"
             )
+        return v
+
+class SearchConfig(BaseModel):
+    """Настройки цепочки поиска (2.13).
+
+    Каждый провайдер — отдельный backend. Цепочка пробует по порядку,
+    пока один не вернёт результат. Падение одного не роняет остальные.
+
+    Attributes:
+        providers: Порядок провайдеров. Допустимые id:
+            ``searxng``, ``openserp``, ``yandex``, ``ollama``, ``ddg``.
+        searxng_url: URL локального SearXNG (``http://localhost:8080``).
+        openserp_url: URL локального OpenSERP (``http://localhost:7000``).
+        yandex_api_key: API-ключ Yandex Search API (опционально, платный).
+        yandex_folder_id: Folder ID Yandex Cloud (обязателен для Yandex API).
+        ollama_api_key: API-ключ Ollama Web Search (опционально).
+        timeout_s: Таймаут одного провайдера (секунды).
+        cache_ttl_hours: Время жизни результата в `SearchCache`.
+        max_results: Сколько результатов запрашивать у провайдера.
+    """
+
+    providers: list[str] = Field(
+        default_factory=lambda: ["searxng", "openserp", "yandex", "ollama", "ddg"]
+    )
+    searxng_url: str = "http://localhost:8080"
+    openserp_url: str = "http://localhost:7000"
+    yandex_api_key: str = ""
+    yandex_folder_id: str = ""
+    ollama_api_key: str = ""
+    timeout_s: int = 15
+    cache_ttl_hours: int = 24
+    max_results: int = 5
+
+    @field_validator("providers")
+    @classmethod
+    def _validate_providers(cls, v: list[str]) -> list[str]:
+        allowed = {"searxng", "openserp", "yandex", "ollama", "ddg"}
+        unknown = [p for p in v if p not in allowed]
+        if unknown:
+            raise ValueError(
+                f"Неизвестные search-провайдеры: {unknown}. "
+                f"Допустимые: {sorted(allowed)}"
+            )
+        seen: list[str] = []
+        for p in v:
+            if p not in seen:
+                seen.append(p)
+        return seen
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, v: int) -> int:
+        if not 1 <= v <= 120:
+            raise ValueError(f"timeout_s must be 1..120, got {v}")
+        return v
+
+    @field_validator("max_results")
+    @classmethod
+    def _validate_max_results(cls, v: int) -> int:
+        if not 1 <= v <= 20:
+            raise ValueError(f"max_results must be 1..20, got {v}")
         return v
 
 class MCPServerConfig(BaseModel):
@@ -931,6 +993,7 @@ class AppConfig(BaseModel):
     session_overrides: dict[str, ToolPolicy] = Field(default_factory=dict)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)

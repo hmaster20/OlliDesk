@@ -258,6 +258,38 @@ class AgentSettingsDialog(QDialog):
 
         layout.addWidget(browser_group)
 
+        # [2.13] Цепочка поиска.
+        search_group = QGroupBox("Поиск в интернете (2.13)")
+        search_layout = QVBoxLayout(search_group)
+
+        _cfg_search = None
+        try:
+            from core.config import load_config as _load_cfg_s
+
+            _cfg_search = _load_cfg_s()
+        except Exception:
+            pass
+
+        current_providers = (
+            list(_cfg_search.search.providers) if _cfg_search else []
+        )
+
+        providers_hint = QLabel(
+            "Цепочка (сверху вниз):\n"
+            + "\n".join(
+                f"  {i+1}. {p}" for i, p in enumerate(current_providers)
+            )
+            + "\n\nНастройка — в config.yaml → search."
+        )
+        providers_hint.setStyleSheet(
+            "color: #888; font-family: 'Consolas', monospace;"
+            " font-size: 11px; padding: 4px 8px;"
+        )
+        providers_hint.setWordWrap(True)
+        search_layout.addWidget(providers_hint)
+
+        layout.addWidget(search_group)
+
         layout.addStretch()
 
         # Кнопки.

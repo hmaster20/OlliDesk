@@ -79,6 +79,10 @@ class EventKind(StrEnum):
     # --- 2.11: browser ---
     BROWSER_ACTION = "browser.action"
 
+    # --- 2.13: цепочка поиска ---
+    SEARCH_PROVIDER_USED = "search.provider.used"
+    SEARCH_CHAIN_EXHAUSTED = "search.chain.exhausted"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -231,6 +235,23 @@ class McpErrorPayload(TypedDict):
     server_name: str
     error: str
 
+# ---------------------------------------------------------------------------
+# 2.13: цепочка поиска
+# ---------------------------------------------------------------------------
+
+
+class SearchProviderUsedPayload(TypedDict):
+    provider: str
+    duration_ms: float
+    n_results: int
+
+
+class SearchChainExhaustedPayload(TypedDict):
+    query: str
+    attempted: list[str]
+    errors: list[str]
+
+
 def args_hash(args: dict) -> str:
     """Стабильный 16-символьный хеш аргументов tool-call'а.
 
@@ -318,5 +339,7 @@ __all__ = [
     "McpDisconnectedPayload",
     "McpToolCalledPayload",
     "McpErrorPayload",
+    "SearchProviderUsedPayload",
+    "SearchChainExhaustedPayload",
     "args_hash",
 ]
