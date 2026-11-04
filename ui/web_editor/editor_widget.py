@@ -16,15 +16,18 @@ import sys
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
+
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
+
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
+    QPushButton,
     QTabBar,
     QVBoxLayout,
     QWidget,
@@ -78,7 +81,20 @@ class PythonBridge(QObject):
 
 
 class EditorWidget(QWidget):
-    """Редактор Monaco с собственным таб-баром."""
+    """Редактор Monaco с собственным таб-баром.
+
+    [9.1] Чат больше не вкладка (`MainWindow` использует `QStackedWidget`).
+    Этот виджет — единственная «редакторская» страница, а его `tab_bar` —
+    единственное место, где есть вкладки (только файлы).
+
+    Сигналы:
+      * ``tabs_changed(int)`` — открыт/закрыт файл (0 → показать чат).
+      * ``back_to_chat_requested()`` — пользователь нажал «💬 Чат»
+        в тулбаре (MainWindow переключает страницу).
+    """
+
+    tabs_changed = Signal(int)
+    back_to_chat_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,6 +139,34 @@ class EditorWidget(QWidget):
 
         tab_row = QHBoxLayout()
         tab_row.setContentsMargins(0, 0, 0, 0)
+
+        # [9.1] Кнопка «Чат» — возврат к базовому экрану. Живёт в тулбаре
+        # редактора, потому что сам ChatPanel при показе редактора скрыт
+        # (`QStackedWidget` в MainWindow).
+        self.back_to_chat_btn = QPushButton("💬 Чат")
+        self.back_to_chat_btn.setToolTip(
+            "Вернуться к чату (Ctrl+Shift+C). Вкладки файлов сохранятся."
+        )
+        self.back_to_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.back_to_chat_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.back_to_chat_btn.setStyleSheet(
+            "QPushButton {"
+            " background: transparent;"
+            " border: 1px solid #444;"
+            " border-radius: 10px;"
+            " color: #bbb;"
+            " font-size: 11px;"
+            " padding: 3px 12px;"
+            " margin: 2px 4px 2px 0;"
+            "}"
+            "QPushButton:hover {"
+            " background: rgba(212,163,115,0.2);"
+            " color: #d4a373;"
+            "}"
+        )
+        self.back_to_chat_btn.clicked.connect(self.back_to_chat_requested.emit)
+        tab_row.addWidget(self.back_to_chat_btn)
+
         tab_row.addWidget(self.tab_bar)
         tab_row.addStretch()
         layout.addLayout(tab_row)
@@ -213,6 +257,8 @@ class EditorWidget(QWidget):
             idx = self.tab_bar.addTab(self._tab_title(file_path))
             self.tab_bar.setTabData(idx, file_path)
             self._dirty[file_path] = False
+            # [9.1] Сообщаем MainWindow, что появилась вкладка.
+            self.tabs_changed.emit(self.tab_bar.count())
 
         idx = self._open_files.index(file_path)
         if self.tab_bar.currentIndex() != idx:
@@ -262,6 +308,8 @@ class EditorWidget(QWidget):
         self.tab_bar.removeTab(index)
         self._open_files.pop(index)
         self._dirty.pop(file_path, None)
+        # [9.1] Если вкладок не осталось — MainWindow вернёт чат.
+        self.tabs_changed.emit(self.tab_bar.count())
 
     def _tab_title(self, file_path: str) -> str:
         name = Path(file_path).name
@@ -411,6 +459,8 @@ class EditorWidget(QWidget):
         self.tab_bar.removeTab(index)
         self._open_files.pop(index)
         self._dirty.pop(file_path, None)
+        # [9.1] Эмит после каждой закрытой вкладки.
+        self.tabs_changed.emit(self.tab_bar.count())
 
     # ------------------------------------------------------------------
     # Хуки для файловых операций из дерева проекта
@@ -445,6 +495,8 @@ class EditorWidget(QWidget):
         self._dirty.pop(target, None)
         if self.current_file == target:
             self.current_file = None
+        # [9.1] Эмит: возможно, вкладок не осталось.
+        self.tabs_changed.emit(self.tab_bar.count())
 
     # ------------------------------------------------------------------
     # Bridge slots
@@ -483,6 +535,8 @@ class EditorWidget(QWidget):
         self._open_files.clear()
         self._dirty.clear()
         self.current_file = None
+        # [9.1] Все вкладки закрыты — MainWindow вернёт чат.
+        self.tabs_changed.emit(0)
 
     # Совместимость со старым API --------------------------------------
 

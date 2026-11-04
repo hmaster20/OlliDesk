@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -319,12 +320,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_show_diff(self, payload: dict) -> None:
-        """[9.8] Открывает Monaco DiffEditor с original↔modified.
-
-        Вызывается из карточки `write_file` («🔍 Показать diff»).
-        В редактор передаётся и `file_path`, чтобы после accept/reject
-        пользователь мог сохранить — Monaco уже умеет.
-        """
+        """[9.8 + 9.1] Открывает Monaco DiffEditor с original↔modified."""
         if not payload or not hasattr(self, "editor_widget"):
             return
         original = str(payload.get("original") or "")
@@ -338,21 +334,14 @@ class MainWindow(QMainWindow):
             language=language,
             file_path=file_path or None,
         )
-        # Переключаемся на вкладку редактора.
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     @Slot(str)
     def _show_file_diff(self, path: str) -> None:
-        """[9.8.3] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
+        """[9.8.3 + 9.1] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
         if hasattr(self, "editor_widget"):
             self.editor_widget.show_git_diff_for_file(path)
-            index = self.tab_widget.indexOf(self.editor_widget)
-            if index >= 0:
-                self.tab_widget.setCurrentWidget(self.editor_widget)
+            self._switch_to_editor()
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация).
@@ -413,21 +402,27 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_center_panel(self) -> QWidget:
-        """Создает центральную панель (вкладки: Чат / Редактор)."""
-        from PySide6.QtWidgets import QTabWidget
+        """[9.1] Центральная панель: QStackedWidget (чат / редактор).
 
+        Чат — базовый экран, не вкладка. Вкладки есть только в редакторе
+        (внутри `EditorWidget.tab_bar`) и только для файлов. При закрытии
+        последней вкладки — автоматический возврат к чату.
+        """
         from ui.web_editor.editor_widget import EditorWidget
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.tabCloseRequested.connect(self._close_tab)
+        # [9.1] Стек из двух страниц. Никакого QTabWidget в MainWindow.
+        self.center_stack = QStackedWidget()
 
-        default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
+        # --- Страница 0: чат (базовый экран) ---
+        default_model = (
+            self.config.default_model
+            if hasattr(self.config, "default_model")
+            else "llama3.2"
+        )
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
             base_url="http://localhost:11434",
@@ -440,19 +435,22 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_role_manager(self.role_manager)
         self.chat_panel.set_prompt_manager(self.prompt_manager)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
-        # [9.8] Diff из карточки write_file → Monaco DiffEditor.
-        # Подключаем ЗДЕСЬ: chat_panel уже создан (перенесено из _setup_ui,
-        # где обращение к атрибуту падало с AttributeError).
         self.chat_panel.diff_requested.connect(self._on_show_diff)
+        self.center_stack.addWidget(self.chat_panel)  # index 0
 
-        self.tab_widget.addTab(self.chat_panel, "💬 Чат")
-
+        # --- Страница 1: редактор (с файловыми вкладками) ---
         self.editor_widget = EditorWidget()
         self.editor_widget.set_file_reader(self._read_file)
         self.editor_widget.set_file_writer(self._write_file)
-        # 🆕 Инициализация темы Monaco из текущего конфига.
         self.editor_widget.set_theme(self.config.theme)
-        self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+
+        # [9.1] Сигналы редактора:
+        # * tabs_changed(0) → вернуть чат; (>0) → переключиться на редактор.
+        # * back_to_chat_requested → кнопка «💬 Чат» в тулбаре редактора.
+        self.editor_widget.tabs_changed.connect(self._on_editor_tabs_changed)
+        self.editor_widget.back_to_chat_requested.connect(self._show_chat_tab)
+
+        self.center_stack.addWidget(self.editor_widget)  # index 1
 
         # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
         try:
@@ -461,14 +459,47 @@ class MainWindow(QMainWindow):
 
             diff_action = QAction(self.editor_widget)
             diff_action.setShortcut(QKeySequence("Ctrl+D"))
-            diff_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            diff_action.setShortcutContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut
+            )
             diff_action.triggered.connect(self._diff_current_editor_file)
             self.editor_widget.addAction(diff_action)
         except Exception:
             logger.debug("Не удалось установить Ctrl+D для diff", exc_info=True)
 
-        layout.addWidget(self.tab_widget)
+        layout.addWidget(self.center_stack)
         return panel
+
+    # ------------------------------------------------------------------
+    # [9.1] Переключение страниц (чат ⇄ редактор)
+    # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _on_editor_tabs_changed(self, count: int) -> None:
+        """Реакция на изменение числа вкладок в редакторе.
+
+        * ``count == 0`` → вкладок нет, возвращаем чат (базовый экран);
+        * ``count > 0`` → открыт хотя бы один файл, переключаемся в редактор.
+
+        Раньше эта проверка была внутри `_close_tab` (защита индекса 0).
+        Теперь чат не вкладка — `_close_tab` удалён.
+        """
+        if count == 0:
+            self._switch_to_chat()
+        else:
+            self._switch_to_editor()
+
+    def _switch_to_chat(self) -> None:
+        """Показывает страницу чата (базовый экран)."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(0)
+            logger.debug("[9.1] Переключено на чат")
+
+    def _switch_to_editor(self) -> None:
+        """Показывает страницу редактора."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(1)
+            logger.debug("[9.1] Переключено на редактор")
 
     @Slot()
     def _diff_current_editor_file(self) -> None:
@@ -529,28 +560,16 @@ class MainWindow(QMainWindow):
             logger.error(f"Ошибка записи файла: {e}")
             return False
 
-    def _close_tab(self, index: int):
-        """Закрывает вкладку (кроме чата)."""
-        if index == 0:  # Чат нельзя закрыть
-            return
-        self.tab_widget.removeTab(index)
-
     def open_file_in_editor(self, file_path: str, line: int = 0):
-        """Открывает файл в редакторе.
+        """Открывает файл в редакторе и переключает на страницу редактора.
 
-        Многофайловость обеспечивает сам `EditorWidget` (собственный QTabBar
-        и отдельные модели Monaco). Во внешнем `QTabWidget` окна вкладка
-        «📝 Редактор» одна — она переиспользуется.
+        [9.1] Чат больше не вкладка — `EditorWidget.open_file` сам
+        добавляет файл в свой `tab_bar`. `tabs_changed` эмитится, но мы
+        дополнительно принудительно переключаемся, чтобы реакция была
+        мгновенной (важно при первом открытии файла из дерева).
         """
         self.editor_widget.open_file(file_path, line)
-
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setTabText(index, "📝 Редактор")
-
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     def _setup_menu(self) -> None:
         """Создаёт меню-бар и подключает его сигналы (план 2.4).
@@ -1273,6 +1292,10 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
 
+        # [9.1] При открытии проекта показываем чат: пользователь пришёл
+        # за вопросами, а не за прошлым состоянием редактора.
+        self._switch_to_chat()
+
         # Индексация: контроллер сам загрузит previous_state (план 2.4).
         self.indexing_controller.configure(
             project_path=self.project_path,
@@ -1356,6 +1379,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))
         self.chat_panel.set_project_open(True)
+        # [9.1] @dir возвращает на чат — пользователь задаст вопрос по каталогу.
+        self._switch_to_chat()
         # Пересоздаём индексер для нового каталога
         self.indexer = FileIndexer(self.config, self.project_path)
 
@@ -1583,17 +1608,25 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Настройки агента применены", 3000)
 
+    @Slot()
     def _show_chat_tab(self) -> None:
-        """Показывает вкладку чата (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.chat_panel) < 0:
-            self.tab_widget.insertTab(0, self.chat_panel, "💬 Чат")
-        self.tab_widget.setCurrentWidget(self.chat_panel)
+        """[9.1] Возвращает на страницу чата. Вкладки файлов сохраняются."""
+        self._switch_to_chat()
 
+    @Slot()
     def _show_editor_tab(self) -> None:
-        """Показывает вкладку редактора (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.editor_widget) < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        """[9.1] Переключает на страницу редактора.
+
+        Если не открыто ни одного файла — редактор пуст, показывать
+        нечего. Сообщаем пользователю и остаёмся в чате.
+        """
+        if self.editor_widget.tab_count() == 0:
+            self.status_bar.showMessage(
+                "Редактор пуст: откройте файл из дерева проекта.", 3000
+            )
+            self._switch_to_chat()
+            return
+        self._switch_to_editor()
 
     @Slot(bool)
     def _toggle_project_structure(self, visible: bool) -> None:
