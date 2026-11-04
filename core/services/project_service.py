@@ -140,41 +140,37 @@ class ProjectService:
         """Собирает блок для системного промпта (только в AGENT).
 
         Формат:
-Ветка: feature/x (abc1234)
-Последние коммиты:
-• a1b2c3d 2025-01-01 feat: added parser
-Незакоммиченные изменения (diff):
-…
-
-text
-
-В CHAT/PLAN — пустая строка (экономит токены).
-"""
-if mode != AgentMode.AGENT:
-    return ""
-try:
-    snap = self.git_snapshot(root)
-    if not snap.branch:
-        return ""
-    lines: list[str] = [
-        f"Ветка: {snap.branch} ({snap.commit_hash})"
-    ]
-    if snap.recent_commits:
-        lines.append("Последние коммиты:")
-        for c in snap.recent_commits:
-            lines.append(
-                f"  • {c['hash']} {c['date']} "
-                f"{c['subject'][:80]}"
+            Ветка: feature/x (abc1234)
+            Последние коммиты:
+            • a1b2c3d 2025-01-01 feat: added parser
+            Незакоммиченные изменения (diff):
+            …
+        В CHAT/PLAN — пустая строка (экономит токены).
+        """
+        if mode != AgentMode.AGENT:
+            return ""
+        try:
+            snap = self.git_snapshot(root)
+            if not snap.branch:
+                return ""
+            lines: list[str] = [
+                f"Ветка: {snap.branch} ({snap.commit_hash})"
+            ]
+            if snap.recent_commits:
+                lines.append("Последние коммиты:")
+                for c in snap.recent_commits:
+                    lines.append(
+                        f"  • {c['hash']} {c['date']} "
+                        f"{c['subject'][:80]}"
+                    )
+            if snap.uncommitted_diff:
+                lines.append("Незакоммиченные изменения (diff):")
+                lines.append(snap.uncommitted_diff)
+            return "\n".join(lines)
+        except Exception:
+            logger.debug(
+                "ProjectService.build_git_context упал", exc_info=True
             )
-    if snap.uncommitted_diff:
-        lines.append("Незакоммиченные изменения (diff):")
-        lines.append(snap.uncommitted_diff)
-    return "\n".join(lines)
-except Exception:
-    logger.debug(
-        "ProjectService.build_git_context упал", exc_info=True
-    )
-    return ""
-
+            return ""
 
 __all__ = ["GitSnapshot", "ProjectService", "DEFAULT_INTEL_TTL_S"]

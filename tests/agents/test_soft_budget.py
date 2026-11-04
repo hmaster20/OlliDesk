@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import cast
-
-import pytest
 
 from agents.agent_loop import (
     AgentContext,

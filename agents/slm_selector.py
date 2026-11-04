@@ -156,6 +156,13 @@ def select_pair(
     planner_source = "явно из конфига" if planner else "автовыбор"
     analyst_source = "явно из конфига" if analyst else "автовыбор"
 
+    planner_source = "явно из конфига" if planner else "автовыбор"
+    analyst_source = "явно из конфига" if analyst else "автовыбор"
+    logger.debug(
+        f"select_pair: planner_source={planner_source}, "
+        f"analyst_source={analyst_source}"
+    )
+
     # --- 2. Автовыбор planner ---
     if planner is None:
         planner_pool = [f for f in fits if f.info.tier == 1 and f.fits_vram and vram >= 2900]

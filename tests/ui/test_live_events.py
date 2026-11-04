@@ -18,7 +18,7 @@ from core.events import EventKind  # noqa: E402
 @pytest.fixture(scope="module")
 def qapp():
     app = QApplication.instance() or QApplication([])
-    yield app
+    return app
 
 
 @pytest.fixture(autouse=True)
@@ -196,7 +196,7 @@ def test_full_pipeline(qapp) -> None:
     assert "search_codebase" in dash.activity.toolTip()
     bus.shutdown()
 
-    def test_panel_domain_filter_hides_other_kinds(qapp) -> None:
+def test_panel_domain_filter_hides_other_kinds(qapp) -> None:
     """2.5: фильтр домена скрывает события из других доменов."""
     from ui.widgets.live_events import LiveEventsPanel
 

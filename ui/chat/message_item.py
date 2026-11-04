@@ -583,17 +583,15 @@ class ReasoningWidget(QWidget):
         images: list[str] | None = None,
     ):
         super().__init__(parent)
-        self.role = role
-        self.content = content
-        self.thinking = thinking
-        self.mode_name = mode_name
         self._dark = dark
-        self._images: list[str] = list(images or [])
-        self._container = container
+        self._text = initial_text or ""
+        self._expanded = True
+        self._anim: QPropertyAnimation | None = None
 
         c = _theme_colors(dark)
         container = QFrame(self)
         container.setObjectName("_reasoning_widget")
+        self._container = container       # ← теперь container уже существует
         container.setStyleSheet(
             "QFrame#_reasoning_widget {"
             f" background: {c.reasoning_bg};"
@@ -841,65 +839,6 @@ class ReasoningWidget(QWidget):
             self._toggle_btn.setText("▼ Развернуть")
             self._animate_height(expand=False)
 
-    def apply_theme(self, dark: bool) -> None:
-        """[9.5.1] Перекрашивает сообщение (пузырь + reasoning + text + tool cards)."""
-        if dark == self._dark:
-            return
-        self._dark = dark
-        c = _theme_colors(dark)
-
-        is_user = self.role == "user"
-        is_assistant = self.role == "assistant"
-
-        if is_user:
-            self.bubble.setStyleSheet(
-                "QFrame#_bubble {"
-                f" background-color: {c.bubble_user_bg};"
-                " border-radius: 12px;"
-                " padding: 10px 14px;"
-                " border: none;"
-                "}"
-            )
-            self.text_color = c.text
-        elif is_assistant:
-            self.bubble.setStyleSheet(
-                "QFrame#_bubble {"
-                f" background-color: {c.bubble_bg};"
-                " border-radius: 10px;"
-                " padding: 12px 14px;"
-                f" border: 1px solid {c.bubble_border};"
-                "}"
-            )
-            self.text_color = c.text
-        else:
-            self.text_color = c.text_muted
-
-        if hasattr(self, "copy_button"):
-            self.copy_button.setStyleSheet(_action_btn_css(dark))
-
-        if self._reasoning_widget is not None:
-            self._reasoning_widget.apply_theme(dark)
-        if self._text_widget is not None:
-            self._text_widget.apply_theme(dark)
-        for card in self._tool_cards:
-            card.apply_theme(dark)
-
-    def apply_theme(self, dark: bool) -> None:
-        """[9.5.1] Перекрашивает карточку под тему."""
-        self._dark = dark
-        self._apply_state_style()
-        # Перерисовать diff-режим или preview (у них свои inline-стили).
-        if (
-            self._metadata
-            and isinstance(self._metadata, dict)
-            and "diff" in self._metadata
-            and not self._result_is_error
-        ):
-            # Пересобрать diff-режим (создаст новые кнопки).
-            self._rebuild_diff_mode()
-        else:
-            self._update_preview()
-
     def _rebuild_diff_mode(self) -> None:
         """Пересобирает UI diff-режима (кнопки, стили) — при смене темы."""
         # Удаляем все layout-элементы, кроме header (index 0).
@@ -966,8 +905,6 @@ class TextWidget(QTextBrowser):
             " background: transparent; border: none; padding: 0;"
             " }"
         )
-        if initial_text:
-            self.set_text(initial_text)
 
     def set_dark(self, dark: bool) -> None:
         """[9.6.6] Переключает цвет таблиц в markdown."""

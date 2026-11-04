@@ -5,11 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
-from agents.hardware_profile import CPUInfo, GPUInfo, HardwareProfile, RAMInfo
+from agents.hardware_profile import CPUInfo, HardwareProfile, RAMInfo
 from agents.slm_selector import select_coder
-from core.config import SLMConfig, SLMModelInfo, load_config
+from core.config import SLMConfig, SLMModelInfo
 
 
 class TestSelectCoder:

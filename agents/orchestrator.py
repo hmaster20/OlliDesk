@@ -32,9 +32,6 @@ from core.config import SLMModelInfo
 from core.event_bus import emit_event
 from core.events import EventKind
 from fs.intel import GraphNode, ProjectIntel, analyze_project
-from core.event_bus import emit_event
-from core.events import EventKind
-from fs.intel import GraphNode, ProjectIntel, analyze_project
 
 SMALL_PROJECT_FILES = 100
 SMALL_PROJECT_BYTES = 300_000
@@ -962,8 +959,8 @@ class Orchestrator:
         unsupported = 0
         critique_ok = True
         try:
-            from agents.verifier import verify as _verify
             from agents.critic import critique as _critique
+            from agents.verifier import verify as _verify
 
             known_paths = self._known_paths(intel)
             known_symbols = self._known_symbols(intel)

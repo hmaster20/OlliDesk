@@ -22,9 +22,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-
 from loguru import logger
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QColor
@@ -44,11 +41,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agents.tool_registry import ToolRegistry, ToolSpec
+from agents.tool_registry import ToolRegistry
 from core.config import AgentMode, AppConfig, ToolPolicy
 from core.event_bus import emit_event
 from core.events import EventKind
-from core.policy import EffectivePolicy, PolicyStep, effective_policy, explain_policy
+from core.policy import effective_policy, explain_policy
 from core.profiles import ProfileConfig
 
 # Цвета для policy.
@@ -424,7 +421,7 @@ class PermissionsDashboard(QDialog):
             "<h4>Пошаговое применение</h4>",
             "<ol>",
         ]
-        for i, step in enumerate(steps, 1):
+        for _i, step in enumerate(steps, 1):
             color = (
                 _COLOR_EXCL
                 if step.policy == "excluded"
@@ -488,10 +485,9 @@ class PermissionsDashboard(QDialog):
         cleared = list(self._session_overrides.keys())
         self._session_overrides.clear()
         # Применяем к конфигу (если передан).
-        try:
+        import contextlib
+        with contextlib.suppress(Exception):
             self._config.session_overrides.clear()
-        except Exception:
-            pass
         emit_event(
             EventKind.PERMISSIONS_RESET.value,
             {"tools": cleared},

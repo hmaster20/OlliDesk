@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +14,6 @@ from agents.browser_client import (
     IsolatedBrowser,
     PageSnapshot,
     create_backend,
-    is_playwright_available,
 )
 from core.config import BrowserConfig
 
@@ -98,6 +97,5 @@ class TestExtensionErrors:
         with patch(
             "agents.browser_client.ExtensionBrowser._ensure_ws",
             side_effect=BrowserError("bridge недоступен"),
-        ):
-            with pytest.raises(BrowserError, match="bridge"):
-                await backend.open("https://example.com")
+        ), pytest.raises(BrowserError, match="bridge"):
+            await backend.open("https://example.com")

@@ -3,14 +3,17 @@
 import hashlib
 import json
 import shutil
+import subprocess as _subprocess
+import sys as _sys
 import time
-from datetime import datetime, timedelta
-from core.utils import get_app_data_dir
-
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from git import Repo
 from loguru import logger
+
+from core.utils import get_app_data_dir
 
 
 def create_snapshot(repo_path: Path | str, message: str = "OlliDesk auto-snapshot") -> str | None:
@@ -279,11 +282,6 @@ def create_file_snapshot(
 # ---------------------------------------------------------------------------
 # 9.4: git-интеграция для coding-режима
 # ---------------------------------------------------------------------------
-
-import subprocess as _subprocess
-import sys as _sys
-from datetime import datetime as _datetime
-
 
 def _run_git_cli(
     repo_path: Path | str,

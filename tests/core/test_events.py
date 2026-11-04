@@ -25,7 +25,8 @@ def test_args_hash_different_for_different_args() -> None:
 def test_args_hash_fallback_on_unserializable() -> None:
     """Path — не сериализуется json.dumps напрямую, но default=str спасает."""
     h = args_hash({"path": Path("/tmp/x")})
-    assert isinstance(h, str) and len(h) == 16
+    assert isinstance(h, str)
+    assert len(h) == 16
 
 
 def test_args_hash_length() -> None:

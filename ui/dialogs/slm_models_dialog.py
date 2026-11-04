@@ -2,10 +2,10 @@
 
 import contextlib
 import re
+from typing import Any
 
 from loguru import logger
-from typing import Any
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,

@@ -20,7 +20,7 @@ from loguru import logger
 from agents.download_slm import get_model_paths
 from agents.model_pool import Role
 from agents.slm_selector import select_coder, select_pair_park, select_park
-from core.config import SLMModelInfo, AppConfig, load_config
+from core.config import AppConfig, SLMModelInfo, load_config
 from core.profiles import ProfileConfig
 
 

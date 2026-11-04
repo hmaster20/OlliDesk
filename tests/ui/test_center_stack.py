@@ -9,7 +9,6 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from core.config import AppConfig
-from state.session_store import SessionStore
 
 
 @pytest.fixture(scope="module")

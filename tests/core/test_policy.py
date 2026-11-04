@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agents.tool_registry import ToolSpec, ToolRegistry, tool
+from agents.tool_registry import ToolSpec
 from core.config import AgentMode, AppConfig, ToolPolicy
-from core.policy import EffectivePolicy, effective_policy
+from core.policy import effective_policy
 from core.profiles import ProfileConfig, ProfileToolPolicies
 from core.security import SecurityPolicy
 

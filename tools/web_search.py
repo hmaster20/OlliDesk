@@ -13,12 +13,10 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from loguru import logger
 
 from agents.search_providers import (
-    SearchProvider,
     SearchProviderError,
     SearchResult,
     build_chain,

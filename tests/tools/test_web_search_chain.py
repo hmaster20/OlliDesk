@@ -9,7 +9,7 @@ import pytest
 from agents.search_providers import SearchProviderError, SearchResult
 from core.config import SearchConfig
 from core.search_cache import SearchCache
-from core.security import NetworkMode, SecurityPolicy
+from core.security import SecurityPolicy
 from tools.web_search import web_search
 
 
@@ -93,7 +93,7 @@ class TestHygieneAndSecurity:
     async def test_hygiene_redacts_secret(self) -> None:
         p1 = _mock_provider("searxng", [SearchResult("A", "https://a")])
         with patch("tools.web_search.build_chain", return_value=[p1]):
-            out = await web_search(
+            await web_search(
                 "TOKEN=abcdef123456 hello", security=SecurityPolicy()
             )
         # Секрет не должен утечь в запрос.

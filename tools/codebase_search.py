@@ -4,11 +4,11 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
-from core.sandbox import is_denied_file
 from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
+from core.sandbox import is_denied_file
 
 # Алиасы языков: модель часто пишет «C#», «js», «csharp» — приводим к тому
 # виду, который кладёт `fs.indexer._detect_language` в метаданные чанка.
@@ -188,9 +188,7 @@ async def search_codebase(
         logger.error(f"Ошибка поиска по коду: {e}")
         return f"Ошибка поиска: {e}"
 
-from pathlib import Path
 
-from core.sandbox import is_denied_file
 
 
 @tool(

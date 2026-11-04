@@ -121,7 +121,7 @@ _STRICTNESS: dict[str, int] = {
 }
 
 
-def _capabilities_of(spec: "ToolSpec") -> frozenset[str]:
+def _capabilities_of(spec: ToolSpec) -> frozenset[str]:
     """Capabilities инструмента; ``{"fs.read"}``, если пусто."""
     return spec.capabilities or frozenset({"fs.read"})
 
@@ -134,11 +134,11 @@ def _most_restrictive(policies: list[str]) -> str:
 
 
 def effective_policy(
-    spec: "ToolSpec",
+    spec: ToolSpec,
     *,
-    profile: "ProfileConfig | None" = None,
-    security: "SecurityPolicy | None" = None,
-    config: "AppConfig | None" = None,
+    profile: ProfileConfig | None = None,
+    security: SecurityPolicy | None = None,
+    config: AppConfig | None = None,
     session_overrides: dict[str, ToolPolicy] | None = None,
     current_mode: AgentMode | None = None,
 ) -> EffectivePolicy:
@@ -273,11 +273,11 @@ class PolicyStep:
 
 
 def explain_policy(
-    spec: "ToolSpec",
+    spec: ToolSpec,
     *,
-    profile: "ProfileConfig | None" = None,
-    security: "SecurityPolicy | None" = None,
-    config: "AppConfig | None" = None,
+    profile: ProfileConfig | None = None,
+    security: SecurityPolicy | None = None,
+    config: AppConfig | None = None,
     session_overrides: dict[str, ToolPolicy] | None = None,
     current_mode: AgentMode | None = None,
 ) -> tuple[EffectivePolicy, list[PolicyStep]]:

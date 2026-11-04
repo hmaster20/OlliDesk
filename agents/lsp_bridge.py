@@ -19,13 +19,13 @@ LSP включается точечно для bug_analysis/refactor («где �
 
 from __future__ import annotations
 
-import threading
 import asyncio
 import contextlib
 import json
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -312,7 +312,7 @@ class LspBridge:
 
 
     @classmethod
-    def _get_default(cls) -> "LspBridge | None":
+    def _get_default(cls) -> LspBridge | None:
         """Возвращает глобальный синглтон (создаёт при первом вызове).
 
         Лениво: если LSP-серверы не установлены — вернёт объект, но
@@ -350,7 +350,7 @@ class LspBridge:
         return _default_bridge
 
     @classmethod
-    def _set_default_for_tests(cls, bridge: "LspBridge | None") -> None:
+    def _set_default_for_tests(cls, bridge: LspBridge | None) -> None:
         """Подмена синглтона (для тестов)."""
         global _default_bridge
         _default_bridge = bridge

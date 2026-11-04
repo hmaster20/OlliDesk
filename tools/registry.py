@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from tools import test_ops, codebase_search
 
 from tools import (
     attached_files,

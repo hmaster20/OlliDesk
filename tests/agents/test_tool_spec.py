@@ -17,7 +17,6 @@ from agents.tool_registry import (
 )
 from core.config import AgentMode, ToolPolicy
 
-
 # ---------------------------------------------------------------------------
 # ToolSpec / @tool
 # ---------------------------------------------------------------------------
@@ -266,7 +265,7 @@ def test_all_registered_tools_have_valid_specs() -> None:
 
 
 @pytest.mark.parametrize(
-    "tool_name,expected_caps",
+    ("tool_name", "expected_caps"),
     [
         ("read_file", {"fs.read"}),
         ("list_directory", {"fs.read"}),

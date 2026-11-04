@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from agents.model_pool import ModelPool
 from agents.orchestrator import Orchestrator, RunResult
-from fs.intel import FileRecord, ProjectIntel, Symbol
+from fs.intel import ProjectIntel
 from fs.intel.graph import DependencyGraph, GraphNode
 
 
@@ -76,8 +76,6 @@ async def test_coding_flow_routes_from_run(tmp_path: Path) -> None:
 
     async def _gen(client, role, op, prompt):
         return "```diff\n--- a/main.py\n+++ b/main.py\n@@ -1 +1 @@\n-a\n+b\n```"
-
-    monkeypatch_intel = lambda: intel
 
     orch._classify = _classify  # type: ignore[method-assign]
     orch._gen = _gen  # type: ignore[method-assign]

@@ -47,16 +47,14 @@ def main() -> int:
         return 1
 
     # Собираем клиента и реестр (так же, как ChatPanel, но проще).
+    from agents.download_slm import get_model_path
     from agents.local_llm_client import LocalLLMClient
     from agents.slm_optimizer import optimize
-    from agents.download_slm import get_model_path
     from agents.slm_selector import select_pair
     from agents.tool_registry import ToolRegistry
     from core.config import load_config
     from tools.registry import ALL_TOOLS
 
-    cfg = load_config()
-    # Определяем путь к модели.
     pair = select_pair()
     info = pair.get("analyst") or pair.get("planner")
     if info is None:

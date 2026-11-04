@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
 from typing import cast
 
 import pytest
 
 from agents.tool_registry import ToolRegistry
-from core.config import AgentMode, MCPServerConfig, ToolPolicy
+from core.config import MCPServerConfig, ToolPolicy
 from core.policy import effective_policy
 from tools.mcp_ops import MCPManager, _infer_capability
 

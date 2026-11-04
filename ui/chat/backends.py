@@ -17,7 +17,6 @@ ResearchMixin) вызывает QWidget.__init__, а поля инициализ
 ChatPanel.__init__ явно.
 """
 
-from core.config import load_config
 from __future__ import annotations
 
 from collections.abc import Callable

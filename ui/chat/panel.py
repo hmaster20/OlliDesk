@@ -16,8 +16,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot, QUrl
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor,QDragEnterEvent, QDragLeaveEvent, QDropEvent
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal, Slot, QUrl
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QKeyEvent,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -64,6 +70,7 @@ from core.roles import RoleManager
 from core.security import SecurityPolicy
 from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
+from state.inbox import SessionInbox
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
 from ui.chat.backends import BackendsMixin
@@ -91,8 +98,6 @@ from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.live_events import LiveEventsPanel, QtEventBus
 from ui.widgets.pipeline_selectors import PipelineSelectors
-from ui.widgets.profiles_selector import ProfilesSelectorf
-from state.inbox import SessionInbox
 
 if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
@@ -618,10 +623,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not p.is_file():
             self._add_message("system", f"❌ Не файл: {p}")
             return
-        from fs.image_extractors import is_image
         from fs.audio_extractors import is_audio
-        from fs.video_extractors import is_video
         from fs.document_extractors import is_document
+        from fs.image_extractors import is_image
+        from fs.video_extractors import is_video
 
         if is_image(p):
             self._attach_image(p)
@@ -740,8 +745,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._media_busy:
             self._add_message("system", "⏳ Дождитесь завершения распознавания.")
             return
-        from fs.video_extractors import extract_transcript
         from fs.media_cache import get_cached, set_cached
+        from fs.video_extractors import extract_transcript
 
         self._media_busy = True
         self.status_label.setText(f"⏳ Распознавание {path.name}…")
@@ -3985,7 +3990,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             logger.debug("MCP shutdown failed", exc_info=True)
         if self._orchestrator is not None:
+            self._orchestrator = None
         if self._model_pool is not None:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._model_pool.aclose())
+                loop.close()
+            except Exception:
+                pass
+            self._model_pool = None
             try:
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self._model_pool.aclose())
@@ -4331,11 +4344,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
         # [9.4] Git-ветка.
         try:
+            from pathlib import Path as _Path
+
             from tools.git_ops import (
                 get_branch_hash,
                 get_current_branch,
             )
-            from pathlib import Path as _Path
 
             if self.project_root:
                 root = _Path(self.project_root)
@@ -4624,7 +4638,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not enabled:
             return
 
-        from PySide6.QtCore import QThread, Signal as _Signal
+        from PySide6.QtCore import QThread
+        from PySide6.QtCore import Signal as _Signal
 
         class _MCPInitThread(QThread):
             """Фоновый поток инициализации MCP (7).

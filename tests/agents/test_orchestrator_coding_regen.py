@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
 from agents.critic import Critique
-from agents.model_pool import ModelPool
 from agents.orchestrator import Orchestrator, RunResult
 from fs.intel import ProjectIntel
 from fs.intel.graph import DependencyGraph, GraphNode

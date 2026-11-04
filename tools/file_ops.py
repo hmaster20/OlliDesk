@@ -1,6 +1,5 @@
 """Инструменты для чтения и записи файлов."""
 
-import asyncio
 import difflib
 import re
 import subprocess
@@ -13,7 +12,6 @@ from loguru import logger
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 from core.sandbox import SandboxedPathResolver, is_denied_file
-from tools.git_ops import create_snapshot
 
 _SKIP_NAMES = {
     ".git",
@@ -552,14 +550,13 @@ def apply_patch(
     from tools.git_ops import file_fingerprint
 
     fp = file_fingerprint(file_path)
-    if expected_hash:
-        if not fp["hash"].startswith(expected_hash):
-            return (
-                f"Ошибка: stale check failed. Файл изменился с момента "
-                f"чтения (expected hash {expected_hash[:8]}, "
-                f"actual {fp['hash'][:8]}). Перечитай файл через "
-                f"read_file и повтори apply_patch с новым expected_hash."
-            )
+    if expected_hash and not fp["hash"].startswith(expected_hash):
+        return (
+            f"Ошибка: stale check failed. Файл изменился с момента "
+            f"чтения (expected hash {expected_hash[:8]}, "
+            f"actual {fp['hash'][:8]}). Перечитай файл через "
+            f"read_file и повтори apply_patch с новым expected_hash."
+        )
 
     # 3. Читаем оригинал.
     try:

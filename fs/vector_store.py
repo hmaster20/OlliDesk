@@ -14,7 +14,6 @@ from core.event_bus import emit_event
 from core.events import EventKind
 from core.exceptions import EmbedderError
 from fs.bm25 import BM25Index
-
 from fs.chroma_adapter import (
     ChromaCollection,
     ChunkMetadata,

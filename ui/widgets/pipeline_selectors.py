@@ -191,7 +191,6 @@ class PipelineSelectors(QWidget):
         В `READY`/`REFRESHING`/`ERROR с latest` — рендерим `latest`.
         Ошибка без `latest` → плейсхолдер «Ошибка загрузки».
         """
-        from agents.download_slm import is_model_installed
 
         self._updating = True
         try:

@@ -22,7 +22,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from loguru import logger
 
@@ -60,7 +60,9 @@ class BenchSummary:
     invalid_args_rate: float
     results: list[TaskResult]
 
-
+from agents.ollama_client import ChatMessage
+def _make_user(content: str) -> ChatMessage:
+    return ChatMessage(role="user", content=content)
 async def _run_one_task(
     task_dir: Path,
     *,

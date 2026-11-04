@@ -55,7 +55,7 @@ def _infer_capability(tool_name: str) -> str:
 class MCPManager:
     """Singleton-менеджер MCP-серверов (7)."""
 
-    _instance: "MCPManager | None" = None
+    _instance: MCPManager | None = None
     _instance_lock = __import__("threading").Lock()
 
     def __init__(self) -> None:
@@ -67,7 +67,7 @@ class MCPManager:
         self._init_lock: asyncio.Lock | None = None
 
     @classmethod
-    def instance(cls) -> "MCPManager":
+    def instance(cls) -> MCPManager:
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:

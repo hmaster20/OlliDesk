@@ -8,7 +8,6 @@ import pytest
 
 from agents.hf_search import (
     HFGgufFile,
-    HFModel,
     HFModelDetails,
     HFUnavailableError,
     clear_caches,
@@ -56,9 +55,8 @@ class TestSearchModels:
         with patch(
             "agents.hf_search._get_api",
             side_effect=HFUnavailableError("нет сети"),
-        ):
-            with pytest.raises(HFUnavailableError, match="нет сети"):
-                await search_models("qwen")
+        ), pytest.raises(HFUnavailableError, match="нет сети"):
+            await search_models("qwen")
 
     @pytest.mark.asyncio
     async def test_cache_hit(self) -> None:

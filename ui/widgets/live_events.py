@@ -56,6 +56,9 @@ _BODY_MAX_HEIGHT = 200
 _PREVIEW_CHARS = 90
 
 # Цвета по уровню/виду (в стиле «серого лога»).
+_C_OK = "#98c379"
+_C_WARN = "#e5c07b"
+_C_INFO = "#d4a373"
 _C_LOG_INFO = "#888"
 _C_LOG_WARNING = "#e5c07b"
 _C_LOG_ERROR = "#e06c75"

@@ -16,12 +16,10 @@ import sys
 from pathlib import Path
 
 from loguru import logger
-
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
-
-from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,

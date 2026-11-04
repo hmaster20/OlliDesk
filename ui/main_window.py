@@ -1657,8 +1657,9 @@ class MainWindow(QMainWindow):
         self.config.browser.full_access_acknowledged = b_ack
         # Закрываем текущий backend — при следующем browser_* пересоздастся.
         try:
-            from tools.browser_ops import shutdown_browser
             import asyncio as _aio
+
+            from tools.browser_ops import shutdown_browser
 
             _loop = _aio.new_event_loop()
             try:
@@ -2207,12 +2208,11 @@ class MainWindow(QMainWindow):
         current_mode = self.chat_panel._current_mode()  # приватный, но это UI-окно
         session_overrides = dict(self.config.session_overrides)
         # Плюс то, что ChatPanel накопил в `_current_session_overrides()`.
-        try:
+        import contextlib
+        with contextlib.suppress(Exception):
             session_overrides.update(
                 self.chat_panel._current_session_overrides()
             )
-        except Exception:
-            pass
 
         from ui.dialogs.permissions_dashboard import PermissionsDashboard
 

@@ -12,7 +12,6 @@ from tools.browser_ops import (
     browser_close,
     browser_fill,
     browser_open,
-    browser_snapshot,
     shutdown_browser,
 )
 
@@ -52,7 +51,8 @@ class TestBrowserOps:
     async def test_open_calls_backend(self, fake_backend) -> None:
         with patch("tools.browser_ops._BACKEND", fake_backend):
             out = await browser_open("https://example.com")
-            assert "u" in out and "t" in out
+            assert "u" in out
+            assert "t" in out
             fake_backend.open.assert_awaited_once_with("https://example.com")
 
     @pytest.mark.asyncio

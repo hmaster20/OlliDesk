@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 from pathlib import Path
 
 import pytest
@@ -11,10 +9,8 @@ import pytest
 from core.mcp_client import (
     MCPClient,
     MCPError,
-    MCPToolInfo,
     MCPToolResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock MCP-сервер (крошечный python-скрипт, отвечающий на MCP-запросы).

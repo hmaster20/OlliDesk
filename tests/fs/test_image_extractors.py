@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from fs.image_extractors import (
-    IMAGE_EXTENSIONS,
     extract_image,
     image_thumbnail_base64,
     is_image,

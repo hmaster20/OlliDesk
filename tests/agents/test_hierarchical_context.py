@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agents.ollama_client import ChatMessage
 from core.context_budget import (
     HOT_WINDOW_SHARE,
@@ -138,8 +136,8 @@ class TestOptimizeNCtxHint:
         from pathlib import Path
         from unittest.mock import patch
 
-        from agents.hardware_profile import CPUInfo, HardwareProfile, RAMInfo
         from agents.gguf_reader import GGUFMeta
+        from agents.hardware_profile import CPUInfo, HardwareProfile, RAMInfo
         from agents.slm_optimizer import optimize
 
         meta = GGUFMeta(

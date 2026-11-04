@@ -20,6 +20,7 @@ import json
 from enum import StrEnum
 from typing import NotRequired, TypedDict
 
+
 class EventKind(StrEnum):
     """Все виды событий OlliDesk (2.5).
 

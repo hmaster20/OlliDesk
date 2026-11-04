@@ -147,6 +147,10 @@ def _event_bus_sink(record: dict) -> None:
             "timestamp": record["time"].strftime("%H:%M:%S"),
         }
         EventBus.instance().emit(EventKind.LOG.value, payload)
+    except Exception:
+        # Sink не должен валить логирование ни при каких условиях.
+        logger.debug("EventBus-sink упал", exc_info=True)
+
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.

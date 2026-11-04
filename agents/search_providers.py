@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 

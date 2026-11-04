@@ -15,10 +15,11 @@
 import json
 import re
 import time
+
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 

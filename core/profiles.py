@@ -18,12 +18,11 @@
 (режим: chat/plan/agent) — это ортогональные вещи.
 """
 
-from pydantic import BaseModel, Field, field_validator
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ProfileToolPolicyStr = Literal["auto", "ask_first", "excluded"]
 

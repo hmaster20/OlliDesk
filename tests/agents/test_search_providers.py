@@ -10,10 +10,8 @@ import pytest
 from agents.search_providers import (
     DDGProvider,
     OllamaWebSearchProvider,
-    OpenSERPProvider,
-    SearXNGProvider,
     SearchProviderError,
-    SearchResult,
+    SearXNGProvider,
     YandexSearchAPIProvider,
     build_chain,
 )
@@ -62,7 +60,8 @@ class TestBuildChain:
         assert build_chain(cfg) == []
         cfg2 = SearchConfig(providers=["ollama"], ollama_api_key="k")
         chain = build_chain(cfg2)
-        assert chain and chain[0].name == "ollama"
+        assert chain
+        assert chain[0].name == "ollama"
 
 
 class TestSearXNG:
@@ -103,9 +102,8 @@ class TestSearXNG:
         with patch(
             "agents.search_providers.httpx.AsyncClient",
             return_value=mock_client,
-        ):
-            with pytest.raises(SearchProviderError, match="HTTP 500"):
-                await provider.search("test")
+        ), pytest.raises(SearchProviderError, match="HTTP 500"):
+            await provider.search("test")
 
     @pytest.mark.asyncio
     async def test_network_error(self) -> None:
@@ -120,9 +118,8 @@ class TestSearXNG:
         with patch(
             "agents.search_providers.httpx.AsyncClient",
             return_value=mock_client,
-        ):
-            with pytest.raises(SearchProviderError, match="network"):
-                await provider.search("test")
+        ), pytest.raises(SearchProviderError, match="network"):
+            await provider.search("test")
 
 
 class TestYandex:
@@ -144,9 +141,8 @@ class TestYandex:
         with patch(
             "agents.search_providers.httpx.AsyncClient",
             return_value=mock_client,
-        ):
-            with pytest.raises(SearchProviderError, match="403"):
-                await provider.search("test")
+        ), pytest.raises(SearchProviderError, match="403"):
+            await provider.search("test")
 
 
 class TestOllama:
@@ -167,9 +163,8 @@ class TestOllama:
         with patch(
             "agents.search_providers.httpx.AsyncClient",
             return_value=mock_client,
-        ):
-            with pytest.raises(SearchProviderError, match="401"):
-                await provider.search("test")
+        ), pytest.raises(SearchProviderError, match="401"):
+            await provider.search("test")
 
 
 class TestDDG:

@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TypeVar, get_type_hints
+from typing import TYPE_CHECKING, Any, TypeVar, get_type_hints
 
 import httpx
 from loguru import logger
@@ -626,7 +626,7 @@ class ToolRegistry:
                 name=tool_call.name,
                 content=redaction.redact_only(str(result_content)),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"Инструмент {tool_call.name}: таймаут {timeout_s:.1f}с "
                 f"(timeout_s из ToolSpec)"

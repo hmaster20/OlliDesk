@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import cast
 
-import pytest
-
 from agents.agent_loop import AgentContext, AgentLoop, _build_system_prompt
 from agents.base import LLMBackend
 from agents.ollama_client import ChatChunk, TextPart

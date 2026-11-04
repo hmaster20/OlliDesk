@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agents.tool_registry import ToolSpec
 from core.config import AgentMode, AppConfig, ToolPolicy
-from core.policy import PolicyStep, explain_policy
+from core.policy import explain_policy
 from core.profiles import ProfileConfig, ProfileToolPolicies
 from core.security import SecurityPolicy
 

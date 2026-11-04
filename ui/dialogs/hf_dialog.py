@@ -16,11 +16,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any
 
 from loguru import logger
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -41,7 +39,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QUrl
 
 from agents.hf_search import (
     HFModel,
@@ -51,7 +48,6 @@ from agents.hf_search import (
     model_info,
     search_models,
 )
-
 
 # ---------------------------------------------------------------------------
 # Фоновые потоки

@@ -19,7 +19,6 @@
 через пересборку `parts`.
 """
 
-from core.context_budget import estimate_tokens
 from __future__ import annotations
 
 import json

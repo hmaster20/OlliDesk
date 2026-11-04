@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.bench.runner import BenchSummary, TaskResult
 
 

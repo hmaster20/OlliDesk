@@ -1252,7 +1252,7 @@ class ConfigLoader:
                 yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
             logger.info(f"Конфигурация сохранена: {path}")
         except Exception as e:
-            raise ConfigError(f"Ошибка сохранения конфигурации {path}: {e}") from es
+            raise ConfigError(f"Ошибка сохранения конфигурации {path}: {e}") from e
 
 
 config_loader = ConfigLoader()

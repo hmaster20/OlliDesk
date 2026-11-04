@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tools.test_ops import (
-    TestFailure,
-    TestResult,
     _parse_dotnet,
     _parse_go,
     _parse_pytest,

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
-from unittest.mock import MagicMock
 
 import pytest
 
 from agents.ollama_client import ToolCall
-from agents.tool_registry import ToolRegistry, ToolResult, tool
+from agents.tool_registry import ToolRegistry, tool
 from core.audit import AuditLog
-from core.config import AgentMode, ToolPolicy
+from core.config import ToolPolicy
 from core.policy import EffectivePolicy
 from core.services.tool_service import ToolService
 

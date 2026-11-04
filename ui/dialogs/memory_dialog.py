@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,

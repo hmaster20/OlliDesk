@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -34,7 +34,7 @@ from agents.ollama_client import ToolCall
 from agents.tool_registry import ToolRegistry, ToolResult
 from core.audit import AuditLog, get_audit_log
 from core.event_bus import emit_event
-from core.events import EventKind, args_hash
+from core.events import EventKind
 from core.policy import EffectivePolicy
 from tools.git_ops import create_file_snapshot
 

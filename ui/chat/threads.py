@@ -1,10 +1,9 @@
 """Фоновые потоки для панели чата."""
 
+from __future__ import annotations
 import asyncio
 import json
 import threading
-from core.event_bus import emit_event
-from core.events import EventKind
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,6 +15,7 @@ from agents.agent_loop import (
     AgentContext,
     AgentIterationLimitError,
     AgentLoop,
+    SoftBudget,
 )
 from agents.base import LLMBackend
 from agents.download_slm import download_model, get_model_parts
@@ -25,6 +25,8 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.orchestrator import Orchestrator, RunResult
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
+from core.event_bus import emit_event
+from core.events import EventKind
 from fs.vector_store import SearchResult
 
 if TYPE_CHECKING:
@@ -258,11 +260,10 @@ class AgentChatThread(QThread):
         # [2.10] SoftBudget строится из AppConfig; для CHAT/PLAN
         # `iterations` переопределяется `max_iterations` внутри run().
         from core.config import load_config
-        from agents.agent_loop import SoftBudget
 
         try:
             _cfg = load_config()
-           _budget = self.soft_budget
+            _budget = self.soft_budget
         except Exception:
             pass
 
@@ -713,7 +714,7 @@ class _ModelPoolLoadThread(QThread):
             from agents.local_llm_client import LocalLLMClient
             from agents.model_pool import ModelPool, Role, RoleSpec
             from agents.slm_optimizer import OptimizedParams, optimize
-            from agents.slm_selector import select_park, select_pair_park
+            from agents.slm_selector import select_pair_park, select_park
             from core.config import load_config
 
             # 4.1: парк моделей по ролям из активного профиля.
