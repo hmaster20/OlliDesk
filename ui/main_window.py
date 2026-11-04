@@ -516,14 +516,20 @@ class MainWindow(QMainWindow):
     # 🆕 Слот: смена темы → Monaco.
     @Slot(str)
     def _on_theme_changed_for_editor(self, theme: str) -> None:
-        """Прокидывает смену темы в Monaco Editor.
-
-        Вызывается из `MainWindow.theme_changed` (испускается
-        `_toggle_theme`), когда `OlliDeskApp._on_theme_changed` уже
-        применил QSS к приложению.
+        """
+        [9.5.1] Смена темы: Monaco Editor + ChatPanel (пузыри, reasoning,
+        tool-карточки).
+        Прокидывает смену темы в Monaco Editor.
         """
         if hasattr(self, "editor_widget"):
             self.editor_widget.set_theme(theme)
+        if hasattr(self, "chat_panel") and self.chat_panel is not None:
+            try:
+                self.chat_panel.set_theme(theme)
+            except Exception:
+                logger.debug(
+                    "chat_panel.set_theme упал", exc_info=True
+                )
 
     @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):

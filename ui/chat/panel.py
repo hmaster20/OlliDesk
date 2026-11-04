@@ -265,6 +265,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [2.12] id текущего inbox-запроса (для complete/fail).
         self._current_inbox_id: str | None = None
 
+        # [9.5.1] Текущая тема чата (передаётся в ChatMessageItem).
+        self._is_dark: bool = True
+        try:
+            from core.config import load_config as _load_cfg_theme
+
+            self._is_dark = _load_cfg_theme().theme != "light"
+        except Exception:
+            pass
+
         # --- Новые поля для серого потока и паспорта ---
         self._research_mode_active: bool = False
         self._research_cancelled: bool = False
@@ -429,7 +438,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ---------------------------------------------------------
 
     def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
-        widget = ChatMessageItem(role, content, mode_name=mode_name)
+        widget = ChatMessageItem(
+            role, content, mode_name=mode_name, dark=self._is_dark
+        )
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
@@ -462,6 +473,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             msg.role,
             content="",
             mode_name=self._current_mode_name(),
+            dark=self._is_dark,
         )
         # Очередь pending-карточек по имени инструмента. Список, потому что
         # модель может вызвать один и тот же инструмент дважды подряд.
@@ -494,7 +506,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         создаём его.
         """
         if self._last_assistant_widget is None:
-            widget = ChatMessageItem("assistant", "", mode_name=self._current_mode_name())
+            widget = ChatMessageItem(
+                "assistant", "", mode_name=self._current_mode_name(),
+                dark=self._is_dark,
+            )
             self._last_assistant_widget = widget
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
@@ -3891,6 +3906,41 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._dashboard is not None:
             self._dashboard.set_activity_state(self._activity_state)
 
+    # ------------------------------------------------------------------
+    # [9.5.1] Тема чата
+    # ------------------------------------------------------------------
+
+    def set_theme(self, theme: str) -> None:
+        """Переключает тему чата (light / dark).
+
+        Вызывается из `MainWindow._on_theme_changed_for_editor`. Пузыри,
+        reasoning, tool-карточки перекрашиваются через
+        `_apply_theme_to_messages`. `StatusDashboard` и Monaco — отдельно,
+        их настраивает MainWindow.
+        """
+        self._is_dark = theme != "light"
+        self._apply_theme_to_messages()
+        logger.debug(f"ChatPanel theme={theme} (is_dark={self._is_dark})")
+
+    def _apply_theme_to_messages(self) -> None:
+        """Рекурсивно применяет тему ко всем виджетам в scroll-ленте."""
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is None:
+                continue
+            apply = getattr(widget, "apply_theme", None)
+            if callable(apply):
+                try:
+                    apply(self._is_dark)
+                except Exception:
+                    logger.debug(
+                        f"apply_theme упал на {type(widget).__name__}",
+                        exc_info=True,
+                    )
+
     def _sync_dashboard(self) -> None:
         """Синхронизирует бэкенд/pipeline/tok/s с приборной панелью."""
         if self._dashboard is None:
@@ -4323,3 +4373,4 @@ except Exception:
                 "MCP для permissions не зарегистрирован", exc_info=True
             )
         return registry
+

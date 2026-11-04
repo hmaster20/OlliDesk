@@ -46,7 +46,7 @@ class ColorTokens:
     accent: str
     accent_hover: str
     accent_pressed: str
-    accent_text: str  # текст на accent-фоне
+    accent_text: str
     accent_muted: str
 
     # Семантика
@@ -67,6 +67,22 @@ class ColorTokens:
     # Строки таблиц
     row_alt: str
 
+    # [9.5.1] Пузыри чата.
+    bubble_bg: str = ""  # фон пузыря assistant
+    bubble_user_bg: str = ""  # фон пузыря user
+    bubble_border: str = ""  # граница пузыря (тонкая)
+    # [9.5.1] Код-блоки (pygments + header).
+    code_bg: str = ""
+    code_text: str = ""
+    code_header_bg: str = ""
+    code_header_text: str = ""
+    # [9.5.1] Reasoning-виджет.
+    reasoning_bg: str = ""
+    reasoning_text: str = ""
+    # [9.5.1] Tool-карточки.
+    tool_card_bg: str = ""
+    tool_card_border: str = ""
+    tool_preview_text: str = ""
 
 DARK_COLORS = ColorTokens(
     bg="#2b2b2b",
@@ -75,8 +91,8 @@ DARK_COLORS = ColorTokens(
     surface_hover="#4c5052",
     surface_pressed="#555555",
     header_bg="#3c3f41",
-    text="#c4c4c4",  # было #bbbbbb — 4.82:1 на surface_hover (порог 4.5)
-    text_muted="#909090",  # было #7a7a7a — 3.53:1 на surface (порог 3.0)
+    text="#c4c4c4",
+    text_muted="#909090",
     text_disabled="#555555",
     header_text="#d4d4d4",
     border="#555555",
@@ -96,6 +112,22 @@ DARK_COLORS = ColorTokens(
     scrollbar_hover="#5c6062",
     scrollbar_bg="#2b2b2b",
     row_alt="#333637",
+    # [9.5.1] Пузыри чата.
+    bubble_bg="#2f2f38",
+    bubble_user_bg="#3d3d48",
+    bubble_border="#3a3a48",
+    # [9.5.1] Код-блоки.
+    code_bg="#23232c",
+    code_text="#e0e0e0",
+    code_header_bg="#2f2f3c",
+    code_header_text="#9a9ab0",
+    # [9.5.1] Reasoning.
+    reasoning_bg="#262630",
+    reasoning_text="#a8a8b8",
+    # [9.5.1] Tool-карточки.
+    tool_card_bg="rgba(120,120,140,0.06)",
+    tool_card_border="#3a3a48",
+    tool_preview_text="#a8a8b8",
 )
 
 LIGHT_COLORS = ColorTokens(
@@ -117,7 +149,7 @@ LIGHT_COLORS = ColorTokens(
     accent_text="#ffffff",
     accent_muted="#d4a373",
     success="#4e9a06",
-    warning="#b08000",  # было #b8860b — 3.32:1 на bg (порог 3.0)
+    warning="#b08000",
     danger="#c0392b",
     info="#1976d2",
     selection_bg="#9e5318",
@@ -126,6 +158,22 @@ LIGHT_COLORS = ColorTokens(
     scrollbar_hover="#a8a8a8",
     scrollbar_bg="#e8e8e8",
     row_alt="#f7f7f7",
+    # [9.5.1] Пузыри чата.
+    bubble_bg="#ffffff",
+    bubble_user_bg="#e8eef5",
+    bubble_border="#e0e0e0",
+    # [9.5.1] Код-блоки.
+    code_bg="#f5f5f5",
+    code_text="#1e1e1e",
+    code_header_bg="#e8e8e8",
+    code_header_text="#666666",
+    # [9.5.1] Reasoning.
+    reasoning_bg="#f8f8f8",
+    reasoning_text="#555555",
+    # [9.5.1] Tool-карточки.
+    tool_card_bg="rgba(120,120,140,0.04)",
+    tool_card_border="#d0d0d0",
+    tool_preview_text="#666666",
 )
 
 # ============================================================================
