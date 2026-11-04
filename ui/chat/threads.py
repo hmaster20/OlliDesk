@@ -119,6 +119,9 @@ class AgentChatThread(QThread):
         max_iterations: int = 10,
         orchestrator: Orchestrator | None = None,
         soft_budget: SoftBudget | None = None,
+        # [2.12] Durable inbox.
+        inbox_id: str | None = None,
+        inbox: Any = None,  # SessionInbox | None
     ):
         super().__init__()
         self.client = client
@@ -130,6 +133,9 @@ class AgentChatThread(QThread):
         self.max_iterations = max_iterations
         self.orchestrator = orchestrator
         self.soft_budget = soft_budget
+        # [2.12]
+        self.inbox_id = inbox_id
+        self.inbox = inbox
 
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
@@ -158,7 +164,20 @@ class AgentChatThread(QThread):
     # ------------------------------------------------------------------
 
     async def _run_agent(self):
-        # Пытаемся распознать research-вопрос для роутинга.
+        # [2.12] Атомарно забираем запрос из inbox (pending → running).
+        # Если claim вернул False — запись уже забрана (крайне редко;
+        # например, вторая сессия по ошибке). Продолжаем без inbox.
+        if self.inbox is not None and self.inbox_id:
+            try:
+                claimed = self.inbox.claim(self.inbox_id)
+                if not claimed:
+                    logger.warning(
+                        f"inbox.claim: id={self.inbox_id[:8]}… не pending "
+                        f"(возможно, уже забрали)"
+                    )
+            except Exception:
+                logger.debug("inbox.claim упал", exc_info=True)
+
         last_user = next(
             (m for m in reversed(self.messages_history) if m.role == "user"),
             None,

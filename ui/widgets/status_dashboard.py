@@ -185,11 +185,17 @@ class StatusDashboard(QWidget):
         self.search.setToolTip("Цепочка поиска: первый доступный провайдер")
         layout.addWidget(self.search)
 
+        # [2.12] Индикатор inbox (pending запросы).
+        self.inbox = _PillLabel("inbox")
+        self.inbox.setToolTip("Durable inbox: запросы в очереди")
+        layout.addWidget(self.inbox)
+
         self.set_budget(None)
         self.set_cache(0, 0)
         self.set_coder("⚡", "coder", "—")
         self.set_browser("isolated", available=False)
         self.set_search("", available=False)
+        self.set_inbox(0)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
@@ -436,5 +442,29 @@ class StatusDashboard(QWidget):
             f"Настроить: config.yaml → search.providers"
         )
         self.search.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [2.12] Durable inbox
+    # ------------------------------------------------------------------
+
+    def set_inbox(self, pending: int) -> None:
+        """Показывает счётчик pending-запросов.
+
+        Args:
+            pending: Сколько запросов в состоянии ``pending``.
+        """
+        if pending <= 0:
+            self.inbox.set_state(
+                "— inbox", _C_OFF, "Durable inbox пуст"
+            )
+            return
+        color = _C_WARN if pending >= 5 else _C_INFO
+        text = f"📥 inbox: {pending}"
+        tooltip = (
+            f"{pending} незавершённых запросов.\n"
+            f"«running» при упавшем процессе автоматически "
+            f"переходит в «pending» при старте."
+        )
+        self.inbox.set_state(text, color, tooltip)
 
 __all__ = ["StatusDashboard"]

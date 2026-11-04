@@ -82,6 +82,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("policy", "policy"),
     ("mcp", "mcp"),
     ("browser", "browser"),
+    ("inbox", "inbox"),
 )
 
 
@@ -436,6 +437,19 @@ class LiveEventsPanel(QWidget):
                 f"({', '.join(str(a) for a in attempted)})",
                 _C_LOG_ERROR,
             )
+
+        # 2.12: inbox.
+        if kind == EventKind.INBOX_ENQUEUED.value:
+            iid = str(payload.get("id", ""))[:8]
+            mode = payload.get("mode", "?")
+            return f"📥 inbox.enqueued: {iid}… ({mode})", _C_OTHER
+        if kind == EventKind.INBOX_DELIVERED.value:
+            iid = str(payload.get("id", ""))[:8]
+            return f"📥 inbox.delivered: {iid}…", _C_OK
+        if kind == EventKind.INBOX_FAILED.value:
+            iid = str(payload.get("id", ""))[:8]
+            err = str(payload.get("error", ""))[:80]
+            return f"📥 inbox.failed: {iid}… — {err}", _C_LOG_ERROR
 
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")

@@ -92,6 +92,7 @@ from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.live_events import LiveEventsPanel, QtEventBus
 from ui.widgets.pipeline_selectors import PipelineSelectors
 from ui.widgets.profiles_selector import ProfilesSelectorf
+from state.inbox import SessionInbox
 
 if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
@@ -258,6 +259,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # в тестах без памяти.
         self._memory_service: MemoryService | None = None
 
+        # 2.12: durable inbox. Ленивая инициализация через `_ensure_inbox`,
+        # чтобы тесты без SQLite не падали.
+        self._inbox: SessionInbox | None = None
+        # [2.12] id текущего inbox-запроса (для complete/fail).
+        self._current_inbox_id: str | None = None
+
         # --- Новые поля для серого потока и паспорта ---
         self._research_mode_active: bool = False
         self._research_cancelled: bool = False
@@ -361,6 +368,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._detect_backends_timer.setSingleShot(True)
         self._detect_backends_timer.timeout.connect(self._detect_backends)
         self._detect_backends_timer.start(100)
+
+        # [2.12] Восстанавливаем inbox (running → pending) и обновляем
+        # индикатор. Делаем это сразу после создания UI — пользователь
+        # увидит счётчик незавершённых запросов.
+        self._recover_inbox_on_startup()
 
         # [7] Фоновая инициализация MCP-серверов.
         self._mcp_init_thread: QThread | None = None
@@ -1329,6 +1341,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._command_popup_active = False
         self._last_assistant_widget = None
         self._last_run_params = None
+        # [2.12] Сбрасываем ссылку на inbox-запись.
+        self._current_inbox_id = None
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
         self.status_label.setText("Чат очищен")
@@ -1435,7 +1449,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
-        # 0.1.3b: новый запрос — новый буфер частей.
         self._current_assistant_parts = []
         self._current_assistant_text = ""
         self._current_assistant_reasoning = ""
@@ -1458,11 +1471,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._create_session()
 
-        # [D9] идемпотентность: стабильный id = hash(role|content|session).
+        # [2.12] Durable inbox: пишем запрос в pending ДО запуска.
+        # Если процесс упадёт — `recover()` при следующем старте
+        # покажет счётчик. `AgentChatThread` вызовет `claim()` в run().
+        inbox = self._ensure_inbox()
+        self._current_inbox_id = None
+        if inbox is not None and self._session_id:
+            try:
+                self._current_inbox_id = inbox.enqueue(
+                    self._session_id,
+                    text,
+                    mode=self._current_mode().value,
+                )
+                self._sync_inbox_indicator()
+            except Exception:
+                logger.warning(
+                    "inbox: не удалось поставить запрос в очередь",
+                    exc_info=True,
+                )
+                self._current_inbox_id = None
+
+        # (дальше — как было)
         import hashlib
 
-        msg_id = hashlib.sha1(f"{self._session_id or ''}|user|{text}".encode()).hexdigest()[:16]
-
+        msg_id = hashlib.sha1(
+            f"{self._session_id or ''}|user|{text}".encode()
+        ).hexdigest()[:16]
         if any(m.id == msg_id for m in self._messages):
             logger.debug(f"Повтор user-сообщения {msg_id!r} — пропускаем дубль")
             return
@@ -1745,6 +1779,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
             soft_budget=override_budget,
+            # [2.12] inbox: claim в run() + complete/fail по завершении.
+            inbox_id=self._current_inbox_id,
+            inbox=self._inbox,
         )
         self._last_run_params = {
             "kind": "chat",
@@ -1885,6 +1922,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
             soft_budget=override_budget,
+            # [2.12] inbox: claim в run() + complete/fail по завершении.
+            inbox_id=self._current_inbox_id,
+            inbox=self._inbox,
         )
 
         self._last_run_params = {
@@ -2530,7 +2570,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     @Slot(dict)
     def _on_agent_finished(self, payload: dict) -> None:
         """Завершение прогона: причина остановки + снимок бюджета (2.10)
-        + запись рефлексии в память (4.3)."""
+        + запись рефлексии в память (4.3)
+        + закрытие inbox-записи (2.12)."""
         reason = payload.get("finish_reason")
         budget = payload.get("budget")
         if self._dashboard is not None:
@@ -2543,8 +2584,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             f"iterations={payload.get('iterations')}, "
             f"elapsed={payload.get('elapsed_s')}с"
         )
+
+        # [2.12] Закрытие inbox-записи.
+        self._finalize_inbox(reason=reason)
+
         # [4.3] Автоматическая рефлексия при успешном/частичном завершении.
-        # Не пишем при user_cancel (бессмысленно) и при ошибке.
         if reason in (None, "stop", "length", "budget.exceeded"):
             outcome = {
                 "stop": "success",
@@ -2555,6 +2599,35 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 outcome=outcome,
                 summary_hint=self._current_assistant_text[:300],
             )
+
+    def _finalize_inbox(self, *, reason: str | None) -> None:
+        """[2.12] Закрывает текущую inbox-запись по причине.
+
+        * ``stop`` / ``length`` / ``budget.exceeded`` → ``complete``
+          (запрос выполнен, результат в сессии);
+        * ``user_cancel`` / ``None`` / прочее → ``fail``
+          (запрос прерван; при следующем запуске pending не висит,
+          потому что запись в failed).
+
+        Args:
+            reason: ``finish_reason`` из `agent_finished`.
+        """
+        if not self._current_inbox_id or self._inbox is None:
+            return
+        try:
+            if reason in ("stop", "length", "budget.exceeded"):
+                self._inbox.complete(self._current_inbox_id)
+            else:
+                self._inbox.fail(
+                    self._current_inbox_id, reason or "unknown"
+                )
+        except Exception:
+            logger.debug(
+                "inbox: не удалось закрыть запись", exc_info=True
+            )
+        finally:
+            self._current_inbox_id = None
+            self._sync_inbox_indicator()
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
@@ -2969,8 +3042,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _on_agent_error(self, error_msg: str):
         # Помечаем серый поток как прерванный, если он был.
         if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
-        # [9.5.4] Индикатор: ошибка (короткий detail).
+            self._current_thought_stream.mark_interrupted(
+                f"Ошибка: {error_msg[:120]}"
+            )
+        # [2.12] inbox: fail.
+        if self._inbox is not None and self._current_inbox_id:
+            try:
+                self._inbox.fail(self._current_inbox_id, error_msg[:500])
+            except Exception:
+                logger.debug("inbox.fail упал", exc_info=True)
+            finally:
+                self._current_inbox_id = None
+                self._sync_inbox_indicator()
+         # [9.5.4] Индикатор: ошибка (короткий detail).
         self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(f"Ошибка: {error_msg[:200]}", is_error=True)
@@ -2992,6 +3076,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """[2.10] Hard ceiling достигнут (safety net, а не «лимит»)."""
         self._reset_research_state()
         self._reset_send_button()
+        # [2.12] inbox: hard ceiling — запрос завершён «failed»,
+        # следующий запрос будет новой записью.
+        if self._inbox is not None and self._current_inbox_id:
+            try:
+                self._inbox.fail(
+                    self._current_inbox_id, "iteration_limit"
+                )
+            except Exception:
+                logger.debug("inbox.fail упал", exc_info=True)
+            finally:
+                self._current_inbox_id = None
+                self._sync_inbox_indicator()
         self._show_activity(
             "⏸ Достигнут предел шагов. «Продолжить» — ещё шаги, "
             "«Продолжить до результата» — без бюджета."
@@ -3585,6 +3681,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             with contextlib.suppress(Exception):
                 self._memory_service.close()
             self._memory_service = None
+        # [2.12] Закрываем inbox.
+        if self._inbox is not None:
+            with contextlib.suppress(Exception):
+                self._inbox.close()
+            self._inbox = None
         # [7] Закрываем MCP-серверы.
         try:
             from tools.mcp_ops import MCPManager
@@ -3917,6 +4018,68 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         lines.append("Локально: ✅" if info.is_local else "Локально: ⬇️ не скачана")
         return "<br>".join(lines)
 
+    # ------------------------------------------------------------------
+    # [2.12] Durable inbox
+    # ------------------------------------------------------------------
+
+    def _ensure_inbox(self) -> SessionInbox | None:
+        """Ленивое создание `SessionInbox`.
+
+        Возвращает ``None``, если SQLite не открывается (права, битый
+        файл) — тогда inbox не работает, но ChatPanel продолжает
+        функционировать.
+        """
+        if self._inbox is not None:
+            return self._inbox
+        try:
+            self._inbox = SessionInbox()
+            return self._inbox
+        except Exception:
+            logger.warning(
+                "2.12: SessionInbox не инициализирован — inbox отключён",
+                exc_info=True,
+            )
+            return None
+
+    def _recover_inbox_on_startup(self) -> None:
+        """2.12: восстанавливает «зависшие» running → pending при старте.
+
+        Вызывается из `__init__` после `_setup_ui`. Показывает счётчик
+        `pending` в `StatusDashboard`, если есть незавершённые запросы.
+        """
+        inbox = self._ensure_inbox()
+        if inbox is None:
+            return
+        try:
+            # Очистка старых done/failed.
+            try:
+                inbox.cleanup_old()
+            except Exception:
+                logger.debug("inbox.cleanup_old упал", exc_info=True)
+            recovered = inbox.recover()
+            if recovered:
+                logger.warning(
+                    f"inbox: восстановлено {recovered} незавершённых запросов"
+                )
+            self._sync_inbox_indicator()
+        except Exception:
+            logger.debug(
+                "inbox recover упал", exc_info=True
+            )
+
+    def _sync_inbox_indicator(self) -> None:
+        """2.12: обновляет индикатор inbox в дашборде."""
+        if self._dashboard is None:
+            return
+        inbox = self._inbox
+        if inbox is None:
+            self._dashboard.set_inbox(0)
+            return
+        try:
+            pending = inbox.count_pending()
+        except Exception:
+            pending = 0
+        self._dashboard.set_inbox(pending)
 
     def _ensure_memory_service(self) -> MemoryService | None:
         """4.3: ленивое создание MemoryService.

@@ -83,6 +83,11 @@ class EventKind(StrEnum):
     SEARCH_PROVIDER_USED = "search.provider.used"
     SEARCH_CHAIN_EXHAUSTED = "search.chain.exhausted"
 
+    # --- 2.12: durable inbox ---
+    INBOX_ENQUEUED = "inbox.enqueued"
+    INBOX_DELIVERED = "inbox.delivered"
+    INBOX_FAILED = "inbox.failed"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -251,6 +256,25 @@ class SearchChainExhaustedPayload(TypedDict):
     attempted: list[str]
     errors: list[str]
 
+# ---------------------------------------------------------------------------
+# 2.12: durable inbox
+# ---------------------------------------------------------------------------
+
+
+class InboxEnqueuedPayload(TypedDict):
+    id: str
+    session_id: str
+    mode: str
+
+
+class InboxDeliveredPayload(TypedDict):
+    id: str
+    state: str  # "done"
+
+
+class InboxFailedPayload(TypedDict):
+    id: str
+    error: str
 
 def args_hash(args: dict) -> str:
     """Стабильный 16-символьный хеш аргументов tool-call'а.
@@ -341,5 +365,8 @@ __all__ = [
     "McpErrorPayload",
     "SearchProviderUsedPayload",
     "SearchChainExhaustedPayload",
+    "InboxEnqueuedPayload",
+    "InboxDeliveredPayload",
+    "InboxFailedPayload",
     "args_hash",
 ]
