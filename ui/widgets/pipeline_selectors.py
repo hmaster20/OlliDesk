@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from loguru import logger
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -42,6 +43,19 @@ class PipelineSelectors(QWidget):
         super().__init__(parent)
         self._config = config
         self._updating = False
+        # [9.3.2] Активный профиль — для подсветки coder-моделей.
+        self._active_profile_id: str = ""
+        # Иконки ролей (9.3.2): coder / reasoning / moE / router / planner /
+        # verifier / embed. Показываются в префиксе названия.
+        self._role_icons: dict[str, str] = {
+            "coder": "⚡",
+            "reasoning": "🧠",
+            "moE": "📦",
+            "router": "🔀",
+            "planner": "📋",
+            "verifier": "✅",
+            "embed": "🔤",
+        }
 
         # [9.11] Ресурс «список моделей». Не мигает при refresh:
         # при обновлении combo сохраняет старые items до `set_value`.
@@ -126,6 +140,22 @@ class PipelineSelectors(QWidget):
     # Заполнение ComboBox'ов
     # ------------------------------------------------------------------
 
+    def set_active_profile(self, profile_id: str) -> None:
+        """[9.3.2] Обновляет активный профиль и перерисовывает ComboBox'ы.
+
+        В профиле ``development`` coder-модели выделяются жирным и
+        цветом-акцентом. В ``research``/``learning`` — обычный стиль.
+
+        Args:
+            profile_id: ``"development"`` | ``"research"`` | ``"learning"``
+                или id пользовательского профиля.
+        """
+        if profile_id == self._active_profile_id:
+            return
+        self._active_profile_id = profile_id
+        # Перерисовываем без похода в HF — только метки.
+        self._apply_models_to_combos()
+
     def refresh_models(self) -> None:
         """Перечитывает список моделей через `AsyncResource` (9.11).
 
@@ -200,30 +230,46 @@ class PipelineSelectors(QWidget):
         combo: QComboBox,
         models: list[SLMModelInfo],
         current_id: str,
-    ) -> None:
-        """Заполняет один ComboBox (без `clear` — guard 9.11).
+        ) -> None:
+        """Заполняет один ComboBox (guard 9.11) + подсветка coder (9.3.2).
 
-        Проверка «items уже такие же» — чтобы не дёргать `clear()` без
-        надобности. Если набор не изменился, combo не перерисовывается
-        (нет «моргания», нет сброса выделения).
+        * Иконки ролей (⚡ coder, 🧠 reasoning, 📦 moE, …) — в префиксе.
+        * В профиле ``development`` модели с тегом ``coder`` выделяются
+          жирным шрифтом и цветом-акцентом.
+        * Метки пересчитываются при `set_active_profile`, без запроса в HF.
         """
         from agents.download_slm import is_model_installed
 
-        # Собираем целевой список (id, label, tooltip).
+        is_dev = self._active_profile_id == "development"
+        accent = QColor("#d4a373")
+
+        # Собираем целевой список.
         target: list[tuple[str, str, str]] = [("", "(автовыбор)", "")]
         for m in models:
             installed = is_model_installed(m.file)
-            prefix = "✅ " if installed else "⬇️ "
-            label = f"{prefix}{m.display_name}"
+            install_prefix = "✅ " if installed else "⬇️ "
+            # Иконки ролей (может быть несколько — берём первые 2).
+            role_icons: list[str] = []
+            for tag in m.tags:
+                icon = self._role_icons.get(tag)
+                if icon and icon not in role_icons:
+                    role_icons.append(icon)
+            role_prefix = "".join(role_icons[:2])
+            if role_prefix:
+                role_prefix += " "
+            label = f"{role_prefix}{install_prefix}{m.display_name}"
             target.append((m.id, label, self._build_model_tooltip(m, installed)))
 
-        # Сверяем с текущими.
+        # Сверяем с текущими (без учёта стилей — только text/data).
         current: list[tuple[str, str]] = [
-            (combo.itemData(i) or "", combo.itemText(i)) for i in range(combo.count())
+            (combo.itemData(i) or "", combo.itemText(i))
+            for i in range(combo.count())
         ]
         if current == [(tid, tlabel) for tid, tlabel, _ in target]:
-            # Ничего не изменилось — не трогаем combo (нет мигания).
             combo.setEnabled(True)
+            # Даже если текст не менялся, могли измениться стили —
+            # применяем идемпотентно (setItemData без изменения).
+            self._apply_coder_highlight(combo, models, is_dev, accent)
             return
 
         combo.blockSignals(True)
@@ -237,7 +283,48 @@ class PipelineSelectors(QWidget):
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
         combo.setEnabled(True)
+
+        # [9.3.2] Подсветка coder-моделей в профиле development.
+        self._apply_coder_highlight(combo, models, is_dev, accent)
         self._sync_combo_tooltip(combo)
+
+    def _apply_coder_highlight(
+        self,
+        combo: QComboBox,
+        models: list[SLMModelInfo],
+        is_dev: bool,
+        accent: QColor,
+    ) -> None:
+        """Устанавливает/снимает bold+цвет для coder-моделей.
+
+        Идемпотентно: если стиль уже установлен — повторный вызов
+        не меняет `itemText` и не дёргает `currentIndexChanged`.
+
+        Args:
+            combo: ComboBox для применения.
+            models: Модели, которые сейчас в combo (по id через itemData).
+            is_dev: ``True`` — профиль development (подсвечивать).
+            accent: Цвет акцента.
+        """
+        models_by_id = {m.id: m for m in models}
+        for i in range(combo.count()):
+            model_id = combo.itemData(i) or ""
+            info = models_by_id.get(str(model_id)) if model_id else None
+            is_coder = bool(info and "coder" in info.tags)
+            bold = bool(is_dev and is_coder)
+
+            font = QFont()
+            font.setBold(bold)
+            combo.setItemData(i, font, Qt.ItemDataRole.FontRole)
+
+            # ForegroundRole: акцент для coder в dev, иначе — сброс (None
+            # не установить, ставим пустой QColor через invalid).
+            if bold:
+                combo.setItemData(
+                    i, accent, Qt.ItemDataRole.ForegroundRole
+                )
+            else:
+                combo.setItemData(i, None, Qt.ItemDataRole.ForegroundRole)
 
     @staticmethod
     def _build_model_tooltip(m: SLMModelInfo, installed: bool) -> str:

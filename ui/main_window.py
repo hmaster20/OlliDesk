@@ -1250,19 +1250,38 @@ class MainWindow(QMainWindow):
         self.project_title_label.setText(self.project_path.name)
         self._update_window_title()
 
-        # [9.2] Восстанавливаем видимость дерева проекта.
+        # [9.2] Автопоказ структуры: если проект открывается ВПЕРВЫЕ
+        # (его нет в recent_projects) — показываем дерево всегда. Иначе
+        # уважаем сохранённое решение пользователя (F4 / кнопка «📁»).
+        project_str = str(self.project_path)
+        is_first_open = project_str not in (self.config.recent_projects or [])
         try:
             from core.config import load_config as _load_cfg
 
             _cfg = _load_cfg()
-            show_tree = bool(getattr(_cfg, "show_project_tree", False))
+            saved_visible = bool(
+                getattr(_cfg, "show_project_tree", False)
+            )
         except Exception:
-            show_tree = False
+            saved_visible = False
+
+        # Первое открытие → показать. Повторное → как решил пользователь.
+        show_tree = True if is_first_open else saved_visible
+
         self.left_panel.setVisible(show_tree)
         if hasattr(self.chat_panel, "project_tree_btn"):
             self.chat_panel.project_tree_btn.blockSignals(True)
             self.chat_panel.project_tree_btn.setChecked(show_tree)
             self.chat_panel.project_tree_btn.blockSignals(False)
+        # Синхронизируем галочку в меню (F4).
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(show_tree)
+            action.blockSignals(False)
+        # [9.1] Плюс сразу переключаемся на чат — пользователь пришёл
+        # за вопросами, а не за прошлым редактором.
+        self._switch_to_chat()
 
         # [9.4] Применяем профиль из конфига (мог быть изменён в другом окне).
         try:
@@ -1402,6 +1421,19 @@ class MainWindow(QMainWindow):
         self.file_tree_controller.set_project_root(path)
         self.project_title_label.setText(path.name)
         self._update_window_title()
+
+        # [9.2] @dir — пользователь только что прикрепил каталог, логично
+        # показать его структуру.
+        self.left_panel.setVisible(True)
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(True)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(True)
+            action.blockSignals(False)
 
         # Индекс хранится в .ollidesk внутри самого каталога
         self.vector_store = VectorStore(

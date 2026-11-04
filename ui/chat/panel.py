@@ -1143,9 +1143,25 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             _cfg_for_pipeline = None
         if _cfg_for_pipeline is not None:
             self._pipeline_selectors = PipelineSelectors(_cfg_for_pipeline)
-            self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
-            self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
-            self._pipeline_selectors.open_slm_dialog_requested.connect(self.slm_models_requested.emit)
+            self._pipeline_selectors.planner_changed.connect(
+                self._on_planner_changed
+            )
+            self._pipeline_selectors.analyst_changed.connect(
+                self._on_analyst_changed
+            )
+            self._pipeline_selectors.open_slm_dialog_requested.connect(
+                self.slm_models_requested.emit
+            )
+            # [9.3.2] Инициализируем активный профиль в селекторах.
+            try:
+                self._pipeline_selectors.set_active_profile(
+                    _cfg_for_pipeline.active_profile
+                )
+            except Exception:
+                logger.debug(
+                    "Не удалось установить активный профиль в PipelineSelectors",
+                    exc_info=True,
+                )
             top_bar.addWidget(self._pipeline_selectors, stretch=1)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
@@ -2818,6 +2834,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         try:
             svc.remember(reflection)
+            # [9.8] Обновляем индикатор сразу — иначе счётчик
+            # отстаёт до следующего `_sync_dashboard`.
+            self._sync_dashboard()
         except Exception:
             logger.warning(
                 "4.3: не удалось записать рефлексию", exc_info=True
@@ -4061,7 +4080,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
         if self._pipeline_selectors is not None:
-            self._pipeline_selectors.set_recommended_model(profile.recommended_model, profile.name)
+            self._pipeline_selectors.set_recommended_model(
+                profile.recommended_model, profile.name
+            )
+        # [9.3.2] Подсветка coder-моделей в профиле development.
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.set_active_profile(profile.id)
 
         # 6. Кнопка «Возврат в Разработку» — видна только для не-development.
         if hasattr(self, "back_to_development_btn"):
@@ -4309,6 +4333,51 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.debug(
                 "Не удалось обновить git-индикатор", exc_info=True
             )
+        # ... (всё, что было выше: backend/pipeline/coder/browser/search/git_branch)
+
+        # [4.3] Память: количество рефлексий + последние 3.
+        try:
+            svc = self._memory_service
+            count = 0
+            recent: list[str] = []
+            if svc is not None:
+                counts = svc.count()
+                count = int(counts.get("reflections", 0))
+                if count > 0:
+                    recent = [
+                        r.summary[:80]
+                        for r in svc.list_recent(limit=3)
+                    ]
+            self._dashboard.set_memory(count, recent)
+        except Exception:
+            logger.debug(
+                "Не удалось обновить memory-индикатор", exc_info=True
+            )
+
+        # [7] MCP: количество подключённых серверов.
+        try:
+            from tools.mcp_ops import MCPManager
+
+            mgr = MCPManager.instance()
+            connected = len(mgr._clients)
+            servers = list(mgr._clients.keys())
+            self._dashboard.set_mcp(connected, servers)
+        except Exception:
+            logger.debug(
+                "Не удалось обновить MCP-индикатор", exc_info=True
+            )
+
+        # [9.12] freedom_level активного профиля.
+        try:
+            if self._profile is not None:
+                self._dashboard.set_freedom(self._profile.freedom_level)
+            else:
+                self._dashboard.set_freedom("development")
+        except Exception:
+            logger.debug(
+                "Не удалось обновить freedom-индикатор", exc_info=True
+            )
+
 
     @staticmethod
     def _build_registry_model_tooltip(info: ModelInfo) -> str:
@@ -4570,11 +4639,13 @@ except Exception:
 
     @Slot(int, int)
     def _on_mcp_initialized(self, connected: int, total: int) -> None:
-        """Пост-обработка инициализации MCP в GUI-потоке."""
+        """Пост-обработка инициализации MCP в GUI-потоке (9.8)."""
         self.status_label.setText(
             f"✅ MCP: подключено {connected}/{total} серверов"
         )
         logger.info(f"MCP: {connected}/{total} серверов готовы")
+        # [9.8] Обновляем индикатор MCP сразу.
+        self._sync_dashboard()
 
     def registry_for_permissions(self) -> ToolRegistry:
         """[9.10] Возвращает полный ToolRegistry для Permissions Dashboard.

@@ -190,6 +190,21 @@ class StatusDashboard(QWidget):
         self.git_branch.setToolTip("Текущая git-ветка и hash")
         layout.addWidget(self.git_branch)
 
+        # [4.3] Эпизодическая память.
+        self.memory = _PillLabel("mem")
+        self.memory.setToolTip("Память: рефлексии по завершённым задачам")
+        layout.addWidget(self.memory)
+
+        # [7] MCP-серверы.
+        self.mcp = _PillLabel("mcp")
+        self.mcp.setToolTip("MCP: подключённые серверы")
+        layout.addWidget(self.mcp)
+
+        # [9.12] Свобода активного профиля.
+        self.freedom = _PillLabel("profile")
+        self.freedom.setToolTip("freedom_level активного профиля")
+        layout.addWidget(self.freedom)
+
         # [2.12] Индикатор inbox (pending запросы).
         self.inbox = _PillLabel("inbox")
         self.inbox.setToolTip("Durable inbox: запросы в очереди")
@@ -201,6 +216,9 @@ class StatusDashboard(QWidget):
         self.set_browser("isolated", available=False)
         self.set_search("", available=False)
         self.set_git_branch("", "")  # [9.4]
+        self.set_memory(0, [])  # [4.3]
+        self.set_mcp(0, [])  # [7]
+        self.set_freedom("development")  # [9.12]
         self.set_inbox(0)
 
     # ------------------------------------------------------------------
@@ -384,6 +402,95 @@ class StatusDashboard(QWidget):
             f"Hit rate: {hit_pct}% (уже в KV / обработано заново)"
         )
         self.cache.set_state(text, _C_OK if hit_pct >= 50 else _C_WARN, tooltip)
+
+    # ------------------------------------------------------------------
+    # [4.3] Эпизодическая память
+    # ------------------------------------------------------------------
+
+    def set_memory(self, count: int, recent: list[str] | None = None) -> None:
+        """Показывает количество рефлексий в памяти.
+
+        Args:
+            count: Сколько записей в `MemoryService`.
+            recent: Последние N summary (для tooltip, до 3-х).
+        """
+        if count <= 0:
+            self.memory.set_state("— mem", _C_OFF, "Память пуста")
+            return
+        text = f"🧠 mem: {count}"
+        tooltip = f"Рефлексий в памяти: {count}"
+        if recent:
+            tooltip += "\n\nПоследние:\n" + "\n".join(
+                f"  • {r[:80]}" for r in recent[:3]
+            )
+        self.memory.set_state(text, _C_INFO, tooltip)
+
+    # ------------------------------------------------------------------
+    # [7] MCP
+    # ------------------------------------------------------------------
+
+    def set_mcp(self, connected: int, servers: list[str] | None = None) -> None:
+        """Показывает количество подключённых MCP-серверов.
+
+        Args:
+            connected: Сколько серверов ответили на ``initialize``.
+            servers: Имена серверов (для tooltip).
+        """
+        if connected <= 0:
+            self.mcp.set_state("— mcp", _C_OFF, "MCP не подключён")
+            return
+        text = f"🔌 mcp: {connected}"
+        tooltip = f"Подключено MCP-серверов: {connected}"
+        if servers:
+            tooltip += "\n\n" + "\n".join(f"  • {s}" for s in servers[:5])
+            if len(servers) > 5:
+                tooltip += f"\n  … ещё {len(servers) - 5}"
+        self.mcp.set_state(text, _C_OK, tooltip)
+
+    # ------------------------------------------------------------------
+    # [9.12] freedom_level
+    # ------------------------------------------------------------------
+
+    def set_freedom(self, level: str) -> None:
+        """Показывает freedom_level активного профиля.
+
+        Args:
+            level: ``"safe"`` | ``"research"`` | ``"development"`` | ``"open"``.
+        """
+        icons = {
+            "safe": "🔒",
+            "research": "🔍",
+            "development": "🛠",
+            "open": "🌐",
+        }
+        colors = {
+            "safe": _C_OFF,
+            "research": _C_INFO,
+            "development": _C_OK,
+            "open": _C_ERR,  # «open» — максимальная свобода, красный
+        }
+        short = {
+            "safe": "safe",
+            "research": "research",
+            "development": "dev",
+            "open": "OPEN",
+        }
+        tooltips = {
+            "safe": "safe — только чтение; shell/git/browser запрещены",
+            "research": "research — чтение + web; shell/git/browser запрещены",
+            "development": "development — запись auto; shell/git ask_first",
+            "open": "open — всё auto (shell ask_first, secrets никогда)",
+        }
+        if level not in icons:
+            self.freedom.set_state(
+                "— profile", _C_OFF, "freedom_level не задан"
+            )
+            return
+        self.freedom.set_state(
+            f"{icons[level]} {short[level]}",
+            colors[level],
+            tooltips[level],
+        )
 
     def set_tools_from_label(self, label: str) -> None:
         """Совместимость с текущим `tool_status_label.setText(...)`."""
