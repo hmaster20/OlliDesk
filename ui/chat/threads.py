@@ -1,6 +1,7 @@
 """Фоновые потоки для панели чата."""
 
 from __future__ import annotations
+
 import asyncio
 import json
 import threading
@@ -546,7 +547,7 @@ class _SLMLoadThread(QThread):
         n_batch: int = 512,
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
-        params: "OptimizedParams | None" = None,
+        params: OptimizedParams | None = None,
     ):
         super().__init__()
         self.chat_path = chat_path

@@ -9,13 +9,15 @@ RAM 127 ГБ держит обе без напряжения.
 """
 
 from __future__ import annotations
-from loguru import logger
+
 import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
+
+from loguru import logger
 
 
 class Role(StrEnum):

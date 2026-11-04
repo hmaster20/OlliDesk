@@ -61,6 +61,8 @@ class BenchSummary:
     results: list[TaskResult]
 
 from agents.ollama_client import ChatMessage
+
+
 def _make_user(content: str) -> ChatMessage:
     return ChatMessage(role="user", content=content)
 async def _run_one_task(

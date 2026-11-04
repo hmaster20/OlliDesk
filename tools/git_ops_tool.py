@@ -1,7 +1,9 @@
 """Инструменты для работы с Git, доступные агенту."""
 
 from typing import Any
+
 from loguru import logger
+
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 from tools.git_ops import create_snapshot, get_git_status

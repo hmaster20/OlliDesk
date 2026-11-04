@@ -52,7 +52,6 @@ def main() -> int:
     from agents.slm_optimizer import optimize
     from agents.slm_selector import select_pair
     from agents.tool_registry import ToolRegistry
-    from core.config import load_config
     from tools.registry import ALL_TOOLS
 
     pair = select_pair()
