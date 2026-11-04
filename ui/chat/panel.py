@@ -2112,7 +2112,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self._agent_thread.respond_to_tool(False)
 
     def _allow_tool_for_session(self, tool_name: str) -> None:
-        """[2.7] Добавляет инструмент в `session_overrides` текущей сессии."""
+        """[2.7 + 9.10] Добавляет инструмент в `session_overrides`."""
         try:
             cfg = load_config()
             cfg.session_overrides[tool_name] = ToolPolicy.AUTO
@@ -2122,6 +2122,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.info(f"Session override: {tool_name} = auto")
             emit_event(
                 EventKind.POLICY_OVERRIDE.value,
+                {"tool": tool_name, "policy": "auto", "scope": "session"},
+            )
+            # 9.10: отдельное событие для Permissions Dashboard.
+            emit_event(
+                EventKind.PERMISSIONS_OVERRIDDEN.value,
                 {"tool": tool_name, "policy": "auto", "scope": "session"},
             )
         except Exception:
@@ -4288,3 +4293,33 @@ except Exception:
             f"✅ MCP: подключено {connected}/{total} серверов"
         )
         logger.info(f"MCP: {connected}/{total} серверов готовы")
+
+    def registry_for_permissions(self) -> ToolRegistry:
+        """[9.10] Возвращает полный ToolRegistry для Permissions Dashboard.
+
+        Отличается от `_build_registry(mode)`:
+          * регистрирует ВСЕ инструменты, включая `read_attached_file`
+            (для отображения политики даже без прикреплённых файлов);
+          * не зависит от режима.
+
+        Returns:
+            Свежий реестр с полным набором инструментов.
+        """
+        from tools.registry import ALL_TOOLS
+
+        registry = ToolRegistry()
+        for tool_func in ALL_TOOLS:
+            meta = getattr(tool_func, "_tool_meta", None)
+            if meta is None:
+                continue
+            registry.register(tool_func)
+        # MCP — тоже, если готов.
+        try:
+            from tools.mcp_ops import register_mcp_tools
+
+            register_mcp_tools(registry)
+        except Exception:
+            logger.debug(
+                "MCP для permissions не зарегистрирован", exc_info=True
+            )
+        return registry

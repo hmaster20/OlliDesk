@@ -605,6 +605,8 @@ class MainWindow(QMainWindow):
         # [9.9] Палитра команд.
         self.menu_bar.command_palette_requested.connect(self._open_command_palette)
 
+        self.menu_bar.permissions_requested.connect(self._open_permissions)
+
         # [9.4] Профили использования.
         self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
         self.menu_bar.profile_editor_requested.connect(self._open_profile_editor)
@@ -2152,3 +2154,51 @@ class MainWindow(QMainWindow):
 
         dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
         dlg.exec()
+
+    def _open_permissions(self) -> None:
+        """[9.10] Открывает Permissions Dashboard."""
+        if self.chat_panel is None:
+            return
+        # Собираем registry, профиль, режим, session-overrides из ChatPanel.
+        try:
+            registry = self.chat_panel.registry_for_permissions()
+        except Exception:
+            logger.exception("Не удалось собрать реестр для Permissions")
+            return
+        active_profile = self.chat_panel.get_active_profile()
+        current_mode = self.chat_panel._current_mode()  # приватный, но это UI-окно
+        session_overrides = dict(self.config.session_overrides)
+        # Плюс то, что ChatPanel накопил в `_current_session_overrides()`.
+        try:
+            session_overrides.update(
+                self.chat_panel._current_session_overrides()
+            )
+        except Exception:
+            pass
+
+        from ui.dialogs.permissions_dashboard import PermissionsDashboard
+
+        dlg = PermissionsDashboard(
+            registry,
+            self.config,
+            active_profile=active_profile,
+            current_mode=current_mode,
+            session_overrides=session_overrides,
+            parent=self,
+        )
+        dlg.exec()
+        # После закрытия — синхронизируем изменённые overrides.
+        try:
+            self.config.session_overrides = dict(
+                dlg._session_overrides  # noqa: SLF001
+            )
+            from core.config import save_config
+
+            save_config(self.config)
+            if self.chat_panel is not None:
+                self.chat_panel._sync_dashboard()
+        except Exception:
+            logger.debug(
+                "Не удалось сохранить session overrides после закрытия",
+                exc_info=True,
+            )

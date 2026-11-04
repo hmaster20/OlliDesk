@@ -85,6 +85,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("inbox", "inbox"),
     ("hf", "hf"),
     ("git", "git"),
+    ("permissions", "permissions"),
 )
 
 
@@ -479,6 +480,17 @@ class LiveEventsPanel(QWidget):
             h = payload.get("commit_hash", "?")
             n = len(payload.get("files") or [])
             return f"✅ git commit: {branch}@{h} ({n} файл(ов))", _C_OK
+
+        # 9.10: permissions.
+        if kind == EventKind.PERMISSIONS_OVERRIDDEN.value:
+            tool = payload.get("tool", "?")
+            policy = payload.get("policy", "?")
+            scope = payload.get("scope", "?")
+            return f"🔓 permissions: {tool} = {policy} ({scope})", _C_INFO
+        if kind == EventKind.PERMISSIONS_RESET.value:
+            tools = payload.get("tools") or []
+            n = len(tools) if isinstance(tools, list) else 0
+            return f"🔒 permissions: сброшено {n} override(ов)", _C_OTHER
 
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")

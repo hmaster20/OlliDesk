@@ -98,6 +98,10 @@ class EventKind(StrEnum):
     GIT_BRANCH_CHANGED = "git.branch.changed"
     GIT_COMMIT_CREATED = "git.commit.created"
 
+    # --- 9.10: permissions dashboard ---
+    PERMISSIONS_OVERRIDDEN = "permissions.overridden"
+    PERMISSIONS_RESET = "permissions.reset"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -380,6 +384,20 @@ class GitCommitCreatedPayload(TypedDict):
     files: list[str]
     message: str
 
+# ---------------------------------------------------------------------------
+# 9.10: permissions dashboard
+# ---------------------------------------------------------------------------
+
+
+class PermissionsOverriddenPayload(TypedDict):
+    tool: str
+    policy: str  # "auto" | "ask_first" | "excluded"
+    scope: str  # "session"
+
+
+class PermissionsResetPayload(TypedDict):
+    tools: list[str]
+
 __all__ = [
     "AgentFinishedPayload",
     "BudgetSnapshotPayload",
@@ -419,5 +437,7 @@ __all__ = [
     "HfSearchErrorPayload",
     "GitBranchChangedPayload",
     "GitCommitCreatedPayload",
+    "PermissionsOverriddenPayload",
+    "PermissionsResetPayload",
     "args_hash",
 ]

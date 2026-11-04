@@ -245,4 +245,329 @@ def effective_policy(
     )
 
 
-__all__ = ["EffectivePolicy", "effective_policy"]
+# ---------------------------------------------------------------------------
+# 9.10: объяснение цепочки политик
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PolicyStep:
+    """Один шаг в цепочке применения политик (9.10).
+
+    Attributes:
+        layer: ``"secrets"`` | ``"security"`` | ``"mode"`` | ``"freedom"``
+            | ``"profile"`` | ``"session"`` | ``"config"`` | ``"decorator"``.
+        applied: Применялся ли слой (если нет — «пропущен»).
+        policy: Результирующая политика слоя (``auto``/``ask_first``/``excluded``).
+        reason: Пояснение (например, ``"confidential=true"``,
+            ``"freedom_level=safe, capabilities={shell}"``).
+        blocking: ``True`` — этот слой принял финальное решение (дальше
+            не идти).
+    """
+
+    layer: str
+    applied: bool
+    policy: str
+    reason: str
+    blocking: bool = False
+
+
+def explain_policy(
+    spec: "ToolSpec",
+    *,
+    profile: "ProfileConfig | None" = None,
+    security: "SecurityPolicy | None" = None,
+    config: "AppConfig | None" = None,
+    session_overrides: dict[str, ToolPolicy] | None = None,
+    current_mode: AgentMode | None = None,
+) -> tuple[EffectivePolicy, list[PolicyStep]]:
+    """Возвращает `EffectivePolicy` + пошаговое объяснение (9.10).
+
+    Дублирует логику `effective_policy`, но записывает КАЖДЫЙ слой в
+    список `PolicyStep` (применён / пропущен / заблокировал). UI
+    показывает этот список в Permissions Dashboard → «Почему заблокировано».
+
+    Args:
+        spec: `ToolSpec`.
+        profile: Активный профиль.
+        security: `SecurityPolicy`.
+        config: `AppConfig`.
+        session_overrides: Per-session overrides.
+        current_mode: Текущий режим.
+
+    Returns:
+        ``(effective, steps)``. ``effective`` — то же, что вернул бы
+        `effective_policy`; ``steps`` — история слоёв.
+    """
+    caps = _capabilities_of(spec)
+    steps: list[PolicyStep] = []
+
+    def _step(
+        layer: str,
+        *,
+        applied: bool,
+        policy: str,
+        reason: str,
+        blocking: bool = False,
+    ) -> None:
+        steps.append(
+            PolicyStep(
+                layer=layer,
+                applied=applied,
+                policy=policy,
+                reason=reason,
+                blocking=blocking,
+            )
+        )
+
+    # 0. secrets — всегда excluded.
+    if "secrets" in caps:
+        _step(
+            "secrets",
+            applied=True,
+            policy="excluded",
+            reason=f"capabilities={sorted(caps)} содержит secrets",
+            blocking=True,
+        )
+        return (
+            EffectivePolicy(
+                ToolPolicy.EXCLUDED, False, "security:secrets"
+            ),
+            steps,
+        )
+    _step(
+        "secrets",
+        applied=False,
+        policy="—",
+        reason="secrets не в capabilities",
+    )
+
+    # 1. SecurityPolicy.
+    if security is not None and security.confidential:
+        if caps & {"net", "shell", "git", "browser"}:
+            _step(
+                "security",
+                applied=True,
+                policy="excluded",
+                reason="confidential=true, capabilities пересекаются с {net,shell,git,browser}",
+                blocking=True,
+            )
+            return (
+                EffectivePolicy(
+                    ToolPolicy.EXCLUDED, False, "security:confidential"
+                ),
+                steps,
+            )
+        _step(
+            "security",
+            applied=False,
+            policy="—",
+            reason="confidential=true, но capabilities не опасные",
+        )
+    else:
+        _step(
+            "security",
+            applied=False,
+            policy="—",
+            reason="confidential=false или security=None",
+        )
+
+    # 2. Режим.
+    if current_mode is not None and current_mode not in spec.modes:
+        _step(
+            "mode",
+            applied=True,
+            policy="excluded",
+            reason=f"mode={current_mode.value} не в spec.modes={sorted(m.value for m in spec.modes)}",
+            blocking=True,
+        )
+        return (
+            EffectivePolicy(ToolPolicy.EXCLUDED, False, "mode"),
+            steps,
+        )
+    _step(
+        "mode",
+        applied=False,
+        policy="—",
+        reason="режим допустим",
+    )
+
+    # 3. freedom_level.
+    freedom_policy: ToolPolicy | None = None
+    if profile is not None:
+        level = getattr(profile, "freedom_level", None)
+        if level and level in _FREEDOM_MATRIX:
+            matrix = _FREEDOM_MATRIX[level]
+            per_cap = [matrix.get(cap, "auto") for cap in caps]
+            strictest = _most_restrictive(per_cap)
+            _step(
+                "freedom",
+                applied=True,
+                policy=strictest,
+                reason=(
+                    f"freedom_level={level}, "
+                    f"capabilities={sorted(caps)} → {strictest}"
+                ),
+                blocking=(strictest == "excluded"),
+            )
+            if strictest == "excluded":
+                return (
+                    EffectivePolicy(
+                        ToolPolicy.EXCLUDED, False, "freedom:excluded"
+                    ),
+                    steps,
+                )
+            freedom_policy = (
+                ToolPolicy.ASK_FIRST
+                if strictest == "ask_first"
+                else ToolPolicy.AUTO
+            )
+        else:
+            _step(
+                "freedom",
+                applied=False,
+                policy="—",
+                reason="freedom_level не задан или неизвестен",
+            )
+    else:
+        _step(
+            "freedom",
+            applied=False,
+            policy="—",
+            reason="profile=None",
+        )
+
+    # 4. profile.tool_policies.
+    if profile is not None:
+        explicit = getattr(profile.tool_policies, spec.name, None)
+        if explicit is not None:
+            try:
+                p = ToolPolicy(explicit)
+            except ValueError:
+                p = None
+            if p is not None:
+                _step(
+                    "profile",
+                    applied=True,
+                    policy=p.value,
+                    reason=f"profile.tool_policies[{spec.name!r}]={p.value}",
+                    blocking=True,
+                )
+                return (
+                    EffectivePolicy(
+                        p, p != ToolPolicy.EXCLUDED, "profile"
+                    ),
+                    steps,
+                )
+        _step(
+            "profile",
+            applied=False,
+            policy="—",
+            reason="нет явного override в profile.tool_policies",
+        )
+    else:
+        _step(
+            "profile",
+            applied=False,
+            policy="—",
+            reason="profile=None",
+        )
+
+    # 5. session overrides.
+    if session_overrides and spec.name in session_overrides:
+        p = session_overrides[spec.name]
+        _step(
+            "session",
+            applied=True,
+            policy=p.value,
+            reason=f"session_overrides[{spec.name!r}]={p.value}",
+            blocking=True,
+        )
+        return (
+            EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "session"),
+            steps,
+        )
+    _step(
+        "session",
+        applied=False,
+        policy="—",
+        reason="нет session-override",
+    )
+
+    # 6. config.tool_policies.
+    if config is not None and spec.name in config.tool_policies:
+        p = config.tool_policies[spec.name]
+        _step(
+            "config",
+            applied=True,
+            policy=p.value,
+            reason=f"config.tool_policies[{spec.name!r}]={p.value}",
+            blocking=True,
+        )
+        return (
+            EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "config"),
+            steps,
+        )
+    _step(
+        "config",
+        applied=False,
+        policy="—",
+        reason="нет override в config.tool_policies",
+    )
+
+    # 7. freedom fallback / decorator.
+    if freedom_policy is not None:
+        if (
+            freedom_policy == ToolPolicy.AUTO
+            and spec.policy == ToolPolicy.ASK_FIRST
+        ):
+            _step(
+                "decorator",
+                applied=True,
+                policy="ask_first",
+                reason="freedom=auto, но декоратор=ask_first (мутирующий)",
+                blocking=True,
+            )
+            return (
+                EffectivePolicy(
+                    ToolPolicy.ASK_FIRST, True, "default:decorator"
+                ),
+                steps,
+            )
+        _step(
+            "decorator",
+            applied=True,
+            policy=freedom_policy.value,
+            reason=f"freedom={freedom_policy.value}",
+            blocking=True,
+        )
+        return (
+            EffectivePolicy(
+                freedom_policy,
+                freedom_policy != ToolPolicy.EXCLUDED,
+                "freedom",
+            ),
+            steps,
+        )
+
+    _step(
+        "decorator",
+        applied=True,
+        policy=spec.policy.value,
+        reason=f"@tool(policy={spec.policy.value})",
+        blocking=True,
+    )
+    return (
+        EffectivePolicy(
+            spec.policy, spec.policy != ToolPolicy.EXCLUDED, "default"
+        ),
+        steps,
+    )
+
+
+__all__ = [
+    "EffectivePolicy",
+    "PolicyStep",
+    "effective_policy",
+    "explain_policy",
+]

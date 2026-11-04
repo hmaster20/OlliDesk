@@ -68,6 +68,9 @@ class AppMenuBar(QMenuBar):
     profile_selected = Signal(str)  # profile_id
     profile_editor_requested = Signal()
 
+    # [9.10] Permissions Dashboard.
+    permissions_requested = Signal()
+
     # [4.3] Память агента.
     memory_requested = Signal()
 
@@ -227,6 +230,17 @@ class AppMenuBar(QMenuBar):
         )
         memory_action.triggered.connect(self.memory_requested.emit)
         view_menu.addAction(memory_action)
+
+        # [9.10] Разрешения.
+        permissions_action = QAction("Разрешения…", self)
+        permissions_action.setToolTip(
+            "Матрица профиль × инструмент, capabilities, последние вызовы "
+            "(audit), пошаговое объяснение «почему заблокировано»."
+        )
+        permissions_action.triggered.connect(
+            self.permissions_requested.emit
+        )
+        view_menu.addAction(permissions_action)
 
         view_menu.addSeparator()
 
