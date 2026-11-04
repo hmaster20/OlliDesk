@@ -84,6 +84,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("browser", "browser"),
     ("inbox", "inbox"),
     ("hf", "hf"),
+    ("git", "git"),
 )
 
 
@@ -467,6 +468,17 @@ class LiveEventsPanel(QWidget):
         if kind == EventKind.HF_SEARCH_ERROR.value:
             err = str(payload.get("error", ""))[:120]
             return f"🔎 hf.search: {err}", _C_LOG_ERROR
+
+        # 9.4: git.
+        if kind == EventKind.GIT_BRANCH_CHANGED.value:
+            branch = payload.get("branch", "?")
+            h = payload.get("hash", "")
+            return f"🌿 git: {branch}@{h}", _C_OTHER
+        if kind == EventKind.GIT_COMMIT_CREATED.value:
+            branch = payload.get("branch", "?")
+            h = payload.get("commit_hash", "?")
+            n = len(payload.get("files") or [])
+            return f"✅ git commit: {branch}@{h} ({n} файл(ов))", _C_OK
 
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")

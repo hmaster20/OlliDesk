@@ -1755,6 +1755,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.7] Единая точка авторизации.
             profile=self._profile,
             app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
+            # [9.4] Git-контекст (только в AGENT).
+            git_context=self._build_git_context(),
         )
 
         client = self._router.active_client
@@ -1906,6 +1908,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.7] Единая точка авторизации.
             profile=self._profile,
             app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
+            # [9.4] Git-контекст (только в AGENT).
+            git_context=self._build_git_context(),
         )
 
         self._current_assistant_content = ""
@@ -3998,7 +4002,26 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.debug(
                 "Не удалось обновить search-индикатор", exc_info=True
             )
+        # [9.4] Git-ветка.
+        try:
+            from tools.git_ops import (
+                get_branch_hash,
+                get_current_branch,
+            )
+            from pathlib import Path as _Path
 
+            if self.project_root:
+                root = _Path(self.project_root)
+                self._dashboard.set_git_branch(
+                    get_current_branch(root) or "",
+                    get_branch_hash(root) or "",
+                )
+            else:
+                self._dashboard.set_git_branch("", "")
+        except Exception:
+            logger.debug(
+                "Не удалось обновить git-индикатор", exc_info=True
+            )
 
     @staticmethod
     def _build_registry_model_tooltip(info: ModelInfo) -> str:
@@ -4080,6 +4103,67 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             pending = 0
         self._dashboard.set_inbox(pending)
+
+    # ------------------------------------------------------------------
+    # [9.4] Git-контекст
+    # ------------------------------------------------------------------
+
+    def _build_git_context(self) -> str:
+        """Собирает git-контекст для system-промпта в режиме AGENT.
+
+        Формат:
+Ветка: feature/x (abc1234)
+Последние коммиты:
+• a1b2c3d 2025-01-01 feat: added parser
+• …
+Незакоммиченные изменения:
+diff-содержимое (обрезано)
+
+text
+
+В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
+токены).
+"""
+if self._current_mode() != AgentMode.AGENT:
+    return ""
+if not self.project_root:
+    return ""
+
+try:
+    from tools.git_ops import (
+        get_branch_hash,
+        get_current_branch,
+        get_recent_commits,
+        get_uncommitted_diff,
+    )
+    from pathlib import Path as _Path
+
+    root = _Path(self.project_root)
+    branch = get_current_branch(root)
+    if not branch:
+        return ""
+
+    lines: list[str] = [
+        f"Ветка: {branch} ({get_branch_hash(root)})"
+    ]
+    commits = get_recent_commits(root, limit=5)
+    if commits:
+        lines.append("Последние коммиты:")
+        for c in commits:
+            lines.append(
+                f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
+            )
+    diff = get_uncommitted_diff(root, max_chars=1500)
+    if diff:
+        lines.append("Незакоммиченные изменения (diff):")
+        lines.append(diff)
+    return "\n".join(lines)
+except Exception:
+    logger.debug(
+        "Не удалось собрать git_context", exc_info=True
+    )
+    return ""
+
 
     def _ensure_memory_service(self) -> MemoryService | None:
         """4.3: ленивое создание MemoryService.

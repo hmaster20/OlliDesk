@@ -1316,6 +1316,23 @@ class MainWindow(QMainWindow):
             if self.config.last_mode:
                 self.chat_panel.set_mode_by_name(self.config.last_mode)
 
+        # [9.4] Обновляем git-снимок (ветка/hash) — на случай, если
+        # проект открывается после смены ветки вручную.
+        try:
+            from state.project_settings import snapshot_git_state
+
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                project_settings.git_branch = git_state["branch"]
+                project_settings.git_hash = git_state["hash"]
+                project_settings.git_last_sync = git_state["timestamp"]
+                project_settings.save(self.project_path)
+                logger.info(
+                    f"git context: {git_state['branch']}@{git_state['hash']}"
+                )
+        except Exception:
+            logger.debug("git snapshot не сохранён", exc_info=True)
+
         # Синхронизируем чекбокс с фактическим состоянием — apply_settings
         # мог применить show_reasoning=False из project_settings.yaml.
         if hasattr(self, "show_reasoning_check"):
@@ -1357,6 +1374,18 @@ class MainWindow(QMainWindow):
         if not path.is_dir():
             logger.warning(f"@dir: путь недоступен: {path}")
             return
+
+        # [9.4] Логируем git-контекст (при @dir сессия не пересоздаётся).
+        try:
+            from state.project_settings import snapshot_git_state
+
+            git_state = snapshot_git_state(path)
+            if git_state["branch"]:
+                logger.info(
+                    f"@dir git context: {git_state['branch']}@{git_state['hash']}"
+                )
+        except Exception:
+            pass
 
         logger.info(f"@dir: прикрепляю директорию {path}")
         self.project_path = path
@@ -1853,10 +1882,24 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _save_project_settings(self) -> None:
-        """Сохраняет настройки проекта."""
+        """Сохраняет настройки проекта (+ git-снимок, 9.4)."""
         if not self.project_path:
             return
         settings = self.chat_panel.get_settings()
+        try:
+            from state.project_settings import snapshot_git_state
+
+            existing = ProjectSettings.load(self.project_path)
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                existing.git_branch = git_state["branch"]
+                existing.git_hash = git_state["hash"]
+                existing.git_last_sync = git_state["timestamp"]
+            settings["git_branch"] = existing.git_branch
+            settings["git_hash"] = existing.git_hash
+            settings["git_last_sync"] = existing.git_last_sync
+        except Exception:
+            logger.debug("git snapshot при save не обновлён", exc_info=True)
         ProjectSettings(**settings).save(self.project_path)
 
     # 🆕 Убран new_event_loop() — закрытие окна больше не блокируется.

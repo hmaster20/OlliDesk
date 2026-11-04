@@ -217,7 +217,7 @@ def create_file_snapshot(
     tool: str,
     args_summary: str = "",
     project_root: Path | None = None,
-) -> str:
+    ) -> str:
     """Создаёт снапшот указанных файлов, возвращает snapshot_id.
 
     Снапшот — копия файлов + ``meta.json`` (tool, args, created_at, root,
@@ -276,7 +276,286 @@ def create_file_snapshot(
     logger.info(f"Snapshot {snapshot_id}: {len(paths)} файл(ов), tool={tool}")
     return snapshot_id
 
+# ---------------------------------------------------------------------------
+# 9.4: git-интеграция для coding-режима
+# ---------------------------------------------------------------------------
 
+import subprocess as _subprocess
+import sys as _sys
+from datetime import datetime as _datetime
+
+
+def _run_git_cli(
+    repo_path: Path | str,
+    *args: str,
+    timeout: float = 5.0,
+) -> str | None:
+    """Запускает `git <args>` в ``repo_path``. Возвращает stdout или ``None``.
+
+    Используется только read-only функциями (`get_current_branch` и т.п.);
+    для мутирующих операций (`commit`) — отдельная обёртка с проверкой
+    результата.
+    """
+    try:
+        flags = _subprocess.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
+        result = _subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(repo_path),
+            timeout=timeout,
+            creationflags=flags,
+        )
+    except (FileNotFoundError, _subprocess.TimeoutExpired, OSError) as e:
+        logger.debug(f"git {' '.join(args)} failed: {e}")
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def get_current_branch(repo_path: Path | str) -> str:
+    """Возвращает имя текущей ветки (или короткий hash при detached HEAD).
+
+    Приоритет:
+      1. Если HEAD на теге — показываем тег (``v0.1.2``).
+      2. Имя ветки.
+      3. Detached HEAD — short-hash.
+
+    Returns:
+        Строка (пустая при ошибке / не-репозитории).
+    """
+    tag = _run_git_cli(repo_path, "describe", "--tags", "--exact-match", "HEAD")
+    if tag and tag.strip():
+        return tag.strip()
+    ref = _run_git_cli(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
+    if ref:
+        branch = ref.strip()
+        if branch and branch != "HEAD":
+            return branch
+    short = _run_git_cli(repo_path, "rev-parse", "--short", "HEAD")
+    return f"({short.strip()})" if short else ""
+
+
+def get_branch_hash(repo_path: Path | str) -> str:
+    """Короткий hash HEAD (7 символов) или пустая строка."""
+    out = _run_git_cli(repo_path, "rev-parse", "--short", "HEAD")
+    return out.strip() if out else ""
+
+
+def get_uncommitted_diff(
+    repo_path: Path | str,
+    *,
+    include_untracked: bool = False,
+    max_chars: int = 2000,
+) -> str:
+    """Diff рабочей копии (``git diff`` + ``git diff --cached``).
+
+    Args:
+        repo_path: Корень репозитория.
+        include_untracked: ``True`` — добавить ``git status --short``
+            для перечисления неотслеживаемых файлов.
+        max_chars: Обрезка (для промпта).
+
+    Returns:
+        Diff в виде текста (может быть пустым, если рабочая копия чистая).
+    """
+    parts: list[str] = []
+    work = _run_git_cli(repo_path, "diff", "--unified=1")
+    if work and work.strip():
+        parts.append(work.strip())
+    staged = _run_git_cli(repo_path, "diff", "--cached", "--unified=1")
+    if staged and staged.strip():
+        parts.append("-- cached --\n" + staged.strip())
+    if include_untracked:
+        status = _run_git_cli(
+            repo_path, "status", "--short", "--untracked-files=normal"
+        )
+        if status and status.strip():
+            parts.append("-- status --\n" + status.strip())
+    result = "\n\n".join(parts)
+    if len(result) > max_chars:
+        result = result[: max_chars - 20] + "\n… [diff обрезан]"
+    return result
+
+
+def get_branch_diff(
+    repo_path: Path | str,
+    base: str,
+    target: str = "HEAD",
+    *,
+    max_chars: int = 3000,
+) -> str:
+    """Diff между двумя ветками/коммитами (`git diff base..target`).
+
+    Args:
+        repo_path: Корень репозитория.
+        base: Базовая ветка/коммит.
+        target: Целевая ветка/коммит (по умолчанию ``HEAD``).
+        max_chars: Обрезка.
+
+    Returns:
+        Diff или пустая строка.
+    """
+    out = _run_git_cli(
+        repo_path, "diff", f"{base}..{target}", "--unified=1"
+    )
+    if not out:
+        return ""
+    result = out.strip()
+    if len(result) > max_chars:
+        result = result[: max_chars - 20] + "\n… [diff обрезан]"
+    return result
+
+
+def get_recent_commits(
+    repo_path: Path | str,
+    limit: int = 10,
+) -> list[dict[str, str]]:
+    """Последние коммиты (hash, author, date, subject).
+
+    Args:
+        repo_path: Корень репозитория.
+        limit: Сколько коммитов вернуть (1..50).
+
+    Returns:
+        Список dict. Пустой при ошибке / не-репозитории.
+    """
+    n = max(1, min(int(limit), 50))
+    # `%x1f` — unit separator, `%x1e` — record separator; так безопаснее
+    # парсить, чем regex-ом по тексту.
+    fmt = "%h%x1f%an%x1f%ad%x1f%s%x1e"
+    out = _run_git_cli(
+        repo_path,
+        "log",
+        f"-{n}",
+        f"--pretty=format:{fmt}",
+        "--date=short",
+    )
+    if not out:
+        return []
+    commits: list[dict[str, str]] = []
+    for raw in out.split("\x1e"):
+        raw = raw.strip("\n\r")
+        if not raw:
+            continue
+        parts = raw.split("\x1f")
+        if len(parts) < 4:
+            continue
+        commits.append(
+            {
+                "hash": parts[0],
+                "author": parts[1],
+                "date": parts[2],
+                "subject": parts[3],
+            }
+        )
+    return commits
+
+
+def commit(
+    repo_path: Path | str,
+    message: str,
+    files: list[str] | None = None,
+) -> dict[str, Any]:
+    """Делает коммит указанных файлов (или уже отслеживаемых изменений).
+
+    **НЕ делает `git add -A`.** Логика:
+      * ``files`` задан — ``git add -- <files>``, затем ``git commit -- <files>``;
+      * ``files=None`` — ``git commit -a`` (только уже отслеживаемые
+        изменённые файлы; untracked — не трогаем).
+
+    Args:
+        repo_path: Корень репозитория.
+        message: Сообщение коммита (непустое).
+        files: Список относительных путей (если ``None`` — все изменённые
+            отслеживаемые).
+
+    Returns:
+        dict:
+          * ``ok`` — успех;
+          * ``commit_hash`` — короткий hash нового коммита;
+          * ``branch`` — текущая ветка;
+          * ``files_committed`` — список файлов;
+          * ``error`` — текст ошибки (пустой при успехе).
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "commit_hash": "",
+        "branch": "",
+        "files_committed": [],
+        "error": "",
+    }
+    if not message or not message.strip():
+        result["error"] = "пустое сообщение коммита"
+        return result
+
+    root = Path(repo_path).resolve()
+    if not (root / ".git").exists():
+        result["error"] = "не git-репозиторий"
+        return result
+
+    flags = _subprocess.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
+
+    def _git(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        try:
+            p = _subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(root),
+                timeout=timeout,
+                creationflags=flags,
+            )
+            return p.returncode, p.stdout or "", p.stderr or ""
+        except (FileNotFoundError, _subprocess.TimeoutExpired, OSError) as e:
+            return -1, "", str(e)
+
+    branch = get_current_branch(root)
+    result["branch"] = branch
+
+    if files:
+        # Добавляем только перечисленные файлы.
+        rc, _out, err = _git("add", "--", *files, timeout=30.0)
+        if rc != 0:
+            result["error"] = f"git add: {err.strip()[:300]}"
+            return result
+        rc, out, err = _git("commit", "-m", message, "--", *files, timeout=60.0)
+        if rc != 0:
+            result["error"] = (
+                f"git commit: {err.strip()[:300] or out.strip()[:300]}"
+            )
+            return result
+        result["files_committed"] = list(files)
+    else:
+        # Только уже отслеживаемые изменения (`-a`).
+        rc, out, err = _git("commit", "-a", "-m", message, timeout=60.0)
+        if rc != 0:
+            result["error"] = (
+                f"git commit -a: {err.strip()[:300] or out.strip()[:300]}"
+            )
+            return result
+        # Какие файлы были закоммичены — из `git show --name-only`.
+        rc2, names_out, _err = _git(
+            "show", "--name-only", "--pretty=format:", "HEAD", timeout=10.0
+        )
+        if rc2 == 0 and names_out:
+            result["files_committed"] = [
+                line.strip() for line in names_out.splitlines() if line.strip()
+            ]
+
+    short_hash = get_branch_hash(root)
+    result["commit_hash"] = short_hash
+    result["ok"] = True
+    logger.info(
+        f"git commit: {branch}@{short_hash} — «{message[:60]}» "
+        f"({len(result['files_committed'])} файл(ов))"
+    )
+    return result
 def load_snapshot_meta(snapshot_id: str) -> dict[str, Any] | None:
     """Читает ``meta.json`` снапшота. ``None``, если снапшот не найден."""
     path = _snapshots_root() / snapshot_id / _META_FILENAME

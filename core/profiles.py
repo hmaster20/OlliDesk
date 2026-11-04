@@ -48,6 +48,9 @@ class ProfileToolPolicies(BaseModel):
     get_git_status: ProfileToolPolicyStr = "auto"
     create_snapshot: ProfileToolPolicyStr = "ask_first"
     undo_last_snapshot: ProfileToolPolicyStr = "ask_first"
+    # [9.4] Коммит — только с подтверждением по умолчанию.
+    # В research/learning переопределяется на "excluded".
+    git_commit: ProfileToolPolicyStr = "ask_first"
     read_attached_file: ProfileToolPolicyStr = "auto"
     record_hypothesis: ProfileToolPolicyStr = "auto"
     update_hypothesis: ProfileToolPolicyStr = "auto"
@@ -175,6 +178,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "undo_last_snapshot": "ask_first",
             "web_search": "ask_first",
             "run_shell_command": "ask_first",
+            "git_commit": "ask_first",
         },
         "run_tests_after_edit": True,
     },
@@ -220,6 +224,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "record_hypothesis": "auto",
             "update_hypothesis": "auto",
             "list_hypotheses": "auto",
+            "git_commit": "excluded",
         },
         "run_tests_after_edit": False,
     },
@@ -269,6 +274,7 @@ _DEFAULT_PROFILES: list[dict] = [
             "get_git_status": "excluded",
             "create_snapshot": "excluded",
             "undo_last_snapshot": "excluded",
+            "git_commit": "excluded",
             "read_attached_file": "excluded",
             "record_hypothesis": "excluded",
             "update_hypothesis": "excluded",

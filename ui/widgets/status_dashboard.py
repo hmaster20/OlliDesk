@@ -185,6 +185,11 @@ class StatusDashboard(QWidget):
         self.search.setToolTip("Цепочка поиска: первый доступный провайдер")
         layout.addWidget(self.search)
 
+        # [9.4] Git-ветка проекта.
+        self.git_branch = _PillLabel("git")
+        self.git_branch.setToolTip("Текущая git-ветка и hash")
+        layout.addWidget(self.git_branch)
+
         # [2.12] Индикатор inbox (pending запросы).
         self.inbox = _PillLabel("inbox")
         self.inbox.setToolTip("Durable inbox: запросы в очереди")
@@ -195,6 +200,7 @@ class StatusDashboard(QWidget):
         self.set_coder("⚡", "coder", "—")
         self.set_browser("isolated", available=False)
         self.set_search("", available=False)
+        self.set_git_branch("", "")  # [9.4]
         self.set_inbox(0)
 
     # ------------------------------------------------------------------
@@ -466,5 +472,29 @@ class StatusDashboard(QWidget):
             f"переходит в «pending» при старте."
         )
         self.inbox.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [9.4] Git-ветка
+    # ------------------------------------------------------------------
+
+    def set_git_branch(self, branch: str, commit_hash: str) -> None:
+        """Показывает текущую git-ветку и hash.
+
+        Args:
+            branch: Имя ветки (пусто — не git-репозиторий).
+            commit_hash: Короткий hash HEAD.
+        """
+        if not branch:
+            self.git_branch.set_state(
+                "— git", _C_OFF, "Проект не под git"
+            )
+            return
+        text = f"🌿 {branch}"
+        if commit_hash:
+            text += f"@{commit_hash}"
+        tooltip = f"Ветка: {branch}"
+        if commit_hash:
+            tooltip += f"\nhash: {commit_hash}"
+        self.git_branch.set_state(text, _C_INFO, tooltip)
 
 __all__ = ["StatusDashboard"]

@@ -209,6 +209,10 @@ class AgentContext:
     # заданы — используется только security + decorator.
     profile: "ProfileConfig | None" = None
     app_config: "AppConfig | None" = None
+    # [9.4] Git-контекст: ветка, hash, последние коммиты, uncommitted diff.
+    # Собирается в `ChatPanel._do_chat/_do_agent` и подмешивается в
+    # системный промпт в режиме AGENT (coding).
+    git_context: str = ""
 
 if TYPE_CHECKING:
     from agents.protocols import MemoryServiceLike
@@ -495,7 +499,7 @@ def _fit_sections(
         return variable
 
     remaining = list(variable)
-    for key in ("rag", "map", "rules", "agents", "hypotheses"):
+    for key in ("rag", "map", "rules", "agents", "hypotheses", "memory", "git"):
         if len(_assemble_prompt(pre, remaining)) <= budget:
             break
         others = [item for item in remaining if item[0] != key]
@@ -612,6 +616,9 @@ def _build_system_prompt(
     memory_block = _build_memory_block(context)
     if memory_block:
         variable.append(("memory", memory_block))
+    # 9.4: git-контекст.
+    if context.git_context:
+        variable.append(("git", f"Git-контекст:\n{context.git_context}"))
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:

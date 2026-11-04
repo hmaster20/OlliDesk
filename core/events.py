@@ -94,6 +94,10 @@ class EventKind(StrEnum):
     HF_SEARCH_EMPTY = "hf.search.empty"
     HF_SEARCH_ERROR = "hf.search.error"
 
+    # --- 9.4: git ---
+    GIT_BRANCH_CHANGED = "git.branch.changed"
+    GIT_COMMIT_CREATED = "git.commit.created"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -345,26 +349,36 @@ class AgentFinishedPayload(TypedDict):
 # 9.3.1: HF search
 # ---------------------------------------------------------------------------
 
-
 class HfSearchStartedPayload(TypedDict):
     query: str
     filter: str
-
 
 class HfSearchFoundPayload(TypedDict):
     query: str
     n_results: int
     duration_ms: float
 
-
 class HfSearchEmptyPayload(TypedDict):
     query: str
     duration_ms: float
 
-
 class HfSearchErrorPayload(TypedDict):
     query: str
     error: str
+
+# ---------------------------------------------------------------------------
+# 9.4: git
+# ---------------------------------------------------------------------------
+
+class GitBranchChangedPayload(TypedDict):
+    branch: str
+    hash: str
+
+class GitCommitCreatedPayload(TypedDict):
+    branch: str
+    commit_hash: str
+    files: list[str]
+    message: str
 
 __all__ = [
     "AgentFinishedPayload",
@@ -403,5 +417,7 @@ __all__ = [
     "HfSearchFoundPayload",
     "HfSearchEmptyPayload",
     "HfSearchErrorPayload",
+    "GitBranchChangedPayload",
+    "GitCommitCreatedPayload",
     "args_hash",
 ]
