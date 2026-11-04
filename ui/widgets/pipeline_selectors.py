@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig, SLMModelInfo, save_config
+from ui.state.async_resource import AsyncResource
 
 
 class PipelineSelectors(QWidget):
@@ -41,6 +42,10 @@ class PipelineSelectors(QWidget):
         super().__init__(parent)
         self._config = config
         self._updating = False
+
+        # [9.11] Ресурс «список моделей». Не мигает при refresh:
+        # при обновлении combo сохраняет старые items до `set_value`.
+        self._models_resource: AsyncResource[list[SLMModelInfo]] = AsyncResource()
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
@@ -122,15 +127,16 @@ class PipelineSelectors(QWidget):
     # ------------------------------------------------------------------
 
     def refresh_models(self) -> None:
-        """Перечитывает список моделей из конфига и обновляет ComboBox'ы.
+        """Перечитывает список моделей через `AsyncResource` (9.11).
 
-        Для каждого пункта выставляется подробный HTML-tooltip: сам
-        display_name в списке усечён по ширине, а в tooltip'е — целиком
-        (id, tier, n_ctx, размер, файл, репозиторий, статус).
+        Правило guard'а: `begin_load()` → `set_value()`/`set_error()`.
+        Если в ресурсе уже есть `latest` (повторный вызов) — состояние
+        будет `REFRESHING`, combo сохранит старые items до `set_value`.
+        Это устраняет «вспышку» пустого combo при `refresh_models_requested`.
         """
         from agents.download_slm import is_model_installed
 
-        self._updating = True
+        self._models_resource.begin_load()
         try:
             chat_models = self._config.slm.get_chat_models()
             sorted_models = sorted(
@@ -141,41 +147,97 @@ class PipelineSelectors(QWidget):
                     m.display_name.lower(),
                 ),
             )
+            self._models_resource.set_value(sorted_models)
+        except Exception as e:
+            logger.exception("PipelineSelectors.refresh_models failed")
+            self._models_resource.set_error(e)
 
-            for combo, current_id in (
-                (self.planner_combo, self._config.slm.planner_model_id),
-                (self.analyst_combo, self._config.slm.analyst_model_id),
-            ):
-                combo.blockSignals(True)
-                combo.clear()
+        self._apply_models_to_combos()
 
-                # «(автовыбор)» тоже с tooltip — объясняем, как работает автовыбор.
-                auto_tip = (
-                    "<b>(автовыбор)</b><br>"
-                    "Модель выбирается автоматически по tier и свободной VRAM "
-                    "при загрузке проекта (см. <code>agents.slm_selector.select_pair</code>)."
+    def _apply_models_to_combos(self) -> None:
+        """Рендерит `_models_resource` в оба ComboBox (guard-паттерн 9.11).
+
+        В состоянии `LOADING` (первая загрузка) — показываем плейсхолдер.
+        В `READY`/`REFRESHING`/`ERROR с latest` — рендерим `latest`.
+        Ошибка без `latest` → плейсхолдер «Ошибка загрузки».
+        """
+        from agents.download_slm import is_model_installed
+
+        self._updating = True
+        try:
+            if self._models_resource.loaded():
+                models = self._models_resource.value_or([])
+                for combo, current_id in (
+                    (self.planner_combo, self._config.slm.planner_model_id),
+                    (self.analyst_combo, self._config.slm.analyst_model_id),
+                ):
+                    self._fill_combo(combo, models, current_id)
+            elif self._models_resource.is_loading_first_time():
+                for combo in (self.planner_combo, self.analyst_combo):
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItem("Загрузка…", "")
+                    combo.setEnabled(False)
+                    combo.blockSignals(False)
+            else:
+                # ERROR без latest.
+                err_text = (
+                    f"Ошибка: {type(self._models_resource.error).__name__}"
+                    if self._models_resource.error
+                    else "Ошибка загрузки"
                 )
-                combo.addItem("(автовыбор)", "")
-                combo.setItemData(0, auto_tip, Qt.ItemDataRole.ToolTipRole)
-
-                for m in sorted_models:
-                    installed = is_model_installed(m.file)
-                    prefix = "✅ " if installed else "⬇️ "
-                    idx = combo.count()
-                    combo.addItem(f"{prefix}{m.display_name}", m.id)
-                    combo.setItemData(
-                        idx,
-                        self._build_model_tooltip(m, installed),
-                        Qt.ItemDataRole.ToolTipRole,
-                    )
-
-                idx = combo.findData(current_id) if current_id else 0
-                combo.setCurrentIndex(idx if idx >= 0 else 0)
-                combo.blockSignals(False)
-                # Tooltip на самом ComboBox — показываем текущий выбор подробно.
-                self._sync_combo_tooltip(combo)
+                for combo in (self.planner_combo, self.analyst_combo):
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItem(err_text, "")
+                    combo.setEnabled(False)
+                    combo.blockSignals(False)
         finally:
             self._updating = False
+
+    def _fill_combo(
+        self,
+        combo: QComboBox,
+        models: list[SLMModelInfo],
+        current_id: str,
+    ) -> None:
+        """Заполняет один ComboBox (без `clear` — guard 9.11).
+
+        Проверка «items уже такие же» — чтобы не дёргать `clear()` без
+        надобности. Если набор не изменился, combo не перерисовывается
+        (нет «моргания», нет сброса выделения).
+        """
+        from agents.download_slm import is_model_installed
+
+        # Собираем целевой список (id, label, tooltip).
+        target: list[tuple[str, str, str]] = [("", "(автовыбор)", "")]
+        for m in models:
+            installed = is_model_installed(m.file)
+            prefix = "✅ " if installed else "⬇️ "
+            label = f"{prefix}{m.display_name}"
+            target.append((m.id, label, self._build_model_tooltip(m, installed)))
+
+        # Сверяем с текущими.
+        current: list[tuple[str, str]] = [
+            (combo.itemData(i) or "", combo.itemText(i)) for i in range(combo.count())
+        ]
+        if current == [(tid, tlabel) for tid, tlabel, _ in target]:
+            # Ничего не изменилось — не трогаем combo (нет мигания).
+            combo.setEnabled(True)
+            return
+
+        combo.blockSignals(True)
+        combo.clear()
+        for tid, label, tooltip in target:
+            idx = combo.count()
+            combo.addItem(label, tid)
+            if tooltip:
+                combo.setItemData(idx, tooltip, Qt.ItemDataRole.ToolTipRole)
+        idx = combo.findData(current_id) if current_id else 0
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+        combo.setEnabled(True)
+        self._sync_combo_tooltip(combo)
 
     @staticmethod
     def _build_model_tooltip(m: SLMModelInfo, installed: bool) -> str:

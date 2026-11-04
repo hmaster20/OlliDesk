@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from agents.ollama_client import ChatMessage
 from core.chat_export import export_to_markdown
 from state.session_store import SessionStore
+from ui.state.async_resource import AsyncResource
 
 
 class SessionManagerDialog(QDialog):
@@ -43,6 +44,11 @@ class SessionManagerDialog(QDialog):
         self.session_store = session_store
         self.chat_panel = chat_panel
         self._current_session_id: str | None = None
+
+        # [9.11] Ресурс «список сессий». При обновлении (`refresh`)
+        # таблица не мигает: рендерим `latest`, пока идёт refresh.
+        self._sessions_resource: AsyncResource[list[Any]] = AsyncResource()
+
         self.setWindowTitle("Управление сессиями")
         self.resize(1100, 600)
 
@@ -122,17 +128,52 @@ class SessionManagerDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        sessions = self.session_store.list_sessions()
+        """[9.11] Обновляет список сессий через `AsyncResource`.
+
+        При `REFRESHING` таблица сохраняет старые данные до `set_value()`
+        — пользователь не видит «вспышку» пустой таблицы.
+        """
+        self._sessions_resource.begin_load()
+        try:
+            sessions = self.session_store.list_sessions()
+            self._sessions_resource.set_value(list(sessions))
+        except Exception as e:
+            logger.exception("SessionManagerDialog._refresh failed")
+            self._sessions_resource.set_error(e)
+
+        self._render_sessions()
+
+    def _render_sessions(self) -> None:
+        """Guard-рендер (9.11): latest при loaded(), плейсхолдер иначе."""
         self.table.blockSignals(True)
-        self.table.setRowCount(len(sessions))
-        for i, s in enumerate(sessions):
-            self.table.setItem(i, 0, QTableWidgetItem(s.id))
-            self.table.setItem(i, 1, QTableWidgetItem(s.project_path))
-            self.table.setItem(i, 2, QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M")))
-            self.table.setItem(i, 3, QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M")))
-        self.table.blockSignals(False)
-        if self.table.rowCount() > 0:
-            self.table.selectRow(0)
+        try:
+            if self._sessions_resource.loaded():
+                sessions = self._sessions_resource.value_or([])
+                self.table.setRowCount(len(sessions))
+                for i, s in enumerate(sessions):
+                    self.table.setItem(i, 0, QTableWidgetItem(s.id))
+                    self.table.setItem(i, 1, QTableWidgetItem(s.project_path))
+                    self.table.setItem(
+                        i, 2,
+                        QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M")),
+                    )
+                    self.table.setItem(
+                        i, 3,
+                        QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M")),
+                    )
+                if self.table.rowCount() > 0:
+                    self.table.selectRow(0)
+            elif self._sessions_resource.is_loading_first_time():
+                self.table.setRowCount(1)
+                self.table.setSpan(0, 0, 1, 4)
+                self.table.setItem(0, 0, QTableWidgetItem("Загрузка сессий…"))
+            else:
+                self.table.setRowCount(1)
+                self.table.setSpan(0, 0, 1, 4)
+                err = type(self._sessions_resource.error).__name__ if self._sessions_resource.error else "?"
+                self.table.setItem(0, 0, QTableWidgetItem(f"Ошибка загрузки: {err}"))
+        finally:
+            self.table.blockSignals(False)
 
     def _selected_session_id(self) -> str | None:
         row = self.table.currentRow()
