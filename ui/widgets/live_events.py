@@ -83,6 +83,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("mcp", "mcp"),
     ("browser", "browser"),
     ("inbox", "inbox"),
+    ("hf", "hf"),
 )
 
 
@@ -450,6 +451,22 @@ class LiveEventsPanel(QWidget):
             iid = str(payload.get("id", ""))[:8]
             err = str(payload.get("error", ""))[:80]
             return f"📥 inbox.failed: {iid}… — {err}", _C_LOG_ERROR
+
+        # 9.3.1: HF search.
+        if kind == EventKind.HF_SEARCH_STARTED.value:
+            q = str(payload.get("query", ""))[:60]
+            f = payload.get("filter", "?")
+            return f"🔎 hf.search: {q!r} (filter={f})", _C_OTHER
+        if kind == EventKind.HF_SEARCH_FOUND.value:
+            n = payload.get("n_results", 0)
+            dur = payload.get("duration_ms", 0)
+            return f"🔎 hf.search: {n} моделей ({dur} ms)", _C_OK
+        if kind == EventKind.HF_SEARCH_EMPTY.value:
+            dur = payload.get("duration_ms", 0)
+            return f"🔎 hf.search: пусто ({dur} ms)", _C_WARN
+        if kind == EventKind.HF_SEARCH_ERROR.value:
+            err = str(payload.get("error", ""))[:120]
+            return f"🔎 hf.search: {err}", _C_LOG_ERROR
 
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")

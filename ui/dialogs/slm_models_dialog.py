@@ -4,6 +4,7 @@ import contextlib
 import re
 
 from loguru import logger
+from typing import Any
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -220,6 +221,15 @@ class SLMModelsDialog(QDialog):
         )
         self.add_btn.clicked.connect(self._add_custom_model)
         btn_layout.addWidget(self.add_btn)
+
+        # [9.3.1] Поиск на HuggingFace.
+        self.hf_search_btn = QPushButton("🔍 Поиск HF")
+        self.hf_search_btn.setToolTip(
+            "Поиск GGUF-моделей на HuggingFace. Клик по модели → карточка, "
+            "скачивание, добавление в каталог."
+        )
+        self.hf_search_btn.clicked.connect(self._open_hf_dialog)
+        btn_layout.addWidget(self.hf_search_btn)
 
         btn_layout.addStretch()
 
@@ -518,6 +528,114 @@ class SLMModelsDialog(QDialog):
             msg += " (автовыбор отключён — выбор сохранится при перезапуске)"
         self.status_label.setText(msg)
         self._populate()
+
+    @Slot()
+    def _open_hf_dialog(self) -> None:
+        """[9.3.1] Открывает диалог поиска на HuggingFace.
+
+        Диалог эмитит `download_requested` / `add_to_catalog_requested`.
+        Обработка — здесь, потому что `SLMModelsDialog` уже знает, как
+        добавлять модели в каталог и запускать скачивание.
+        """
+        from ui.dialogs.hf_dialog import HFDialog
+
+        dlg = HFDialog(self)
+        dlg.download_requested.connect(self._on_hf_download)
+        dlg.add_to_catalog_requested.connect(self._on_hf_add_to_catalog)
+        dlg.exec()
+
+    @Slot(object)
+    def _on_hf_add_to_catalog(self, payload: Any) -> None:
+        """[9.3.1] Добавляет модель из HF-диалога в каталог (без скачивания)."""
+        if not isinstance(payload, dict):
+            return
+        repo_id = str(payload.get("repo_id") or "").strip()
+        filename = str(payload.get("filename") or "").strip()
+        if not repo_id or not filename:
+            return
+
+        # Стабильный id из имени файла (как в `_add_custom_model`).
+        import re
+
+        base_id = re.sub(
+            r"[^a-z0-9._-]+", "-", filename.removesuffix(".gguf").lower()
+        )
+        base_id = base_id.strip("-") or "custom-model"
+        model_id = base_id
+        suffix = 2
+        while self.config.slm.get_model_by_id(model_id) is not None:
+            model_id = f"{base_id}-{suffix}"
+            suffix += 1
+
+        info = SLMModelInfo(
+            id=model_id,
+            repo=repo_id,
+            file=filename,
+            display_name=str(
+                payload.get("display_name") or filename.removesuffix(".gguf")
+            ),
+            size_mb=int(payload.get("size_mb") or 0),
+            kind="chat",
+            n_ctx=0,
+            tags=list(payload.get("tags") or ["chat"]),
+            description=str(payload.get("description") or "")[:500],
+        )
+        self.config.slm.available_models.append(info)
+        save_config(self.config)
+        save_slm_models(self.config.slm.available_models)
+        self._changed = True
+        self.status_label.setText(
+            f"➕ Добавлено в каталог: {info.display_name}. "
+            f"Скачайте через «⬇️ Скачать»."
+        )
+        self._populate()
+
+    @Slot(object)
+    def _on_hf_download(self, payload: Any) -> None:
+        """[9.3.1] Запускает скачивание модели из HF-диалога.
+
+        Порядок:
+          1. Если модели ещё нет в каталоге — добавляем (как в
+             `_on_hf_add_to_catalog`).
+          2. Запускаем скачивание через `_download_selected` (тот же
+             механизм, что и для каталожных моделей).
+        """
+        if not isinstance(payload, dict):
+            return
+        repo_id = str(payload.get("repo_id") or "").strip()
+        filename = str(payload.get("filename") or "").strip()
+        if not repo_id or not filename:
+            return
+
+        # 1. Проверяем, есть ли уже в каталоге.
+        existing = None
+        for m in self.config.slm.available_models:
+            if m.repo == repo_id and m.file == filename:
+                existing = m
+                break
+        if existing is None:
+            # Добавляем и запускаем скачивание «в один клик».
+            self._on_hf_add_to_catalog(payload)
+            # Найти добавленную запись по (repo, file) и выделить её в таблице.
+            for m in self.config.slm.available_models:
+                if m.repo == repo_id and m.file == filename:
+                    existing = m
+                    break
+        if existing is None:
+            return
+
+        # 2. Выделяем строку этой модели в таблице.
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if (
+                item is not None
+                and item.data(Qt.ItemDataRole.UserRole) == existing.id
+            ):
+                self.table.selectRow(row)
+                break
+
+        # 3. Запускаем скачивание тем же механизмом.
+        self._download_selected()
 
     def _add_custom_model(self):
         """Добавляет пользовательскую SLM-модель в available_models.

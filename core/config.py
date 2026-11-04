@@ -797,6 +797,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "mcp",
         "browser",
         "search",
+        "hf_token",
     }
 )
 
@@ -994,6 +995,9 @@ class AppConfig(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    # [9.3.1] HF-токен для обхода rate-limit при поиске/скачивании моделей.
+    # Хранится в config.yaml, читается из env HF_TOKEN (приоритет — config).
+    hf_token: str = ""
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)

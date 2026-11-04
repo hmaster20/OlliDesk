@@ -88,6 +88,12 @@ class EventKind(StrEnum):
     INBOX_DELIVERED = "inbox.delivered"
     INBOX_FAILED = "inbox.failed"
 
+    # --- 9.3.1: HF search ---
+    HF_SEARCH_STARTED = "hf.search.started"
+    HF_SEARCH_FOUND = "hf.search.found"
+    HF_SEARCH_EMPTY = "hf.search.empty"
+    HF_SEARCH_ERROR = "hf.search.error"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -335,6 +341,31 @@ class AgentFinishedPayload(TypedDict):
     iterations: int
     elapsed_s: float
 
+# ---------------------------------------------------------------------------
+# 9.3.1: HF search
+# ---------------------------------------------------------------------------
+
+
+class HfSearchStartedPayload(TypedDict):
+    query: str
+    filter: str
+
+
+class HfSearchFoundPayload(TypedDict):
+    query: str
+    n_results: int
+    duration_ms: float
+
+
+class HfSearchEmptyPayload(TypedDict):
+    query: str
+    duration_ms: float
+
+
+class HfSearchErrorPayload(TypedDict):
+    query: str
+    error: str
+
 __all__ = [
     "AgentFinishedPayload",
     "BudgetSnapshotPayload",
@@ -368,5 +399,9 @@ __all__ = [
     "InboxEnqueuedPayload",
     "InboxDeliveredPayload",
     "InboxFailedPayload",
+    "HfSearchStartedPayload",
+    "HfSearchFoundPayload",
+    "HfSearchEmptyPayload",
+    "HfSearchErrorPayload",
     "args_hash",
 ]
