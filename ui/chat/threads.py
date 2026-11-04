@@ -122,6 +122,8 @@ class AgentChatThread(QThread):
         # [2.12] Durable inbox.
         inbox_id: str | None = None,
         inbox: Any = None,  # SessionInbox | None
+        # [2.8] Единая точка исполнения.
+        tool_service: Any = None,
     ):
         super().__init__()
         self.client = client
@@ -140,6 +142,7 @@ class AgentChatThread(QThread):
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
         self._research_mode: bool = False
+        self.tool_service = tool_service
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
         self._tool_response = (approved, arguments)
@@ -264,7 +267,13 @@ class AgentChatThread(QThread):
             pass
 
         async def _run_with(client) -> tuple[str, AgentLoop]:
-            loop = AgentLoop(client=client, registry=self.registry, model=self.model)
+            loop = AgentLoop(
+                client=client,
+                registry=self.registry,
+                model=self.model,
+                tool_service=self.tool_service,
+                project_root=self.context.project_root,
+            )
             from agents.investigation import is_research_question
 
             last_user_local = next(

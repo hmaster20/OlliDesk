@@ -265,6 +265,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [2.12] id текущего inbox-запроса (для complete/fail).
         self._current_inbox_id: str | None = None
 
+        # [2.8] Application Services.
+        from core.services.model_service import ModelService
+        from core.services.project_service import ProjectService
+
+        self._project_service = ProjectService()
+        self._model_service = ModelService()
+
         # [9.7] Флаг «идёт распознавание» — чтобы не запускать параллельный OCR/STT.
         self._media_busy: bool = False
 
@@ -2033,6 +2040,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
+        # [2.8] ToolService на этот запрос.
+        from core.services.tool_service import ToolService
+
         model_name = self.get_current_model()
         self._agent_thread = AgentChatThread(
             client=client,
@@ -2047,6 +2057,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
+            tool_service=ToolService(
+                registry, project_root=self.project_root
+            ),
         )
         self._last_run_params = {
             "kind": "chat",
@@ -2192,6 +2205,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
+            tool_service=ToolService(
+                registry, project_root=self.project_root
+            ),
         )
 
         self._last_run_params = {
@@ -4465,60 +4481,68 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ------------------------------------------------------------------
 
     def _build_git_context(self) -> str:
-        """Собирает git-контекст для system-промпта в режиме AGENT.
+        """Собирает git-контекст для system-промпта в режиме AGENT (2.8)."""
+        if not self.project_root:
+            return ""
+        return self._project_service.build_git_context(
+            self.project_root, mode=self._current_mode()
+        )
 
-        Формат:
-Ветка: feature/x (abc1234)
-Последние коммиты:
-• a1b2c3d 2025-01-01 feat: added parser
-• …
-Незакоммиченные изменения:
-diff-содержимое (обрезано)
+#     def _build_git_context(self) -> str:
+#         """Собирает git-контекст для system-промпта в режиме AGENT.
 
-text
+#         Формат:
+# Ветка: feature/x (abc1234)
+# Последние коммиты:
+# • a1b2c3d 2025-01-01 feat: added parser
+# • …
+# Незакоммиченные изменения:
+# diff-содержимое (обрезано)
 
-В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
-токены).
-"""
-if self._current_mode() != AgentMode.AGENT:
-    return ""
-if not self.project_root:
-    return ""
+# text
 
-try:
-    from tools.git_ops import (
-        get_branch_hash,
-        get_current_branch,
-        get_recent_commits,
-        get_uncommitted_diff,
-    )
-    from pathlib import Path as _Path
+# В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
+# токены).
+# """
+# if self._current_mode() != AgentMode.AGENT:
+#     return ""
+# if not self.project_root:
+#     return ""
 
-    root = _Path(self.project_root)
-    branch = get_current_branch(root)
-    if not branch:
-        return ""
+# try:
+#     from tools.git_ops import (
+#         get_branch_hash,
+#         get_current_branch,
+#         get_recent_commits,
+#         get_uncommitted_diff,
+#     )
+#     from pathlib import Path as _Path
 
-    lines: list[str] = [
-        f"Ветка: {branch} ({get_branch_hash(root)})"
-    ]
-    commits = get_recent_commits(root, limit=5)
-    if commits:
-        lines.append("Последние коммиты:")
-        for c in commits:
-            lines.append(
-                f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
-            )
-    diff = get_uncommitted_diff(root, max_chars=1500)
-    if diff:
-        lines.append("Незакоммиченные изменения (diff):")
-        lines.append(diff)
-    return "\n".join(lines)
-except Exception:
-    logger.debug(
-        "Не удалось собрать git_context", exc_info=True
-    )
-    return ""
+#     root = _Path(self.project_root)
+#     branch = get_current_branch(root)
+#     if not branch:
+#         return ""
+
+#     lines: list[str] = [
+#         f"Ветка: {branch} ({get_branch_hash(root)})"
+#     ]
+#     commits = get_recent_commits(root, limit=5)
+#     if commits:
+#         lines.append("Последние коммиты:")
+#         for c in commits:
+#             lines.append(
+#                 f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
+#             )
+#     diff = get_uncommitted_diff(root, max_chars=1500)
+#     if diff:
+#         lines.append("Незакоммиченные изменения (diff):")
+#         lines.append(diff)
+#     return "\n".join(lines)
+# except Exception:
+#     logger.debug(
+#         "Не удалось собрать git_context", exc_info=True
+#     )
+#     return ""
 
 
     def _ensure_memory_service(self) -> MemoryService | None:

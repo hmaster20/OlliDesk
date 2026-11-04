@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from core.config import AppConfig
     from core.profiles import ProfileConfig
     from core.security import SecurityPolicy
+    from core.services.tool_service import ToolService
 
 # Максимальное число чтений одного файла, после которого цикл считает это
 # застреванием. Дублируется с `investigation._MAX_READS_PER_FILE`, но здесь
@@ -397,7 +398,6 @@ _MODE_HINTS = {
         "  • не выдумывай имена классов и путей — только из read_file/project_map."
     ),
 }
-}
 
 
 _SECTION_SEP = "\n\n"
@@ -692,7 +692,15 @@ def _create_tool_result_message(
 class AgentLoop:
     """Цикл ReAct агента (CHAT / PLAN / AGENT)."""
 
-    def __init__(self, client: LLMBackend, registry: ToolRegistry, model: str):
+    def __init__(
+        self,
+        client: LLMBackend,
+        registry: ToolRegistry,
+        model: str,
+        *,
+        tool_service: "ToolService | None" = None,
+        project_root: str = "",
+    ):
         """
         Args:
             client: Клиент LLM (OllamaClient, LocalLLMClient, ModelRouter)
@@ -702,14 +710,26 @@ class AgentLoop:
         self.client = client
         self.registry = registry
         self.model = model
-        # Заполняется в _finalize() при завершении research-прогона.
-        self.last_research_summary: dict[str, Any] | None = None
-        # Флаг: был ли прогон research-режимом.
-        self.was_research_mode: bool = False
-        # [2.10] Причина остановки последнего прогона ("stop" | "length"
-        # | "budget.exceeded" | "user_cancel" | None) и снимок бюджета.
+        # [2.8] Единая точка исполнения: audit + автоснапшот. Если
+        # не задан — fallback на registry.execute (старое поведение,
+        # audit пишется только для run_shell_command).
+        if tool_service is None:
+            try:
+                from core.services.tool_service import ToolService
+
+                tool_service = ToolService(
+                    registry, project_root=project_root
+                )
+            except Exception:
+                logger.debug(
+                    "ToolService не создан, fallback на registry.execute",
+                    exc_info=True,
+                )
+                tool_service = None
+        self.tool_service = tool_service
         self.last_finish_reason: str | None = None
         self.last_budget_snapshot: dict[str, Any] | None = None
+
 
     # ------------------------------------------------------------------
     # Вспомогательные методы
@@ -1579,7 +1599,14 @@ class AgentLoop:
                     if context.app_config is not None:
                         extra["app_config"] = context.app_config
 
-                    result = await self.registry.execute(tc, **extra)
+                    if self.tool_service is not None:
+                        result = await self.tool_service.execute(
+                            tc,
+                            effective_policy=effective,
+                            extra=extra,
+                        )
+                    else:
+                        result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
 
                     state.note_call(tc.name, tc.arguments, result.content, result.is_error)

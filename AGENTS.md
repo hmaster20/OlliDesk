@@ -202,7 +202,12 @@ OlliDesk/
 | `core/policy.py` | **`[план 2.7]`** Policy Engine | `EffectivePolicy`, `effective_policy(tool_spec, profile, security, config)` — приоритет `security > profile > config > decorator`; дефолт по capability (`fs.read` → auto, `fs.write` → ask_first, `net` → ask_first (кроме info-инструментов), `shell` → excluded/ask_first по профилю, `git` → ask_first (кроме `get_git_status`), `secrets` → excluded) |
 | `core/redaction.py` | **`[план 0.1.2]`** Redaction секретов | `redact(text) -> str`: API-ключи (`sk-…`, `hf_…`, `ghp_…`), JWT, пароли из URL, приватные ключи (`-----BEGIN … PRIVATE KEY-----`), env-переменные с секретными именами. Используется в логах, tool-аргументах и результатах |
 | `core/slm_models_io.py` | **`[план 9.3.3]`** Каталог моделей в YAML | `load_slm_models(path) -> list[SLMModelInfo]`, `save_slm_models(models, path)`, `validate_slm_models(list[dict]) -> list[SLMModelInfo]`; `schema_version`; миграция из `_DEFAULT_SLM_MODELS` при первом запуске |
-| `core/services/*` | **`[план 2.8]`** Application Services | `session_service`, `chat_service`, `tool_service`, `model_service`, `project_service` — чистый Python без Qt |
+- **`core/services/`** (2.8) — сервисы без Qt:
+  - `memory_service.py` — эпизодическая память (4.3).
+  - `tool_service.py` — policy → snapshot → execute → audit (2.8, 0.1.1, 10.9).
+  - `project_service.py` — кэш `ProjectIntel` + git_context (2.8).
+  - `model_service.py` — config + `resolve_park`/`resolve_coder` (2.8).
+  - `chat_service.py` — `build_agent_context` + `pick_max_iterations` (2.8).
 
 ### `agents/` — работа с LLM
 

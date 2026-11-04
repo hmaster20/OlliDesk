@@ -17,6 +17,7 @@ ResearchMixin) вызывает QWidget.__init__, а поля инициализ
 ChatPanel.__init__ явно.
 """
 
+from core.config import load_config
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -116,9 +117,7 @@ class BackendsMixin:
         from agents.slm_selector import select_best_model
 
         try:
-            from core.config import load_config
-
-            cfg = load_config()
+            cfg = self._model_service.reload_config()
         except Exception as e:
             logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
             cfg = None

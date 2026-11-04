@@ -106,7 +106,8 @@ DDG) и **три режима браузера** вместо одного оп�
 | **EventBus / структурированные события** | ❌ | Нет `core/event_bus.py` (2.5) |
 | **ToolSpec v2: capabilities + timeout + idempotent** | ❌ | `@tool` знает только `name`/`description`/`policy`/`modes`/`is_mutating`/`category` (2.6) |
 | **Policy Engine (единая точка авторизации)** | ❌ | Политики раскиданы по `_apply_config_policies`, `ProfileToolPolicies`, декоратору (2.7) |
-| **Audit log инструментов** | ✅ | `core/audit.py::AuditLog` → `~/.ollidesk/audit.db`: timestamp, tool, args_hash, policy, approved, result_hash, error, dangerous (0.1.1) |
+| **Application Services (2.8)** | ✅ | `core/services/{tool,project,model,chat,memory}_service.py`. `ToolService` — audit для всех инструментов + автоснапшот; `ProjectService` — кэш `ProjectIntel` + git_context; `ModelService` — конфиг + `resolve_park`/`resolve_coder`; `ChatService` — `build_agent_context` без Qt (готов к интеграции в `_do_chat`) |
+| **Audit log инструментов** | ✅ | `core/audit.py` + `core/services/tool_service.py`: **все** вызовы пишутся в audit (было: только `run_shell_command`) |
 | **Shell allowlist (а не чёрный список)** | ✅ | `tools/shell_ops.py::_ALLOWLIST_RE` + `SecurityPolicy.allow_arbitrary_shell` (dangerous mode) + чёрный список сохраняется (0.1.1) |
 | **Модель за сессией / явный выбор** | ✅ | `_settings_payload` фильтрует `model` по `active_backend`; `_suppress_model_save` в `set_model` (0.1.4) |
 | **Изоляция тестов ChatPanel** | ✅ | Фикстуры подавляют `_detect_backends`; `QTimer` в `ChatPanel.__init__` привязан к `self` (0.1.5) |
@@ -640,26 +641,23 @@ dangerous mode; секреты не утекают в LLM/логи; истори
 - [ ] **Тесты:** `tests/core/test_policy.py` — 20+ кейсов (профиль, security,
       capabilities, приоритет, session_overrides, confirm.web_search).
 
-### 2.8 Application Services (OlliDesk 2.0)
+### 2.8 Application Services — `[~]` (частично закрыто)
 
 **Боль:** «UI знает про `QFileSystemModel`, `ProjectState`, `SessionStore`,
 `VectorStore` напрямую; тяжело тестировать».
 
-- [ ] **`core/services/`** — чистые Python-сервисы без Qt:
-  - `session_service.py` — создание/удаление сессий, `parts_json`, миграции.
-  - `chat_service.py` — отправка сообщений, отмена, стриминг (через `EventBus`).
-  - `tool_service.py` — `execute_tool(invocation, context)`, audit, метрики,
-    snapshots (10.9).
-  - `model_service.py` — выбор модели, `ModelCatalog`, `auto_select`, парк моделей (4.1).
-  - `project_service.py` — `ProjectIntel`, `repomap`, `git_context`.
-  - `memory_service.py` — эпизодическая память (4.3).
-  - `search_service.py` — цепочка поиска (2.13).
-  - `browser_service.py` — режимы браузера (2.11).
-- [ ] **`ui/*_controller.py`** переписываются на сервисы: `ChatPanel` вызывает
-      `ChatService.send()`, `IndexingController` — `ProjectService.index()`,
-      `FileTreeController` — `ProjectService.list_files()`.
-- [ ] **Тесты сервисов без Qt** — покрытие ≥80% на критичных путях
-      (сессия, отмена, policy, audit, memory, search, browser).
+**Сделано:**
+- ✅ `core/services/memory_service.py` (4.3) — эпизодическая память.
+- ✅ `core/services/tool_service.py` — единая точка: policy → snapshot → execute → audit. Audit теперь пишется для **всех** вызовов (было — только `run_shell_command`), снапшот — перед `git_commit` и `run_shell_command` в dangerous mode (`write_file`/`apply_patch` уже создают сами, дубля нет). Интегрирован в `AgentLoop` через опциональный `tool_service`.
+- ✅ `core/services/project_service.py` — кэш `ProjectIntel` по TTL 5 мин, `git_snapshot`, `build_git_context`. Устраняет дублирование `Orchestrator._intel_memo`. `ChatPanel._build_git_context` → одна строка через сервис.
+- ✅ `core/services/model_service.py` — `get_config`/`reload_config`, `resolve_park`, `resolve_coder`, `resolve_paths`. `ChatPanel._detect_and_load_slm` использует `reload_config()`.
+- ✅ `core/services/chat_service.py` — `ChatRequestSnapshot` + `ChatService.build_agent_context` + `pick_max_iterations`. **Не интегрирован в `_do_chat/_do_agent`** — большая правка, риск регрессии; готов к миграции отдельной итерацией.
+
+**Осталось:**
+- [ ] Миграция `ChatPanel._do_chat/_do_agent` на `ChatService.build_agent_context` — убирает ~30 строк ручной сборки в двух местах. Требует прогона `AgentChatThread`-тестов и ручной проверки ресёрч/кодинг-флоу.
+- [ ] Вынос `_connect_agent_thread_signals` в `ui/chat/threads.py` — сервис-фасад над `AgentChatThread` (в плане изначально значился как «third consumer» — сейчас 1 потребитель).
+- [ ] `search_service.py` / `browser_service.py` — **отменено** как отдельные сервисы: `agents/search_providers.py` и `agents/browser_client.py` уже не зависят от Qt, тестируются без `QApplication`. Фасад добавил бы только церемонию.
+- [ ] `session_service.py` — **отменено**: `state/session_store.py` + `state/inbox.py` уже чистые.
 
 ### 2.9 AsyncResource для Qt (OlliDesk 2.0) — **приоритет поднят**
 
@@ -2229,7 +2227,7 @@ stale check и снапшоты защищают от потери данных.
 11. **9.3 + 9.4 — Модели и Git** (2–3 недели).
 12. **10.2 run_tests + 10.3 find_references + 10.4 verifier + 10.5 Coding Bench**
     (2–3 недели).
-13. **2.12 Durable inbox + 2.8 Application Services** (1–2 недели).
+13. **2.12 Durable inbox** — ✅. **2.8 Application Services** — ✅ (4 из 4 сервисов; `ChatService` готов, интеграция в `_do_chat` — отдельно).
 14. **Фаза 7 Plugin API** — после MCP.
 15. **Фаза 5 + 9.7 Мультимодальность**.
 16. **Фаза 8 Релиз и качество**.
@@ -2441,3 +2439,4 @@ freedom_level (9.12) → natural exit (2.10) → MCP (7) → browser (2.11) → 
 6. **«Свобода с ответственностью»** — `freedom_level` в профилях, per-session overrides, audit log.
 7. **`AGENTS.md` синхронизирован** — перечислены новые модули, тесты, подводные камни.
 8. **Детализация сохранена везде** — каждый новый пункт содержит: файл, функцию, аргументы, поведение, тесты, DoD. Никаких «сделать хорошо» — только конкретные шаги.
+9. **2.8 Application Services** — 4 сервиса готовы. `ToolService` интегрирован в `AgentLoop` (audit + snapshot для всех вызовов). `ProjectService`/`ModelService` — в `ChatPanel`. `ChatService` — только API, интеграция в `_do_chat` — отдельная итерация с прогоном `AgentChatThread`-тестов.

@@ -5,23 +5,39 @@
 ходят сюда за логикой; сервисы эмитят события в `EventBus`, а UI
 подписывается.
 
-Первый сервис — `MemoryService` (4.3). Дальше сюда переедут
-`ChatService`, `ToolService`, `ProjectService`, `ModelService` и т.д.
-(2.8).
+Сервисы:
+  * `MemoryService` (4.3) — эпизодическая память.
+  * `ToolService` (0.1.1 + 10.9 + 2.8) — единая точка исполнения
+    инструментов: audit-log для всех вызовов, авто-снапшот перед
+    мутирующими.
+  * `ProjectService` (2.8) — кэш `ProjectIntel` + git-контекст.
+  * `ModelService` (2.8) — единая точка выбора моделей (парк / coder /
+    пути).
+  * `ChatService` (2.8) — сборка `AgentContext` без Qt.
 """
 
+from core.services.chat_service import ChatRequestSnapshot, ChatService
 from core.services.memory_service import (
     Decision,
     MemoryService,
     Preference,
-    Reflection,
     RecallResult,
+    Reflection,
 )
+from core.services.model_service import ModelService
+from core.services.project_service import GitSnapshot, ProjectService
+from core.services.tool_service import ToolService
 
 __all__ = [
+    "ChatRequestSnapshot",
+    "ChatService",
     "Decision",
+    "GitSnapshot",
     "MemoryService",
+    "ModelService",
     "Preference",
+    "ProjectService",
     "RecallResult",
     "Reflection",
+    "ToolService",
 ]
