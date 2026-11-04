@@ -989,8 +989,62 @@ class Orchestrator:
                     "unsupported": unsupported,
                 },
             )
+
+            # [10.7] Регенерация: если тесты ЗЕЛЁНЫЕ, но verifier нашёл
+            # проблемы (пути вне индекса, выдуманные символы) — это
+            # регенерация прозы, без apply_patch. Если тесты упали —
+            # регенерация бессмысленна: код не работает, и переписывать
+            # объяснение не имеет смысла.
+            tests_green = tests_failed == 0 and tests_errors == 0
+            if not ver.ok and tests_green and last_answer:
+                ev("coding_regen", {"reason": ver.summary()})
+                regen_prompt = self._build_coding_regen_prompt(
+                    last_answer, ver, tests_passed
+                )
+                try:
+                    regen_answer = await self._gen(
+                        coder_client,
+                        coder_role,
+                        OpType.REGEN,
+                        regen_prompt,
+                    )
+                    ver2 = _verify(
+                        regen_answer,
+                        graph=intel.graph,
+                        evidence=evidence,
+                        known_paths=known_paths,
+                        known_symbols=known_symbols,
+                        strict=False,
+                    )
+                    # Берём второй, если он лучше (меньше проблем).
+                    if ver2.ok or len(ver2.missing_paths) < len(ver.missing_paths):
+                        final_answer = regen_answer
+                        verify_ok = ver2.ok
+                        unsupported = len(ver2.unsupported_claims)
+                        ev(
+                            "coding_regen_done",
+                            {
+                                "verify_ok": verify_ok,
+                                "unsupported": unsupported,
+                            },
+                        )
+                except Exception as e:
+                    logger.warning(f"coding: regen упал: {e}")
         except Exception:
             logger.debug("coding: verifier/critic упали", exc_info=True)
+
+        # [10.7] Честная пометка, если тесты не зелёные — задача не
+        # завершена. Модель обязана сообщить об этом явно, а не делать
+        # вид, что всё в порядке.
+        if tests_failed > 0 or tests_errors > 0:
+            final_answer = (
+                f"⚠️ **Тесты не зелёные** (passed={tests_passed}, "
+                f"failed={tests_failed}, errors={tests_errors}). "
+                f"Итераций: {iterations}. "
+                f"Патчей применено: "
+                f"{sum(1 for p in patches if p.get('status') == 'ok')}.\n\n"
+                f"{final_answer}"
+            )
 
         elapsed_total = time.time() - t0
         metrics = {
@@ -1078,6 +1132,31 @@ class Orchestrator:
             {n.path for n in intel.graph.nodes.values() if n.path and n.kind == "file"}
         )
         return "\n".join(f"- {p}" for p in files[:limit])
+
+    def _build_coding_regen_prompt(
+        self,
+        previous_answer: str,
+        ver: Any,
+        tests_passed: int,
+    ) -> str:
+        """[10.7] Промпт для регенерации прозы coding-ответа.
+
+        Тесты зелёные — правки не нужны, переписываем объяснение.
+        Модель получает проблемы verifier'а и должна их устранить.
+        """
+        summary = ver.summary() if hasattr(ver, "summary") else "проверка не прошла"
+        return (
+            "Твой предыдущий ответ НЕ прошёл верификацию.\n"
+            f"Тесты зелёные (passed={tests_passed}). Код НЕ трогай — "
+            f"правки не нужны.\n"
+            f"Проблемы: {summary}\n\n"
+            "Исправь ТОЛЬКО текст ответа:\n"
+            "  • все пути к файлам — из проекта (не выдумывай);\n"
+            "  • все имена классов/функций — реальные;\n"
+            "  • если факт не подтверждён — напиши «не подтверждено»;\n"
+            "  • не вызывай инструменты, верни только текст.\n\n"
+            "Предыдущий ответ:\n" + previous_answer[:3000]
+        )
 
     def _build_coding_system_prompt(
         self, task: str, coder_info: SLMModelInfo

@@ -1847,7 +1847,14 @@ class AgentLoop:
     ) -> str:
         """Проверяет ответ verifier'ом и (один раз) регенерирует при провале.
 
-        Условия запуска:
+        [10.4] Условия запуска:
+          * есть чем проверять — `project_map` или `vector_store`;
+          * режим — PLAN или AGENT, либо research-вопрос в CHAT
+            (в обычном CHAT verifier не нужен: там диалог, а не код);
+          * ответ длиннее 80 символов (короткие реплики не проверяем);
+          * финальный вызов уже не был «forced synthesis» (там
+            регенерация бессмысленна).
+        Условия запуска (старые):
           * ``context.vector_store`` или ``context.project_map`` заданы
             (есть чем проверять);
           * ответ непустой и длиннее 80 символов (короткие «привет» не
@@ -1869,6 +1876,12 @@ class AgentLoop:
         """
         # Не верифицируем, если нечего проверять.
         if not (context.vector_store or context.project_map):
+            return final_text
+        # [10.4] CHAT без research — это диалог, а не разбор кода.
+        # Verifier тут будет ложно флагать CamelCase-слова из общей речи
+        # («DependencyInversion» в объяснении SOLID) и запускать
+        # бесполезную регенерацию.
+        if context.mode == AgentMode.CHAT and not research_mode:
             return final_text
         if not final_text or len(final_text) < 80:
             return final_text
