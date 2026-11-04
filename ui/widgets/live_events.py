@@ -86,6 +86,7 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("hf", "hf"),
     ("git", "git"),
     ("permissions", "permissions"),
+    ("media", "media"),
 )
 
 
@@ -491,6 +492,18 @@ class LiveEventsPanel(QWidget):
             tools = payload.get("tools") or []
             n = len(tools) if isinstance(tools, list) else 0
             return f"🔒 permissions: сброшено {n} override(ов)", _C_OTHER
+
+        # 9.7: медиа.
+        if kind == EventKind.MEDIA_EXTRACTED.value:
+            p = str(payload.get("path", "")).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            k = payload.get("kind", "?")
+            n = payload.get("chars", 0)
+            cached = " (кэш)" if payload.get("cached") else ""
+            return f"📎 media: {p} — {k}, {n} симв.{cached}", _C_OTHER
+        if kind == EventKind.MEDIA_ERROR.value:
+            p = str(payload.get("path", "")).rsplit("/", 1)[-1]
+            err = str(payload.get("error", ""))[:100]
+            return f"📎 media: {p} — {err}", _C_LOG_ERROR
 
         if kind == EventKind.MCP_CONNECTED.value:
             name = payload.get("server_name", "?")

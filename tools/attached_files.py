@@ -30,6 +30,11 @@ class AttachedFile:
 
     path: Path
     content: str
+    # [9.7] Тип прикреплённого файла.
+    # text — обычный файл; image — OCR; audio — STT; video — STT; document — PDF/DOCX.
+    kind: str = "text"
+    # [9.7] Base64 data-url превью для изображений (может быть пустым).
+    thumbnail: str = ""
 
     @property
     def name(self) -> str:
@@ -65,17 +70,32 @@ class AttachedFileStore:
         return list(self._files)
 
     def add(self, path: Path, content: str) -> AttachedFile:
-        """Добавляет файл в хранилище, заменяя предыдущую версию того же пути.
+        """Добавляет файл в хранилище, заменяя предыдущую версию того же пути."""
+        self._files = [f for f in self._files if f.path != path]
+        attached = AttachedFile(path=path, content=content)
+        self._files.append(attached)
+        return attached
+
+    def add_from_media(
+        self,
+        path: Path,
+        content: str,
+        *,
+        kind: str,
+        thumbnail: str = "",
+        ) -> AttachedFile:
+        """[9.7] Добавляет медиафайл (изображение/аудио/видео) с типом.
 
         Args:
             path: Путь к файлу.
-            content: Текст файла.
-
-        Returns:
-            Добавленный (или замененный) файл.
+            content: Извлечённый текст (OCR/STT) или пустая строка.
+            kind: ``"image"`` | ``"audio"`` | ``"video"``.
+            thumbnail: data-url превью (только для изображений).
         """
         self._files = [f for f in self._files if f.path != path]
-        attached = AttachedFile(path=path, content=content)
+        attached = AttachedFile(
+            path=path, content=content, kind=kind, thumbnail=thumbnail
+        )
         self._files.append(attached)
         return attached
 

@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot, QUrl
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor,QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -265,6 +265,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [2.12] id текущего inbox-запроса (для complete/fail).
         self._current_inbox_id: str | None = None
 
+        # [9.7] Флаг «идёт распознавание» — чтобы не запускать параллельный OCR/STT.
+        self._media_busy: bool = False
+
         # [9.5.1] Текущая тема чата (передаётся в ChatMessageItem).
         self._is_dark: bool = True
         try:
@@ -437,9 +440,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # UI
     # ---------------------------------------------------------
 
-    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
+    def _add_message(
+        self,
+        role: str,
+        content: str,
+        mode_name: str = "",
+        images: list[str] | None = None,
+    ) -> ChatMessageItem:
         widget = ChatMessageItem(
-            role, content, mode_name=mode_name, dark=self._is_dark
+            role, content, mode_name=mode_name, dark=self._is_dark,
+            images=images,
         )
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
@@ -566,6 +576,204 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return (kind, parts[0], parts[1] if len(parts) > 1 else "")
 
         return None
+
+    # ------------------------------------------------------------------
+    # [9.7] Приём медиафайлов (drag&drop / кнопка 📎)
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_attach_clicked(self) -> None:
+        """Открывает QFileDialog с фильтром по поддерживаемым типам."""
+        from PySide6.QtWidgets import QFileDialog
+
+        filters = [
+            "Все поддерживаемые (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tiff"
+            " *.mp3 *.wav *.ogg *.m4a *.flac *.mp4 *.mkv *.webm *.avi *.mov"
+            " *.pdf *.docx *.pptx *.xlsx *.rtf *.py *.js *.ts *.cs *.md *.txt)",
+            "Изображения (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tiff)",
+            "Аудио (*.mp3 *.wav *.ogg *.m4a *.flac)",
+            "Видео (*.mp4 *.mkv *.webm *.avi *.mov)",
+            "Документы (*.pdf *.docx *.pptx *.xlsx *.rtf)",
+            "Текст (*.py *.js *.ts *.cs *.md *.txt *.json *.yaml)",
+            "Все файлы (*.*)",
+        ]
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Прикрепить файл", "", ";;".join(filters)
+        )
+        if path:
+            self._attach_local_file(path)
+
+    def _attach_local_file(self, path: str) -> None:
+        """[9.7] Единая точка прикрепления: определяет тип и запускает распознавание."""
+        from pathlib import Path as _Path
+
+        p = _Path(path).expanduser().resolve()
+        if not p.is_file():
+            self._add_message("system", f"❌ Не файл: {p}")
+            return
+        from fs.image_extractors import is_image
+        from fs.audio_extractors import is_audio
+        from fs.video_extractors import is_video
+        from fs.document_extractors import is_document
+
+        if is_image(p):
+            self._attach_image(p)
+        elif is_audio(p):
+            self._attach_audio(p)
+        elif is_video(p):
+            self._attach_video(p)
+        elif is_document(p):
+            # Существующий путь документа.
+            from fs.document_extractors import extract_document
+
+            self._attach_document(p, extract_document)
+        else:
+            self._attach_file(p)
+
+    def _attach_image(self, path) -> None:
+        """[9.7] OCR изображения + миниатюра."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.image_extractors import extract_image, image_thumbnail_base64
+        from fs.media_cache import get_cached, set_cached
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ OCR {path.name}…")
+
+        try:
+            cached = get_cached(path, "image")
+            if cached is not None:
+                text = cached
+            else:
+                result = extract_image(path, use_ocr=True)
+                text = result.text
+                if text:
+                    set_cached(path, "image", text)
+
+            thumb = image_thumbnail_base64(path)
+            attached = self._attached_files.add_from_media(
+                path, text, kind="image", thumbnail=thumb
+            )
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "image",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🖼 Прикреплено изображение: {attached.name} "
+                f"({len(text)} символов OCR)."
+                if text
+                else f"🖼 Изображение {attached.name} прикреплено (текст не распознан)."
+            )
+            # В user-пузыре с миниатюрой.
+            self._add_message(
+                "user", f"[Прикреплено изображение: {attached.name}]",
+                images=[thumb] if thumb else None,
+            )
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
+
+    def _attach_audio(self, path) -> None:
+        """[9.7] STT аудио."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.audio_extractors import transcribe_audio
+        from fs.media_cache import get_cached, set_cached
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ Распознавание речи {path.name}…")
+        try:
+            cached = get_cached(path, "audio")
+            if cached is not None:
+                text = cached
+            else:
+                result = transcribe_audio(path)
+                text = result.text
+                if text:
+                    set_cached(path, "audio", text)
+
+            attached = self._attached_files.add_from_media(
+                path, text, kind="audio"
+            )
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "audio",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🎵 Прикреплено аудио: {attached.name} "
+                f"({len(text)} символов расшифровки)."
+                if text
+                else f"🎵 Аудио {attached.name} прикреплено (расшифровка пуста)."
+            )
+            self._add_message(
+                "user", f"[Прикреплено аудио: {attached.name}]"
+            )
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
+
+    def _attach_video(self, path) -> None:
+        """[9.7] STT видео."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.video_extractors import extract_transcript
+        from fs.media_cache import get_cached, set_cached
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ Распознавание {path.name}…")
+        try:
+            cached = get_cached(path, "video")
+            if cached is not None:
+                text = cached
+            else:
+                result = extract_transcript(path)
+                text = result.text
+                if text:
+                    set_cached(path, "video", text)
+
+            attached = self._attached_files.add_from_media(
+                path, text, kind="video"
+            )
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "video",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🎬 Прикреплено видео: {attached.name} "
+                f"({len(text)} символов расшифровки)."
+                if text
+                else f"🎬 Видео {attached.name} прикреплено (расшифровка пуста)."
+            )
+            self._add_message(
+                "user", f"[Прикреплено видео: {attached.name}]"
+            )
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
 
     def _attach_file(self, path: Path) -> None:
         """[9.4.8] Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
@@ -1026,15 +1234,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
+        self.input_edit.setAcceptDrops(True)
+        self.input_edit.textChanged.connect(self._on_input_text_changed)
+        # При скролле/фокусе — обновляем позицию popup.
+        self.input_edit.cursorPositionChanged.connect(self._update_command_placeholder)
+
         input_layout.addWidget(self.input_edit, stretch=1)
 
         # [9.6.2] Автодополнение `@`-команд.
         self._command_completer = CommandCompleter(self)
         self._command_completer.setWidget(self.input_edit)
         self._command_completer.command_activated.connect(self._on_command_completed)
-        self.input_edit.textChanged.connect(self._on_input_text_changed)
-        # При скролле/фокусе — обновляем позицию popup.
-        self.input_edit.cursorPositionChanged.connect(self._update_command_placeholder)
+
+        # [9.7] Кнопка «📎 Скрепка».
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setToolTip(
+            "Прикрепить файл: изображение (OCR), аудио/видео (STT), "
+            "PDF/DOCX (текст). Также можно перетащить файл в чат."
+        )
+        self.attach_btn.setStyleSheet(
+            "QPushButton { font-size: 16px; padding: 8px 12px;"
+            " background: transparent; border: none; }"
+            " QPushButton:hover { background: rgba(128,128,128,0.2);"
+            " border-radius: 4px; }"
+        )
+        self.attach_btn.clicked.connect(self._on_attach_clicked)
+        input_layout.addWidget(self.attach_btn)
 
         # Кнопка «Продолжить» показывается только при исчерпании лимита
         # итераций (см. _on_iteration_limit_exceeded / _continue_after_limit).
@@ -1187,29 +1412,36 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.input_edit.setPlaceholderText(DEFAULT_PLACEHOLDER)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # [9.6.2] Tab / Enter при видимом popup — навигация и выбор в completer.
-        if (
-            obj is self.input_edit
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and self._command_popup_active
-            and self._command_completer is not None
-            and self._command_completer.is_popup_visible()
-        ):
-            popup = self._command_completer.popup()
-            key = event.key()
-            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
-                # Навигация по popup.
-                popup.keyPressEvent(event)
-                return True
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
-                # Выбор текущего элемента.
-                index = popup.currentIndex()
-                if index.isValid():
-                    tag = index.data(Qt.ItemDataRole.DisplayRole)
-                    self._on_command_completed(str(tag))
+        # [9.7] Drag&drop файлов в поле ввода.
+        if obj is self.input_edit:
+            if event.type() == QEvent.Type.DragEnter:
+                mime = getattr(event, "mimeData", lambda: None)()
+                if mime is not None and mime.hasUrls():
+                    self.input_edit.setStyleSheet(
+                        "font-size: 14px; padding: 8px;"
+                        " border: 2px dashed #d4a373; border-radius: 4px;"
+                    )
+                    event.acceptProposedAction()
                     return True
-                # Если ничего не выделено — Tab/Enter ведут себя как обычно.
+            elif event.type() == QEvent.Type.DragLeave:
+                self.input_edit.setStyleSheet(
+                    "font-size: 14px; padding: 8px;"
+                    " border: 1px solid #ccc; border-radius: 4px;"
+                )
+                return False
+            elif event.type() == QEvent.Type.Drop:
+                mime = getattr(event, "mimeData", lambda: None)()
+                if mime is not None and mime.hasUrls():
+                    urls = mime.urls()
+                    self.input_edit.setStyleSheet(
+                        "font-size: 14px; padding: 8px;"
+                        " border: 1px solid #ccc; border-radius: 4px;"
+                    )
+                    for url in urls:
+                        if url.isLocalFile():
+                            self._attach_local_file(url.toLocalFile())
+                    event.acceptProposedAction()
+                    return True
             if key == Qt.Key.Key_Escape:
                 self._command_completer.hide_popup()
                 self._command_popup_active = False

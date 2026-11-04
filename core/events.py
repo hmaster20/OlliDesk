@@ -102,6 +102,10 @@ class EventKind(StrEnum):
     PERMISSIONS_OVERRIDDEN = "permissions.overridden"
     PERMISSIONS_RESET = "permissions.reset"
 
+    # --- Фаза 5 / 9.7: мультимодальность ---
+    MEDIA_EXTRACTED = "media.extracted"
+    MEDIA_ERROR = "media.error"
+
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
@@ -394,9 +398,27 @@ class PermissionsOverriddenPayload(TypedDict):
     policy: str  # "auto" | "ask_first" | "excluded"
     scope: str  # "session"
 
-
 class PermissionsResetPayload(TypedDict):
     tools: list[str]
+
+# ---------------------------------------------------------------------------
+# Фаза 5 / 9.7: медиа
+# ---------------------------------------------------------------------------
+
+
+class MediaExtractedPayload(TypedDict):
+    path: str
+    kind: str  # image / audio / video
+    chars: int
+    duration_ms: float
+    cached: bool
+
+
+class MediaErrorPayload(TypedDict):
+    path: str
+    kind: str
+    error: str
+
 
 __all__ = [
     "AgentFinishedPayload",
@@ -439,5 +461,7 @@ __all__ = [
     "GitCommitCreatedPayload",
     "PermissionsOverriddenPayload",
     "PermissionsResetPayload",
+    "MediaExtractedPayload",
+    "MediaErrorPayload",
     "args_hash",
 ]

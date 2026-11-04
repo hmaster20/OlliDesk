@@ -580,12 +580,15 @@ class ReasoningWidget(QWidget):
         parent: QWidget | None = None,
         *,
         dark: bool = True,
+        images: list[str] | None = None,
     ):
         super().__init__(parent)
-        self._text = initial_text or ""
-        self._expanded = bool(self._text)
-        self._anim: QPropertyAnimation | None = None
+        self.role = role
+        self.content = content
+        self.thinking = thinking
+        self.mode_name = mode_name
         self._dark = dark
+        self._images: list[str] = list(images or [])
         self._container = container
 
         c = _theme_colors(dark)
@@ -1039,7 +1042,43 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
         return ("…", True)
     return (clean[: limit - 1] + "…", True)
 
+def _make_thumbnail_label(
+    data_url: str, max_size: int = 120
+) -> QLabel | None:
+    """[9.7] Возвращает QLabel с миниатюрой из base64 data-url.
 
+    Клик по миниатюре открывает полный размер в системном просмотрщике
+    (через `QDesktopServices.openUrl` — но data-url не открывается;
+    вместо этого копируем в temp и открываем).
+    """
+    if not data_url.startswith("data:image/"):
+        return None
+    try:
+        header, _, b64 = data_url.partition(",")
+        import base64
+
+        raw = base64.b64decode(b64)
+    except Exception:
+        return None
+    try:
+        from PySide6.QtGui import QPixmap
+    except Exception:
+        return None
+    pix = QPixmap()
+    if not pix.loadFromData(raw):
+        return None
+    pix = pix.scaled(
+        max_size, max_size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    label = QLabel()
+    label.setPixmap(pix)
+    label.setStyleSheet(
+        "QLabel { border: 1px solid #3a3a48; border-radius: 6px; padding: 2px; }"
+    )
+    label.setToolTip("Прикреплённое изображение")
+    return label
 def _escape_diff(text: str) -> str:
     """Экранирует HTML-спецсимволы для diff-сводки."""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1671,6 +1710,21 @@ class ChatMessageItem(QWidget):
             header_row.addWidget(role_label)
         header_row.addStretch()
         bubble_layout.addLayout(header_row)
+
+        # [9.7] Миниатюры прикреплённых изображений.
+        if self._images and is_user:
+            self._image_strip = QWidget()
+            img_layout = QHBoxLayout(self._image_strip)
+            img_layout.setContentsMargins(0, 4, 0, 4)
+            img_layout.setSpacing(6)
+            for b64 in self._images:
+                thumb = _make_thumbnail_label(b64, max_size=120)
+                if thumb is not None:
+                    img_layout.addWidget(thumb)
+            img_layout.addStretch()
+            bubble_layout.addWidget(self._image_strip)
+        else:
+            self._image_strip = None
 
         # parts container
         self._parts_container = QWidget()
