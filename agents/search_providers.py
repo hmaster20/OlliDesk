@@ -45,11 +45,7 @@ class SearchResult:
 
     def render(self, index: int) -> str:
         """Форматирует для observation."""
-        return (
-            f"{index}. {self.title}\n"
-            f"   {self.href}\n"
-            f"   {self.body[:400]}"
-        )
+        return f"{index}. {self.title}\n   {self.href}\n   {self.body[:400]}"
 
 
 @runtime_checkable
@@ -96,9 +92,7 @@ class SearXNGProvider:
                     params={"q": query, "format": "json", "categories": "general"},
                 )
                 if resp.status_code != 200:
-                    raise SearchProviderError(
-                        f"SearXNG HTTP {resp.status_code}"
-                    )
+                    raise SearchProviderError(f"SearXNG HTTP {resp.status_code}")
                 data = resp.json()
         except SearchProviderError:
             raise
@@ -154,13 +148,9 @@ class OpenSERPProvider:
                 timeout=self.timeout_s,
                 headers={"User-Agent": "OlliDesk/0.1"},
             ) as client:
-                resp = await client.get(
-                    url, params={"text": query, "limit": num}
-                )
+                resp = await client.get(url, params={"text": query, "limit": num})
                 if resp.status_code != 200:
-                    raise SearchProviderError(
-                        f"OpenSERP HTTP {resp.status_code}"
-                    )
+                    raise SearchProviderError(f"OpenSERP HTTP {resp.status_code}")
                 data = resp.json()
         except SearchProviderError:
             raise
@@ -235,18 +225,12 @@ class YandexSearchAPIProvider:
             "getPartialResults": False,
         }
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout_s
-            ) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code == 403:
-                    raise SearchProviderError(
-                        "Yandex API: 403 (проверьте ключ и folder_id)"
-                    )
+                    raise SearchProviderError("Yandex API: 403 (проверьте ключ и folder_id)")
                 if resp.status_code != 200:
-                    raise SearchProviderError(
-                        f"Yandex API HTTP {resp.status_code}"
-                    )
+                    raise SearchProviderError(f"Yandex API HTTP {resp.status_code}")
                 data = resp.json()
         except SearchProviderError:
             raise
@@ -294,9 +278,7 @@ class YandexSearchAPIProvider:
                     elif tag == "passages":
                         body = "".join(child.itertext()).strip()
                 if title and href:
-                    results.append(
-                        SearchResult(title=title, href=href, body=body[:400])
-                    )
+                    results.append(SearchResult(title=title, href=href, body=body[:400]))
                 if len(results) >= num:
                     break
         return results
@@ -329,27 +311,17 @@ class OllamaWebSearchProvider:
             "Content-Type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout_s
-            ) as client:
-                resp = await client.post(
-                    url, headers=headers, json={"query": query, "max_results": num}
-                )
+            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                resp = await client.post(url, headers=headers, json={"query": query, "max_results": num})
                 if resp.status_code == 401:
-                    raise SearchProviderError(
-                        "Ollama Web Search: 401 (неверный api_key)"
-                    )
+                    raise SearchProviderError("Ollama Web Search: 401 (неверный api_key)")
                 if resp.status_code != 200:
-                    raise SearchProviderError(
-                        f"Ollama Web Search HTTP {resp.status_code}"
-                    )
+                    raise SearchProviderError(f"Ollama Web Search HTTP {resp.status_code}")
                 data = resp.json()
         except SearchProviderError:
             raise
         except httpx.HTTPError as e:
-            raise SearchProviderError(
-                f"Ollama Web Search network: {e}"
-            ) from e
+            raise SearchProviderError(f"Ollama Web Search network: {e}") from e
         except Exception as e:
             raise SearchProviderError(f"Ollama Web Search: {e}") from e
 
@@ -400,20 +372,14 @@ class DDGProvider:
         try:
             from ddgs import DDGS
         except ImportError as e:
-            raise SearchProviderError(
-                "ddgs не установлен: `pip install ddgs`"
-            ) from e
+            raise SearchProviderError("ddgs не установлен: `pip install ddgs`") from e
 
         def _do() -> list[dict]:
             with DDGS() as ddgs:
-                return list(
-                    ddgs.text(query, max_results=num, region="ru-ru")
-                )
+                return list(ddgs.text(query, max_results=num, region="ru-ru"))
 
         try:
-            raw = await asyncio.wait_for(
-                asyncio.to_thread(_do), timeout=self.timeout_s
-            )
+            raw = await asyncio.wait_for(asyncio.to_thread(_do), timeout=self.timeout_s)
         except TimeoutError as e:
             raise SearchProviderError(f"DDG timeout ({self.timeout_s}s)") from e
         except Exception as e:
@@ -453,20 +419,14 @@ def build_chain(config: SearchConfig) -> list[SearchProvider]:
         Список провайдеров в порядке приоритета (только доступные).
     """
     factory: dict[str, Any] = {
-        "searxng": lambda: SearXNGProvider(
-            config.searxng_url, timeout_s=float(config.timeout_s)
-        ),
-        "openserp": lambda: OpenSERPProvider(
-            config.openserp_url, timeout_s=float(config.timeout_s)
-        ),
+        "searxng": lambda: SearXNGProvider(config.searxng_url, timeout_s=float(config.timeout_s)),
+        "openserp": lambda: OpenSERPProvider(config.openserp_url, timeout_s=float(config.timeout_s)),
         "yandex": lambda: YandexSearchAPIProvider(
             config.yandex_api_key,
             config.yandex_folder_id,
             timeout_s=float(config.timeout_s),
         ),
-        "ollama": lambda: OllamaWebSearchProvider(
-            config.ollama_api_key, timeout_s=float(config.timeout_s)
-        ),
+        "ollama": lambda: OllamaWebSearchProvider(config.ollama_api_key, timeout_s=float(config.timeout_s)),
         "ddg": lambda: DDGProvider(timeout_s=float(config.timeout_s)),
     }
 
@@ -482,16 +442,11 @@ def build_chain(config: SearchConfig) -> list[SearchProvider]:
             logger.debug(f"search: {name} не создан: {e}")
             continue
         if not provider.is_available():
-            logger.debug(
-                f"search: {name} недоступен (не настроен) — пропускаю"
-            )
+            logger.debug(f"search: {name} недоступен (не настроен) — пропускаю")
             continue
         chain.append(provider)
 
-    logger.debug(
-        f"search chain: {[p.name for p in chain]} "
-        f"({len(chain)} из {len(config.providers)})"
-    )
+    logger.debug(f"search chain: {[p.name for p in chain]} ({len(chain)} из {len(config.providers)})")
     return chain
 
 

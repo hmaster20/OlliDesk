@@ -158,10 +158,7 @@ def select_pair(
 
     planner_source = "явно из конфига" if planner else "автовыбор"
     analyst_source = "явно из конфига" if analyst else "автовыбор"
-    logger.debug(
-        f"select_pair: planner_source={planner_source}, "
-        f"analyst_source={analyst_source}"
-    )
+    logger.debug(f"select_pair: planner_source={planner_source}, analyst_source={analyst_source}")
 
     # --- 2. Автовыбор planner ---
     if planner is None:
@@ -210,6 +207,7 @@ def select_pair(
                 f"Работаем в single-model режиме."
             )
         # analyst = None  ← УДАЛЕНО: не обнуляем, пусть будет тот же объект.
+
 
 def select_park(
     hw: HardwareProfile | None = None,
@@ -325,10 +323,7 @@ def select_park(
         if picked:
             result[Role.ANALYST] = picked
 
-    logger.info(
-        "select_park: "
-        + ", ".join(f"{role.value}={info.id}" for role, info in result.items())
-    )
+    logger.info("select_park: " + ", ".join(f"{role.value}={info.id}" for role, info in result.items()))
     return result
 
 
@@ -346,6 +341,7 @@ def select_pair_park(hw: HardwareProfile | None = None) -> dict[Role, SLMModelIn
     if pair.get("analyst"):
         result[Role.ANALYST] = pair["analyst"]
     return result
+
 
 # ---------------------------------------------------------------------------
 # 10.6: coder-модель для coding-задач
@@ -393,15 +389,10 @@ def select_coder(
         for model_id in profile_coder_models:
             info = cfg.slm.get_model_by_id(model_id)
             if info is None:
-                logger.warning(
-                    f"select_coder: профиль ссылается на {model_id!r}, "
-                    f"но в каталоге такой нет"
-                )
+                logger.warning(f"select_coder: профиль ссылается на {model_id!r}, но в каталоге такой нет")
                 continue
             if not is_model_installed(info.file):
-                logger.info(
-                    f"select_coder: {model_id!r} не установлена — пропускаю"
-                )
+                logger.info(f"select_coder: {model_id!r} не установлена — пропускаю")
                 continue
             return info
 
@@ -414,9 +405,7 @@ def select_coder(
     if coder_fits:
         best = coder_fits[0]
         logger.info(
-            f"select_coder: {best.info.id} "
-            f"(tier={best.info.tier}, "
-            f"{'VRAM' if best.fits_vram else 'RAM'})"
+            f"select_coder: {best.info.id} (tier={best.info.tier}, {'VRAM' if best.fits_vram else 'RAM'})"
         )
         return best.info
 
@@ -428,9 +417,6 @@ def select_coder(
             reverse=True,
         )
         if chat_fits:
-            logger.info(
-                f"select_coder: coder-модели нет, fallback на "
-                f"{chat_fits[0].info.id}"
-            )
+            logger.info(f"select_coder: coder-модели нет, fallback на {chat_fits[0].info.id}")
             return chat_fits[0].info
     return None

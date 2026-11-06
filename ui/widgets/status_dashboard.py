@@ -174,9 +174,7 @@ class StatusDashboard(QWidget):
 
         # [2.11] Режим браузера.
         self.browser = _PillLabel("browser")
-        self.browser.setToolTip(
-            "Режим browser_control: isolated / extension / full / off"
-        )
+        self.browser.setToolTip("Режим browser_control: isolated / extension / full / off")
         layout.addWidget(self.browser)
 
         # [2.13] Провайдер поиска.
@@ -419,9 +417,7 @@ class StatusDashboard(QWidget):
         text = f"🧠 mem: {count}"
         tooltip = f"Рефлексий в памяти: {count}"
         if recent:
-            tooltip += "\n\nПоследние:\n" + "\n".join(
-                f"  • {r[:80]}" for r in recent[:3]
-            )
+            tooltip += "\n\nПоследние:\n" + "\n".join(f"  • {r[:80]}" for r in recent[:3])
         self.memory.set_state(text, _C_INFO, tooltip)
 
     # ------------------------------------------------------------------
@@ -481,9 +477,7 @@ class StatusDashboard(QWidget):
             "open": "open — всё auto (shell ask_first, secrets никогда)",
         }
         if level not in icons:
-            self.freedom.set_state(
-                "— profile", _C_OFF, "freedom_level не задан"
-            )
+            self.freedom.set_state("— profile", _C_OFF, "freedom_level не задан")
             return
         self.freedom.set_state(
             f"{icons[level]} {short[level]}",
@@ -507,9 +501,7 @@ class StatusDashboard(QWidget):
             available: ``False`` — playwright/websockets не установлены.
         """
         if not available:
-            self.browser.set_state(
-                "— browser", _C_OFF, "playwright/websockets не установлены"
-            )
+            self.browser.set_state("— browser", _C_OFF, "playwright/websockets не установлены")
             return
         color = {
             "isolated": _C_OK,
@@ -542,9 +534,7 @@ class StatusDashboard(QWidget):
             available: ``False`` — ни один не настроен.
         """
         if not available or not provider:
-            self.search.set_state(
-                "— search", _C_OFF, "Ни один провайдер не настроен"
-            )
+            self.search.set_state("— search", _C_OFF, "Ни один провайдер не настроен")
             return
         color = _C_OK if provider in ("searxng", "openserp") else _C_WARN
         text = f"🔍 search: {provider}"
@@ -566,9 +556,7 @@ class StatusDashboard(QWidget):
             pending: Сколько запросов в состоянии ``pending``.
         """
         if pending <= 0:
-            self.inbox.set_state(
-                "— inbox", _C_OFF, "Durable inbox пуст"
-            )
+            self.inbox.set_state("— inbox", _C_OFF, "Durable inbox пуст")
             return
         color = _C_WARN if pending >= 5 else _C_INFO
         text = f"📥 inbox: {pending}"
@@ -591,9 +579,7 @@ class StatusDashboard(QWidget):
             commit_hash: Короткий hash HEAD.
         """
         if not branch:
-            self.git_branch.set_state(
-                "— git", _C_OFF, "Проект не под git"
-            )
+            self.git_branch.set_state("— git", _C_OFF, "Проект не под git")
             return
         text = f"🌿 {branch}"
         if commit_hash:
@@ -602,5 +588,6 @@ class StatusDashboard(QWidget):
         if commit_hash:
             tooltip += f"\nhash: {commit_hash}"
         self.git_branch.set_state(text, _C_INFO, tooltip)
+
 
 __all__ = ["StatusDashboard"]

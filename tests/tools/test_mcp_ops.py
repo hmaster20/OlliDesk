@@ -42,7 +42,8 @@ class TestMCPManager:
         mgr = MCPManager()
         # Заглушка клиента.
         mgr._clients["test"] = cast(  # type: ignore[assignment]
-            object(), None  # type: ignore[arg-type]
+            object(),
+            None,  # type: ignore[arg-type]
         )
         from core.mcp_client import MCPToolInfo
 

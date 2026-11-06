@@ -90,9 +90,7 @@ async def _approve(_name, _desc, _args) -> bool:
 class TestNaturalExit:
     async def test_stop_without_tool_calls_exits_immediately(self):
         """finish_reason=stop + нет tool_calls → один вызов, сразу выход."""
-        client = _ScriptedClient(
-            [{"parts": [TextPart(text="final answer")], "finish_reason": "stop"}]
-        )
+        client = _ScriptedClient([{"parts": [TextPart(text="final answer")], "finish_reason": "stop"}])
         loop = AgentLoop(
             client=cast(LLMBackend, client),
             registry=cast(ToolRegistry, _FakeRegistry()),
@@ -176,9 +174,12 @@ class TestSoftBudget:
         b.reset()
         snap = b.snapshot()
         assert set(snap.keys()) == {
-            "iterations", "iterations_limit",
-            "tokens", "tokens_limit",
-            "time_s", "time_limit_s",
+            "iterations",
+            "iterations_limit",
+            "tokens",
+            "tokens_limit",
+            "time_s",
+            "time_limit_s",
             "status",
         }
 
@@ -297,6 +298,7 @@ class TestSoftBudget:
         assert len(calls) == 1  # exceeded сработал один раз
         assert loop.last_finish_reason == "stop"
 
+
 # ---------------------------------------------------------------------------
 # 2.5: budget.warning/exceeded/agent.finished идут в EventBus
 # ---------------------------------------------------------------------------
@@ -317,9 +319,7 @@ async def test_budget_warning_in_event_bus():
     class _TokenReportingClient(_ScriptedClient):
         last_stats = {"tokens": 8, "tokens_per_sec": 1.0}
 
-    client = _TokenReportingClient(
-        [{"parts": [TextPart(text="a")], "finish_reason": "stop"}]
-    )
+    client = _TokenReportingClient([{"parts": [TextPart(text="a")], "finish_reason": "stop"}])
     loop = AgentLoop(
         client=cast(LLMBackend, client),
         registry=cast(ToolRegistry, _FakeRegistry()),
@@ -354,9 +354,7 @@ async def test_agent_finished_in_event_bus():
         lambda _k, p: received.append(p),
     )
 
-    client = _ScriptedClient(
-        [{"parts": [TextPart(text="ok")], "finish_reason": "stop"}]
-    )
+    client = _ScriptedClient([{"parts": [TextPart(text="ok")], "finish_reason": "stop"}])
     loop = AgentLoop(
         client=cast(LLMBackend, client),
         registry=cast(ToolRegistry, _FakeRegistry()),

@@ -109,12 +109,10 @@ class ToolConfirmationDialog(QDialog):
         # [2.7] Разрешить на эту сессию — добавляет в session_overrides.
         allow_session_btn = QPushButton("📌 Разрешить на сессию")
         allow_session_btn.setToolTip(
-            "Разрешить этот инструмент на текущую сессию "
-            "(сбрасывается при закрытии чата)."
+            "Разрешить этот инструмент на текущую сессию (сбрасывается при закрытии чата)."
         )
         allow_session_btn.setStyleSheet(
-            "padding: 6px 16px; background: #4a6741; color: #fff;"
-            " border: none; border-radius: 4px;"
+            "padding: 6px 16px; background: #4a6741; color: #fff; border: none; border-radius: 4px;"
         )
         allow_session_btn.clicked.connect(self._approve_session)
         btn_layout.addWidget(allow_session_btn)

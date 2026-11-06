@@ -54,13 +54,7 @@ async def _approve(_, __, ___):
 
 
 def _project_map() -> str:
-    return (
-        "Структура проекта:\n"
-        "  src/\n"
-        "    main.py\n"
-        "  tests/\n"
-        "    test_main.py\n"
-    )
+    return "Структура проекта:\n  src/\n    main.py\n  tests/\n    test_main.py\n"
 
 
 class TestVerifierCondition:
@@ -92,9 +86,7 @@ class TestVerifierCondition:
     @pytest.mark.asyncio
     async def test_agent_triggers_verifier(self) -> None:
         """AGENT с невалидным путём — verifier → регенерация."""
-        client = _NoopClient(
-            "В файле ghost/missing.py есть функция FooBarBaz."
-        )
+        client = _NoopClient("В файле ghost/missing.py есть функция FooBarBaz.")
         loop = AgentLoop(
             client=cast(LLMBackend, client),
             registry=cast(ToolRegistry, _FakeRegistry()),

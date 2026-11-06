@@ -187,9 +187,7 @@ class IsolatedBrowser(BrowserBackend):
         try:
             title = await self._page.title()
             url = self._page.url
-            text = await self._page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            )
+            text = await self._page.evaluate("() => document.body ? document.body.innerText : ''")
         except Exception as e:
             raise BrowserError(f"snapshot: {e}") from e
         elements = await self._collect_elements()
@@ -217,9 +215,7 @@ class IsolatedBrowser(BrowserBackend):
         await self._ensure_started()
         assert self._page is not None
         try:
-            await self._page.fill(
-                selector, text, timeout=DEFAULT_ACTION_TIMEOUT * 1000
-            )
+            await self._page.fill(selector, text, timeout=DEFAULT_ACTION_TIMEOUT * 1000)
         except Exception as e:
             raise BrowserError(f"fill({selector}): {e}") from e
         emit_event(
@@ -340,14 +336,10 @@ class ExtensionBrowser(BrowserBackend):
         try:
             import websockets
         except ImportError as e:
-            raise BrowserError(
-                "websockets не установлен. Установите: `pip install websockets`"
-            ) from e
+            raise BrowserError("websockets не установлен. Установите: `pip install websockets`") from e
         url = f"ws://127.0.0.1:{self.config.extension_bridge_port}"
         try:
-            self._ws = await asyncio.wait_for(
-                websockets.connect(url), timeout=5.0
-            )
+            self._ws = await asyncio.wait_for(websockets.connect(url), timeout=5.0)
         except Exception as e:
             raise BrowserError(
                 f"Extension bridge недоступен на {url}: {e}. "
@@ -481,8 +473,7 @@ class FullAccessBrowser(BrowserBackend):
         pages = self._browser.pages
         self._page = pages[0] if pages else await self._browser.new_page()
         logger.warning(
-            "Browser (full): доступ к реальным сессиям пользователя. "
-            "Все действия пишутся в audit log."
+            "Browser (full): доступ к реальным сессиям пользователя. Все действия пишутся в audit log."
         )
 
     # open/snapshot/click/fill/close — те же, что у IsolatedBrowser.
@@ -506,9 +497,7 @@ class FullAccessBrowser(BrowserBackend):
         try:
             title = await self._page.title()
             url = self._page.url
-            text = await self._page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            )
+            text = await self._page.evaluate("() => document.body ? document.body.innerText : ''")
         except Exception as e:
             raise BrowserError(f"snapshot: {e}") from e
         # Используем общий сборщик из IsolatedBrowser через временный экземпляр.
@@ -539,9 +528,7 @@ class FullAccessBrowser(BrowserBackend):
         await self._ensure_started()
         assert self._page is not None
         try:
-            await self._page.fill(
-                selector, text, timeout=DEFAULT_ACTION_TIMEOUT * 1000
-            )
+            await self._page.fill(selector, text, timeout=DEFAULT_ACTION_TIMEOUT * 1000)
         except Exception as e:
             raise BrowserError(f"fill({selector}): {e}") from e
         emit_event(
@@ -601,15 +588,10 @@ def create_backend(config: BrowserConfig) -> BrowserBackend | None:
 
             return ExtensionBrowser(config)
         except ImportError:
-            logger.warning(
-                "browser_control: websockets не установлен — extension-режим "
-                "недоступен"
-            )
+            logger.warning("browser_control: websockets не установлен — extension-режим недоступен")
             return None
     if not is_playwright_available():
-        logger.warning(
-            "browser_control: playwright не установлен — браузер недоступен"
-        )
+        logger.warning("browser_control: playwright не установлен — браузер недоступен")
         return None
     if config.mode == "full":
         return FullAccessBrowser(config)

@@ -48,6 +48,7 @@ def _capture_settings(panel) -> list[dict]:
     panel.settings_changed.connect(captured.append)
     return captured
 
+
 def test_save_current_settings_omits_model_when_slm_active(panel, monkeypatch):
     """SLM active → payload без ключа 'model'.
 
@@ -78,6 +79,7 @@ def test_set_model_does_not_persist_when_slm_active(panel, monkeypatch):
     # подавлен флагом _suppress_model_save.
     assert captured == []
 
+
 def test_mode_change_omits_model_when_slm_active(panel, monkeypatch):
     """Переключение режима при SLM-active не перетирает last_model."""
     monkeypatch.setattr(panel._router, "_active_backend", BackendType.LOCAL_SLM)
@@ -92,6 +94,7 @@ def test_mode_change_omits_model_when_slm_active(panel, monkeypatch):
     for payload in captured:
         assert "model" not in payload
 
+
 def test_save_current_settings_includes_model_when_ollama_active(panel, monkeypatch):
     """Ollama active → payload содержит 'model'."""
     # Подменяем активный бэкенд (приватное поле — тест, контракт не трогаем).
@@ -105,6 +108,7 @@ def test_save_current_settings_includes_model_when_ollama_active(panel, monkeypa
     assert "model" in payload
     assert payload["model"] == panel.get_current_model()
 
+
 def test_manual_model_change_persists_when_ollama_active(panel, monkeypatch):
     """Ручная смена модели при Ollama active эмитит 'model'."""
     monkeypatch.setattr(panel._router, "_active_backend", BackendType.OLLAMA)
@@ -117,6 +121,7 @@ def test_manual_model_change_persists_when_ollama_active(panel, monkeypatch):
     assert captured
     payload = captured[-1]
     assert "model" in payload
+
 
 def test_activate_selected_disables_auto_select(qapp, monkeypatch, tmp_path):
     """Явный выбор модели в SLMModelsDialog выключает auto_select_model."""
@@ -136,9 +141,7 @@ def test_activate_selected_disables_auto_select(qapp, monkeypatch, tmp_path):
     )
 
     # Моки: «все модели установлены», save_config — no-op.
-    monkeypatch.setattr(
-        "agents.download_slm.is_model_installed", lambda *a, **kw: True
-    )
+    monkeypatch.setattr("agents.download_slm.is_model_installed", lambda *a, **kw: True)
     monkeypatch.setattr(dlg_mod, "is_model_installed", lambda *a, **kw: True)
     monkeypatch.setattr(dlg_mod, "save_config", lambda *a, **kw: None)
     # _real_size_str читает get_models_dir() — подменяем на пустую tmp_path.

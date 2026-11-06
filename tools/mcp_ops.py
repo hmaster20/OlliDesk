@@ -124,10 +124,7 @@ class MCPManager:
                     },
                 )
             self._initialized = True
-            logger.info(
-                f"MCPManager: initialized {len(self._clients)}/{len(server_configs)} "
-                f"серверов"
-            )
+            logger.info(f"MCPManager: initialized {len(self._clients)}/{len(server_configs)} серверов")
 
     async def shutdown(self) -> None:
         """Останавливает все серверы."""

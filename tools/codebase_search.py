@@ -157,10 +157,7 @@ async def search_codebase(
         results = [r for r in results if not is_denied_file(Path(r.file_path).name)]
 
         if not results:
-            return (
-                "Ничего не найдено (секретные файлы исключены политикой "
-                "безопасности)."
-            )
+            return "Ничего не найдено (секретные файлы исключены политикой безопасности)."
             # Диагностическое сообщение: подсказываем, какие значения
             # фильтра точно сработают, и что запрос вообще отработал.
             hint = ""
@@ -187,8 +184,6 @@ async def search_codebase(
     except Exception as e:
         logger.error(f"Ошибка поиска по коду: {e}")
         return f"Ошибка поиска: {e}"
-
-
 
 
 @tool(
@@ -231,9 +226,7 @@ async def find_references(
     if not symbol or not symbol.strip():
         return "Ошибка: пустое имя символа."
     symbol = symbol.strip()
-    logger.debug(
-        f"find_references: symbol={symbol!r}, file={file!r}, line={line}"
-    )
+    logger.debug(f"find_references: symbol={symbol!r}, file={file!r}, line={line}")
 
     # 1. Пробуем LSP (precise).
     if file and line > 0:
@@ -249,9 +242,7 @@ async def find_references(
                 if not fpath.is_absolute() and project_root:
                     fpath = _Path(project_root) / fpath
                 # LSP 0-based: line-1, character=0 (начало строки).
-                refs = await _try_lsp_references(
-                    bridge, fpath, line - 1, language
-                )
+                refs = await _try_lsp_references(bridge, fpath, line - 1, language)
                 if refs:
                     return _format_lsp_references(symbol, refs)
         except Exception as e:
@@ -264,17 +255,13 @@ async def find_references(
             f"использования {symbol!r}. Открой проект для индексации."
         )
     try:
-        results = await vector_store.search(
-            symbol, n_results=15, path_prefix=None
-        )
+        results = await vector_store.search(symbol, n_results=15, path_prefix=None)
     except Exception as e:
         return f"Ошибка поиска: {e}"
 
     # Фильтруем секреты и пустые результаты.
     results = [
-        r for r in (results or [])
-        if not is_denied_file(Path(r.file_path).name)
-        and symbol in r.chunk.content
+        r for r in (results or []) if not is_denied_file(Path(r.file_path).name) and symbol in r.chunk.content
     ]
     if not results:
         return (
@@ -283,8 +270,7 @@ async def find_references(
         )
 
     lines: list[str] = [
-        f"Эвристический поиск (LSP недоступен): {len(results)} вхождений "
-        f"{symbol!r}",
+        f"Эвристический поиск (LSP недоступен): {len(results)} вхождений {symbol!r}",
         "",
     ]
     for i, r in enumerate(results[:15], 1):
@@ -317,7 +303,10 @@ async def _try_lsp_references(
         return []
     try:
         return await bridge.references(
-            language, str(file_path), line, 0,
+            language,
+            str(file_path),
+            line,
+            0,
             project_root=str(file_path.parent),
         )
     except Exception as e:

@@ -46,12 +46,8 @@ def test_load_history_restores_parts(panel):
             parts=[
                 ReasoningPart(text="думаю"),
                 TextPart(text="привет"),
-                ToolCallPart(
-                    calls=[ToolCall(name="read_file", arguments={"path": "a.py"})]
-                ),
-                ToolResultPart(
-                    call_id="", name="read_file", content="ok", is_error=False
-                ),
+                ToolCallPart(calls=[ToolCall(name="read_file", arguments={"path": "a.py"})]),
+                ToolResultPart(call_id="", name="read_file", content="ok", is_error=False),
             ],
         ),
     ]
@@ -90,13 +86,9 @@ def test_load_history_multiple_tools(panel):
         ChatMessage(
             role="assistant",
             parts=[
-                ToolCallPart(
-                    calls=[ToolCall(name="read_file", arguments={"path": "a.py"})]
-                ),
+                ToolCallPart(calls=[ToolCall(name="read_file", arguments={"path": "a.py"})]),
                 ToolResultPart(call_id="", name="read_file", content="A", is_error=False),
-                ToolCallPart(
-                    calls=[ToolCall(name="read_file", arguments={"path": "b.py"})]
-                ),
+                ToolCallPart(calls=[ToolCall(name="read_file", arguments={"path": "b.py"})]),
                 ToolResultPart(call_id="", name="read_file", content="B", is_error=False),
             ],
         ),

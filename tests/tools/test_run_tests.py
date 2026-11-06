@@ -34,10 +34,7 @@ class TestParsers:
         assert res.failures[0].line == 10
 
     def test_dotnet(self) -> None:
-        out = (
-            "Failed!  - Failed:     1, Passed:     5, "
-            "Skipped:     0, Total:     6, Duration: 1 s"
-        )
+        out = "Failed!  - Failed:     1, Passed:     5, Skipped:     0, Total:     6, Duration: 1 s"
         res = _parse_dotnet(out, duration=1.0, exit_code=1)
         assert res.failed == 1
         assert res.passed == 5

@@ -89,7 +89,6 @@ def _count_entries(directory: Path) -> int:
     capabilities=["fs.read"],
     timeout_s=15.0,
 )
-
 def read_file(
     path: str,
     offset: int = 0,
@@ -393,9 +392,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
                     project_root=Path(project_root),
                 )
             except Exception:
-                logger.debug(
-                    "write_file: снапшот не создан", exc_info=True
-                )
+                logger.debug("write_file: снапшот не создан", exc_info=True)
 
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
@@ -464,6 +461,7 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
     except Exception as e:
         return f"Ошибка записи файла: {e}"
 
+
 def _resolve_path(path: str, project_root: str = "", *, allow_sensitive: bool = False) -> Path | None:
     """Устаревшая обёртка для обратной совместимости тестов.
 
@@ -472,6 +470,7 @@ def _resolve_path(path: str, project_root: str = "", *, allow_sensitive: bool = 
     импортировать это имя. Новый код должен использовать резолвер напрямую.
     """
     return SandboxedPathResolver(project_root).resolve(path, allow_sensitive=allow_sensitive)
+
 
 # ---------------------------------------------------------------------------
 # 10.1: apply_patch — правка файла через unified diff
@@ -529,16 +528,11 @@ def apply_patch(
         ``lsp_errors``), либо строка с ошибкой.
     """
     # 1. Резолв и проверки.
-    file_path = SandboxedPathResolver(project_root).resolve(
-        path, allow_sensitive=False
-    )
+    file_path = SandboxedPathResolver(project_root).resolve(path, allow_sensitive=False)
     if not file_path:
         raw = str(path or "").strip()
         if raw and is_denied_file(Path(raw).name):
-            return (
-                f"Ошибка: файл '{Path(raw).name}' заблокирован политикой "
-                f"безопасности (секрет)."
-            )
+            return f"Ошибка: файл '{Path(raw).name}' заблокирован политикой безопасности (секрет)."
         return "Ошибка: путь вне допустимой директории"
 
     if not file_path.exists():
@@ -606,10 +600,7 @@ def apply_patch(
         file_path.write_text(new_content, encoding="utf-8")
     except OSError as e:
         return f"Ошибка записи: {e}"
-    logger.info(
-        f"apply_patch: {file_path} ({len(original_content)} → "
-        f"{len(new_content)} chars)"
-    )
+    logger.info(f"apply_patch: {file_path} ({len(original_content)} → {len(new_content)} chars)")
 
     # 7. Верификация (py_compile + LSP).
     syntax_error = _verify_python_syntax(file_path)
@@ -634,12 +625,8 @@ def apply_patch(
         )
     )
     diff_text = "".join(diff_chunks)
-    lines_added = sum(
-        1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++")
-    )
-    lines_removed = sum(
-        1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---")
-    )
+    lines_added = sum(1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++"))
+    lines_removed = sum(1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---"))
 
     llm_text = f"Файл успешно обновлён через apply_patch: {file_path.name}"
     if snapshot_id:
@@ -648,8 +635,7 @@ def apply_patch(
         llm_text += f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
     if lsp_errors:
         preview = "; ".join(
-            f"{e.get('file', '?')}:{e.get('line', '?')} {e.get('message', '')[:120]}"
-            for e in lsp_errors[:5]
+            f"{e.get('file', '?')}:{e.get('line', '?')} {e.get('message', '')[:120]}" for e in lsp_errors[:5]
         )
         llm_text += f"\n\n⚠️ LSP: {len(lsp_errors)} ошибок: {preview}"
 
@@ -718,9 +704,7 @@ def _apply_unified_diff(original: str, patch: str) -> str:
         if line.strip() == "":
             i += 1
             continue
-        raise _PatchError(
-            f"ожидался hunk @@ ... @@, получено {line!r}"
-        )
+        raise _PatchError(f"ожидался hunk @@ ... @@, получено {line!r}")
 
     while i < n:
         header = patch_lines[i].rstrip("\r\n")
@@ -761,9 +745,7 @@ def _apply_unified_diff(original: str, patch: str) -> str:
             elif marker == "+":
                 hunk_new.append(text)
             else:
-                raise _PatchError(
-                    f"неизвестный префикс строки: {line[:40]!r}"
-                )
+                raise _PatchError(f"неизвестный префикс строки: {line[:40]!r}")
             i += 1
 
         # Ищем hunk_old в orig_lines начиная с (old_start - 1).
@@ -772,9 +754,7 @@ def _apply_unified_diff(original: str, patch: str) -> str:
 
         # Допускаем неточное позиционирование: ищем блок в радиусе ±5.
         found_at = -1
-        search_window = range(
-            max(0, target_idx - 5), min(len(orig_lines), target_idx + 6)
-        )
+        search_window = range(max(0, target_idx - 5), min(len(orig_lines), target_idx + 6))
         for start in search_window:
             if orig_lines[start : start + len(hunk_old)] == hunk_old:
                 found_at = start

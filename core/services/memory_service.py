@@ -118,10 +118,7 @@ class RecallResult:
         for i, r in enumerate(self.reflections, 1):
             # Компактный формат: «[M1] (code, success) — summary».
             tags_str = f" [{', '.join(r.tags)}]" if r.tags else ""
-            block = (
-                f"[M{i}] ({r.task_type}, {r.outcome}){tags_str}\n"
-                f"{r.summary}"
-            )
+            block = f"[M{i}] ({r.task_type}, {r.outcome}){tags_str}\n{r.summary}"
             if used + len(block) > max_chars:
                 remaining = max_chars - used
                 if remaining < 80:
@@ -150,9 +147,7 @@ class MemoryService:
         self.db_path = db_path or (get_app_data_dir() / "memory.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(
-            str(self.db_path), check_same_thread=False
-        )
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -179,13 +174,9 @@ class MemoryService:
                 """
             )
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_reflections_project "
-                "ON reflections(project_path)"
+                "CREATE INDEX IF NOT EXISTS ix_reflections_project ON reflections(project_path)"
             )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_reflections_created "
-                "ON reflections(created_at)"
-            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_reflections_created ON reflections(created_at)")
 
             # FTS5 — поиск по summary + tags (BM25).
             # `content=` — external content table: храним данные в
@@ -226,9 +217,7 @@ class MemoryService:
             except sqlite3.OperationalError as e:
                 # FTS5 может быть недоступен в очень старых сборках SQLite.
                 # Тогда recall деградирует до LIKE-поиска по summary.
-                logger.warning(
-                    f"FTS5 недоступен ({e}); recall будет использовать LIKE"
-                )
+                logger.warning(f"FTS5 недоступен ({e}); recall будет использовать LIKE")
 
             self._conn.execute(
                 """
@@ -241,10 +230,7 @@ class MemoryService:
                 )
                 """
             )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_decisions_project "
-                "ON decisions(project_path)"
-            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_decisions_project ON decisions(project_path)")
 
             self._conn.execute(
                 """
@@ -332,9 +318,7 @@ class MemoryService:
     def forget(self, reflection_id: int) -> bool:
         """Удаляет рефлексию по id. ``False``, если такой не было."""
         with self._tx() as conn:
-            cur = conn.execute(
-                "DELETE FROM reflections WHERE id = ?", (reflection_id,)
-            )
+            cur = conn.execute("DELETE FROM reflections WHERE id = ?", (reflection_id,))
             removed = cur.rowcount > 0
         if removed:
             logger.info(f"Memory: forget id={reflection_id}")
@@ -355,9 +339,7 @@ class MemoryService:
         with self._lock:
             if project_path:
                 cur = self._conn.execute(
-                    "SELECT * FROM reflections"
-                    " WHERE project_path = ?"
-                    " ORDER BY id DESC LIMIT ?",
+                    "SELECT * FROM reflections WHERE project_path = ? ORDER BY id DESC LIMIT ?",
                     (project_path, limit),
                 )
             else:
@@ -399,9 +381,7 @@ class MemoryService:
 
         cutoff = ""
         if max_age_days > 0:
-            cutoff = datetime.fromtimestamp(
-                time.time() - max_age_days * 86400
-            ).isoformat(timespec="seconds")
+            cutoff = datetime.fromtimestamp(time.time() - max_age_days * 86400).isoformat(timespec="seconds")
 
         # Пробуем FTS5; при ошибке — LIKE-fallback.
         try:
@@ -426,9 +406,7 @@ class MemoryService:
         except sqlite3.OperationalError as e:
             logger.debug(f"FTS5 recall упал ({e}); fallback на LIKE")
             like_pattern = f"%{q}%"
-            sql = (
-                "SELECT * FROM reflections WHERE summary LIKE ?"
-            )
+            sql = "SELECT * FROM reflections WHERE summary LIKE ?"
             params = [like_pattern]
             if project_path:
                 sql += " AND project_path = ?"
@@ -485,9 +463,7 @@ class MemoryService:
         created_at = decision.created_at or self._now()
         with self._tx() as conn:
             cur = conn.execute(
-                "INSERT INTO decisions"
-                " (created_at, project_path, decision, rationale)"
-                " VALUES (?, ?, ?, ?)",
+                "INSERT INTO decisions (created_at, project_path, decision, rationale) VALUES (?, ?, ?, ?)",
                 (
                     created_at,
                     decision.project_path,
@@ -506,8 +482,7 @@ class MemoryService:
         with self._lock:
             if project_path:
                 cur = self._conn.execute(
-                    "SELECT * FROM decisions WHERE project_path = ?"
-                    " ORDER BY id DESC LIMIT ?",
+                    "SELECT * FROM decisions WHERE project_path = ? ORDER BY id DESC LIMIT ?",
                     (project_path, limit),
                 )
             else:
@@ -547,18 +522,13 @@ class MemoryService:
     def get_preference(self, key: str, default: str | None = None) -> str | None:
         """Читает настройку; ``default``, если нет."""
         with self._lock:
-            cur = self._conn.execute(
-                "SELECT value FROM preferences WHERE key = ?", (key,)
-            )
+            cur = self._conn.execute("SELECT value FROM preferences WHERE key = ?", (key,))
             row = cur.fetchone()
         return str(row["value"]) if row else default
 
     def list_preferences(self) -> list[Preference]:
         with self._lock:
-            cur = self._conn.execute(
-                "SELECT key, value, updated_at FROM preferences"
-                " ORDER BY key"
-            )
+            cur = self._conn.execute("SELECT key, value, updated_at FROM preferences ORDER BY key")
             return [
                 Preference(
                     key=str(r["key"]),
@@ -584,22 +554,14 @@ class MemoryService:
             conn.execute("DELETE FROM decisions")
             if not keep_preferences:
                 conn.execute("DELETE FROM preferences")
-        logger.info(
-            f"Memory: clear (keep_preferences={keep_preferences})"
-        )
+        logger.info(f"Memory: clear (keep_preferences={keep_preferences})")
 
     def count(self) -> dict[str, int]:
         """Счётчики по таблицам (для UI)."""
         with self._lock:
-            refl = self._conn.execute(
-                "SELECT COUNT(*) AS c FROM reflections"
-            ).fetchone()
-            dec = self._conn.execute(
-                "SELECT COUNT(*) AS c FROM decisions"
-            ).fetchone()
-            pref = self._conn.execute(
-                "SELECT COUNT(*) AS c FROM preferences"
-            ).fetchone()
+            refl = self._conn.execute("SELECT COUNT(*) AS c FROM reflections").fetchone()
+            dec = self._conn.execute("SELECT COUNT(*) AS c FROM decisions").fetchone()
+            pref = self._conn.execute("SELECT COUNT(*) AS c FROM preferences").fetchone()
         return {
             "reflections": int(refl["c"]) if refl else 0,
             "decisions": int(dec["c"]) if dec else 0,
@@ -633,8 +595,7 @@ class MemoryService:
                 for d in self.list_decisions(limit=10_000)
             ],
             "preferences": [
-                {"key": p.key, "value": p.value, "updated_at": p.updated_at}
-                for p in self.list_preferences()
+                {"key": p.key, "value": p.value, "updated_at": p.updated_at} for p in self.list_preferences()
             ],
         }
         path.write_text(

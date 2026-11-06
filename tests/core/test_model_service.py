@@ -14,12 +14,18 @@ def _cfg() -> AppConfig:
     return AppConfig(
         default_model="m",
         embed_model="e",
-        slm=SLMConfig(available_models=[
-            SLMModelInfo(
-                id="coder-x", repo="r", file="c.gguf",
-                display_name="C", tags=["chat", "coder"], kind="chat",
-            ),
-        ]),
+        slm=SLMConfig(
+            available_models=[
+                SLMModelInfo(
+                    id="coder-x",
+                    repo="r",
+                    file="c.gguf",
+                    display_name="C",
+                    tags=["chat", "coder"],
+                    kind="chat",
+                ),
+            ]
+        ),
     )
 
 
@@ -52,9 +58,7 @@ class TestResolveCoder:
             tool_policies=ProfileToolPolicies(),
             coder_models=["coder-x"],
         )
-        with patch(
-            "agents.download_slm.is_model_installed", return_value=True
-        ):
+        with patch("agents.download_slm.is_model_installed", return_value=True):
             info = svc.resolve_coder(profile)
             assert info is not None
             assert info.id == "coder-x"

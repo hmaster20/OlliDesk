@@ -85,10 +85,7 @@ def _convert_to_wav(src: Path) -> Path | None:
             tmp.unlink()
         return None
     if result.returncode != 0:
-        logger.warning(
-            f"ffmpeg {src.name} вернул {result.returncode}: "
-            f"{(result.stderr or '')[:200]}"
-        )
+        logger.warning(f"ffmpeg {src.name} вернул {result.returncode}: {(result.stderr or '')[:200]}")
         with contextlib.suppress(OSError):
             tmp.unlink()
         return None
@@ -123,9 +120,7 @@ def transcribe_audio(
 
     try:
         try:
-            model = WhisperModel(
-                model_name, device="cpu", compute_type="int8"
-            )
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
             segments, info = model.transcribe(str(wav), language=None)
             parts: list[str] = []
             for seg in segments:
@@ -141,10 +136,7 @@ def transcribe_audio(
 
     if len(text) > MAX_TRANSCRIPT_CHARS:
         text = text[:MAX_TRANSCRIPT_CHARS] + "\n… [транскрипт обрезан]"
-    logger.info(
-        f"STT {path.name}: {len(text)} символов, {duration:.1f}с "
-        f"(модель {model_name})"
-    )
+    logger.info(f"STT {path.name}: {len(text)} символов, {duration:.1f}с (модель {model_name})")
     return AudioResult(text=text, duration_s=duration)
 
 

@@ -81,11 +81,7 @@ def test_does_not_redact_short_eyj() -> None:
 
 
 def test_redacts_rsa_private_key() -> None:
-    pem = (
-        "-----BEGIN RSA PRIVATE KEY-----\n"
-        "MIIEpAIBAAKCAQEA...\n"
-        "-----END RSA PRIVATE KEY-----"
-    )
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
     cleaned, hits = redact(f"Ключ:\n{pem}\nконец")
     assert "MIIEpAIBAAKCAQEA" not in cleaned
     assert "[REDACTED:private_key]" in cleaned
@@ -219,9 +215,7 @@ def test_redact_only_returns_str() -> None:
 
 
 def test_redact_is_idempotent() -> None:
-    text = (
-        "TOKEN=abcdef123456 and sk-" + "x" * 30 + " and postgres://u:p@host/db"
-    )
+    text = "TOKEN=abcdef123456 and sk-" + "x" * 30 + " and postgres://u:p@host/db"
     once, _ = redact(text)
     twice, hits2 = redact(once)
     assert once == twice
@@ -234,6 +228,7 @@ def test_redact_empty_string() -> None:
 
 def test_redact_only_empty_string() -> None:
     assert redact_only("") == ""
+
 
 # ---------------------------------------------------------------------------
 # redact_dict
@@ -305,6 +300,7 @@ def test_redact_exc_broken_str() -> None:
     class BrokenError(Exception):
         def __str__(self) -> str:
             raise RuntimeError("boom")
+
     e = BrokenError()
     # Не падаем — fallback на type name.
     assert redact_exc(e) == "BrokenError"

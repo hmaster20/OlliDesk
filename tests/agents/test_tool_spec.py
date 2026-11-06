@@ -84,6 +84,7 @@ def test_tool_empty_capabilities_allowed() -> None:
 
 def test_tool_unknown_capability_raises() -> None:
     with pytest.raises(ValueError, match="Неизвестные capabilities"):
+
         @tool(
             name="t",
             description="",
@@ -97,6 +98,7 @@ def test_tool_unknown_capability_raises() -> None:
 
 def test_tool_negative_timeout_raises() -> None:
     with pytest.raises(ValueError, match="timeout_s"):
+
         @tool(
             name="t",
             description="",
@@ -110,6 +112,7 @@ def test_tool_negative_timeout_raises() -> None:
 
 def test_tool_negative_max_output_chars_raises() -> None:
     with pytest.raises(ValueError, match="max_output_chars"):
+
         @tool(
             name="t",
             description="",
@@ -252,8 +255,7 @@ def test_all_registered_tools_have_valid_specs() -> None:
 
     for spec in reg.get_all_specs():
         assert spec.capabilities <= _VALID_CAPABILITIES, (
-            f"{spec.name}: недопустимые capabilities "
-            f"{spec.capabilities - _VALID_CAPABILITIES}"
+            f"{spec.name}: недопустимые capabilities {spec.capabilities - _VALID_CAPABILITIES}"
         )
         assert spec.timeout_s >= 0
         assert spec.max_output_chars >= 0
@@ -296,6 +298,5 @@ def test_capabilities_per_tool(tool_name: str, expected_caps: set[str] | frozens
 
     spec = reg.get_spec(tool_name)
     assert spec.capabilities == frozenset(expected_caps), (
-        f"{tool_name}: ожидалось {frozenset(expected_caps)}, "
-        f"получено {spec.capabilities}"
+        f"{tool_name}: ожидалось {frozenset(expected_caps)}, получено {spec.capabilities}"
     )

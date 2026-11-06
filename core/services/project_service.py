@@ -76,10 +76,7 @@ class ProjectService:
                 if cached is not None:
                     ts, intel = cached
                     if now - ts < self._intel_ttl_s:
-                        logger.debug(
-                            f"ProjectService: intel cache hit {key} "
-                            f"({now - ts:.0f}s)"
-                        )
+                        logger.debug(f"ProjectService: intel cache hit {key} ({now - ts:.0f}s)")
                         return intel
 
         intel = analyze_project(Path(key), cache_dir=cache_dir)
@@ -153,24 +150,18 @@ class ProjectService:
             snap = self.git_snapshot(root)
             if not snap.branch:
                 return ""
-            lines: list[str] = [
-                f"Ветка: {snap.branch} ({snap.commit_hash})"
-            ]
+            lines: list[str] = [f"Ветка: {snap.branch} ({snap.commit_hash})"]
             if snap.recent_commits:
                 lines.append("Последние коммиты:")
                 for c in snap.recent_commits:
-                    lines.append(
-                        f"  • {c['hash']} {c['date']} "
-                        f"{c['subject'][:80]}"
-                    )
+                    lines.append(f"  • {c['hash']} {c['date']} {c['subject'][:80]}")
             if snap.uncommitted_diff:
                 lines.append("Незакоммиченные изменения (diff):")
                 lines.append(snap.uncommitted_diff)
             return "\n".join(lines)
         except Exception:
-            logger.debug(
-                "ProjectService.build_git_context упал", exc_info=True
-            )
+            logger.debug("ProjectService.build_git_context упал", exc_info=True)
             return ""
+
 
 __all__ = ["GitSnapshot", "ProjectService", "DEFAULT_INTEL_TTL_S"]

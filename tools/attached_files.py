@@ -83,7 +83,7 @@ class AttachedFileStore:
         *,
         kind: str,
         thumbnail: str = "",
-        ) -> AttachedFile:
+    ) -> AttachedFile:
         """[9.7] Добавляет медиафайл (изображение/аудио/видео) с типом.
 
         Args:
@@ -93,9 +93,7 @@ class AttachedFileStore:
             thumbnail: data-url превью (только для изображений).
         """
         self._files = [f for f in self._files if f.path != path]
-        attached = AttachedFile(
-            path=path, content=content, kind=kind, thumbnail=thumbnail
-        )
+        attached = AttachedFile(path=path, content=content, kind=kind, thumbnail=thumbnail)
         self._files.append(attached)
         return attached
 

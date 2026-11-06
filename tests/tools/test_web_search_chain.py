@@ -93,9 +93,7 @@ class TestHygieneAndSecurity:
     async def test_hygiene_redacts_secret(self) -> None:
         p1 = _mock_provider("searxng", [SearchResult("A", "https://a")])
         with patch("tools.web_search.build_chain", return_value=[p1]):
-            await web_search(
-                "TOKEN=abcdef123456 hello", security=SecurityPolicy()
-            )
+            await web_search("TOKEN=abcdef123456 hello", security=SecurityPolicy())
         # Секрет не должен утечь в запрос.
         args, _ = p1.search.call_args
         assert "abcdef123456" not in args[0]

@@ -131,9 +131,7 @@ def _get_api():
     try:
         from huggingface_hub import HfApi
     except ImportError as e:
-        raise HFUnavailableError(
-            "huggingface_hub не установлен: `pip install huggingface_hub`"
-        ) from e
+        raise HFUnavailableError("huggingface_hub не установлен: `pip install huggingface_hub`") from e
     token = _hf_token()
     if token:
         return HfApi(token=token)
@@ -177,9 +175,7 @@ async def search_models(
             logger.debug(f"hf_search: cache hit {cache_key!r}")
             return models
 
-    emit_event_safe(
-        "hf.search.started", {"query": query, "filter": filter_tag}
-    )
+    emit_event_safe("hf.search.started", {"query": query, "filter": filter_tag})
     started = time.perf_counter()
 
     def _do() -> list[HFModel]:
@@ -199,12 +195,8 @@ async def search_models(
                         downloads=int(getattr(m, "downloads", 0) or 0),
                         likes=int(getattr(m, "likes", 0) or 0),
                         tags=list(getattr(m, "tags", []) or []),
-                        pipeline_tag=str(
-                            getattr(m, "pipeline_tag", "") or ""
-                        ),
-                        last_modified=str(
-                            getattr(m, "last_modified", "") or ""
-                        ),
+                        pipeline_tag=str(getattr(m, "pipeline_tag", "") or ""),
+                        last_modified=str(getattr(m, "last_modified", "") or ""),
                     )
                 )
             return results
@@ -212,9 +204,7 @@ async def search_models(
             raise HFUnavailableError(f"HF list_models: {e}") from e
 
     try:
-        models = await asyncio.wait_for(
-            asyncio.to_thread(_do), timeout=30.0
-        )
+        models = await asyncio.wait_for(asyncio.to_thread(_do), timeout=30.0)
     except TimeoutError as e:
         raise HFUnavailableError("HF list_models: timeout 30s") from e
 
@@ -235,9 +225,7 @@ async def search_models(
             "hf.search.empty",
             {"query": query, "duration_ms": duration_ms},
         )
-    logger.info(
-        f"hf_search: {query!r} → {len(models)} моделей ({duration_ms} ms)"
-    )
+    logger.info(f"hf_search: {query!r} → {len(models)} моделей ({duration_ms} ms)")
     return models
 
 
@@ -264,9 +252,7 @@ async def model_info(repo_id: str) -> HFModelDetails:
     def _do() -> HFModelDetails:
         api = _get_api()
         try:
-            info = api.model_info(
-                repo_id, files_metadata=True, cardData=True
-            )
+            info = api.model_info(repo_id, files_metadata=True, cardData=True)
         except Exception as e:
             raise HFUnavailableError(f"HF model_info: {e}") from e
 
@@ -308,17 +294,12 @@ async def model_info(repo_id: str) -> HFModelDetails:
         )
 
     try:
-        details = await asyncio.wait_for(
-            asyncio.to_thread(_do), timeout=30.0
-        )
+        details = await asyncio.wait_for(asyncio.to_thread(_do), timeout=30.0)
     except TimeoutError as e:
         raise HFUnavailableError("HF model_info: timeout 30s") from e
 
     _info_cache[repo_id] = (time.time(), details)
-    logger.info(
-        f"hf_info: {repo_id} — {len(details.gguf_files)} .gguf, "
-        f"downloads={details.downloads}"
-    )
+    logger.info(f"hf_info: {repo_id} — {len(details.gguf_files)} .gguf, downloads={details.downloads}")
     return details
 
 
@@ -340,9 +321,7 @@ def detect_tags(
         ``reasoning`` / ``moE`` / ``embed`` / ``router`` / ``planner`` /
         ``verifier``.
     """
-    combined = " ".join(
-        str(x).lower() for x in (tags or []) + [pipeline_tag, repo_id]
-    )
+    combined = " ".join(str(x).lower() for x in (tags or []) + [pipeline_tag, repo_id])
     out: list[str] = []
     if any(k in combined for k in ("coder", "code-", "starcoder", "code_")):
         out.append("coder")
@@ -350,10 +329,7 @@ def detect_tags(
         out.append("reasoning")
     if any(k in combined for k in ("moe", "a3b", "a2b", "a22b")):
         out.append("moE")
-    if any(
-        k in combined
-        for k in ("embed", "bge", "nomic-embed", "e5-", "gte-")
-    ):
+    if any(k in combined for k in ("embed", "bge", "nomic-embed", "e5-", "gte-")):
         out.append("embed")
     if "embed" not in out and (not out or "coder" not in out):
         out.append("chat")

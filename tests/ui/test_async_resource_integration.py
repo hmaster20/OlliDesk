@@ -25,17 +25,20 @@ class TestPipelineSelectors:
         cfg = AppConfig(
             default_model="m",
             embed_model="e",
-            slm=SLMConfig(available_models=[
-                SLMModelInfo(
-                    id="m1", repo="r", file="m1.gguf",
-                    display_name="M1", kind="chat",
-                ),
-            ]),
+            slm=SLMConfig(
+                available_models=[
+                    SLMModelInfo(
+                        id="m1",
+                        repo="r",
+                        file="m1.gguf",
+                        display_name="M1",
+                        kind="chat",
+                    ),
+                ]
+            ),
         )
         # Отключаем реальную проверку «установлена ли модель».
-        monkeypatch.setattr(
-            "agents.download_slm.is_model_installed", lambda *a, **kw: True
-        )
+        monkeypatch.setattr("agents.download_slm.is_model_installed", lambda *a, **kw: True)
         w = PipelineSelectors(cfg)
         # Первый refresh_models в __init__ уже загрузил — resource READY.
         assert w._models_resource.loaded()
@@ -48,16 +51,19 @@ class TestPipelineSelectors:
         cfg = AppConfig(
             default_model="m",
             embed_model="e",
-            slm=SLMConfig(available_models=[
-                SLMModelInfo(
-                    id="m1", repo="r", file="m1.gguf",
-                    display_name="M1", kind="chat",
-                ),
-            ]),
+            slm=SLMConfig(
+                available_models=[
+                    SLMModelInfo(
+                        id="m1",
+                        repo="r",
+                        file="m1.gguf",
+                        display_name="M1",
+                        kind="chat",
+                    ),
+                ]
+            ),
         )
-        monkeypatch.setattr(
-            "agents.download_slm.is_model_installed", lambda *a, **kw: True
-        )
+        monkeypatch.setattr("agents.download_slm.is_model_installed", lambda *a, **kw: True)
         w = PipelineSelectors(cfg)
         before = w.planner_combo.count()
         # Подменяем clear на шпион.
@@ -77,22 +83,28 @@ class TestPipelineSelectors:
         cfg = AppConfig(
             default_model="m",
             embed_model="e",
-            slm=SLMConfig(available_models=[
-                SLMModelInfo(
-                    id="m1", repo="r", file="m1.gguf",
-                    display_name="M1", kind="chat",
-                ),
-            ]),
+            slm=SLMConfig(
+                available_models=[
+                    SLMModelInfo(
+                        id="m1",
+                        repo="r",
+                        file="m1.gguf",
+                        display_name="M1",
+                        kind="chat",
+                    ),
+                ]
+            ),
         )
-        monkeypatch.setattr(
-            "agents.download_slm.is_model_installed", lambda *a, **kw: True
-        )
+        monkeypatch.setattr("agents.download_slm.is_model_installed", lambda *a, **kw: True)
         w = PipelineSelectors(cfg)
         before = w.planner_combo.count()
         cfg.slm.available_models.append(
             SLMModelInfo(
-                id="m2", repo="r", file="m2.gguf",
-                display_name="M2", kind="chat",
+                id="m2",
+                repo="r",
+                file="m2.gguf",
+                display_name="M2",
+                kind="chat",
             )
         )
         w.refresh_models()

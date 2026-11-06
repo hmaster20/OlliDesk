@@ -93,13 +93,7 @@ class TestVerifierInLoop:
         )
         ctx = AgentContext(
             mode=AgentMode.CHAT,
-            project_map=(
-                "Структура проекта:\n"
-                "  src/\n"
-                "    main.py\n"
-                "  tests/\n"
-                "    test_main.py\n"
-            ),
+            project_map=("Структура проекта:\n  src/\n    main.py\n  tests/\n    test_main.py\n"),
         )
         result = await loop.run(
             context=ctx,

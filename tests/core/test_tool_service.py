@@ -78,9 +78,7 @@ class TestPolicyBlocked:
     @pytest.mark.asyncio
     async def test_blocked_does_not_execute(self, registry, audit) -> None:
         svc = ToolService(registry, audit=audit)
-        policy = EffectivePolicy(
-            ToolPolicy.EXCLUDED, False, "security:secrets"
-        )
+        policy = EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:secrets")
         result = await svc.execute(
             ToolCall(name="ok_tool", arguments={}),
             effective_policy=policy,
@@ -95,14 +93,10 @@ class TestPolicyBlocked:
 
 class TestSnapshot:
     @pytest.mark.asyncio
-    async def test_snapshot_before_mutating(
-        self, registry, audit, tmp_path: Path
-    ) -> None:
+    async def test_snapshot_before_mutating(self, registry, audit, tmp_path: Path) -> None:
         target = tmp_path / "a.txt"
         target.write_text("old")
-        svc = ToolService(
-            registry, audit=audit, project_root=str(tmp_path)
-        )
+        svc = ToolService(registry, audit=audit, project_root=str(tmp_path))
         policy = EffectivePolicy(ToolPolicy.ASK_FIRST, True, "profile")
         result = await svc.execute(
             ToolCall(name="write_tool", arguments={"path": "a.txt"}),
@@ -112,12 +106,8 @@ class TestSnapshot:
         assert result.metadata.get("snapshot_id")
 
     @pytest.mark.asyncio
-    async def test_no_snapshot_for_readonly(
-        self, registry, audit, tmp_path: Path
-    ) -> None:
-        svc = ToolService(
-            registry, audit=audit, project_root=str(tmp_path)
-        )
+    async def test_no_snapshot_for_readonly(self, registry, audit, tmp_path: Path) -> None:
+        svc = ToolService(registry, audit=audit, project_root=str(tmp_path))
         policy = EffectivePolicy(ToolPolicy.AUTO, True, "default")
         result = await svc.execute(
             ToolCall(name="ok_tool", arguments={}),

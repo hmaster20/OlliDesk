@@ -1,5 +1,6 @@
 """Утилиты парсинга."""
 
+
 def parse_numbers(text: str) -> list[int]:
     """Разбирает строку "1,2,3" в список [1, 2, 3]."""
     parts = text.split(",")

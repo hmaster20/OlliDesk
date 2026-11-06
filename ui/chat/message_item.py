@@ -86,6 +86,7 @@ def _action_btn_css(dark: bool) -> str:
         text_disabled=c.text_disabled,
     )
 
+
 # ============================================================================
 # Markdown → HTML (без изменений; используется research_passport.py)
 # ============================================================================
@@ -121,14 +122,8 @@ def _render_code_block(code: str, lang: str, *, dark: bool = True) -> str:
         from pygments.lexers import get_lexer_by_name, guess_lexer
 
         pyg_style = "monokai" if dark else "friendly"
-        formatter = HtmlFormatter(
-            style=pyg_style, nowrap=True, noclasses=True
-        )
-        lexer = (
-            get_lexer_by_name(lang, stripall=True)
-            if lang
-            else guess_lexer(code)
-        )
+        formatter = HtmlFormatter(style=pyg_style, nowrap=True, noclasses=True)
+        lexer = get_lexer_by_name(lang, stripall=True) if lang else guess_lexer(code)
         highlighted = _highlight(code, lexer, formatter).rstrip("\n")
     except Exception:
         highlighted = html_mod.escape(code)
@@ -149,9 +144,7 @@ def _render_code_block(code: str, lang: str, *, dark: bool = True) -> str:
         + header
         + '<pre style="margin:0; padding:8px 12px;'
         " font-family:'Cascadia Mono','Consolas','Courier New',monospace;"
-        f' font-size:13px; color:{c.code_text};"><code>'
-        + highlighted
-        + "</code></pre></div>"
+        f' font-size:13px; color:{c.code_text};"><code>' + highlighted + "</code></pre></div>"
     )
 
 
@@ -447,9 +440,7 @@ def render_markdown(text: str, *, dark: bool = True) -> str:
     def _stash(m: re.Match[str]) -> str:
         lang = (m.group("lang") or "").strip()
         # [9.5.1] Палитра кода — по теме.
-        code_blocks.append(
-            _render_code_block(m.group("code"), lang, dark=dark)
-        )
+        code_blocks.append(_render_code_block(m.group("code"), lang, dark=dark))
         return f"\x00CB{len(code_blocks) - 1}\x00"
 
     stashed = _CODE_FENCE_RE.sub(_stash, text)
@@ -591,7 +582,7 @@ class ReasoningWidget(QWidget):
         c = _theme_colors(dark)
         container = QFrame(self)
         container.setObjectName("_reasoning_widget")
-        self._container = container       # ← теперь container уже существует
+        self._container = container  # ← теперь container уже существует
         container.setStyleSheet(
             "QFrame#_reasoning_widget {"
             f" background: {c.reasoning_bg};"
@@ -702,9 +693,7 @@ class ReasoningWidget(QWidget):
         safe = (
             self._text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         )
-        self._browser.setHtml(
-            f'<div style="color:{c.reasoning_text}; font-style:italic;">{safe}</div>'
-        )
+        self._browser.setHtml(f'<div style="color:{c.reasoning_text}; font-style:italic;">{safe}</div>')
         cap = self._compute_max_height()
         self._browser.setMaximumHeight(cap)
         # Внутренний авто-скролл к последнему токену: пользователь видит
@@ -875,6 +864,7 @@ class ReasoningWidget(QWidget):
         )
         self._refresh_browser()
 
+
 class TextWidget(QTextBrowser):
     """Markdown-текст ответа модели с авто-высотой под содержимое."""
 
@@ -979,9 +969,8 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
         return ("…", True)
     return (clean[: limit - 1] + "…", True)
 
-def _make_thumbnail_label(
-    data_url: str, max_size: int = 120
-) -> QLabel | None:
+
+def _make_thumbnail_label(data_url: str, max_size: int = 120) -> QLabel | None:
     """[9.7] Возвращает QLabel с миниатюрой из base64 data-url.
 
     Клик по миниатюре открывает полный размер в системном просмотрщике
@@ -1005,17 +994,18 @@ def _make_thumbnail_label(
     if not pix.loadFromData(raw):
         return None
     pix = pix.scaled(
-        max_size, max_size,
+        max_size,
+        max_size,
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
     label = QLabel()
     label.setPixmap(pix)
-    label.setStyleSheet(
-        "QLabel { border: 1px solid #3a3a48; border-radius: 6px; padding: 2px; }"
-    )
+    label.setStyleSheet("QLabel { border: 1px solid #3a3a48; border-radius: 6px; padding: 2px; }")
     label.setToolTip("Прикреплённое изображение")
     return label
+
+
 def _escape_diff(text: str) -> str:
     """Экранирует HTML-спецсимволы для diff-сводки."""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1068,9 +1058,7 @@ class ToolCallCard(QWidget):
 
     # [9.5.1] Палитра для тёмной/светлой темы: (bg, border, status_icon).
     # Выбор — в `_apply_state_style` по `self._dark`.
-    _STATE_STYLES: dict[
-        str, tuple[tuple[str, str, str], tuple[str, str, str]]
-    ] = {
+    _STATE_STYLES: dict[str, tuple[tuple[str, str, str], tuple[str, str, str]]] = {
         "pending": (
             ("rgba(120,120,140,0.06)", "#3a3a48", "⏳"),
             ("rgba(120,120,140,0.04)", "#d0d0d0", "⏳"),
@@ -1145,8 +1133,7 @@ class ToolCallCard(QWidget):
         self._name_label.setWordWrap(True)
         self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._name_label.setStyleSheet(
-            f"color: {c.info}; font-family: 'Consolas','Cascadia Mono',monospace;"
-            " font-size: 12px;"
+            f"color: {c.info}; font-family: 'Consolas','Cascadia Mono',monospace; font-size: 12px;"
         )
         header.addWidget(self._name_label, stretch=1)
         # Status — по цвету темы.
@@ -1214,8 +1201,7 @@ class ToolCallCard(QWidget):
             " QPushButton:hover { text-decoration: underline; color: #8bc0f0; }"
         )
         link.clicked.connect(
-            lambda _checked=False, ln=line, p=path:
-            self.open_in_editor_requested.emit(f"{p}:{ln}")
+            lambda _checked=False, ln=line, p=path: self.open_in_editor_requested.emit(f"{p}:{ln}")
         )
         self._body_layout.addWidget(link)
 
@@ -1280,20 +1266,16 @@ class ToolCallCard(QWidget):
         self._status_label.setText(icon)
         c = _theme_colors(self._dark)
         if self._state == "pending":
-            self._status_label.setStyleSheet(
-                f"color: {c.text_muted}; font-size: 13px; padding-left: 6px;"
-            )
+            self._status_label.setStyleSheet(f"color: {c.text_muted}; font-size: 13px; padding-left: 6px;")
             self._status_label.setToolTip("Инструмент ещё не выполнен")
         elif self._state == "ok":
             self._status_label.setStyleSheet(
-                f"color: {c.success}; font-size: 13px;"
-                " padding-left: 6px; font-weight: 700;"
+                f"color: {c.success}; font-size: 13px; padding-left: 6px; font-weight: 700;"
             )
             self._status_label.setToolTip("Успешно")
         else:
             self._status_label.setStyleSheet(
-                f"color: {c.danger}; font-size: 13px;"
-                " padding-left: 6px; font-weight: 700;"
+                f"color: {c.danger}; font-size: 13px; padding-left: 6px; font-weight: 700;"
             )
             self._status_label.setToolTip("Ошибка")
 
@@ -1412,8 +1394,7 @@ class ToolCallCard(QWidget):
         if lsp_errors:
             lsp_header = QLabel(f"⚠️ LSP: {len(lsp_errors)} ошибок")
             lsp_header.setStyleSheet(
-                "color: #e06c75; font-weight: 600; font-size: 11px;"
-                " padding: 2px 0 2px 20px;"
+                "color: #e06c75; font-weight: 600; font-size: 11px; padding: 2px 0 2px 20px;"
             )
             self._body_layout.addWidget(lsp_header)
             for err in lsp_errors[:5]:
@@ -1423,18 +1404,14 @@ class ToolCallCard(QWidget):
                 self._add_lsp_link(line, col, msg, path)
             if len(lsp_errors) > 5:
                 more = QLabel(f"… ещё {len(lsp_errors) - 5}")
-                more.setStyleSheet(
-                    "color: #888; font-size: 11px; padding: 0 20px;"
-                )
+                more.setStyleSheet("color: #888; font-size: 11px; padding: 0 20px;")
                 self._body_layout.addWidget(more)
 
         # [10.9] Кнопка «↩ Откатить снапшот», если есть snapshot_id.
         snapshot_id = str(meta.get("snapshot_id") or "")
         if snapshot_id:
             snap_btn = QPushButton(f"↩ Откатить (snapshot {snapshot_id[:15]}…)")
-            snap_btn.setToolTip(
-                "Восстановить файл из снапшота, сделанного перед записью."
-            )
+            snap_btn.setToolTip("Восстановить файл из снапшота, сделанного перед записью.")
             snap_btn.setStyleSheet(
                 "QPushButton { background: transparent; border: 1px solid #444;"
                 " border-radius: 10px; color: #e5c07b; font-size: 11px;"
@@ -1631,11 +1608,7 @@ class ChatMessageItem(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(6)
         if not is_tool and not is_user:
-            header = (
-                f"Ассистент ({self.mode_name})"
-                if is_assistant
-                else self.role
-            )
+            header = f"Ассистент ({self.mode_name})" if is_assistant else self.role
             role_label = QLabel(header)
             role_label.setStyleSheet(
                 "background: transparent;"

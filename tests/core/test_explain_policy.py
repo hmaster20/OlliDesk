@@ -14,9 +14,7 @@ def _spec(
     caps: list[str] | None = None,
     *,
     policy: ToolPolicy = ToolPolicy.AUTO,
-    modes: frozenset[AgentMode] = frozenset(
-        {AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT}
-    ),
+    modes: frozenset[AgentMode] = frozenset({AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT}),
 ) -> ToolSpec:
     return ToolSpec(
         name=name,
@@ -41,9 +39,7 @@ def _profile(freedom: str = "development", **policies) -> ProfileConfig:
 
 class TestExplainSecrets:
     def test_secrets_blocks_first(self) -> None:
-        eff, steps = explain_policy(
-            _spec(caps=["secrets"]), profile=_profile("open")
-        )
+        eff, steps = explain_policy(_spec(caps=["secrets"]), profile=_profile("open"))
         assert eff.policy == ToolPolicy.EXCLUDED
         assert steps[0].layer == "secrets"
         assert steps[0].blocking is True
@@ -52,9 +48,7 @@ class TestExplainSecrets:
 class TestExplainConfidential:
     def test_confidential_blocks_net(self) -> None:
         sec = SecurityPolicy(confidential=True)
-        eff, steps = explain_policy(
-            _spec(name="web_search", caps=["net"]), security=sec
-        )
+        eff, steps = explain_policy(_spec(name="web_search", caps=["net"]), security=sec)
         assert eff.policy == ToolPolicy.EXCLUDED
         layers = [s.layer for s in steps]
         assert "security" in layers
@@ -67,9 +61,7 @@ class TestExplainMode:
         spec = _spec(modes=frozenset({AgentMode.AGENT}))
         eff, steps = explain_policy(spec, current_mode=AgentMode.CHAT)
         assert eff.policy == ToolPolicy.EXCLUDED
-        assert any(
-            s.layer == "mode" and s.blocking for s in steps
-        )
+        assert any(s.layer == "mode" and s.blocking for s in steps)
 
 
 class TestExplainFreedom:
@@ -87,14 +79,10 @@ class TestExplainProfile:
     def test_profile_override(self) -> None:
         eff, steps = explain_policy(
             _spec(name="write_file", caps=["fs.write"]),
-            profile=_profile(
-                "development", write_file="excluded"
-            ),
+            profile=_profile("development", write_file="excluded"),
         )
         assert eff.policy == ToolPolicy.EXCLUDED
-        profile_step = next(
-            s for s in steps if s.layer == "profile"
-        )
+        profile_step = next(s for s in steps if s.layer == "profile")
         assert profile_step.applied is True
         assert profile_step.blocking is True
 
@@ -107,9 +95,7 @@ class TestExplainSession:
             session_overrides={"write_file": ToolPolicy.AUTO},
         )
         assert eff.policy == ToolPolicy.AUTO
-        session_step = next(
-            s for s in steps if s.layer == "session"
-        )
+        session_step = next(s for s in steps if s.layer == "session")
         assert session_step.applied is True
 
 

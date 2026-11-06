@@ -40,9 +40,7 @@ from tools.git_ops import create_file_snapshot
 
 # Инструменты, которые сами создают снапшот перед мутацией.
 # Дублировать его на уровне сервиса не нужно — только лишние копии.
-_SELF_SNAPSHOT_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "apply_patch"}
-)
+_SELF_SNAPSHOT_TOOLS: frozenset[str] = frozenset({"write_file", "apply_patch"})
 
 # Capabilities, требующие снапшота (если инструмент их меняет).
 _SNAPSHOT_CAPABILITIES: frozenset[str] = frozenset({"fs.write"})
@@ -99,10 +97,7 @@ class ToolService:
         # 1. Policy: blocked → не выполняем.
         if not effective_policy.allowed:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            logger.warning(
-                f"ToolService: {tool_call.name} заблокирован "
-                f"({effective_policy.reason})"
-            )
+            logger.warning(f"ToolService: {tool_call.name} заблокирован ({effective_policy.reason})")
             self._audit.log(
                 tool_call.name,
                 tool_call.arguments,
@@ -257,9 +252,7 @@ class ToolService:
             return ""
 
     @staticmethod
-    def _is_dangerous(
-        tool_name: str, effective_policy: EffectivePolicy
-    ) -> bool:
+    def _is_dangerous(tool_name: str, effective_policy: EffectivePolicy) -> bool:
         """Эвристика «dangerous» для audit-log.
 
         Опасным считаем:

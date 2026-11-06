@@ -51,25 +51,19 @@ class TestPageSnapshot:
 class TestCreateBackend:
     def test_isolated_requires_playwright(self) -> None:
         cfg = BrowserConfig(mode="isolated")
-        with patch(
-            "agents.browser_client.is_playwright_available", return_value=False
-        ):
+        with patch("agents.browser_client.is_playwright_available", return_value=False):
             backend = create_backend(cfg)
             assert backend is None
 
     def test_isolated_returns_isolated(self) -> None:
         cfg = BrowserConfig(mode="isolated")
-        with patch(
-            "agents.browser_client.is_playwright_available", return_value=True
-        ):
+        with patch("agents.browser_client.is_playwright_available", return_value=True):
             backend = create_backend(cfg)
             assert isinstance(backend, IsolatedBrowser)
 
     def test_full_returns_full(self) -> None:
         cfg = BrowserConfig(mode="full", full_access_acknowledged=True)
-        with patch(
-            "agents.browser_client.is_playwright_available", return_value=True
-        ):
+        with patch("agents.browser_client.is_playwright_available", return_value=True):
             backend = create_backend(cfg)
             assert isinstance(backend, FullAccessBrowser)
 
@@ -94,8 +88,11 @@ class TestExtensionErrors:
     async def test_extension_bridge_unreachable(self) -> None:
         cfg = BrowserConfig(mode="extension")
         backend = ExtensionBrowser(cfg)
-        with patch(
-            "agents.browser_client.ExtensionBrowser._ensure_ws",
-            side_effect=BrowserError("bridge недоступен"),
-        ), pytest.raises(BrowserError, match="bridge"):
+        with (
+            patch(
+                "agents.browser_client.ExtensionBrowser._ensure_ws",
+                side_effect=BrowserError("bridge недоступен"),
+            ),
+            pytest.raises(BrowserError, match="bridge"),
+        ):
             await backend.open("https://example.com")

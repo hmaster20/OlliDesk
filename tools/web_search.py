@@ -96,10 +96,7 @@ async def web_search(
 
     clean, hits = filter_query(query, mode=mode, policy=sec)
     if hits:
-        logger.warning(
-            f"web_search hygiene: redacted categories={hits} "
-            f"query={clean[:80]!r}"
-        )
+        logger.warning(f"web_search hygiene: redacted categories={hits} query={clean[:80]!r}")
     if not clean.strip():
         return (
             "<untrusted>\n"
@@ -142,15 +139,11 @@ async def web_search(
             results = await provider.search(clean, n)
         except SearchProviderError as e:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            logger.warning(
-                f"web_search: {provider.name} failed за {duration_ms} ms: {e}"
-            )
+            logger.warning(f"web_search: {provider.name} failed за {duration_ms} ms: {e}")
             errors.append(f"{provider.name}: {e}")
             continue
         except Exception as e:
-            logger.exception(
-                f"web_search: {provider.name} упал с исключением"
-            )
+            logger.exception(f"web_search: {provider.name} упал с исключением")
             errors.append(f"{provider.name}: {type(e).__name__}: {e}")
             continue
 
@@ -168,16 +161,13 @@ async def web_search(
             text = _render_results(results, provider.name)
             wrapped = "<untrusted>\n" + text + "\n</untrusted>"
             logger.info(
-                f"web_search: '{clean[:60]}' via {provider.name}, "
-                f"{len(results)} results за {duration_ms} ms"
+                f"web_search: '{clean[:60]}' via {provider.name}, {len(results)} results за {duration_ms} ms"
             )
             if search_cache:
                 search_cache.set(clean, wrapped)
             return wrapped
 
-        logger.info(
-            f"web_search: {provider.name} вернул 0 результатов за {duration_ms} ms"
-        )
+        logger.info(f"web_search: {provider.name} вернул 0 результатов за {duration_ms} ms")
         errors.append(f"{provider.name}: 0 results")
 
     # Все провайдеры упали или вернули 0.

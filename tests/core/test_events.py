@@ -38,6 +38,7 @@ def test_args_hash_empty_dict() -> None:
     """Пустой dict — стабильный, не падает."""
     assert args_hash({}) == args_hash({})
 
+
 def test_new_event_kinds_registered() -> None:
     """2.5 + 2.10: бюджет, завершение агента и orchestrator.event."""
     from core.events import EventKind

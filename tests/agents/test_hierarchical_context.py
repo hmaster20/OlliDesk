@@ -141,8 +141,12 @@ class TestOptimizeNCtxHint:
         from agents.slm_optimizer import optimize
 
         meta = GGUFMeta(
-            n_layer=32, n_embd=4096, n_head=32, n_head_kv=32,
-            n_ctx_train=32768, architecture="llama",
+            n_layer=32,
+            n_embd=4096,
+            n_head=32,
+            n_head_kv=32,
+            n_ctx_train=32768,
+            architecture="llama",
         )
         hw = HardwareProfile(
             cpu=CPUInfo(model="test", physical_cores=8, logical_cores=16),

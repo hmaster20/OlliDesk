@@ -30,6 +30,7 @@ class ProjectSettings(BaseModel):
     git_hash: str = ""
     git_last_sync: str = ""  # ISO timestamp
 
+
 def snapshot_git_state(project_path: Path) -> dict[str, str]:
     """[9.4] Снимок git-состояния проекта: ветка, hash, timestamp.
 

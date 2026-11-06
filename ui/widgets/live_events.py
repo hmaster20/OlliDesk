@@ -180,9 +180,7 @@ class LiveEventsPanel(QWidget):
 
         self._domain_combo = QComboBox()
         self._domain_combo.setStyleSheet("font-size: 11px; color: #888;")
-        self._domain_combo.setToolTip(
-            "Фильтр по домену события (tool, llm, rag, budget, …)."
-        )
+        self._domain_combo.setToolTip("Фильтр по домену события (tool, llm, rag, budget, …).")
         for key, label in _DOMAIN_FILTERS:
             self._domain_combo.addItem(label, key)
         self._domain_combo.currentIndexChanged.connect(self._on_domain_changed)
@@ -191,8 +189,7 @@ class LiveEventsPanel(QWidget):
         self._important_check = QCheckBox("Только важное")
         self._important_check.setStyleSheet("font-size: 11px; color: #888;")
         self._important_check.setToolTip(
-            "Скрыть INFO-логи. Показывать только WARNING/ERROR/CRITICAL "
-            "и ошибки инструментов."
+            "Скрыть INFO-логи. Показывать только WARNING/ERROR/CRITICAL и ошибки инструментов."
         )
         self._important_check.toggled.connect(self._on_important_toggled)
         header.addWidget(self._important_check)
@@ -308,19 +305,13 @@ class LiveEventsPanel(QWidget):
 
     def _render_line(self, kind: str, payload: dict) -> None:
         text, color = self._format_line(kind, payload)
-        safe = (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         ts = str(payload.get("timestamp", ""))
         cursor = self._body.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self._body.setTextCursor(cursor)
         prefix = f'<span style="color:#555;">{ts} </span>' if ts else ""
-        self._body.insertHtml(
-            f'{prefix}<span style="color:{color};">{safe}</span>'
-        )
+        self._body.insertHtml(f'{prefix}<span style="color:{color};">{safe}</span>')
         cursor = self._body.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self._body.setTextCursor(cursor)
@@ -411,10 +402,7 @@ class LiveEventsPanel(QWidget):
                 "budget.exceeded": _C_LOG_ERROR,
                 "user_cancel": _C_OTHER,
             }.get(reason, _C_OTHER)
-            return (
-                f"{icon} Прогон завершён: {reason} "
-                f"({iterations} ит., {elapsed:.0f}с)"
-            ), color
+            return (f"{icon} Прогон завершён: {reason} ({iterations} ит., {elapsed:.0f}с)"), color
 
         if kind == EventKind.MEMORY_RECALLED.value:
             n = payload.get("n_results", 0)
@@ -440,8 +428,7 @@ class LiveEventsPanel(QWidget):
         if kind == EventKind.SEARCH_CHAIN_EXHAUSTED.value:
             attempted = payload.get("attempted") or []
             return (
-                f"🔍 search: все провайдеры упали "
-                f"({', '.join(str(a) for a in attempted)})",
+                f"🔍 search: все провайдеры упали ({', '.join(str(a) for a in attempted)})",
                 _C_LOG_ERROR,
             )
 
@@ -556,14 +543,8 @@ class LiveEventsPanel(QWidget):
 
         preview = self._latest_preview()
         if preview:
-            safe = (
-                preview.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-            parts.append(
-                f'<span style="color:#6a6a7a; font-style:italic;">· {safe}</span>'
-            )
+            safe = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            parts.append(f'<span style="color:#6a6a7a; font-style:italic;">· {safe}</span>')
 
         self._header_label.setText(" ".join(parts))
 

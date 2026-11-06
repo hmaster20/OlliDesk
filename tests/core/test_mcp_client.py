@@ -82,9 +82,7 @@ def mock_server(tmp_path: Path) -> Path:
 
 class TestMCPClient:
     @pytest.mark.asyncio
-    async def test_initialize_and_list(
-        self, mock_server: Path, tmp_path: Path
-    ) -> None:
+    async def test_initialize_and_list(self, mock_server: Path, tmp_path: Path) -> None:
         import sys
 
         client = MCPClient(
@@ -103,9 +101,7 @@ class TestMCPClient:
             await client.stop()
 
     @pytest.mark.asyncio
-    async def test_call_tool(
-        self, mock_server: Path, tmp_path: Path
-    ) -> None:
+    async def test_call_tool(self, mock_server: Path, tmp_path: Path) -> None:
         import sys
 
         client = MCPClient(

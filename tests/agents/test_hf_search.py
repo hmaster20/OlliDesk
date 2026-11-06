@@ -52,10 +52,13 @@ class TestSearchModels:
     @pytest.mark.asyncio
     async def test_offline_raises(self) -> None:
         clear_caches()
-        with patch(
-            "agents.hf_search._get_api",
-            side_effect=HFUnavailableError("нет сети"),
-        ), pytest.raises(HFUnavailableError, match="нет сети"):
+        with (
+            patch(
+                "agents.hf_search._get_api",
+                side_effect=HFUnavailableError("нет сети"),
+            ),
+            pytest.raises(HFUnavailableError, match="нет сети"),
+        ):
             await search_models("qwen")
 
     @pytest.mark.asyncio

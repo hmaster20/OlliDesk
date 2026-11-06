@@ -161,22 +161,16 @@ def effective_policy(
 
     # 0. `secrets` — всегда excluded. Даже в open. Это не обсуждается.
     if "secrets" in caps:
-        return EffectivePolicy(
-            ToolPolicy.EXCLUDED, False, "security:secrets"
-        )
+        return EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:secrets")
 
     # 1. SecurityPolicy: confidential → блокируем опасные capabilities.
     if security is not None and security.confidential:
         if caps & {"net", "shell", "git", "browser"}:
-            return EffectivePolicy(
-                ToolPolicy.EXCLUDED, False, "security:confidential"
-            )
+            return EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:confidential")
 
     # 2. Режим: инструмент не для текущего режима.
     if current_mode is not None and current_mode not in spec.modes:
-        return EffectivePolicy(
-            ToolPolicy.EXCLUDED, False, "mode"
-        )
+        return EffectivePolicy(ToolPolicy.EXCLUDED, False, "mode")
 
     # 3. freedom_level из профиля — базовая политика по capabilities.
     freedom_policy: ToolPolicy | None = None
@@ -187,14 +181,8 @@ def effective_policy(
             per_cap = [matrix.get(cap, "auto") for cap in caps]
             strictest = _most_restrictive(per_cap)
             if strictest == "excluded":
-                return EffectivePolicy(
-                    ToolPolicy.EXCLUDED, False, "freedom:excluded"
-                )
-            freedom_policy = (
-                ToolPolicy.ASK_FIRST
-                if strictest == "ask_first"
-                else ToolPolicy.AUTO
-            )
+                return EffectivePolicy(ToolPolicy.EXCLUDED, False, "freedom:excluded")
+            freedom_policy = ToolPolicy.ASK_FIRST if strictest == "ask_first" else ToolPolicy.AUTO
 
     # 4. profile.tool_policies — явный override профиля.
     if profile is not None:
@@ -205,34 +193,23 @@ def effective_policy(
             except ValueError:
                 p = None
             if p is not None:
-                return EffectivePolicy(
-                    p, p != ToolPolicy.EXCLUDED, "profile"
-                )
+                return EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "profile")
 
     # 5. session overrides.
     if session_overrides and spec.name in session_overrides:
         p = session_overrides[spec.name]
-        return EffectivePolicy(
-            p, p != ToolPolicy.EXCLUDED, "session"
-        )
+        return EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "session")
 
     # 6. config.tool_policies.
     if config is not None and spec.name in config.tool_policies:
         p = config.tool_policies[spec.name]
-        return EffectivePolicy(
-            p, p != ToolPolicy.EXCLUDED, "config"
-        )
+        return EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "config")
 
     # 7. freedom fallback: `auto` + decorator `ask_first` → уважаем
     #    декоратор (мутирующий инструмент сам знает, что опасный).
     if freedom_policy is not None:
-        if (
-            freedom_policy == ToolPolicy.AUTO
-            and spec.policy == ToolPolicy.ASK_FIRST
-        ):
-            return EffectivePolicy(
-                ToolPolicy.ASK_FIRST, True, "default:decorator"
-            )
+        if freedom_policy == ToolPolicy.AUTO and spec.policy == ToolPolicy.ASK_FIRST:
+            return EffectivePolicy(ToolPolicy.ASK_FIRST, True, "default:decorator")
         return EffectivePolicy(
             freedom_policy,
             freedom_policy != ToolPolicy.EXCLUDED,
@@ -240,9 +217,7 @@ def effective_policy(
         )
 
     # 8. decorator default.
-    return EffectivePolicy(
-        spec.policy, spec.policy != ToolPolicy.EXCLUDED, "default"
-    )
+    return EffectivePolicy(spec.policy, spec.policy != ToolPolicy.EXCLUDED, "default")
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +305,7 @@ def explain_policy(
             blocking=True,
         )
         return (
-            EffectivePolicy(
-                ToolPolicy.EXCLUDED, False, "security:secrets"
-            ),
+            EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:secrets"),
             steps,
         )
     _step(
@@ -353,9 +326,7 @@ def explain_policy(
                 blocking=True,
             )
             return (
-                EffectivePolicy(
-                    ToolPolicy.EXCLUDED, False, "security:confidential"
-                ),
+                EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:confidential"),
                 steps,
             )
         _step(
@@ -404,24 +375,15 @@ def explain_policy(
                 "freedom",
                 applied=True,
                 policy=strictest,
-                reason=(
-                    f"freedom_level={level}, "
-                    f"capabilities={sorted(caps)} → {strictest}"
-                ),
+                reason=(f"freedom_level={level}, capabilities={sorted(caps)} → {strictest}"),
                 blocking=(strictest == "excluded"),
             )
             if strictest == "excluded":
                 return (
-                    EffectivePolicy(
-                        ToolPolicy.EXCLUDED, False, "freedom:excluded"
-                    ),
+                    EffectivePolicy(ToolPolicy.EXCLUDED, False, "freedom:excluded"),
                     steps,
                 )
-            freedom_policy = (
-                ToolPolicy.ASK_FIRST
-                if strictest == "ask_first"
-                else ToolPolicy.AUTO
-            )
+            freedom_policy = ToolPolicy.ASK_FIRST if strictest == "ask_first" else ToolPolicy.AUTO
         else:
             _step(
                 "freedom",
@@ -454,9 +416,7 @@ def explain_policy(
                     blocking=True,
                 )
                 return (
-                    EffectivePolicy(
-                        p, p != ToolPolicy.EXCLUDED, "profile"
-                    ),
+                    EffectivePolicy(p, p != ToolPolicy.EXCLUDED, "profile"),
                     steps,
                 )
         _step(
@@ -517,10 +477,7 @@ def explain_policy(
 
     # 7. freedom fallback / decorator.
     if freedom_policy is not None:
-        if (
-            freedom_policy == ToolPolicy.AUTO
-            and spec.policy == ToolPolicy.ASK_FIRST
-        ):
+        if freedom_policy == ToolPolicy.AUTO and spec.policy == ToolPolicy.ASK_FIRST:
             _step(
                 "decorator",
                 applied=True,
@@ -529,9 +486,7 @@ def explain_policy(
                 blocking=True,
             )
             return (
-                EffectivePolicy(
-                    ToolPolicy.ASK_FIRST, True, "default:decorator"
-                ),
+                EffectivePolicy(ToolPolicy.ASK_FIRST, True, "default:decorator"),
                 steps,
             )
         _step(
@@ -558,9 +513,7 @@ def explain_policy(
         blocking=True,
     )
     return (
-        EffectivePolicy(
-            spec.policy, spec.policy != ToolPolicy.EXCLUDED, "default"
-        ),
+        EffectivePolicy(spec.policy, spec.policy != ToolPolicy.EXCLUDED, "default"),
         steps,
     )
 

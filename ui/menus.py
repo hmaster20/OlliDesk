@@ -237,9 +237,7 @@ class AppMenuBar(QMenuBar):
             "Матрица профиль × инструмент, capabilities, последние вызовы "
             "(audit), пошаговое объяснение «почему заблокировано»."
         )
-        permissions_action.triggered.connect(
-            self.permissions_requested.emit
-        )
+        permissions_action.triggered.connect(self.permissions_requested.emit)
         view_menu.addAction(permissions_action)
 
         view_menu.addSeparator()

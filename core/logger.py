@@ -93,6 +93,7 @@ def _is_null_stream(stream: object) -> bool:
     except Exception:
         return True
 
+
 def _redact_filter(record: dict) -> bool:
     """Loguru-filter: вырезает секреты из сообщения ДО форматирования.
 
@@ -119,6 +120,7 @@ def _redact_filter(record: dict) -> bool:
         # Фильтр не должен ронять логирование ни при каких условиях.
         pass
     return True
+
 
 def _event_bus_sink(record: dict) -> None:
     """Зеркалит loguru-record в EventBus (2.5).

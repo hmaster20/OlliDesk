@@ -336,9 +336,7 @@ def optimize(
             if flash:
                 notes.append("FlashAttention включён")
             if n_ctx_hint is not None and n_ctx > n_ctx_hint > 0:
-                notes.append(
-                    f"[4.2] n_ctx {n_ctx} -> {n_ctx_hint} (profile n_ctx_hint)"
-                )
+                notes.append(f"[4.2] n_ctx {n_ctx} -> {n_ctx_hint} (profile n_ctx_hint)")
                 n_ctx = n_ctx_hint
             params = OptimizedParams(
                 n_ctx=n_ctx,
@@ -400,9 +398,7 @@ def optimize(
         #     (см. ниже) — сколько KV-кэша влезает в доступную RAM;
         #   * если hint задан — не превышаем hint.
         if kv_type != "f16":
-            notes.append(
-                f"CPU-only: kv {kv_type} -> f16 (квантизованный KV требует flash_attn)"
-            )
+            notes.append(f"CPU-only: kv {kv_type} -> f16 (квантизованный KV требует flash_attn)")
             kv_type = "f16"
         budget_by_ram = _budget_by_ram_ctx(
             meta=meta,
@@ -411,14 +407,10 @@ def optimize(
             model_size_mb=model_size_mb,
         )
         if budget_by_ram > 0 and n_ctx > budget_by_ram:
-            notes.append(
-                f"[4.2] CPU-only: n_ctx {n_ctx} -> {budget_by_ram} (budget_by_ram)"
-            )
+            notes.append(f"[4.2] CPU-only: n_ctx {n_ctx} -> {budget_by_ram} (budget_by_ram)")
             n_ctx = budget_by_ram
         if n_ctx_hint is not None and n_ctx > n_ctx_hint > 0:
-            notes.append(
-                f"[4.2] CPU-only: n_ctx {n_ctx} -> {n_ctx_hint} (profile hint)"
-            )
+            notes.append(f"[4.2] CPU-only: n_ctx {n_ctx} -> {n_ctx_hint} (profile hint)")
             n_ctx = n_ctx_hint
         if n_batch > 512:
             n_batch = 512
@@ -503,9 +495,7 @@ def _budget_by_ram_ctx(
             f"(available={available_ram_mb}, model={model_size_mb})"
         )
         return 0
-    per_tok = (
-        meta.kv_bytes_per_token_fp16 if kv_type == "f16" else meta.kv_bytes_per_token_q8
-    )
+    per_tok = meta.kv_bytes_per_token_fp16 if kv_type == "f16" else meta.kv_bytes_per_token_q8
     if per_tok <= 0:
         return 0
     raw_ctx = (free_for_kv_mb * 1024 * 1024) // per_tok

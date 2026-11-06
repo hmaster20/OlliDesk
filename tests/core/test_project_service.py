@@ -13,9 +13,7 @@ class TestIntelCache:
     def test_cache_hit(self, tmp_path: Path) -> None:
         (tmp_path / "main.py").write_text("x = 1\n")
         svc = ProjectService(intel_ttl_s=60.0)
-        with patch(
-            "core.services.project_service.analyze_project"
-        ) as mock_analyze:
+        with patch("core.services.project_service.analyze_project") as mock_analyze:
             from fs.intel import ProjectIntel
             from fs.intel.graph import DependencyGraph
             from fs.intel.repomap import RepoMap
@@ -42,19 +40,23 @@ class TestIntelCache:
 
     def test_force_ignores_cache(self, tmp_path: Path) -> None:
         svc = ProjectService(intel_ttl_s=60.0)
-        with patch(
-            "core.services.project_service.analyze_project"
-        ) as mock_analyze:
+        with patch("core.services.project_service.analyze_project") as mock_analyze:
             from fs.intel import ProjectIntel
             from fs.intel.graph import DependencyGraph
             from fs.intel.repomap import RepoMap
 
             fake = ProjectIntel(
                 root=str(tmp_path),
-                file_count=0, total_bytes=0, languages={},
-                manifests=[], entry_points=[], symbols=[],
-                graph=DependencyGraph(), domain={},
-                confidence=0.0, repomap=RepoMap(),
+                file_count=0,
+                total_bytes=0,
+                languages={},
+                manifests=[],
+                entry_points=[],
+                symbols=[],
+                graph=DependencyGraph(),
+                domain={},
+                confidence=0.0,
+                repomap=RepoMap(),
             )
             mock_analyze.return_value = fake
             svc.get_intel(tmp_path)

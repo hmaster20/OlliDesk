@@ -90,9 +90,7 @@ class AuditLog:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_audit_timestamp ON audit(timestamp)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_audit_timestamp ON audit(timestamp)")
             conn.commit()
 
     def log(

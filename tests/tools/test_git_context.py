@@ -11,9 +11,7 @@ class TestGitContextInPrompt:
         ctx = AgentContext(
             mode=AgentMode.AGENT,
             git_context=(
-                "Ветка: feature/x (abc1234)\n"
-                "Последние коммиты:\n"
-                "  • a1b2c3d 2025-01-01 feat: added parser"
+                "Ветка: feature/x (abc1234)\nПоследние коммиты:\n  • a1b2c3d 2025-01-01 feat: added parser"
             ),
         )
         prompt = _build_system_prompt(ctx)

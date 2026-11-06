@@ -86,6 +86,7 @@ class SecurityPolicy:
             allow_arbitrary_shell=bool(d.get("allow_arbitrary_shell", False)),
         )
 
+
 def assert_outbound_allowed(url: str) -> None:
     """Гард: любой исходящий HTTP обязан попасть в allowlist.
 
@@ -160,6 +161,7 @@ def redact_query(text: str) -> tuple[str, list[str]]:
     if hits:
         logger.warning(f"web_search hygiene: redacted categories={hits}")
     return out, hits
+
 
 def is_neutral_query(text: str) -> bool:
     """True, если запрос состоит только из нейтральных технологий/ошибок.

@@ -460,7 +460,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         images: list[str] | None = None,
     ) -> ChatMessageItem:
         widget = ChatMessageItem(
-            role, content, mode_name=mode_name, dark=self._is_dark,
+            role,
+            content,
+            mode_name=mode_name,
+            dark=self._is_dark,
             images=images,
         )
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
@@ -529,7 +532,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """
         if self._last_assistant_widget is None:
             widget = ChatMessageItem(
-                "assistant", "", mode_name=self._current_mode_name(),
+                "assistant",
+                "",
+                mode_name=self._current_mode_name(),
                 dark=self._is_dark,
             )
             self._last_assistant_widget = widget
@@ -609,9 +614,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             "Текст (*.py *.js *.ts *.cs *.md *.txt *.json *.yaml)",
             "Все файлы (*.*)",
         ]
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Прикрепить файл", "", ";;".join(filters)
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Прикрепить файл", "", ";;".join(filters))
         if path:
             self._attach_local_file(path)
 
@@ -664,9 +667,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                     set_cached(path, "image", text)
 
             thumb = image_thumbnail_base64(path)
-            attached = self._attached_files.add_from_media(
-                path, text, kind="image", thumbnail=thumb
-            )
+            attached = self._attached_files.add_from_media(path, text, kind="image", thumbnail=thumb)
             emit_event(
                 EventKind.MEDIA_EXTRACTED.value,
                 {
@@ -678,14 +679,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 },
             )
             summary = (
-                f"🖼 Прикреплено изображение: {attached.name} "
-                f"({len(text)} символов OCR)."
+                f"🖼 Прикреплено изображение: {attached.name} ({len(text)} символов OCR)."
                 if text
                 else f"🖼 Изображение {attached.name} прикреплено (текст не распознан)."
             )
             # В user-пузыре с миниатюрой.
             self._add_message(
-                "user", f"[Прикреплено изображение: {attached.name}]",
+                "user",
+                f"[Прикреплено изображение: {attached.name}]",
                 images=[thumb] if thumb else None,
             )
             self._add_message("system", summary)
@@ -713,9 +714,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if text:
                     set_cached(path, "audio", text)
 
-            attached = self._attached_files.add_from_media(
-                path, text, kind="audio"
-            )
+            attached = self._attached_files.add_from_media(path, text, kind="audio")
             emit_event(
                 EventKind.MEDIA_EXTRACTED.value,
                 {
@@ -727,14 +726,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 },
             )
             summary = (
-                f"🎵 Прикреплено аудио: {attached.name} "
-                f"({len(text)} символов расшифровки)."
+                f"🎵 Прикреплено аудио: {attached.name} ({len(text)} символов расшифровки)."
                 if text
                 else f"🎵 Аудио {attached.name} прикреплено (расшифровка пуста)."
             )
-            self._add_message(
-                "user", f"[Прикреплено аудио: {attached.name}]"
-            )
+            self._add_message("user", f"[Прикреплено аудио: {attached.name}]")
             self._add_message("system", summary)
         finally:
             self._media_busy = False
@@ -760,9 +756,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if text:
                     set_cached(path, "video", text)
 
-            attached = self._attached_files.add_from_media(
-                path, text, kind="video"
-            )
+            attached = self._attached_files.add_from_media(path, text, kind="video")
             emit_event(
                 EventKind.MEDIA_EXTRACTED.value,
                 {
@@ -774,14 +768,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 },
             )
             summary = (
-                f"🎬 Прикреплено видео: {attached.name} "
-                f"({len(text)} символов расшифровки)."
+                f"🎬 Прикреплено видео: {attached.name} ({len(text)} символов расшифровки)."
                 if text
                 else f"🎬 Видео {attached.name} прикреплено (расшифровка пуста)."
             )
-            self._add_message(
-                "user", f"[Прикреплено видео: {attached.name}]"
-            )
+            self._add_message("user", f"[Прикреплено видео: {attached.name}]")
             self._add_message("system", summary)
         finally:
             self._media_busy = False
@@ -1155,20 +1146,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             _cfg_for_pipeline = None
         if _cfg_for_pipeline is not None:
             self._pipeline_selectors = PipelineSelectors(_cfg_for_pipeline)
-            self._pipeline_selectors.planner_changed.connect(
-                self._on_planner_changed
-            )
-            self._pipeline_selectors.analyst_changed.connect(
-                self._on_analyst_changed
-            )
-            self._pipeline_selectors.open_slm_dialog_requested.connect(
-                self.slm_models_requested.emit
-            )
+            self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
+            self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
+            self._pipeline_selectors.open_slm_dialog_requested.connect(self.slm_models_requested.emit)
             # [9.3.2] Инициализируем активный профиль в селекторах.
             try:
-                self._pipeline_selectors.set_active_profile(
-                    _cfg_for_pipeline.active_profile
-                )
+                self._pipeline_selectors.set_active_profile(_cfg_for_pipeline.active_profile)
             except Exception:
                 logger.debug(
                     "Не удалось установить активный профиль в PipelineSelectors",
@@ -1306,8 +1289,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self.continue_unlimited_btn = QPushButton("▶▶ До результата")
         self.continue_unlimited_btn.setToolTip(
-            "Снять бюджеты по времени, токенам и итерациям. "
-            "Остановить можно только кнопкой «■»."
+            "Снять бюджеты по времени, токенам и итерациям. Остановить можно только кнопкой «■»."
         )
         self.continue_unlimited_btn.setStyleSheet(
             "font-size: 13px; padding: 8px 12px; background: #7a3f12;"
@@ -1446,15 +1428,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 mime = getattr(event, "mimeData", lambda: None)()
                 if mime is not None and mime.hasUrls():
                     self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px;"
-                        " border: 2px dashed #d4a373; border-radius: 4px;"
+                        "font-size: 14px; padding: 8px; border: 2px dashed #d4a373; border-radius: 4px;"
                     )
                     event.acceptProposedAction()
                     return True
             elif event.type() == QEvent.Type.DragLeave:
                 self.input_edit.setStyleSheet(
-                    "font-size: 14px; padding: 8px;"
-                    " border: 1px solid #ccc; border-radius: 4px;"
+                    "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
                 )
                 return False
             elif event.type() == QEvent.Type.Drop:
@@ -1462,8 +1442,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if mime is not None and mime.hasUrls():
                     urls = mime.urls()
                     self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px;"
-                        " border: 1px solid #ccc; border-radius: 4px;"
+                        "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
                     )
                     for url in urls:
                         if url.isLocalFile():
@@ -1769,9 +1748,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # (дальше — как было)
         import hashlib
 
-        msg_id = hashlib.sha1(
-            f"{self._session_id or ''}|user|{text}".encode()
-        ).hexdigest()[:16]
+        msg_id = hashlib.sha1(f"{self._session_id or ''}|user|{text}".encode()).hexdigest()[:16]
         if any(m.id == msg_id for m in self._messages):
             logger.debug(f"Повтор user-сообщения {msg_id!r} — пропускаем дубль")
             return
@@ -1930,7 +1907,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ---------------------------------------------------------
 
     def _do_chat(
-        self, text: str, override_limit: int | None = None,
+        self,
+        text: str,
+        override_limit: int | None = None,
         override_budget=None,
     ):
         """Запускает ReAct-цикл в режиме Chat.
@@ -2062,9 +2041,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
-            tool_service=ToolService(
-                registry, project_root=self.project_root
-            ),
+            tool_service=ToolService(registry, project_root=self.project_root),
         )
         self._last_run_params = {
             "kind": "chat",
@@ -2210,9 +2187,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
-            tool_service=ToolService(
-                registry, project_root=self.project_root
-            ),
+            tool_service=ToolService(registry, project_root=self.project_root),
         )
 
         self._last_run_params = {
@@ -2613,9 +2588,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # 0.1.3b: фиксируем вызов в буфере текущего ответа.
         # При восстановлении сессии _render_assistant_parts восстановит
         # карточку и привяжет к ней результат из ToolResultPart.
-        self._current_assistant_parts.append(
-            ToolCallPart(calls=[ToolCall(name=name, arguments=args)])
-        )
+        self._current_assistant_parts.append(ToolCallPart(calls=[ToolCall(name=name, arguments=args)]))
         tool_labels = {
             "read_file": "📖 Чтение файла",
             "write_file": "✏️ Запись файла",
@@ -2848,9 +2821,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         svc = self._ensure_memory_service()
         if svc is None:
             return
-        reflection = self._build_reflection(
-            outcome=outcome, summary_hint=summary_hint
-        )
+        reflection = self._build_reflection(outcome=outcome, summary_hint=summary_hint)
         if reflection is None:
             return
         try:
@@ -2859,9 +2830,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # отстаёт до следующего `_sync_dashboard`.
             self._sync_dashboard()
         except Exception:
-            logger.warning(
-                "4.3: не удалось записать рефлексию", exc_info=True
-            )
+            logger.warning("4.3: не удалось записать рефлексию", exc_info=True)
 
     @Slot(dict)
     def _on_agent_finished(self, payload: dict) -> None:
@@ -2914,13 +2883,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             if reason in ("stop", "length", "budget.exceeded"):
                 self._inbox.complete(self._current_inbox_id)
             else:
-                self._inbox.fail(
-                    self._current_inbox_id, reason or "unknown"
-                )
+                self._inbox.fail(self._current_inbox_id, reason or "unknown")
         except Exception:
-            logger.debug(
-                "inbox: не удалось закрыть запись", exc_info=True
-            )
+            logger.debug("inbox: не удалось закрыть запись", exc_info=True)
         finally:
             self._current_inbox_id = None
             self._sync_inbox_indicator()
@@ -3250,9 +3215,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # иначе после перезагрузки пользователь видел только паспорт,
             # а reasoning/tool-calls/финальный текст пропадали.
             if final_text and self._session_id:
-                assistant_message = self._build_assistant_message(
-                    fallback_text=final_text
-                )
+                assistant_message = self._build_assistant_message(fallback_text=final_text)
                 self._messages.append(assistant_message)
                 self.session_store.save_message(self._session_id, assistant_message)
 
@@ -3319,9 +3282,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._last_assistant_widget.finalize()
 
         if self._current_assistant_text or self._current_assistant_reasoning:
-            assistant_message = self._build_assistant_message(
-                fallback_text=self._current_assistant_content
-            )
+            assistant_message = self._build_assistant_message(fallback_text=self._current_assistant_content)
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
@@ -3338,9 +3299,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _on_agent_error(self, error_msg: str):
         # Помечаем серый поток как прерванный, если он был.
         if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted(
-                f"Ошибка: {error_msg[:120]}"
-            )
+            self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
         # [2.12] inbox: fail.
         if self._inbox is not None and self._current_inbox_id:
             try:
@@ -3350,7 +3309,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             finally:
                 self._current_inbox_id = None
                 self._sync_inbox_indicator()
-         # [9.5.4] Индикатор: ошибка (короткий detail).
+        # [9.5.4] Индикатор: ошибка (короткий detail).
         self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(f"Ошибка: {error_msg[:200]}", is_error=True)
@@ -3376,17 +3335,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # следующий запрос будет новой записью.
         if self._inbox is not None and self._current_inbox_id:
             try:
-                self._inbox.fail(
-                    self._current_inbox_id, "iteration_limit"
-                )
+                self._inbox.fail(self._current_inbox_id, "iteration_limit")
             except Exception:
                 logger.debug("inbox.fail упал", exc_info=True)
             finally:
                 self._current_inbox_id = None
                 self._sync_inbox_indicator()
         self._show_activity(
-            "⏸ Достигнут предел шагов. «Продолжить» — ещё шаги, "
-            "«Продолжить до результата» — без бюджета."
+            "⏸ Достигнут предел шагов. «Продолжить» — ещё шаги, «Продолжить до результата» — без бюджета."
         )
         self._set_activity_state("cancelled", "предел шагов")
         self.continue_btn.setVisible(True)
@@ -3428,12 +3384,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
 
         if params["kind"] == "chat":
-            self._do_chat(params["text"], override_limit=100_000,
-                          override_budget=unlimited)
+            self._do_chat(params["text"], override_limit=100_000, override_budget=unlimited)
         else:
             self._do_agent(
-                params["text"], params["mode"], params["rag_context"],
-                override_limit=100_000, override_budget=unlimited,
+                params["text"],
+                params["mode"],
+                params["rag_context"],
+                override_limit=100_000,
+                override_budget=unlimited,
             )
 
     @Slot()
@@ -3907,9 +3865,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             for msg in messages:
                 if msg.role == "assistant" and msg.parts:
                     widget = self._render_assistant_parts(msg)
-                    self.scroll_layout.insertWidget(
-                        self.scroll_layout.count() - 1, widget
-                    )
+                    self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
                     self._update_bubble_width(widget)
                 else:
                     self._add_message(msg.role, msg.content)
@@ -4109,9 +4065,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
         if self._pipeline_selectors is not None:
-            self._pipeline_selectors.set_recommended_model(
-                profile.recommended_model, profile.name
-            )
+            self._pipeline_selectors.set_recommended_model(profile.recommended_model, profile.name)
         # [9.3.2] Подсветка coder-моделей в профиле development.
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.set_active_profile(profile.id)
@@ -4248,25 +4202,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if not roles:
                     self._dashboard.set_pipeline("⏸", "пул пуст")
                 else:
-                    primary = [
-                        r.value
-                        for r in roles
-                        if r in (Role.ROUTER, Role.PLANNER, Role.CODER)
-                    ]
+                    primary = [r.value for r in roles if r in (Role.ROUTER, Role.PLANNER, Role.CODER)]
                     short = " + ".join(primary) if primary else roles[0].value
                     tooltip_lines = []
                     for r in roles:
                         try:
                             spec = self._model_pool.spec(r)
                             tooltip_lines.append(
-                                f"{r.value}={spec.model_id} "
-                                f"({spec.device}, n_ctx={spec.n_ctx})"
+                                f"{r.value}={spec.model_id} ({spec.device}, n_ctx={spec.n_ctx})"
                             )
                         except Exception:
                             tooltip_lines.append(f"{r.value}=?")
-                    self._dashboard.set_pipeline(
-                        "⚡", short, "\n".join(tooltip_lines)
-                    )
+                    self._dashboard.set_pipeline("⚡", short, "\n".join(tooltip_lines))
             except Exception:
                 self._dashboard.set_pipeline("⚡", "готов")
         elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
@@ -4294,13 +4241,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 is_coder = "coder" in coder_info.tags
                 icon = "⚡" if is_coder else "⚠️"
                 label = "coder" if is_coder else "coder (fallback)"
-                self._dashboard.set_coder(
-                    icon, label, coder_info.display_name
-                )
+                self._dashboard.set_coder(icon, label, coder_info.display_name)
             else:
-                self._dashboard.set_coder(
-                    "⚠️", "coder (нет модели)", "Скачайте coder-модель"
-                )
+                self._dashboard.set_coder("⚠️", "coder (нет модели)", "Скачайте coder-модель")
         except Exception:
             logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
 
@@ -4325,9 +4268,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 available = is_playwright_available()
             self._dashboard.set_browser(mode, available=available)
         except Exception:
-            logger.debug(
-                "Не удалось обновить browser-индикатор", exc_info=True
-            )
+            logger.debug("Не удалось обновить browser-индикатор", exc_info=True)
         # [2.13] Провайдер поиска (первый доступный в цепочке).
         try:
             from agents.search_providers import build_chain
@@ -4339,9 +4280,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             available = bool(chain)
             self._dashboard.set_search(provider, available=available)
         except Exception:
-            logger.debug(
-                "Не удалось обновить search-индикатор", exc_info=True
-            )
+            logger.debug("Не удалось обновить search-индикатор", exc_info=True)
         # [9.4] Git-ветка.
         try:
             from pathlib import Path as _Path
@@ -4360,9 +4299,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             else:
                 self._dashboard.set_git_branch("", "")
         except Exception:
-            logger.debug(
-                "Не удалось обновить git-индикатор", exc_info=True
-            )
+            logger.debug("Не удалось обновить git-индикатор", exc_info=True)
         # ... (всё, что было выше: backend/pipeline/coder/browser/search/git_branch)
 
         # [4.3] Память: количество рефлексий + последние 3.
@@ -4374,15 +4311,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 counts = svc.count()
                 count = int(counts.get("reflections", 0))
                 if count > 0:
-                    recent = [
-                        r.summary[:80]
-                        for r in svc.list_recent(limit=3)
-                    ]
+                    recent = [r.summary[:80] for r in svc.list_recent(limit=3)]
             self._dashboard.set_memory(count, recent)
         except Exception:
-            logger.debug(
-                "Не удалось обновить memory-индикатор", exc_info=True
-            )
+            logger.debug("Не удалось обновить memory-индикатор", exc_info=True)
 
         # [7] MCP: количество подключённых серверов.
         try:
@@ -4393,9 +4325,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             servers = list(mgr._clients.keys())
             self._dashboard.set_mcp(connected, servers)
         except Exception:
-            logger.debug(
-                "Не удалось обновить MCP-индикатор", exc_info=True
-            )
+            logger.debug("Не удалось обновить MCP-индикатор", exc_info=True)
 
         # [9.12] freedom_level активного профиля.
         try:
@@ -4404,10 +4334,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             else:
                 self._dashboard.set_freedom("development")
         except Exception:
-            logger.debug(
-                "Не удалось обновить freedom-индикатор", exc_info=True
-            )
-
+            logger.debug("Не удалось обновить freedom-индикатор", exc_info=True)
 
     @staticmethod
     def _build_registry_model_tooltip(info: ModelInfo) -> str:
@@ -4467,14 +4394,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 logger.debug("inbox.cleanup_old упал", exc_info=True)
             recovered = inbox.recover()
             if recovered:
-                logger.warning(
-                    f"inbox: восстановлено {recovered} незавершённых запросов"
-                )
+                logger.warning(f"inbox: восстановлено {recovered} незавершённых запросов")
             self._sync_inbox_indicator()
         except Exception:
-            logger.debug(
-                "inbox recover упал", exc_info=True
-            )
+            logger.debug("inbox recover упал", exc_info=True)
 
     def _sync_inbox_indicator(self) -> None:
         """2.12: обновляет индикатор inbox в дашборде."""
@@ -4498,66 +4421,63 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """Собирает git-контекст для system-промпта в режиме AGENT (2.8)."""
         if not self.project_root:
             return ""
-        return self._project_service.build_git_context(
-            self.project_root, mode=self._current_mode()
-        )
+        return self._project_service.build_git_context(self.project_root, mode=self._current_mode())
 
-#     def _build_git_context(self) -> str:
-#         """Собирает git-контекст для system-промпта в режиме AGENT.
+    #     def _build_git_context(self) -> str:
+    #         """Собирает git-контекст для system-промпта в режиме AGENT.
 
-#         Формат:
-# Ветка: feature/x (abc1234)
-# Последние коммиты:
-# • a1b2c3d 2025-01-01 feat: added parser
-# • …
-# Незакоммиченные изменения:
-# diff-содержимое (обрезано)
+    #         Формат:
+    # Ветка: feature/x (abc1234)
+    # Последние коммиты:
+    # • a1b2c3d 2025-01-01 feat: added parser
+    # • …
+    # Незакоммиченные изменения:
+    # diff-содержимое (обрезано)
 
-# text
+    # text
 
-# В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
-# токены).
-# """
-# if self._current_mode() != AgentMode.AGENT:
-#     return ""
-# if not self.project_root:
-#     return ""
+    # В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
+    # токены).
+    # """
+    # if self._current_mode() != AgentMode.AGENT:
+    #     return ""
+    # if not self.project_root:
+    #     return ""
 
-# try:
-#     from tools.git_ops import (
-#         get_branch_hash,
-#         get_current_branch,
-#         get_recent_commits,
-#         get_uncommitted_diff,
-#     )
-#     from pathlib import Path as _Path
+    # try:
+    #     from tools.git_ops import (
+    #         get_branch_hash,
+    #         get_current_branch,
+    #         get_recent_commits,
+    #         get_uncommitted_diff,
+    #     )
+    #     from pathlib import Path as _Path
 
-#     root = _Path(self.project_root)
-#     branch = get_current_branch(root)
-#     if not branch:
-#         return ""
+    #     root = _Path(self.project_root)
+    #     branch = get_current_branch(root)
+    #     if not branch:
+    #         return ""
 
-#     lines: list[str] = [
-#         f"Ветка: {branch} ({get_branch_hash(root)})"
-#     ]
-#     commits = get_recent_commits(root, limit=5)
-#     if commits:
-#         lines.append("Последние коммиты:")
-#         for c in commits:
-#             lines.append(
-#                 f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
-#             )
-#     diff = get_uncommitted_diff(root, max_chars=1500)
-#     if diff:
-#         lines.append("Незакоммиченные изменения (diff):")
-#         lines.append(diff)
-#     return "\n".join(lines)
-# except Exception:
-#     logger.debug(
-#         "Не удалось собрать git_context", exc_info=True
-#     )
-#     return ""
-
+    #     lines: list[str] = [
+    #         f"Ветка: {branch} ({get_branch_hash(root)})"
+    #     ]
+    #     commits = get_recent_commits(root, limit=5)
+    #     if commits:
+    #         lines.append("Последние коммиты:")
+    #         for c in commits:
+    #             lines.append(
+    #                 f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
+    #             )
+    #     diff = get_uncommitted_diff(root, max_chars=1500)
+    #     if diff:
+    #         lines.append("Незакоммиченные изменения (diff):")
+    #         lines.append(diff)
+    #     return "\n".join(lines)
+    # except Exception:
+    #     logger.debug(
+    #         "Не удалось собрать git_context", exc_info=True
+    #     )
+    #     return ""
 
     def _ensure_memory_service(self) -> MemoryService | None:
         """4.3: ленивое создание MemoryService.
@@ -4592,8 +4512,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         reply = QMessageBox.question(
             self,
             "Откатить файл?",
-            f"Восстановить файл из снапшота {snapshot_id}?\n\n"
-            f"Текущее содержимое будет потеряно.",
+            f"Восстановить файл из снапшота {snapshot_id}?\n\nТекущее содержимое будет потеряно.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -4605,9 +4524,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось откатить:\n{e}")
             return
-        self.status_label.setText(
-            f"↩ Восстановлено файлов: {len(restored)}"
-        )
+        self.status_label.setText(f"↩ Восстановлено файлов: {len(restored)}")
         logger.info(f"undo snapshot {snapshot_id}: {restored}")
 
     def _safe_load_config(self):
@@ -4670,18 +4587,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         thread = _MCPInitThread(enabled)
         thread.done.connect(self._on_mcp_initialized)
-        thread.error.connect(
-            lambda msg: logger.warning(f"MCP init error: {msg}")
-        )
+        thread.error.connect(lambda msg: logger.warning(f"MCP init error: {msg}"))
         thread.start()
         self._mcp_init_thread = thread
 
     @Slot(int, int)
     def _on_mcp_initialized(self, connected: int, total: int) -> None:
         """Пост-обработка инициализации MCP в GUI-потоке (9.8)."""
-        self.status_label.setText(
-            f"✅ MCP: подключено {connected}/{total} серверов"
-        )
+        self.status_label.setText(f"✅ MCP: подключено {connected}/{total} серверов")
         logger.info(f"MCP: {connected}/{total} серверов готовы")
         # [9.8] Обновляем индикатор MCP сразу.
         self._sync_dashboard()
@@ -4711,8 +4624,5 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
             register_mcp_tools(registry)
         except Exception:
-            logger.debug(
-                "MCP для permissions не зарегистрирован", exc_info=True
-            )
+            logger.debug("MCP для permissions не зарегистрирован", exc_info=True)
         return registry
-

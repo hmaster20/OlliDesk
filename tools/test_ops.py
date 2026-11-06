@@ -97,18 +97,14 @@ class TestResult:
 # Парсеры
 # ---------------------------------------------------------------------------
 
-_PYTEST_SUMMARY_RE = re.compile(
-    r"^=+ (?P<parts>[^=]+) in (?P<dur>[\d.]+)s.*?=+$", re.MULTILINE
-)
+_PYTEST_SUMMARY_RE = re.compile(r"^=+ (?P<parts>[^=]+) in (?P<dur>[\d.]+)s.*?=+$", re.MULTILINE)
 _PYTEST_COUNT_RE = re.compile(r"(\d+) (passed|failed|error|errors|skipped)")
 _PYTEST_FAIL_HEADER_RE = re.compile(r"^_{5,} (.+?) _{5,}$", re.MULTILINE)
 _PYTEST_LOCATION_RE = re.compile(r"^(?P<file>[^\s:]+\.py):(?P<line>\d+):")
 
 
 def _parse_pytest(output: str, duration: float, exit_code: int) -> TestResult:
-    res = TestResult(
-        framework="pytest", duration_s=duration, exit_code=exit_code
-    )
+    res = TestResult(framework="pytest", duration_s=duration, exit_code=exit_code)
     for m in _PYTEST_SUMMARY_RE.finditer(output):
         for count_m in _PYTEST_COUNT_RE.finditer(m.group("parts")):
             n = int(count_m.group(1))
@@ -157,15 +153,11 @@ _DOTNET_RE = re.compile(
     r"(?:Failed!|Passed!)\s*-\s*Failed:\s*(\d+),\s*Passed:\s*(\d+),"
     r"\s*Skipped:\s*(\d+),\s*Total:\s*(\d+)"
 )
-_DOTNET_FAIL_RE = re.compile(
-    r"^\s*Failed\s+(?P<name>[^\s]+).*?\[(?P<dur>[\d.]+)\s*(?:ms|s)\]", re.MULTILINE
-)
+_DOTNET_FAIL_RE = re.compile(r"^\s*Failed\s+(?P<name>[^\s]+).*?\[(?P<dur>[\d.]+)\s*(?:ms|s)\]", re.MULTILINE)
 
 
 def _parse_dotnet(output: str, duration: float, exit_code: int) -> TestResult:
-    res = TestResult(
-        framework="dotnet", duration_s=duration, exit_code=exit_code
-    )
+    res = TestResult(framework="dotnet", duration_s=duration, exit_code=exit_code)
     m = _DOTNET_RE.search(output)
     if m:
         failed, passed, skipped, _total = (int(g) for g in m.groups())
@@ -203,18 +195,14 @@ def _parse_go(output: str, duration: float, exit_code: int) -> TestResult:
     return res
 
 
-_NPM_RE = re.compile(
-    r"^(?:Tests:|#\s*tests)\s+(\d+).*?(?:fail\s+(\d+))?", re.MULTILINE
-)
+_NPM_RE = re.compile(r"^(?:Tests:|#\s*tests)\s+(\d+).*?(?:fail\s+(\d+))?", re.MULTILINE)
 _NPM_FAILED_RE = re.compile(r"^\s*✕\s+(.+)$", re.MULTILINE)
 
 
 def _parse_npm(output: str, duration: float, exit_code: int) -> TestResult:
     res = TestResult(framework="npm", duration_s=duration, exit_code=exit_code)
     # Vitest / Jest / Mocha — разные форматы.
-    counts = re.search(
-        r"Tests:\s*(?:\d+\s+failed,\s*)?(\d+)\s+passed", output
-    )
+    counts = re.search(r"Tests:\s*(?:\d+\s+failed,\s*)?(\d+)\s+passed", output)
     if counts:
         res.passed = int(counts.group(1))
     fails = re.search(r"Tests:\s*(\d+)\s+failed", output)
@@ -241,9 +229,7 @@ _PARSERS = {
 # ---------------------------------------------------------------------------
 
 
-def _build_command(
-    framework: Framework, target: str | None
-) -> tuple[list[str], str]:
+def _build_command(framework: Framework, target: str | None) -> tuple[list[str], str]:
     """Возвращает (команда, shell_or_none).
 
     Для ``npm`` нужен shell на Windows (npm — это .cmd).
@@ -382,10 +368,7 @@ def run_tests(
         target_path = resolver.resolve(target)
         if target_path is None:
             return {
-                "_llm_text": (
-                    f"Ошибка: target '{target}' вне проекта или "
-                    f"в служебной директории."
-                ),
+                "_llm_text": (f"Ошибка: target '{target}' вне проекта или в служебной директории."),
                 "ok": False,
                 "error": "target_outside",
             }
@@ -397,10 +380,7 @@ def run_tests(
         t = DEFAULT_TIMEOUT_S
     t = max(1, min(t, 600))
 
-    logger.info(
-        f"run_tests: framework={framework}, target={target!r}, "
-        f"cwd={resolver.root}, timeout={t}s"
-    )
+    logger.info(f"run_tests: framework={framework}, target={target!r}, cwd={resolver.root}, timeout={t}s")
     result = _run_tests_sync(
         framework=framework,
         target=target,
@@ -410,11 +390,7 @@ def run_tests(
 
     # Формируем текст для LLM.
     lines: list[str] = []
-    header = (
-        f"$ {framework}"
-        + (f" {Path(target).name}" if target else "")
-        + f"  →  {result.summary_line()}"
-    )
+    header = f"$ {framework}" + (f" {Path(target).name}" if target else "") + f"  →  {result.summary_line()}"
     lines.append(header)
     if result.truncated:
         lines.append("[Вывод обрезан]")

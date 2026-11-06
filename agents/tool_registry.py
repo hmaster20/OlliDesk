@@ -121,6 +121,7 @@ def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
         logger.exception(f"Не удалось построить валидатор аргументов для {func.__name__}")
         return None
 
+
 # ---------------------------------------------------------------------------
 # 2.6: ToolSpec v2 и capabilities
 # ---------------------------------------------------------------------------
@@ -130,13 +131,13 @@ def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
 # осознанно, потому что от них зависит Policy Engine (2.7).
 _VALID_CAPABILITIES: frozenset[str] = frozenset(
     {
-        "fs.read",   # чтение файлов проекта (read_file, list_directory, …)
+        "fs.read",  # чтение файлов проекта (read_file, list_directory, …)
         "fs.write",  # запись файлов / изменение рабочей копии
-        "net",       # исходящий HTTP (web_search, get_weather, курсы)
-        "shell",     # выполнение shell-команд
-        "git",       # git-операции (status/diff/stash/commit)
-        "ui",        # внутреннее состояние агента (гипотезы, RAG-контекст)
-        "secrets",   # доступ к секретам (.env, *.pem, id_rsa*) — 2.7
+        "net",  # исходящий HTTP (web_search, get_weather, курсы)
+        "shell",  # выполнение shell-команд
+        "git",  # git-операции (status/diff/stash/commit)
+        "ui",  # внутреннее состояние агента (гипотезы, RAG-контекст)
+        "secrets",  # доступ к секретам (.env, *.pem, id_rsa*) — 2.7
     }
 )
 
@@ -203,10 +204,10 @@ def _normalize_capabilities(
     unknown = result - _VALID_CAPABILITIES
     if unknown:
         raise ValueError(
-            f"Неизвестные capabilities: {sorted(unknown)}. "
-            f"Допустимые: {sorted(_VALID_CAPABILITIES)}"
+            f"Неизвестные capabilities: {sorted(unknown)}. Допустимые: {sorted(_VALID_CAPABILITIES)}"
         )
     return result
+
 
 def _generate_schema(func: Callable[..., Any]) -> dict[str, Any]:
     """Генерирует JSON Schema для функции из type hints и докстринга.
@@ -427,8 +428,7 @@ class ToolRegistry:
         spec = self._specs.get(tool_name)
         if spec is None:
             raise KeyError(
-                f"Инструмент '{tool_name}' не зарегистрирован. "
-                f"Доступные: {sorted(self._specs.keys())}"
+                f"Инструмент '{tool_name}' не зарегистрирован. Доступные: {sorted(self._specs.keys())}"
             )
         return spec
 
@@ -489,9 +489,7 @@ class ToolRegistry:
 
         spec = self.try_get_spec(tool_name)
         if spec is None:
-            return EffectivePolicy(
-                policy=ToolPolicy.EXCLUDED, allowed=False, reason="unknown"
-            )
+            return EffectivePolicy(policy=ToolPolicy.EXCLUDED, allowed=False, reason="unknown")
         return effective_policy(
             spec,
             profile=profile,
@@ -627,10 +625,7 @@ class ToolRegistry:
                 content=redaction.redact_only(str(result_content)),
             )
         except TimeoutError:
-            logger.warning(
-                f"Инструмент {tool_call.name}: таймаут {timeout_s:.1f}с "
-                f"(timeout_s из ToolSpec)"
-            )
+            logger.warning(f"Инструмент {tool_call.name}: таймаут {timeout_s:.1f}с (timeout_s из ToolSpec)")
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,

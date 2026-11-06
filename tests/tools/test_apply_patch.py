@@ -9,13 +9,7 @@ from tools.file_ops import apply_patch
 
 def _basic_patch(old: str, new: str, *, start: int = 1) -> str:
     """Простейший патч для однострочной замены."""
-    return (
-        "--- a/file.py\n"
-        "+++ b/file.py\n"
-        f"@@ -{start},1 +{start},1 @@\n"
-        f"-{old}\n"
-        f"+{new}\n"
-    )
+    return f"--- a/file.py\n+++ b/file.py\n@@ -{start},1 +{start},1 @@\n-{old}\n+{new}\n"
 
 
 class TestApplyPatch:
@@ -36,14 +30,7 @@ class TestApplyPatch:
     def test_add_line(self, tmp_path: Path) -> None:
         target = tmp_path / "a.py"
         target.write_text("a\nb\n")
-        patch = (
-            "--- a/a.py\n"
-            "+++ b/a.py\n"
-            "@@ -1,2 +1,3 @@\n"
-            " a\n"
-            "+inserted\n"
-            " b\n"
-        )
+        patch = "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
         result = apply_patch(
             path=str(target),
             patch=patch,
@@ -103,13 +90,7 @@ class TestApplyPatch:
     def test_no_change(self, tmp_path: Path) -> None:
         target = tmp_path / "a.py"
         target.write_text("same\n")
-        patch = (
-            "--- a/a.py\n"
-            "+++ b/a.py\n"
-            "@@ -1,1 +1,1 @@\n"
-            "-same\n"
-            "+same\n"
-        )
+        patch = "--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-same\n+same\n"
         result = apply_patch(
             path=str(target),
             patch=patch,

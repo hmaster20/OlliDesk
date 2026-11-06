@@ -147,9 +147,7 @@ class AgentSettingsDialog(QDialog):
         # --- 0.1.1: Безопасность ---
         security_group = QGroupBox("Безопасность")
         security_layout = QVBoxLayout(security_group)
-        self.allow_arbitrary_shell_check = QCheckBox(
-            "Разрешить произвольные shell-команды (dangerous mode)"
-        )
+        self.allow_arbitrary_shell_check = QCheckBox("Разрешить произвольные shell-команды (dangerous mode)")
         self.allow_arbitrary_shell_check.setChecked(allow_arbitrary_shell)
         self.allow_arbitrary_shell_check.setToolTip(
             "По умолчанию run_shell_command работает только по allowlist "
@@ -172,12 +170,8 @@ class AgentSettingsDialog(QDialog):
         mcp_group = QGroupBox("MCP-серверы")
         mcp_layout = QVBoxLayout(mcp_group)
 
-        self._mcp_enabled_check = QCheckBox(
-            "Включить MCP (Model Context Protocol)"
-        )
-        self._mcp_enabled_check.setChecked(
-            bool(_cfg and _cfg.mcp.enabled)
-        )
+        self._mcp_enabled_check = QCheckBox("Включить MCP (Model Context Protocol)")
+        self._mcp_enabled_check.setChecked(bool(_cfg and _cfg.mcp.enabled))
         self._mcp_enabled_check.setToolTip(
             "MCP-серверы дают доступ к внешним инструментам "
             "(файлы, git, поиск, …) через единый протокол. "
@@ -189,8 +183,7 @@ class AgentSettingsDialog(QDialog):
         servers_text = ""
         if _cfg and _cfg.mcp.servers:
             servers_text = "\n".join(
-                f"  • {s.name}: {s.command} {' '.join(s.args)} "
-                f"[{', '.join(s.capabilities)}]"
+                f"  • {s.name}: {s.command} {' '.join(s.args)} [{', '.join(s.capabilities)}]"
                 for s in _cfg.mcp.servers
             )
         servers_label = QLabel(
@@ -198,8 +191,7 @@ class AgentSettingsDialog(QDialog):
             f"{servers_text or '  (нет — добавьте в config.yaml: mcp.servers)'}"
         )
         servers_label.setStyleSheet(
-            "color: #888; font-family: 'Consolas', monospace;"
-            " font-size: 11px; padding: 4px 8px;"
+            "color: #888; font-family: 'Consolas', monospace; font-size: 11px; padding: 4px 8px;"
         )
         servers_label.setWordWrap(True)
         mcp_layout.addWidget(servers_label)
@@ -219,26 +211,18 @@ class AgentSettingsDialog(QDialog):
             pass
 
         current_mode = _cfg_b.browser.mode if _cfg_b else "isolated"
-        current_ack = (
-            _cfg_b.browser.full_access_acknowledged if _cfg_b else False
-        )
+        current_ack = _cfg_b.browser.full_access_acknowledged if _cfg_b else False
 
         self._browser_mode_combo = QComboBox()
-        self._browser_mode_combo.addItem(
-            "🔒 isolated — отдельный профиль (безопасно)", "isolated"
-        )
+        self._browser_mode_combo.addItem("🔒 isolated — отдельный профиль (безопасно)", "isolated")
         self._browser_mode_combo.addItem(
             "🔗 extension — через расширение (вкладки с разрешения)", "extension"
         )
-        self._browser_mode_combo.addItem(
-            "⚠️ full — доступ ко всем сессиям (опасно)", "full"
-        )
+        self._browser_mode_combo.addItem("⚠️ full — доступ ко всем сессиям (опасно)", "full")
         _idx = self._browser_mode_combo.findData(current_mode)
         if _idx >= 0:
             self._browser_mode_combo.setCurrentIndex(_idx)
-        self._browser_mode_combo.currentIndexChanged.connect(
-            self._on_browser_mode_changed
-        )
+        self._browser_mode_combo.currentIndexChanged.connect(self._on_browser_mode_changed)
         browser_layout.addWidget(self._browser_mode_combo)
 
         hint = QLabel(
@@ -251,9 +235,7 @@ class AgentSettingsDialog(QDialog):
         hint.setWordWrap(True)
         browser_layout.addWidget(hint)
 
-        self._browser_full_ack_check = QCheckBox(
-            "Подтверждаю полный доступ (режим «full»)"
-        )
+        self._browser_full_ack_check = QCheckBox("Подтверждаю полный доступ (режим «full»)")
         self._browser_full_ack_check.setChecked(bool(current_ack))
         self._browser_full_ack_check.setVisible(current_mode == "full")
         browser_layout.addWidget(self._browser_full_ack_check)
@@ -272,20 +254,15 @@ class AgentSettingsDialog(QDialog):
         except Exception:
             pass
 
-        current_providers = (
-            list(_cfg_search.search.providers) if _cfg_search else []
-        )
+        current_providers = list(_cfg_search.search.providers) if _cfg_search else []
 
         providers_hint = QLabel(
             "Цепочка (сверху вниз):\n"
-            + "\n".join(
-                f"  {i+1}. {p}" for i, p in enumerate(current_providers)
-            )
+            + "\n".join(f"  {i + 1}. {p}" for i, p in enumerate(current_providers))
             + "\n\nНастройка — в config.yaml → search."
         )
         providers_hint.setStyleSheet(
-            "color: #888; font-family: 'Consolas', monospace;"
-            " font-size: 11px; padding: 4px 8px;"
+            "color: #888; font-family: 'Consolas', monospace; font-size: 11px; padding: 4px 8px;"
         )
         providers_hint.setWordWrap(True)
         search_layout.addWidget(providers_hint)

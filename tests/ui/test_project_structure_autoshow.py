@@ -46,9 +46,7 @@ class TestFirstOpen:
         main_window._do_open_project(project)
         assert main_window.left_panel.isVisibleTo(main_window)
 
-    def test_second_open_respects_saved(
-        self, main_window, tmp_path: Path
-    ) -> None:
+    def test_second_open_respects_saved(self, main_window, tmp_path: Path) -> None:
         # Добавляем проект в recent_projects «как будто открывали раньше».
         project = tmp_path / "proj2"
         project.mkdir()

@@ -274,8 +274,7 @@ async def run_shell_command(
     if not in_allowlist:
         if not sec.allow_arbitrary_shell:
             logger.info(f"run_shell_command: blocked (not in allowlist): {command[:120]}")
-            _audit(command, cwd, approved=False, result="not in allowlist",
-                   is_error=True, dangerous=False)
+            _audit(command, cwd, approved=False, result="not in allowlist", is_error=True, dangerous=False)
             return (
                 "Ошибка: команда не входит в allowlist безопасных shell-команд. "
                 "Разрешены: Test-Path, Get-ChildItem, Get-Content, Select-String, "
@@ -295,21 +294,18 @@ async def run_shell_command(
     t = max(1, min(t, MAX_TIMEOUT_S))
 
     logger.info(
-        f"run_shell_command: cwd={work_dir}, timeout={t}s, "
-        f"dangerous={dangerous}, cmd={command[:200]}"
+        f"run_shell_command: cwd={work_dir}, timeout={t}s, dangerous={dangerous}, cmd={command[:200]}"
     )
 
     # 6. Запуск.
     try:
         out, rc = await _run_powershell(ps_exe, command, work_dir, t)
     except FileNotFoundError as e:
-        _audit(command, cwd, approved=True, result=str(e),
-               is_error=True, dangerous=dangerous)
+        _audit(command, cwd, approved=True, result=str(e), is_error=True, dangerous=dangerous)
         return f"Ошибка: не удалось запустить {ps_exe}: {e}"
     except Exception as e:
         logger.exception("run_shell_command failed")
-        _audit(command, cwd, approved=True, result=str(e),
-               is_error=True, dangerous=dangerous)
+        _audit(command, cwd, approved=True, result=str(e), is_error=True, dangerous=dangerous)
         return f"Ошибка запуска команды: {e}"
 
     # 7. Усечение вывода.
@@ -319,8 +315,7 @@ async def run_shell_command(
         truncated = True
 
     # 8. Audit log.
-    _audit(command, cwd, approved=True, result=out,
-           is_error=(rc != 0), dangerous=dangerous)
+    _audit(command, cwd, approved=True, result=out, is_error=(rc != 0), dangerous=dangerous)
 
     # 9. Ответ.
     header = f"$ {command}\n(exit {rc}, cwd {work_dir.name})"

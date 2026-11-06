@@ -91,9 +91,7 @@ class SessionInbox:
         self.db_path = db_path or (get_app_data_dir() / "sessions.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(
-            str(self.db_path), check_same_thread=False
-        )
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -121,13 +119,9 @@ class SessionInbox:
                 """
             )
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_inbox_session "
-                "ON session_inbox(session_id, state)"
+                "CREATE INDEX IF NOT EXISTS ix_inbox_session ON session_inbox(session_id, state)"
             )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_inbox_state "
-                "ON session_inbox(state)"
-            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_inbox_state ON session_inbox(state)")
 
     # ------------------------------------------------------------------
     # enqueue / claim / complete / fail
@@ -160,8 +154,7 @@ class SessionInbox:
         # Проверка лимита pending на сессию.
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) AS c FROM session_inbox"
-                " WHERE session_id = ? AND state = 'pending'",
+                "SELECT COUNT(*) AS c FROM session_inbox WHERE session_id = ? AND state = 'pending'",
                 (session_id,),
             )
             pending = int(cur.fetchone()["c"])
@@ -174,11 +167,7 @@ class SessionInbox:
 
         item_id = uuid.uuid4().hex
         now = datetime.now().isoformat(timespec="seconds")
-        context_json = (
-            json.dumps(context, ensure_ascii=False, default=str)
-            if context
-            else None
-        )
+        context_json = json.dumps(context, ensure_ascii=False, default=str) if context else None
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO session_inbox"
@@ -196,8 +185,7 @@ class SessionInbox:
                 ),
             )
         logger.info(
-            f"inbox.enqueue: id={item_id[:8]}… session={session_id[:12]}… "
-            f"mode={mode} chars={len(prompt)}"
+            f"inbox.enqueue: id={item_id[:8]}… session={session_id[:12]}… mode={mode} chars={len(prompt)}"
         )
         emit_event(
             EventKind.INBOX_ENQUEUED.value,
@@ -228,14 +216,10 @@ class SessionInbox:
         now = datetime.now().isoformat(timespec="seconds")
         result_json = None
         if result:
-            result_json = json.dumps(
-                {"result": result[:2000]}, ensure_ascii=False
-            )
+            result_json = json.dumps({"result": result[:2000]}, ensure_ascii=False)
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE session_inbox"
-                " SET state = 'done', updated_at = ?, result_json = ?"
-                " WHERE id = ?",
+                "UPDATE session_inbox SET state = 'done', updated_at = ?, result_json = ? WHERE id = ?",
                 (now, result_json, item_id),
             )
         logger.debug(f"inbox.complete: id={item_id[:8]}…")
@@ -249,9 +233,7 @@ class SessionInbox:
         now = datetime.now().isoformat(timespec="seconds")
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE session_inbox"
-                " SET state = 'failed', updated_at = ?, error = ?"
-                " WHERE id = ?",
+                "UPDATE session_inbox SET state = 'failed', updated_at = ?, error = ? WHERE id = ?",
                 (now, (error or "")[:1000], item_id),
             )
         logger.info(f"inbox.fail: id={item_id[:8]}… ({error[:120]})")
@@ -273,29 +255,22 @@ class SessionInbox:
         now = datetime.now().isoformat(timespec="seconds")
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "UPDATE session_inbox"
-                " SET state = 'pending', updated_at = ?"
-                " WHERE state = 'running'",
+                "UPDATE session_inbox SET state = 'pending', updated_at = ? WHERE state = 'running'",
                 (now,),
             )
             count = cur.rowcount
         if count:
-            logger.warning(
-                f"inbox.recover: {count} 'running' → 'pending' (упавший процесс?)"
-            )
+            logger.warning(f"inbox.recover: {count} 'running' → 'pending' (упавший процесс?)")
         return count
 
     def cleanup_old(self, *, retention_days: int = RETENTION_DAYS) -> int:
         """Удаляет ``done``/``failed`` старше ``retention_days``."""
         if retention_days <= 0:
             return 0
-        cutoff = (
-            datetime.now() - timedelta(days=retention_days)
-        ).isoformat(timespec="seconds")
+        cutoff = (datetime.now() - timedelta(days=retention_days)).isoformat(timespec="seconds")
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "DELETE FROM session_inbox"
-                " WHERE state IN ('done', 'failed') AND updated_at < ?",
+                "DELETE FROM session_inbox WHERE state IN ('done', 'failed') AND updated_at < ?",
                 (cutoff,),
             )
             count = cur.rowcount
@@ -310,9 +285,7 @@ class SessionInbox:
     def get(self, item_id: str) -> InboxItem | None:
         """Возвращает запись по id."""
         with self._lock:
-            cur = self._conn.execute(
-                "SELECT * FROM session_inbox WHERE id = ?", (item_id,)
-            )
+            cur = self._conn.execute("SELECT * FROM session_inbox WHERE id = ?", (item_id,))
             row = cur.fetchone()
         return _row_to_item(row) if row else None
 
@@ -324,35 +297,25 @@ class SessionInbox:
         """Список ``running`` (для диагностики)."""
         return self._list_by_state("running", session_id)
 
-    def list_session(
-        self, session_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[InboxItem]:
+    def list_session(self, session_id: str, limit: int = DEFAULT_LIMIT) -> list[InboxItem]:
         """Все записи сессии (свежие первыми)."""
         with self._lock:
             cur = self._conn.execute(
-                "SELECT * FROM session_inbox"
-                " WHERE session_id = ?"
-                " ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM session_inbox WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
                 (session_id, limit),
             )
             return [_row_to_item(r) for r in cur.fetchall()]
 
-    def _list_by_state(
-        self, state: InboxState, session_id: str | None
-    ) -> list[InboxItem]:
+    def _list_by_state(self, state: InboxState, session_id: str | None) -> list[InboxItem]:
         with self._lock:
             if session_id:
                 cur = self._conn.execute(
-                    "SELECT * FROM session_inbox"
-                    " WHERE state = ? AND session_id = ?"
-                    " ORDER BY created_at ASC",
+                    "SELECT * FROM session_inbox WHERE state = ? AND session_id = ? ORDER BY created_at ASC",
                     (state, session_id),
                 )
             else:
                 cur = self._conn.execute(
-                    "SELECT * FROM session_inbox"
-                    " WHERE state = ?"
-                    " ORDER BY created_at ASC",
+                    "SELECT * FROM session_inbox WHERE state = ? ORDER BY created_at ASC",
                     (state,),
                 )
             return [_row_to_item(r) for r in cur.fetchall()]
@@ -362,15 +325,11 @@ class SessionInbox:
         with self._lock:
             if session_id:
                 cur = self._conn.execute(
-                    "SELECT COUNT(*) AS c FROM session_inbox"
-                    " WHERE state = 'pending' AND session_id = ?",
+                    "SELECT COUNT(*) AS c FROM session_inbox WHERE state = 'pending' AND session_id = ?",
                     (session_id,),
                 )
             else:
-                cur = self._conn.execute(
-                    "SELECT COUNT(*) AS c FROM session_inbox"
-                    " WHERE state = 'pending'"
-                )
+                cur = self._conn.execute("SELECT COUNT(*) AS c FROM session_inbox WHERE state = 'pending'")
             return int(cur.fetchone()["c"])
 
     # ------------------------------------------------------------------

@@ -99,26 +99,30 @@ class TestSearXNG:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = None
 
-        with patch(
-            "agents.search_providers.httpx.AsyncClient",
-            return_value=mock_client,
-        ), pytest.raises(SearchProviderError, match="HTTP 500"):
+        with (
+            patch(
+                "agents.search_providers.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(SearchProviderError, match="HTTP 500"),
+        ):
             await provider.search("test")
 
     @pytest.mark.asyncio
     async def test_network_error(self) -> None:
         provider = SearXNGProvider("http://localhost:8080")
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(
-            side_effect=httpx.ConnectError("refused")
-        )
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = None
 
-        with patch(
-            "agents.search_providers.httpx.AsyncClient",
-            return_value=mock_client,
-        ), pytest.raises(SearchProviderError, match="network"):
+        with (
+            patch(
+                "agents.search_providers.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(SearchProviderError, match="network"),
+        ):
             await provider.search("test")
 
 
@@ -138,10 +142,13 @@ class TestYandex:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = None
 
-        with patch(
-            "agents.search_providers.httpx.AsyncClient",
-            return_value=mock_client,
-        ), pytest.raises(SearchProviderError, match="403"):
+        with (
+            patch(
+                "agents.search_providers.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(SearchProviderError, match="403"),
+        ):
             await provider.search("test")
 
 
@@ -160,10 +167,13 @@ class TestOllama:
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = None
 
-        with patch(
-            "agents.search_providers.httpx.AsyncClient",
-            return_value=mock_client,
-        ), pytest.raises(SearchProviderError, match="401"):
+        with (
+            patch(
+                "agents.search_providers.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(SearchProviderError, match="401"),
+        ):
             await provider.search("test")
 
 

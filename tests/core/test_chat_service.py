@@ -40,44 +40,42 @@ class TestBuildAgentContext:
 
 class TestPickMaxIterations:
     def test_override_wins(self) -> None:
-        assert ChatService.pick_max_iterations(
-            AgentMode.CHAT, override=42
-        ) == 42
+        assert ChatService.pick_max_iterations(AgentMode.CHAT, override=42) == 42
 
     def test_agent_uses_config(self) -> None:
         cfg = AppConfig(
-            default_model="m", embed_model="e",
-            agent_max_iterations=50, chat_max_iterations=10,
+            default_model="m",
+            embed_model="e",
+            agent_max_iterations=50,
+            chat_max_iterations=10,
         )
-        assert ChatService.pick_max_iterations(
-            AgentMode.AGENT, config=cfg
-        ) == 50
+        assert ChatService.pick_max_iterations(AgentMode.AGENT, config=cfg) == 50
 
     def test_chat_uses_config(self) -> None:
         cfg = AppConfig(
-            default_model="m", embed_model="e",
-            agent_max_iterations=50, chat_max_iterations=10,
+            default_model="m",
+            embed_model="e",
+            agent_max_iterations=50,
+            chat_max_iterations=10,
         )
-        assert ChatService.pick_max_iterations(
-            AgentMode.CHAT, config=cfg
-        ) == 10
+        assert ChatService.pick_max_iterations(AgentMode.CHAT, config=cfg) == 10
 
     def test_research_boosted(self) -> None:
         cfg = AppConfig(
-            default_model="m", embed_model="e",
-            agent_max_iterations=30, chat_max_iterations=7,
+            default_model="m",
+            embed_model="e",
+            agent_max_iterations=30,
+            chat_max_iterations=7,
         )
-        result = ChatService.pick_max_iterations(
-            AgentMode.CHAT, config=cfg, is_research=True
-        )
+        result = ChatService.pick_max_iterations(AgentMode.CHAT, config=cfg, is_research=True)
         assert result >= 15
 
     def test_profile_overrides(self) -> None:
         profile = ProfileConfig(
-            id="p", name="P",
-            agent_max_iterations=20, chat_max_iterations=5,
+            id="p",
+            name="P",
+            agent_max_iterations=20,
+            chat_max_iterations=5,
             tool_policies=ProfileToolPolicies(),
         )
-        assert ChatService.pick_max_iterations(
-            AgentMode.AGENT, profile=profile
-        ) == 20
+        assert ChatService.pick_max_iterations(AgentMode.AGENT, profile=profile) == 20

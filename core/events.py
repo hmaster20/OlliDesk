@@ -110,6 +110,7 @@ class EventKind(StrEnum):
     # --- Log mirror (loguru sink) ---
     LOG = "log"
 
+
 # ---------------------------------------------------------------------------
 # Payload-контракты (TypedDict — type hints, не runtime-валидация)
 # ---------------------------------------------------------------------------
@@ -215,6 +216,7 @@ class LogPayload(TypedDict):
     source: str  # "module:function"
     timestamp: str  # "HH:MM:SS"
 
+
 # ---------------------------------------------------------------------------
 # 4.3: память
 # ---------------------------------------------------------------------------
@@ -231,6 +233,7 @@ class MemoryRememberedPayload(TypedDict):
     task_type: str
     outcome: str
     tags: list[str]
+
 
 # ---------------------------------------------------------------------------
 # 7: MCP
@@ -259,6 +262,7 @@ class McpErrorPayload(TypedDict):
     server_name: str
     error: str
 
+
 # ---------------------------------------------------------------------------
 # 2.13: цепочка поиска
 # ---------------------------------------------------------------------------
@@ -274,6 +278,7 @@ class SearchChainExhaustedPayload(TypedDict):
     query: str
     attempted: list[str]
     errors: list[str]
+
 
 # ---------------------------------------------------------------------------
 # 2.12: durable inbox
@@ -295,6 +300,7 @@ class InboxFailedPayload(TypedDict):
     id: str
     error: str
 
+
 def args_hash(args: dict) -> str:
     """Стабильный 16-символьный хеш аргументов tool-call'а.
 
@@ -315,6 +321,7 @@ def args_hash(args: dict) -> str:
     except (TypeError, ValueError):
         payload = str(args)
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:16]
+
 
 # ---------------------------------------------------------------------------
 # 2.5 + 2.10: бюджет агента и причина остановки
@@ -354,40 +361,49 @@ class AgentFinishedPayload(TypedDict):
     iterations: int
     elapsed_s: float
 
+
 # ---------------------------------------------------------------------------
 # 9.3.1: HF search
 # ---------------------------------------------------------------------------
 
+
 class HfSearchStartedPayload(TypedDict):
     query: str
     filter: str
+
 
 class HfSearchFoundPayload(TypedDict):
     query: str
     n_results: int
     duration_ms: float
 
+
 class HfSearchEmptyPayload(TypedDict):
     query: str
     duration_ms: float
+
 
 class HfSearchErrorPayload(TypedDict):
     query: str
     error: str
 
+
 # ---------------------------------------------------------------------------
 # 9.4: git
 # ---------------------------------------------------------------------------
 
+
 class GitBranchChangedPayload(TypedDict):
     branch: str
     hash: str
+
 
 class GitCommitCreatedPayload(TypedDict):
     branch: str
     commit_hash: str
     files: list[str]
     message: str
+
 
 # ---------------------------------------------------------------------------
 # 9.10: permissions dashboard
@@ -399,8 +415,10 @@ class PermissionsOverriddenPayload(TypedDict):
     policy: str  # "auto" | "ask_first" | "excluded"
     scope: str  # "session"
 
+
 class PermissionsResetPayload(TypedDict):
     tools: list[str]
+
 
 # ---------------------------------------------------------------------------
 # Фаза 5 / 9.7: медиа

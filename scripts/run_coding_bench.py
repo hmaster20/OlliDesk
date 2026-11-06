@@ -28,12 +28,8 @@ def main() -> int:
         default=str(_REPO_ROOT / "tests" / "bench" / "tasks"),
         help="Каталог задач",
     )
-    parser.add_argument(
-        "--iterations", type=int, default=30, help="Лимит итераций агента"
-    )
-    parser.add_argument(
-        "--only", nargs="+", default=None, help="Только указанные задачи"
-    )
+    parser.add_argument("--iterations", type=int, default=30, help="Лимит итераций агента")
+    parser.add_argument("--only", nargs="+", default=None, help="Только указанные задачи")
     parser.add_argument(
         "--output",
         default="bench_results.jsonl",
@@ -81,10 +77,7 @@ def main() -> int:
         only=args.only,
     )
     save_results(summary, Path(args.output))
-    logger.info(
-        f"Итог: pass@1 = {summary.pass_at_1:.2%}, "
-        f"tool success = {summary.tool_success_rate:.1%}"
-    )
+    logger.info(f"Итог: pass@1 = {summary.pass_at_1:.2%}, tool success = {summary.tool_success_rate:.1%}")
     return 0 if summary.pass_at_1 >= 0.3 else 2
 
 

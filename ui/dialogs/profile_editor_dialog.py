@@ -164,26 +164,16 @@ class ProfileEditorDialog(QDialog):
 
         # [9.12] Уровень свободы.
         self.freedom_combo = QComboBox()
-        self.freedom_combo.addItem(
-            "🔒 safe — только чтение, shell/git/browser запрещены", "safe"
-        )
-        self.freedom_combo.addItem(
-            "🔍 research — чтение + web, shell/git/browser запрещены", "research"
-        )
-        self.freedom_combo.addItem(
-            "🛠 development — запись auto, shell/git ask_first", "development"
-        )
-        self.freedom_combo.addItem(
-            "🌐 open — всё auto (shell ask_first, secrets никогда)", "open"
-        )
+        self.freedom_combo.addItem("🔒 safe — только чтение, shell/git/browser запрещены", "safe")
+        self.freedom_combo.addItem("🔍 research — чтение + web, shell/git/browser запрещены", "research")
+        self.freedom_combo.addItem("🛠 development — запись auto, shell/git ask_first", "development")
+        self.freedom_combo.addItem("🌐 open — всё auto (shell ask_first, secrets никогда)", "open")
         self.freedom_combo.setToolTip(
             "Матрица политик по capabilities (core/policy.py::_FREEDOM_MATRIX). "
             "«open» даёт максимальную свободу, но shell всё равно спрашивает, "
             "а .env/*.pem/id_rsa* недоступны всегда."
         )
-        self.freedom_combo.currentIndexChanged.connect(
-            self._on_freedom_changed
-        )
+        self.freedom_combo.currentIndexChanged.connect(self._on_freedom_changed)
         behavior_form.addRow("Свобода:", self.freedom_combo)
 
         self.rag_check = QCheckBox("Включить RAG-контекст")

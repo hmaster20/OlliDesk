@@ -142,9 +142,7 @@ class EditorWidget(QWidget):
         # редактора, потому что сам ChatPanel при показе редактора скрыт
         # (`QStackedWidget` в MainWindow).
         self.back_to_chat_btn = QPushButton("💬 Чат")
-        self.back_to_chat_btn.setToolTip(
-            "Вернуться к чату (Ctrl+Shift+C). Вкладки файлов сохранятся."
-        )
+        self.back_to_chat_btn.setToolTip("Вернуться к чату (Ctrl+Shift+C). Вкладки файлов сохранятся.")
         self.back_to_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.back_to_chat_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.back_to_chat_btn.setStyleSheet(

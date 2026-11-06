@@ -790,14 +790,8 @@ class Orchestrator:
         ev("coding_plan_ready", {"plan_chars": len(plan_text)})
 
         # 2. Collect evidence: entry + top-модули + тесты.
-        evidence = EvidenceStore(
-            self.intel_cache_dir / "evidence.sqlite3"
-            if self.intel_cache_dir
-            else None
-        )
-        await self._collect_coding_evidence(
-            task, user_query, intel, evidence, ev
-        )
+        evidence = EvidenceStore(self.intel_cache_dir / "evidence.sqlite3" if self.intel_cache_dir else None)
+        await self._collect_coding_evidence(task, user_query, intel, evidence, ev)
 
         # 3. Coder-модель (10.6).
         coder_info = self._select_coder_for_role(quality_mode)
@@ -805,8 +799,7 @@ class Orchestrator:
             ev("coding_no_coder", {"reason": "no coder model available"})
             return RunResult(
                 answer=(
-                    "⚠️ Coder-модель не выбрана. Скачайте её через "
-                    "«View → Локальные модели» и повторите."
+                    "⚠️ Coder-модель не выбрана. Скачайте её через «View → Локальные модели» и повторите."
                 ),
                 ascii_diagram="",
                 mermaid_diagram="",
@@ -834,9 +827,7 @@ class Orchestrator:
         tests_errors = 0
 
         # Пакет доказательств (entry + top-модули).
-        pack = evidence.pack_for_prompt(
-            budget_tokens=self._evidence_budget(), counter=self.counter
-        )
+        pack = evidence.pack_for_prompt(budget_tokens=self._evidence_budget(), counter=self.counter)
 
         # Клиент coder-модели. В ModelPool coder может быть не загружен —
         # в этом случае fallback на analyst (уже загружен).
@@ -856,11 +847,7 @@ class Orchestrator:
             ev("coding_iteration", {"iter": iter_i, "max": max_fix_iters})
 
             # 4a. Промпт на итерацию.
-            iter_hint = (
-                f"Итерация {iter_i}/{max_fix_iters}. "
-                if iter_i > 1
-                else "Начало работы. "
-            )
+            iter_hint = f"Итерация {iter_i}/{max_fix_iters}. " if iter_i > 1 else "Начало работы. "
             if iter_i > 1:
                 iter_hint += (
                     f"Предыдущая итерация: passed={tests_passed}, "
@@ -903,9 +890,7 @@ class Orchestrator:
             # 4c. Применяем патчи из ответа (если модель вернула diff).
             new_patches = self._extract_patches(answer)
             if new_patches:
-                applied = await self._apply_patches(
-                    new_patches, project_root, ev
-                )
+                applied = await self._apply_patches(new_patches, project_root, ev)
                 patches.extend(applied)
                 if any(p.get("status") == "ok" for p in applied):
                     # Патчи применились — обновляем граф? Не в этой итерации
@@ -974,9 +959,7 @@ class Orchestrator:
             )
             verify_ok = ver.ok
             unsupported = len(ver.unsupported_claims)
-            crit = await _critique(
-                final_answer, task, self.pool.client(Role.PLANNER)
-            )
+            crit = await _critique(final_answer, task, self.pool.client(Role.PLANNER))
             critique_ok = crit.ok
             ev(
                 "coding_verify",
@@ -995,9 +978,7 @@ class Orchestrator:
             tests_green = tests_failed == 0 and tests_errors == 0
             if not ver.ok and tests_green and last_answer:
                 ev("coding_regen", {"reason": ver.summary()})
-                regen_prompt = self._build_coding_regen_prompt(
-                    last_answer, ver, tests_passed
-                )
+                regen_prompt = self._build_coding_regen_prompt(last_answer, ver, tests_passed)
                 try:
                     regen_answer = await self._gen(
                         coder_client,
@@ -1049,9 +1030,7 @@ class Orchestrator:
             "task": task,
             "coding_flow": True,
             "iterations": iterations,
-            "patches_applied": sum(
-                1 for p in patches if p.get("status") == "ok"
-            ),
+            "patches_applied": sum(1 for p in patches if p.get("status") == "ok"),
             "tests_passed": tests_passed,
             "tests_failed": tests_failed,
             "tests_errors": tests_errors,
@@ -1101,14 +1080,10 @@ class Orchestrator:
                     break
             return select_coder(profile_coder_models=profile_coders)
         except Exception:
-            logger.debug(
-                "coding: не удалось выбрать coder-модель", exc_info=True
-            )
+            logger.debug("coding: не удалось выбрать coder-модель", exc_info=True)
             return None
 
-    def _build_coding_plan_prompt(
-        self, user_query: str, intel: ProjectIntel, task: str
-    ) -> str:
+    def _build_coding_plan_prompt(self, user_query: str, intel: ProjectIntel, task: str) -> str:
         """Промпт для плана coding-задачи (3B planner)."""
         return (
             f"Составь КОМПАКТНЫЙ план правки для задачи типа '{task}'.\n"
@@ -1125,9 +1100,7 @@ class Orchestrator:
     @staticmethod
     def _files_preview(intel: ProjectIntel, limit: int) -> str:
         """Короткий список файлов проекта (для промпта)."""
-        files = sorted(
-            {n.path for n in intel.graph.nodes.values() if n.path and n.kind == "file"}
-        )
+        files = sorted({n.path for n in intel.graph.nodes.values() if n.path and n.kind == "file"})
         return "\n".join(f"- {p}" for p in files[:limit])
 
     def _build_coding_regen_prompt(
@@ -1155,9 +1128,7 @@ class Orchestrator:
             "Предыдущий ответ:\n" + previous_answer[:3000]
         )
 
-    def _build_coding_system_prompt(
-        self, task: str, coder_info: SLMModelInfo
-    ) -> str:
+    def _build_coding_system_prompt(self, task: str, coder_info: SLMModelInfo) -> str:
         """System-промпт для coder-модели в coding-флоу."""
         return (
             f"Ты — coder-ассистент ({coder_info.display_name}). "
@@ -1183,9 +1154,7 @@ class Orchestrator:
         """Собирает evidence для coding-флоу: entry + top-модули + тесты."""
         # entry_points.
         for ep in intel.entry_points[:3]:
-            excerpt = self._read_excerpt(
-                Path(intel.root) / ep, lines=(1, 60)
-            )
+            excerpt = self._read_excerpt(Path(intel.root) / ep, lines=(1, 60))
             evidence.put(
                 EvidenceItem(
                     id="",
@@ -1198,14 +1167,10 @@ class Orchestrator:
             )
 
         # Top-модули (по score графа).
-        top = intel.graph.top_nodes(
-            ["class", "module", "file"], limit=12
-        )
+        top = intel.graph.top_nodes(["class", "module", "file"], limit=12)
         for n in top:
             if n.path:
-                ex = self._read_excerpt(
-                    Path(intel.root) / n.path, lines=(1, 40)
-                )
+                ex = self._read_excerpt(Path(intel.root) / n.path, lines=(1, 40))
                 evidence.put(
                     EvidenceItem(
                         id="",
@@ -1220,9 +1185,7 @@ class Orchestrator:
         # Файлы тестов (для контекста).
         for n in intel.graph.nodes.values():
             if n.path and ("test" in n.path.lower() or "spec" in n.path.lower()):
-                ex = self._read_excerpt(
-                    Path(intel.root) / n.path, lines=(1, 80)
-                )
+                ex = self._read_excerpt(Path(intel.root) / n.path, lines=(1, 80))
                 evidence.put(
                     EvidenceItem(
                         id="",
@@ -1239,9 +1202,7 @@ class Orchestrator:
             {"items": len(evidence._order), "task": task},
         )
 
-    def _extract_patches(
-        self, answer: str
-    ) -> list[dict[str, str]]:
+    def _extract_patches(self, answer: str) -> list[dict[str, str]]:
         """Извлекает unified diff'ы из ответа модели.
 
         Ищем блоки ```diff … ```, содержащие ``---``/``+++``. Каждый блок
@@ -1260,13 +1221,9 @@ class Orchestrator:
             if not content:
                 continue
             # Путь из `+++ b/path` или `--- a/path`.
-            path_m = re.search(
-                r"^\+\+\+\s+(?:b/)?(\S+)", content, re.MULTILINE
-            )
+            path_m = re.search(r"^\+\+\+\s+(?:b/)?(\S+)", content, re.MULTILINE)
             if not path_m:
-                path_m = re.search(
-                    r"^---\s+(?:a/)?(\S+)", content, re.MULTILINE
-                )
+                path_m = re.search(r"^---\s+(?:a/)?(\S+)", content, re.MULTILINE)
             if not path_m:
                 continue
             patches.append({"path": path_m.group(1), "patch": content})
@@ -1313,9 +1270,7 @@ class Orchestrator:
                     "coding_patch_error",
                     {"path": path, "error": str(e)[:200]},
                 )
-                applied.append(
-                    {"path": path, "status": "error", "error": str(e)[:200]}
-                )
+                applied.append({"path": path, "status": "error", "error": str(e)[:200]})
                 continue
 
             status = "error" if result.is_error else "ok"
@@ -1323,9 +1278,7 @@ class Orchestrator:
                 {
                     "path": path,
                     "status": status,
-                    "error": (result.content or "")[:200]
-                    if result.is_error
-                    else "",
+                    "error": (result.content or "")[:200] if result.is_error else "",
                 }
             )
             ev(
@@ -1334,9 +1287,7 @@ class Orchestrator:
             )
         return applied
 
-    async def _run_tests_for_coding(
-        self, project_root: Path
-    ) -> Any:
+    async def _run_tests_for_coding(self, project_root: Path) -> Any:
         """Запускает `run_tests` для проекта; ``None``, если тестов нет.
 
         Автодетект фреймворка: ищем маркеры в проекте.
@@ -1365,9 +1316,7 @@ class Orchestrator:
         маркерных файлов, потом — каталогов с тестами.
         """
         # .NET
-        if any(project_root.rglob("*.csproj")) or any(
-            project_root.rglob("*.sln")
-        ):
+        if any(project_root.rglob("*.csproj")) or any(project_root.rglob("*.sln")):
             return "dotnet"
         # Go
         if any(project_root.rglob("go.mod")):

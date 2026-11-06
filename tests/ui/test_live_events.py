@@ -196,6 +196,7 @@ def test_full_pipeline(qapp) -> None:
     assert "search_codebase" in dash.activity.toolTip()
     bus.shutdown()
 
+
 def test_panel_domain_filter_hides_other_kinds(qapp) -> None:
     """2.5: фильтр домена скрывает события из других доменов."""
     from ui.widgets.live_events import LiveEventsPanel
@@ -212,9 +213,12 @@ def test_panel_domain_filter_hides_other_kinds(qapp) -> None:
     panel.append_event(
         EventKind.BUDGET_WARNING.value,
         {
-            "iterations": 8, "iterations_limit": 10,
-            "tokens": 800, "tokens_limit": 1000,
-            "time_s": 10.0, "time_limit_s": 100.0,
+            "iterations": 8,
+            "iterations_limit": 10,
+            "tokens": 800,
+            "tokens_limit": 1000,
+            "time_s": 10.0,
+            "time_limit_s": 100.0,
             "status": "warning",
         },
     )
@@ -235,13 +239,17 @@ def test_panel_domain_filter_all_shows_everything(qapp) -> None:
     panel.append_event(
         EventKind.BUDGET_WARNING.value,
         {
-            "iterations": 1, "iterations_limit": 10,
-            "tokens": 1, "tokens_limit": 1000,
-            "time_s": 1.0, "time_limit_s": 100.0,
+            "iterations": 1,
+            "iterations_limit": 10,
+            "tokens": 1,
+            "tokens_limit": 1000,
+            "time_s": 1.0,
+            "time_limit_s": 100.0,
             "status": "warning",
         },
     )
     assert panel.event_count == 2
+
 
 def test_panel_formats_agent_finished(qapp) -> None:
     """2.5: agent.finished показывает причину и итерации."""

@@ -154,6 +154,7 @@ def _hot_window_start(dialogue: list[ChatMessage], hot_budget: int) -> int:
         used += cost
     return 0  # весь диалог укладывается в горячее окно
 
+
 def _stub_old_reasoning(dialogue: list[ChatMessage], keep_recent: int) -> list[ChatMessage]:
     """Заменяет ReasoningPart в старых assistant-сообщениях на заглушку.
 
@@ -226,6 +227,7 @@ def _drop_oldest_turns(dialogue: list[ChatMessage], budget: int) -> list[ChatMes
             break
         turns.pop(0)
     return [message for turn in turns for message in turn]
+
 
 def _stub_old_reasoning_with_hot(
     dialogue: list[ChatMessage],

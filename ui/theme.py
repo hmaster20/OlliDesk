@@ -84,6 +84,7 @@ class ColorTokens:
     tool_card_border: str = ""
     tool_preview_text: str = ""
 
+
 DARK_COLORS = ColorTokens(
     bg="#2b2b2b",
     surface="#3c3f41",

@@ -47,18 +47,14 @@ class TestCoderHighlight:
     def test_development_highlights(self, qapp) -> None:
         from ui.widgets.pipeline_selectors import PipelineSelectors
 
-        with patch(
-            "agents.download_slm.is_model_installed", return_value=True
-        ):
+        with patch("agents.download_slm.is_model_installed", return_value=True):
             w = PipelineSelectors(_cfg())
             w.set_active_profile("development")
             # Найдём coder-model в planner_combo.
             found = False
             for i in range(w.planner_combo.count()):
                 if w.planner_combo.itemData(i) == "coder-model":
-                    font = w.planner_combo.itemData(
-                        i, Qt.ItemDataRole.FontRole
-                    )
+                    font = w.planner_combo.itemData(i, Qt.ItemDataRole.FontRole)
                     assert font is not None
                     assert font.bold()
                     found = True
@@ -69,16 +65,12 @@ class TestCoderHighlight:
     def test_research_no_highlight(self, qapp) -> None:
         from ui.widgets.pipeline_selectors import PipelineSelectors
 
-        with patch(
-            "agents.download_slm.is_model_installed", return_value=True
-        ):
+        with patch("agents.download_slm.is_model_installed", return_value=True):
             w = PipelineSelectors(_cfg())
             w.set_active_profile("research")
             for i in range(w.planner_combo.count()):
                 if w.planner_combo.itemData(i) == "coder-model":
-                    font = w.planner_combo.itemData(
-                        i, Qt.ItemDataRole.FontRole
-                    )
+                    font = w.planner_combo.itemData(i, Qt.ItemDataRole.FontRole)
                     if font is not None:
                         assert not font.bold()
                     break
@@ -87,9 +79,7 @@ class TestCoderHighlight:
     def test_role_icons_in_label(self, qapp) -> None:
         from ui.widgets.pipeline_selectors import PipelineSelectors
 
-        with patch(
-            "agents.download_slm.is_model_installed", return_value=True
-        ):
+        with patch("agents.download_slm.is_model_installed", return_value=True):
             w = PipelineSelectors(_cfg())
             # coder-model должен иметь ⚡ в начале названия.
             for i in range(w.planner_combo.count()):

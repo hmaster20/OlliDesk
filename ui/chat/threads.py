@@ -177,10 +177,7 @@ class AgentChatThread(QThread):
             try:
                 claimed = self.inbox.claim(self.inbox_id)
                 if not claimed:
-                    logger.warning(
-                        f"inbox.claim: id={self.inbox_id[:8]}… не pending "
-                        f"(возможно, уже забрали)"
-                    )
+                    logger.warning(f"inbox.claim: id={self.inbox_id[:8]}… не pending (возможно, уже забрали)")
             except Exception:
                 logger.debug("inbox.claim упал", exc_info=True)
 
@@ -282,9 +279,7 @@ class AgentChatThread(QThread):
                 (m for m in reversed(self.messages_history) if m.role == "user"),
                 None,
             )
-            self._research_mode = is_research_question(
-                last_user_local.content if last_user_local else ""
-            )
+            self._research_mode = is_research_question(last_user_local.content if last_user_local else "")
             self.research_mode_detected.emit(self._research_mode)
 
             result = await loop.run(
@@ -740,8 +735,7 @@ class _ModelPoolLoadThread(QThread):
 
             if not park:
                 self.error.emit(
-                    "Парк моделей пуст: скачайте хотя бы одну chat-модель "
-                    "через «View → Локальные модели»."
+                    "Парк моделей пуст: скачайте хотя бы одну chat-модель через «View → Локальные модели»."
                 )
                 return
 
@@ -752,21 +746,13 @@ class _ModelPoolLoadThread(QThread):
             for role, info in park.items():
                 path = get_model_path(info.file)
                 if path is None:
-                    self.progress.emit(
-                        f"⚠️ {role.value}: файл {info.file} не найден — пропущено"
-                    )
+                    self.progress.emit(f"⚠️ {role.value}: файл {info.file} не найден — пропущено")
                     continue
                 paths[role] = path
 
                 # Device: planner/router/verifier — GPU; coder/analyst — CPU.
-                device = (
-                    "GPU"
-                    if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER)
-                    else "CPU"
-                )
-                self.progress.emit(
-                    f"Оптимизация {role.value}: {info.display_name} (device={device})"
-                )
+                device = "GPU" if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else "CPU"
+                self.progress.emit(f"Оптимизация {role.value}: {info.display_name} (device={device})")
                 # [4.2] n_ctx_hint из профиля (или 0 — без ограничения).
                 n_hint = profile_n_ctx_hint if profile_n_ctx_hint > 0 else None
                 try:
@@ -789,11 +775,7 @@ class _ModelPoolLoadThread(QThread):
                     n_ctx=params.n_ctx,
                     kv_cache=params.kv_cache_type,
                     n_gpu_layers=params.n_gpu_layers,
-                    temperature=(
-                        0.0
-                        if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER)
-                        else 0.35
-                    ),
+                    temperature=(0.0 if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else 0.35),
                     file=str(path),
                 )
 
@@ -814,8 +796,7 @@ class _ModelPoolLoadThread(QThread):
                 if spec.device == "CPU":
                     if n_gpu_layers != 0:
                         logger.warning(
-                            f"SLM {spec.role.value}: device=CPU, "
-                            f"но n_gpu_layers={n_gpu_layers} → 0"
+                            f"SLM {spec.role.value}: device=CPU, но n_gpu_layers={n_gpu_layers} → 0"
                         )
                         n_gpu_layers = 0
                     flash = False
@@ -830,9 +811,7 @@ class _ModelPoolLoadThread(QThread):
                     kv_cache_type=spec.kv_cache,
                     vram_used_mb=base.vram_used_mb if n_gpu_layers != 0 else 0,
                     ram_used_mb=(
-                        base.ram_used_mb
-                        if n_gpu_layers != 0
-                        else base.ram_used_mb + base.vram_used_mb
+                        base.ram_used_mb if n_gpu_layers != 0 else base.ram_used_mb + base.vram_used_mb
                     ),
                     notes=base.notes,
                 )
@@ -856,8 +835,7 @@ class _ModelPoolLoadThread(QThread):
                         )
                     except TimeoutError:
                         logger.error(
-                            f"SLM pool: таймаут {role.value} ({spec.model_id}) "
-                            f"за {self._ROLE_LOAD_TIMEOUT} с"
+                            f"SLM pool: таймаут {role.value} ({spec.model_id}) за {self._ROLE_LOAD_TIMEOUT} с"
                         )
                         self.error.emit(
                             f"Таймаут загрузки {role.value} ({spec.model_id}) "
@@ -878,9 +856,7 @@ class _ModelPoolLoadThread(QThread):
                             "device": spec.device,
                             "n_ctx": spec.n_ctx,
                             "n_gpu_layers": spec.n_gpu_layers,
-                            "load_ms": round(
-                                (pool.client(role) and 0) or 0, 2
-                            ),
+                            "load_ms": round((pool.client(role) and 0) or 0, 2),
                         },
                     )
             finally:
@@ -889,9 +865,7 @@ class _ModelPoolLoadThread(QThread):
             # Проверка: загрузились хотя бы две ключевые роли для research,
             # либо coder для coding (зависит от профиля).
             roles_loaded = set(pool.loaded_roles())
-            self.progress.emit(
-                f"✅ Парк готов: {', '.join(r.value for r in roles_loaded)}"
-            )
+            self.progress.emit(f"✅ Парк готов: {', '.join(r.value for r in roles_loaded)}")
             self.finished.emit(pool)
         except Exception as e:
             logger.exception("ModelPool load failed")

@@ -215,6 +215,7 @@ class AgentContext:
     # системный промпт в режиме AGENT (coding).
     git_context: str = ""
 
+
 if TYPE_CHECKING:
     from agents.protocols import MemoryServiceLike
     from core.security import SecurityPolicy
@@ -432,6 +433,7 @@ def _looks_like_tool_attempt(text: str) -> bool:
     """Похож ли текст на нераспознанную попытку вызова инструмента."""
     return bool(_REACT_SCAFFOLD_RE.search(text))
 
+
 def _build_memory_block(context: AgentContext) -> str:
     """4.3: формирует блок «Память» из рефлексий MemoryService.
 
@@ -469,6 +471,7 @@ def _build_memory_block(context: AgentContext) -> str:
     if not rendered:
         return ""
     return f"Память (прошлые задачи, top-{len(result.reflections)}):\n{rendered}"
+
 
 def _project_block(context: AgentContext) -> str:
     """Собирает блок о проекте: имя и корень, от которого считаются пути."""
@@ -717,9 +720,7 @@ class AgentLoop:
             try:
                 from core.services.tool_service import ToolService
 
-                tool_service = ToolService(
-                    registry, project_root=project_root
-                )
+                tool_service = ToolService(registry, project_root=project_root)
             except Exception:
                 logger.debug(
                     "ToolService не создан, fallback на registry.execute",
@@ -729,7 +730,6 @@ class AgentLoop:
         self.tool_service = tool_service
         self.last_finish_reason: str | None = None
         self.last_budget_snapshot: dict[str, Any] | None = None
-
 
     # ------------------------------------------------------------------
     # Вспомогательные методы
@@ -1138,8 +1138,7 @@ class AgentLoop:
                     await on_status("🤔 Анализирую запрос…")
                 else:
                     await on_status(
-                        f"🧠 Размышляю над результатами "
-                        f"(шаг {iteration + 1}/{soft_budget.iterations})…"
+                        f"🧠 Размышляю над результатами (шаг {iteration + 1}/{soft_budget.iterations})…"
                     )
 
             if (
@@ -1206,9 +1205,7 @@ class AgentLoop:
                                 EventKind.LLM_FIRST_TOKEN.value,
                                 {
                                     "model": self.model,
-                                    "ttft_ms": round(
-                                        (time.perf_counter() - llm_started_at) * 1000, 2
-                                    ),
+                                    "ttft_ms": round((time.perf_counter() - llm_started_at) * 1000, 2),
                                 },
                             )
                         if on_reasoning_delta:
@@ -1222,9 +1219,7 @@ class AgentLoop:
                                 EventKind.LLM_FIRST_TOKEN.value,
                                 {
                                     "model": self.model,
-                                    "ttft_ms": round(
-                                        (time.perf_counter() - llm_started_at) * 1000, 2
-                                    ),
+                                    "ttft_ms": round((time.perf_counter() - llm_started_at) * 1000, 2),
                                 },
                             )
                         current_text += part.text
@@ -1255,19 +1250,13 @@ class AgentLoop:
                     # [2.5] Эмитим бюджетные события в EventBus.
                     # Срабатывают один раз на переход (флаги *_emitted).
                     _status = soft_budget.status()
-                    if (
-                        _status == BudgetStatus.WARNING
-                        and not soft_budget.warning_emitted
-                    ):
+                    if _status == BudgetStatus.WARNING and not soft_budget.warning_emitted:
                         soft_budget.warning_emitted = True
                         _snap = soft_budget.snapshot()
                         emit_event(EventKind.BUDGET_WARNING.value, _snap)
                         if on_budget_warning is not None:
                             await on_budget_warning(_snap)
-                    elif (
-                        _status == BudgetStatus.EXCEEDED
-                        and not soft_budget.exceeded_emitted
-                    ):
+                    elif _status == BudgetStatus.EXCEEDED and not soft_budget.exceeded_emitted:
                         soft_budget.exceeded_emitted = True
                         _snap = soft_budget.snapshot()
                         emit_event(EventKind.BUDGET_EXCEEDED.value, _snap)
@@ -1277,9 +1266,7 @@ class AgentLoop:
                         # AGENT: только сигнал, продолжаем.
                         if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
                             if current_text:
-                                messages.append(
-                                    ChatMessage(role="assistant", content=current_text)
-                                )
+                                messages.append(ChatMessage(role="assistant", content=current_text))
                             if (
                                 split_thoughts
                                 and on_final_answer_started is not None
@@ -1300,7 +1287,9 @@ class AgentLoop:
                                 on_stream_end=on_stream_end,
                             )
                             self._finalize(
-                                research_mode, state, context,
+                                research_mode,
+                                state,
+                                context,
                                 finish_reason="budget.exceeded",
                                 soft_budget=soft_budget,
                             )
@@ -1320,9 +1309,7 @@ class AgentLoop:
                         # AGENT: только сигнал, продолжаем.
                         if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
                             if current_text:
-                                messages.append(
-                                    ChatMessage(role="assistant", content=current_text)
-                                )
+                                messages.append(ChatMessage(role="assistant", content=current_text))
                             if (
                                 split_thoughts
                                 and on_final_answer_started is not None
@@ -1343,7 +1330,9 @@ class AgentLoop:
                                 on_stream_end=on_stream_end,
                             )
                             self._finalize(
-                                research_mode, state, context,
+                                research_mode,
+                                state,
+                                context,
                                 finish_reason="budget.exceeded",
                                 soft_budget=soft_budget,
                             )
@@ -1352,15 +1341,16 @@ class AgentLoop:
                 if self.client.is_cancelled:
                     logger.info("Запрос отменён пользователем")
                     self._finalize(
-                        research_mode, state, context,
-                        finish_reason="user_cancel", soft_budget=soft_budget,
+                        research_mode,
+                        state,
+                        context,
+                        finish_reason="user_cancel",
+                        soft_budget=soft_budget,
                     )
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
-                logger.warning(
-                    f"Модель {self.model} не поддерживает нативные tools, повтор без tools"
-                )
+                logger.warning(f"Модель {self.model} не поддерживает нативные tools, повтор без tools")
                 base_tools = None
                 if on_tools_disabled:
                     await on_tools_disabled()
@@ -1382,9 +1372,7 @@ class AgentLoop:
                 and _looks_like_tool_attempt(current_text)
             ):
                 nudged_tool_format = True
-                logger.warning(
-                    "Ответ похож на вызов инструмента, но не распознан — прошу формат JSON"
-                )
+                logger.warning("Ответ похож на вызов инструмента, но не распознан — прошу формат JSON")
                 messages.append(ChatMessage(role="assistant", content=current_text))
                 messages.append(ChatMessage(role="user", content=_TOOL_FORMAT_HINT))
                 if on_status:
@@ -1399,9 +1387,7 @@ class AgentLoop:
                     await on_status(f"🔧 Подготовка вызовов: {names}")
                 signature = self._tool_signature(pending_tool_calls)
                 if signature == prev_signature:
-                    logger.warning(
-                        "Повтор идентичного набора tool_calls — принудительный финальный синтез"
-                    )
+                    logger.warning("Повтор идентичного набора tool_calls — принудительный финальный синтез")
                     if (
                         research_mode
                         and split_thoughts
@@ -1427,8 +1413,11 @@ class AgentLoop:
                         on_stream_end=on_stream_end,
                     )
                     self._finalize(
-                        research_mode, state, context,
-                        finish_reason="budget.exceeded", soft_budget=soft_budget,
+                        research_mode,
+                        state,
+                        context,
+                        finish_reason="budget.exceeded",
+                        soft_budget=soft_budget,
                     )
                     if not final_text:
                         final_text = (
@@ -1453,9 +1442,7 @@ class AgentLoop:
                 for tc in pending_tool_calls:
                     call_key = self._call_key(tc)
                     if call_key in executed_calls:
-                        logger.debug(
-                            f"Повторный вызов {tc.name} — отдаю кэшированный результат"
-                        )
+                        logger.debug(f"Повторный вызов {tc.name} — отдаю кэшированный результат")
                         messages.append(
                             _create_tool_result_message(
                                 tc.id,
@@ -1471,8 +1458,7 @@ class AgentLoop:
                         reads = state.reads_per_file.get(target, 0)
                         if reads >= _MAX_READS_PER_FILE_HARD:
                             logger.warning(
-                                f"read_file {target}: уже {reads} чтений — "
-                                f"блокирую, требую перейти к ответу"
+                                f"read_file {target}: уже {reads} чтений — блокирую, требую перейти к ответу"
                             )
                             messages.append(
                                 _create_tool_result_message(
@@ -1503,9 +1489,7 @@ class AgentLoop:
 
                     # [2.7] Единая точка авторизации.
                     session_overrides = (
-                        context.app_config.session_overrides
-                        if context.app_config is not None
-                        else None
+                        context.app_config.session_overrides if context.app_config is not None else None
                     )
                     effective = self.registry.get_effective_policy(
                         tc.name,
@@ -1517,10 +1501,7 @@ class AgentLoop:
                     )
 
                     if not effective.allowed:
-                        logger.warning(
-                            f"Инструмент {tc.name} заблокирован "
-                            f"политикой ({effective.reason})"
-                        )
+                        logger.warning(f"Инструмент {tc.name} заблокирован политикой ({effective.reason})")
                         messages.append(
                             _create_tool_result_message(
                                 tc.id,
@@ -1553,27 +1534,23 @@ class AgentLoop:
 
                     if effective.policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
-                        approved = await on_tool_request(
-                            tc.name, description, tc.arguments
-                        )
+                        approved = await on_tool_request(tc.name, description, tc.arguments)
                         if not approved:
                             messages.append(
                                 _create_tool_result_message(
-                                    tc.id, tc.name,
-                                    "Отклонено пользователем", is_error=True,
+                                    tc.id,
+                                    tc.name,
+                                    "Отклонено пользователем",
+                                    is_error=True,
                                 )
                             )
                             if on_tool_result:
-                                await on_tool_result(
-                                    tc.name, "Отклонено пользователем", True, None
-                                )
+                                await on_tool_result(tc.name, "Отклонено пользователем", True, None)
                             emit_event(
                                 EventKind.TOOL_FINISHED.value,
                                 {
                                     "name": tc.name,
-                                    "duration_ms": round(
-                                        (time.perf_counter() - tool_started_at) * 1000, 2
-                                    ),
+                                    "duration_ms": round((time.perf_counter() - tool_started_at) * 1000, 2),
                                     "is_error": True,
                                     "error_category": "user_declined",
                                 },
@@ -1621,9 +1598,7 @@ class AgentLoop:
 
                     _finished_payload: dict = {
                         "name": result.name,
-                        "duration_ms": round(
-                            (time.perf_counter() - tool_started_at) * 1000, 2
-                        ),
+                        "duration_ms": round((time.perf_counter() - tool_started_at) * 1000, 2),
                         "is_error": result.is_error,
                     }
                     if result.error_category is not None:
@@ -1703,9 +1678,7 @@ class AgentLoop:
                 messages.append(ChatMessage(role="assistant", content=current_text))
                 messages.append(ChatMessage(role="user", content=_OBSERVATION_NUDGE))
                 if on_status:
-                    await on_status(
-                        "🔁 Все вызовы инструментов упали — прошу сменить стратегию…"
-                    )
+                    await on_status("🔁 Все вызовы инструментов упали — прошу сменить стратегию…")
                 current_text = ""
                 iteration += 1
                 continue
@@ -1724,8 +1697,7 @@ class AgentLoop:
                     if key != "verify_hypotheses":
                         state.nudges_fired.add(key)
                     logger.info(
-                        f"Нудж [{key}] на итерации {iteration + 1}: "
-                        f"{state.summary()}, open_hyp={open_h_now}"
+                        f"Нудж [{key}] на итерации {iteration + 1}: {state.summary()}, open_hyp={open_h_now}"
                     )
                     messages.append(ChatMessage(role="assistant", content=current_text))
                     messages.append(ChatMessage(role="user", content=hint))
@@ -1736,15 +1708,9 @@ class AgentLoop:
                     continue
 
                 # Нуджи исчерпаны, но фаза ≠ SYNTHESIS → форсируем синтез.
-                logger.info(
-                    "Нуджи исчерпаны, но фаза ≠ SYNTHESIS — принудительный финальный синтез"
-                )
+                logger.info("Нуджи исчерпаны, но фаза ≠ SYNTHESIS — принудительный финальный синтез")
                 messages.append(ChatMessage(role="assistant", content=current_text))
-                if (
-                    split_thoughts
-                    and on_final_answer_started is not None
-                    and not final_started_emitted
-                ):
+                if split_thoughts and on_final_answer_started is not None and not final_started_emitted:
                     final_started_emitted = True
                     await on_final_answer_started()
                 final_text = await self._final_call_no_tools(
@@ -1760,8 +1726,11 @@ class AgentLoop:
                     on_stream_end=on_stream_end,
                 )
                 self._finalize(
-                    research_mode, state, context,
-                    finish_reason="budget.exceeded", soft_budget=soft_budget,
+                    research_mode,
+                    state,
+                    context,
+                    finish_reason="budget.exceeded",
+                    soft_budget=soft_budget,
                 )
                 return final_text or current_text
 
@@ -1795,7 +1764,9 @@ class AgentLoop:
             )
 
             self._finalize(
-                research_mode, state, context,
+                research_mode,
+                state,
+                context,
                 finish_reason=finish_reason or "stop",
                 soft_budget=soft_budget,
             )
@@ -1805,8 +1776,7 @@ class AgentLoop:
         # модель зациклилась на tool_calls и не эмитит finish_reason=stop.
         # Естественный выход — предыдущая ветка. Это именно fallback.
         logger.warning(
-            f"Достигнут hard ceiling ({_hard_ceiling} итераций) — "
-            "принудительный финальный синтез без tools"
+            f"Достигнут hard ceiling ({_hard_ceiling} итераций) — принудительный финальный синтез без tools"
         )
         if on_status:
             await on_status("⛔ Достигнут предел шагов — формирую итоговый ответ…")
@@ -1829,24 +1799,31 @@ class AgentLoop:
             )
             if self.client.is_cancelled:
                 self._finalize(
-                    research_mode, state, context,
-                    finish_reason="user_cancel", soft_budget=soft_budget,
+                    research_mode,
+                    state,
+                    context,
+                    finish_reason="user_cancel",
+                    soft_budget=soft_budget,
                 )
                 return final_text or "Отменено"
             self._finalize(
-                research_mode, state, context,
-                finish_reason="budget.exceeded", soft_budget=soft_budget,
+                research_mode,
+                state,
+                context,
+                finish_reason="budget.exceeded",
+                soft_budget=soft_budget,
             )
             return final_text
         except Exception as e:
             logger.error(f"Ошибка финального вызова после hard ceiling: {e}")
             self._finalize(
-                research_mode, state, context,
-                finish_reason="budget.exceeded", soft_budget=soft_budget,
+                research_mode,
+                state,
+                context,
+                finish_reason="budget.exceeded",
+                soft_budget=soft_budget,
             )
-            raise AgentIterationLimitError(
-                f"Агент превысил safety net ({_hard_ceiling} итераций)"
-            ) from e
+            raise AgentIterationLimitError(f"Агент превысил safety net ({_hard_ceiling} итераций)") from e
 
     # ------------------------------------------------------------------
     # 10.4: верификация финального ответа
@@ -1964,9 +1941,7 @@ class AgentLoop:
 
         try:
             regen_text = ""
-            stream = self.client.chat(
-                model=self.model, messages=messages, tools=None, stream=True
-            )
+            stream = self.client.chat(model=self.model, messages=messages, tools=None, stream=True)
             async for chunk in stream:
                 if self.client.is_cancelled:
                     return final_text
@@ -2010,16 +1985,8 @@ class AgentLoop:
                 filter(
                     None,
                     [
-                        (
-                            f"пути вне индекса: {ver.missing_paths[:5]}"
-                            if ver.missing_paths
-                            else ""
-                        ),
-                        (
-                            f"символы вне графа: {ver.unknown_symbols[:5]}"
-                            if ver.unknown_symbols
-                            else ""
-                        ),
+                        (f"пути вне индекса: {ver.missing_paths[:5]}" if ver.missing_paths else ""),
+                        (f"символы вне графа: {ver.unknown_symbols[:5]}" if ver.unknown_symbols else ""),
                     ],
                 )
             )

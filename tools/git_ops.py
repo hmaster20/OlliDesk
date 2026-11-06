@@ -164,6 +164,7 @@ def get_git_status_for_file(repo_path: Path | str, file_path: Path | str) -> str
         return None
     return line[:2]
 
+
 # ---------------------------------------------------------------------------
 # 10.9: снапшоты файлов перед мутирующими инструментами
 # ---------------------------------------------------------------------------
@@ -220,7 +221,7 @@ def create_file_snapshot(
     tool: str,
     args_summary: str = "",
     project_root: Path | None = None,
-    ) -> str:
+) -> str:
     """Создаёт снапшот указанных файлов, возвращает snapshot_id.
 
     Снапшот — копия файлов + ``meta.json`` (tool, args, created_at, root,
@@ -279,9 +280,11 @@ def create_file_snapshot(
     logger.info(f"Snapshot {snapshot_id}: {len(paths)} файл(ов), tool={tool}")
     return snapshot_id
 
+
 # ---------------------------------------------------------------------------
 # 9.4: git-интеграция для coding-режима
 # ---------------------------------------------------------------------------
+
 
 def _run_git_cli(
     repo_path: Path | str,
@@ -368,9 +371,7 @@ def get_uncommitted_diff(
     if staged and staged.strip():
         parts.append("-- cached --\n" + staged.strip())
     if include_untracked:
-        status = _run_git_cli(
-            repo_path, "status", "--short", "--untracked-files=normal"
-        )
+        status = _run_git_cli(repo_path, "status", "--short", "--untracked-files=normal")
         if status and status.strip():
             parts.append("-- status --\n" + status.strip())
     result = "\n\n".join(parts)
@@ -397,9 +398,7 @@ def get_branch_diff(
     Returns:
         Diff или пустая строка.
     """
-    out = _run_git_cli(
-        repo_path, "diff", f"{base}..{target}", "--unified=1"
-    )
+    out = _run_git_cli(repo_path, "diff", f"{base}..{target}", "--unified=1")
     if not out:
         return ""
     result = out.strip()
@@ -524,36 +523,29 @@ def commit(
             return result
         rc, out, err = _git("commit", "-m", message, "--", *files, timeout=60.0)
         if rc != 0:
-            result["error"] = (
-                f"git commit: {err.strip()[:300] or out.strip()[:300]}"
-            )
+            result["error"] = f"git commit: {err.strip()[:300] or out.strip()[:300]}"
             return result
         result["files_committed"] = list(files)
     else:
         # Только уже отслеживаемые изменения (`-a`).
         rc, out, err = _git("commit", "-a", "-m", message, timeout=60.0)
         if rc != 0:
-            result["error"] = (
-                f"git commit -a: {err.strip()[:300] or out.strip()[:300]}"
-            )
+            result["error"] = f"git commit -a: {err.strip()[:300] or out.strip()[:300]}"
             return result
         # Какие файлы были закоммичены — из `git show --name-only`.
-        rc2, names_out, _err = _git(
-            "show", "--name-only", "--pretty=format:", "HEAD", timeout=10.0
-        )
+        rc2, names_out, _err = _git("show", "--name-only", "--pretty=format:", "HEAD", timeout=10.0)
         if rc2 == 0 and names_out:
-            result["files_committed"] = [
-                line.strip() for line in names_out.splitlines() if line.strip()
-            ]
+            result["files_committed"] = [line.strip() for line in names_out.splitlines() if line.strip()]
 
     short_hash = get_branch_hash(root)
     result["commit_hash"] = short_hash
     result["ok"] = True
     logger.info(
-        f"git commit: {branch}@{short_hash} — «{message[:60]}» "
-        f"({len(result['files_committed'])} файл(ов))"
+        f"git commit: {branch}@{short_hash} — «{message[:60]}» ({len(result['files_committed'])} файл(ов))"
     )
     return result
+
+
 def load_snapshot_meta(snapshot_id: str) -> dict[str, Any] | None:
     """Читает ``meta.json`` снапшота. ``None``, если снапшот не найден."""
     path = _snapshots_root() / snapshot_id / _META_FILENAME
@@ -597,19 +589,14 @@ def restore_snapshot(snapshot_id: str) -> list[str]:
                     shutil.copy2(src, original)
                     restored.append(str(original))
                 except OSError as e:
-                    logger.warning(
-                        f"Snapshot {snapshot_id}: восстановление {original} "
-                        f"упало ({e})"
-                    )
+                    logger.warning(f"Snapshot {snapshot_id}: восстановление {original} упало ({e})")
         elif not existed and original.exists():
             # Новый файл — удаляем при откате.
             try:
                 original.unlink()
                 restored.append(str(original))
             except OSError as e:
-                logger.warning(
-                    f"Snapshot {snapshot_id}: удаление {original} упало ({e})"
-                )
+                logger.warning(f"Snapshot {snapshot_id}: удаление {original} упало ({e})")
     logger.info(f"Snapshot {snapshot_id}: восстановлено {len(restored)} файл(ов)")
     return restored
 

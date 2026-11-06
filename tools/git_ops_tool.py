@@ -160,9 +160,7 @@ def tool_git_commit(
         f"Файлов закоммичено: {len(result['files_committed'])}"
     )
     if result["files_committed"]:
-        llm_text += "\n" + "\n".join(
-            f"  • {f}" for f in result["files_committed"][:20]
-        )
+        llm_text += "\n" + "\n".join(f"  • {f}" for f in result["files_committed"][:20])
 
     # [9.4] Событие в EventBus для UI-ленты.
     try:

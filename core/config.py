@@ -801,6 +801,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
     }
 )
 
+
 class MemoryConfig(BaseModel):
     """4.3: эпизодическая память."""
 
@@ -827,6 +828,7 @@ class MemoryConfig(BaseModel):
         if v < 0:
             raise ValueError(f"recall_max_age_days must be >= 0, got {v}")
         return v
+
 
 class BrowserConfig(BaseModel):
     """Настройки browser_control (2.11).
@@ -858,10 +860,9 @@ class BrowserConfig(BaseModel):
     @classmethod
     def _validate_port(cls, v: int) -> int:
         if not 1024 <= v <= 65535:
-            raise ValueError(
-                f"extension_bridge_port must be 1024..65535, got {v}"
-            )
+            raise ValueError(f"extension_bridge_port must be 1024..65535, got {v}")
         return v
+
 
 class SearchConfig(BaseModel):
     """Настройки цепочки поиска (2.13).
@@ -882,9 +883,7 @@ class SearchConfig(BaseModel):
         max_results: Сколько результатов запрашивать у провайдера.
     """
 
-    providers: list[str] = Field(
-        default_factory=lambda: ["searxng", "openserp", "yandex", "ollama", "ddg"]
-    )
+    providers: list[str] = Field(default_factory=lambda: ["searxng", "openserp", "yandex", "ollama", "ddg"])
     searxng_url: str = "http://localhost:8080"
     openserp_url: str = "http://localhost:7000"
     yandex_api_key: str = ""
@@ -900,10 +899,7 @@ class SearchConfig(BaseModel):
         allowed = {"searxng", "openserp", "yandex", "ollama", "ddg"}
         unknown = [p for p in v if p not in allowed]
         if unknown:
-            raise ValueError(
-                f"Неизвестные search-провайдеры: {unknown}. "
-                f"Допустимые: {sorted(allowed)}"
-            )
+            raise ValueError(f"Неизвестные search-провайдеры: {unknown}. Допустимые: {sorted(allowed)}")
         seen: list[str] = []
         for p in v:
             if p not in seen:
@@ -923,6 +919,7 @@ class SearchConfig(BaseModel):
         if not 1 <= v <= 20:
             raise ValueError(f"max_results must be 1..20, got {v}")
         return v
+
 
 class MCPServerConfig(BaseModel):
     """Один MCP-сервер (7).
@@ -955,6 +952,7 @@ class MCPConfig(BaseModel):
     enabled: bool = False  # по умолчанию выключено — пользователь явно включает
     servers: list[MCPServerConfig] = Field(default_factory=list)
     connect_timeout_s: int = 30
+
 
 class AppConfig(BaseModel):
     """Главная конфигурация приложения."""

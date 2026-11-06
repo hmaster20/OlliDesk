@@ -12,9 +12,7 @@ class TestAddFromMedia:
         store = AttachedFileStore()
         p = tmp_path / "pic.png"
         p.write_bytes(b"x")
-        attached = store.add_from_media(
-            p, "OCR text", kind="image", thumbnail="data:image/png;base64,AAA"
-        )
+        attached = store.add_from_media(p, "OCR text", kind="image", thumbnail="data:image/png;base64,AAA")
         assert attached.kind == "image"
         assert attached.thumbnail.startswith("data:")
         assert attached.content == "OCR text"

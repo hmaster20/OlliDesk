@@ -155,11 +155,13 @@ class SessionManagerDialog(QDialog):
                     self.table.setItem(i, 0, QTableWidgetItem(s.id))
                     self.table.setItem(i, 1, QTableWidgetItem(s.project_path))
                     self.table.setItem(
-                        i, 2,
+                        i,
+                        2,
                         QTableWidgetItem(s.created_at.strftime("%Y-%m-%d %H:%M")),
                     )
                     self.table.setItem(
-                        i, 3,
+                        i,
+                        3,
                         QTableWidgetItem(s.updated_at.strftime("%Y-%m-%d %H:%M")),
                     )
                 if self.table.rowCount() > 0:

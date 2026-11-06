@@ -292,20 +292,14 @@ class LocalLLMClient:
                     total_kv_after = 0
 
                 if cancelled:
-                    self.last_stats = self._make_stats(
-                        prompt_chars, 0, gen_ms, None, cancelled=True
-                    )
+                    self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
                     _safe_put(ChatChunk(done=True, event_type="end"))
                     return
 
                 full_text = "".join(full_text_parts)
                 tokens = self._count_tokens(full_text)
-                ttft_ms = (
-                    (first_token_at - gen_started) * 1000
-                    if first_token_at is not None
-                    else None
-                )
+                ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
 
                 # prompt_tokens = total_after - tokens (то, что уже в KV,
                 # включая переиспользованное и новое). cache_reads — из

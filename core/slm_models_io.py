@@ -42,9 +42,7 @@ def load_slm_models(path: Path | None = None) -> list[SLMModelInfo] | None:
     except yaml.YAMLError as e:
         raise ValueError(f"Ошибка парсинга YAML {p}: {e}") from e
     if not isinstance(data, dict):
-        raise ValueError(
-            f"Ожидался dict, получено {type(data).__name__} в {p}"
-        )
+        raise ValueError(f"Ожидался dict, получено {type(data).__name__} в {p}")
 
     version = int(data.get("schema_version", 0))
     if version > SCHEMA_VERSION:
@@ -55,18 +53,14 @@ def load_slm_models(path: Path | None = None) -> list[SLMModelInfo] | None:
 
     raw_models = data.get("models") or []
     if not isinstance(raw_models, list):
-        raise ValueError(
-            f"'models' должен быть списком, получено {type(raw_models).__name__}"
-        )
+        raise ValueError(f"'models' должен быть списком, получено {type(raw_models).__name__}")
 
     models: list[SLMModelInfo] = []
     for raw in raw_models:
         try:
             models.append(SLMModelInfo(**raw))
         except (ValidationError, TypeError) as e:
-            logger.warning(
-                f"slm_models.yaml: пропускаю невалидную запись {raw!r}: {e}"
-            )
+            logger.warning(f"slm_models.yaml: пропускаю невалидную запись {raw!r}: {e}")
     logger.info(f"slm_models.yaml: загружено {len(models)} моделей из {p}")
     return models
 
@@ -127,20 +121,14 @@ def ensure_slm_models_file(
     p = path or _default_path()
     loaded = load_slm_models(p)
     if loaded is None:
-        logger.info(
-            f"slm_models.yaml: создаю из встроенного каталога "
-            f"({len(defaults)} моделей)"
-        )
+        logger.info(f"slm_models.yaml: создаю из встроенного каталога ({len(defaults)} моделей)")
         save_slm_models(defaults, p)
         return list(defaults)
 
     merged = merge_with_defaults(loaded, defaults)
     # Перезаписываем, только если появились новые модели или изменилось
     # число (например, defaults расширился после bump).
-    if (
-        [m.id for m in merged] != [m.id for m in loaded]
-        or len(merged) != len(loaded)
-    ):
+    if [m.id for m in merged] != [m.id for m in loaded] or len(merged) != len(loaded):
         save_slm_models(merged, p)
     return merged
 

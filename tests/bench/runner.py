@@ -60,11 +60,14 @@ class BenchSummary:
     invalid_args_rate: float
     results: list[TaskResult]
 
+
 from agents.ollama_client import ChatMessage
 
 
 def _make_user(content: str) -> ChatMessage:
     return ChatMessage(role="user", content=content)
+
+
 async def _run_one_task(
     task_dir: Path,
     *,
@@ -110,8 +113,10 @@ async def _run_one_task(
 
         task_text = task_md.read_text(encoding="utf-8")
         messages = [
-            _make_user(f"Задача: {task_text}\n\nТы — coding-агент. "
-                       f"Используй apply_patch/run_tests. Работай в этой директории.")
+            _make_user(
+                f"Задача: {task_text}\n\nТы — coding-агент. "
+                f"Используй apply_patch/run_tests. Работай в этой директории."
+            )
         ]
 
         from agents.agent_loop import AgentLoop
@@ -153,9 +158,7 @@ async def _run_one_task(
                 passed=False,
                 tests_passed=0,
                 tests_failed=0,
-                iterations=loop.last_budget_snapshot.get("iterations", 0)
-                if loop.last_budget_snapshot
-                else 0,
+                iterations=loop.last_budget_snapshot.get("iterations", 0) if loop.last_budget_snapshot else 0,
                 tokens=0,
                 ttft_ms=None,
                 total_duration_s=time.perf_counter() - started,
@@ -200,9 +203,7 @@ async def _run_one_task(
             passed=test_result.ok,
             tests_passed=test_result.passed,
             tests_failed=test_result.failed + test_result.errors,
-            iterations=int(
-                (loop.last_budget_snapshot or {}).get("iterations", 0)
-            ),
+            iterations=int((loop.last_budget_snapshot or {}).get("iterations", 0)),
             tokens=int(stats.get("tokens", 0)),
             ttft_ms=float(stats["ttft_ms"]) if stats.get("ttft_ms") else None,
             total_duration_s=total_s,
@@ -259,11 +260,7 @@ def run_bench(
     only: list[str] | None = None,
 ) -> BenchSummary:
     """Синхронная обёртка: прогоняет все задачи, возвращает сводку."""
-    task_dirs = sorted(
-        d
-        for d in tasks_dir.iterdir()
-        if d.is_dir() and (d / "task.md").exists()
-    )
+    task_dirs = sorted(d for d in tasks_dir.iterdir() if d.is_dir() and (d / "task.md").exists())
     if only:
         wanted = set(only)
         task_dirs = [d for d in task_dirs if d.name in wanted]
@@ -310,17 +307,12 @@ def run_bench(
         pass_at_1=round(passed / n, 3),
         avg_iterations=round(sum(r.iterations for r in results) / n, 1),
         avg_tokens=round(sum(r.tokens for r in results) / n, 1),
-        avg_total_duration_s=round(
-            sum(r.total_duration_s for r in results) / n, 2
-        ),
+        avg_total_duration_s=round(sum(r.total_duration_s for r in results) / n, 2),
         tool_success_rate=round(
-            (total_tool_calls - sum(r.invalid_args for r in results))
-            / total_tool_calls,
+            (total_tool_calls - sum(r.invalid_args for r in results)) / total_tool_calls,
             3,
         ),
-        invalid_args_rate=round(
-            sum(r.invalid_args for r in results) / total_tool_calls, 3
-        ),
+        invalid_args_rate=round(sum(r.invalid_args for r in results) / total_tool_calls, 3),
         results=results,
     )
 

@@ -112,9 +112,7 @@ class MemoryDialog(QDialog):
 
         self._reflections_table = QTableWidget()
         self._reflections_table.setColumnCount(5)
-        self._reflections_table.setHorizontalHeaderLabels(
-            ["ID", "Дата", "Тип", "Итог", "Теги"]
-        )
+        self._reflections_table.setHorizontalHeaderLabels(["ID", "Дата", "Тип", "Итог", "Теги"])
         self._reflections_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
         )
@@ -127,21 +125,11 @@ class MemoryDialog(QDialog):
         self._reflections_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.ResizeToContents
         )
-        self._reflections_table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch
-        )
-        self._reflections_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._reflections_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self._reflections_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self._reflections_table.itemSelectionChanged.connect(
-            self._on_reflection_selected
-        )
+        self._reflections_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._reflections_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._reflections_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._reflections_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._reflections_table.itemSelectionChanged.connect(self._on_reflection_selected)
         splitter.addWidget(self._reflections_table, stretch=1)
 
         # Preview.
@@ -191,21 +179,11 @@ class MemoryDialog(QDialog):
     def _populate_reflections(self) -> None:
         self._reflections_table.setRowCount(len(self._reflections))
         for row, r in enumerate(self._reflections):
-            self._reflections_table.setItem(
-                row, 0, QTableWidgetItem(str(r.id or ""))
-            )
-            self._reflections_table.setItem(
-                row, 1, QTableWidgetItem(r.created_at.replace("T", " "))
-            )
-            self._reflections_table.setItem(
-                row, 2, QTableWidgetItem(r.task_type)
-            )
-            self._reflections_table.setItem(
-                row, 3, QTableWidgetItem(r.outcome)
-            )
-            self._reflections_table.setItem(
-                row, 4, QTableWidgetItem(", ".join(r.tags))
-            )
+            self._reflections_table.setItem(row, 0, QTableWidgetItem(str(r.id or "")))
+            self._reflections_table.setItem(row, 1, QTableWidgetItem(r.created_at.replace("T", " ")))
+            self._reflections_table.setItem(row, 2, QTableWidgetItem(r.task_type))
+            self._reflections_table.setItem(row, 3, QTableWidgetItem(r.outcome))
+            self._reflections_table.setItem(row, 4, QTableWidgetItem(", ".join(r.tags)))
         if self._reflections:
             self._reflections_table.selectRow(0)
 
@@ -261,15 +239,9 @@ class MemoryDialog(QDialog):
         layout = QVBoxLayout(tab)
         self._decisions_table = QTableWidget()
         self._decisions_table.setColumnCount(4)
-        self._decisions_table.setHorizontalHeaderLabels(
-            ["ID", "Дата", "Проект", "Решение"]
-        )
-        self._decisions_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._decisions_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self._decisions_table.setHorizontalHeaderLabels(["ID", "Дата", "Проект", "Решение"])
+        self._decisions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._decisions_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self._decisions_table)
         return tab
 
@@ -281,15 +253,9 @@ class MemoryDialog(QDialog):
             decisions = []
         self._decisions_table.setRowCount(len(decisions))
         for row, d in enumerate(decisions):
-            self._decisions_table.setItem(
-                row, 0, QTableWidgetItem(str(d.id or ""))
-            )
-            self._decisions_table.setItem(
-                row, 1, QTableWidgetItem(d.created_at.replace("T", " "))
-            )
-            self._decisions_table.setItem(
-                row, 2, QTableWidgetItem(d.project_path)
-            )
+            self._decisions_table.setItem(row, 0, QTableWidgetItem(str(d.id or "")))
+            self._decisions_table.setItem(row, 1, QTableWidgetItem(d.created_at.replace("T", " ")))
+            self._decisions_table.setItem(row, 2, QTableWidgetItem(d.project_path))
             text = d.decision
             if d.rationale:
                 text += f"\n\nОбоснование: {d.rationale}"
@@ -304,15 +270,9 @@ class MemoryDialog(QDialog):
         layout = QVBoxLayout(tab)
         self._preferences_table = QTableWidget()
         self._preferences_table.setColumnCount(3)
-        self._preferences_table.setHorizontalHeaderLabels(
-            ["Ключ", "Значение", "Обновлено"]
-        )
-        self._preferences_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._preferences_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self._preferences_table.setHorizontalHeaderLabels(["Ключ", "Значение", "Обновлено"])
+        self._preferences_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._preferences_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self._preferences_table)
         return tab
 
@@ -326,9 +286,7 @@ class MemoryDialog(QDialog):
         for row, p in enumerate(prefs):
             self._preferences_table.setItem(row, 0, QTableWidgetItem(p.key))
             self._preferences_table.setItem(row, 1, QTableWidgetItem(p.value))
-            self._preferences_table.setItem(
-                row, 2, QTableWidgetItem(p.updated_at.replace("T", " "))
-            )
+            self._preferences_table.setItem(row, 2, QTableWidgetItem(p.updated_at.replace("T", " ")))
 
     # ------------------------------------------------------------------
     # Прочее

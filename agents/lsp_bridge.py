@@ -310,7 +310,6 @@ class LspBridge:
         self._clients: dict[str, _LspClient] = {}
         self._lock = asyncio.Lock()
 
-
     @classmethod
     def _get_default(cls) -> LspBridge | None:
         """Возвращает глобальный синглтон (создаёт при первом вызове).
@@ -333,9 +332,7 @@ class LspBridge:
                         try:
                             cfg = load_config()
                             policy = SecurityPolicy(
-                                allow_lsp_download=bool(
-                                    getattr(cfg, "lsp_download_enabled", True)
-                                ),
+                                allow_lsp_download=bool(getattr(cfg, "lsp_download_enabled", True)),
                             )
                         except Exception:
                             pass
@@ -420,18 +417,13 @@ class LspBridge:
             # Это нормально для async-инструментов, но write_file/apply_patch
             # sync; если кто-то вызовет их из async-контекста — вернём []
             # (вызывающий должен использовать диагностику напрямую).
-            logger.debug(
-                "LspBridge.diagnostics: вызов из async-контекста — "
-                "используйте diagnostics_async"
-            )
+            logger.debug("LspBridge.diagnostics: вызов из async-контекста — используйте diagnostics_async")
             return []
 
         new_loop = asyncio.new_event_loop()
         try:
             return new_loop.run_until_complete(
-                self.diagnostics_async(
-                    file_path, language=language, timeout_s=timeout_s
-                )
+                self.diagnostics_async(file_path, language=language, timeout_s=timeout_s)
             )
         finally:
             new_loop.close()

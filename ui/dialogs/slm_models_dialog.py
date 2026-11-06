@@ -225,8 +225,7 @@ class SLMModelsDialog(QDialog):
         # [9.3.1] Поиск на HuggingFace.
         self.hf_search_btn = QPushButton("🔍 Поиск HF")
         self.hf_search_btn.setToolTip(
-            "Поиск GGUF-моделей на HuggingFace. Клик по модели → карточка, "
-            "скачивание, добавление в каталог."
+            "Поиск GGUF-моделей на HuggingFace. Клик по модели → карточка, скачивание, добавление в каталог."
         )
         self.hf_search_btn.clicked.connect(self._open_hf_dialog)
         btn_layout.addWidget(self.hf_search_btn)
@@ -557,9 +556,7 @@ class SLMModelsDialog(QDialog):
         # Стабильный id из имени файла (как в `_add_custom_model`).
         import re
 
-        base_id = re.sub(
-            r"[^a-z0-9._-]+", "-", filename.removesuffix(".gguf").lower()
-        )
+        base_id = re.sub(r"[^a-z0-9._-]+", "-", filename.removesuffix(".gguf").lower())
         base_id = base_id.strip("-") or "custom-model"
         model_id = base_id
         suffix = 2
@@ -571,9 +568,7 @@ class SLMModelsDialog(QDialog):
             id=model_id,
             repo=repo_id,
             file=filename,
-            display_name=str(
-                payload.get("display_name") or filename.removesuffix(".gguf")
-            ),
+            display_name=str(payload.get("display_name") or filename.removesuffix(".gguf")),
             size_mb=int(payload.get("size_mb") or 0),
             kind="chat",
             n_ctx=0,
@@ -584,10 +579,7 @@ class SLMModelsDialog(QDialog):
         save_config(self.config)
         save_slm_models(self.config.slm.available_models)
         self._changed = True
-        self.status_label.setText(
-            f"➕ Добавлено в каталог: {info.display_name}. "
-            f"Скачайте через «⬇️ Скачать»."
-        )
+        self.status_label.setText(f"➕ Добавлено в каталог: {info.display_name}. Скачайте через «⬇️ Скачать».")
         self._populate()
 
     @Slot(object)
@@ -627,10 +619,7 @@ class SLMModelsDialog(QDialog):
         # 2. Выделяем строку этой модели в таблице.
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if (
-                item is not None
-                and item.data(Qt.ItemDataRole.UserRole) == existing.id
-            ):
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == existing.id:
                 self.table.selectRow(row)
                 break
 

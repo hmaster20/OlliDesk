@@ -20,6 +20,7 @@ from core import redaction
 
 _PARTS_ADAPTER: TypeAdapter[MessagePart] = TypeAdapter(MessagePart)
 
+
 def _redact_parts(parts: list[MessagePart]) -> list[dict]:
     """Сериализует части, вырезая секреты из строковых значений (0.1.2).
 
@@ -54,6 +55,7 @@ def _redact_strings(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_redact_strings(v) for v in obj]
     return obj
+
 
 class SessionInfo(BaseModel):
     """Информация о сессии."""

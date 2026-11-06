@@ -229,7 +229,7 @@ class PipelineSelectors(QWidget):
         combo: QComboBox,
         models: list[SLMModelInfo],
         current_id: str,
-        ) -> None:
+    ) -> None:
         """Заполняет один ComboBox (guard 9.11) + подсветка coder (9.3.2).
 
         * Иконки ролей (⚡ coder, 🧠 reasoning, 📦 moE, …) — в префиксе.
@@ -261,8 +261,7 @@ class PipelineSelectors(QWidget):
 
         # Сверяем с текущими (без учёта стилей — только text/data).
         current: list[tuple[str, str]] = [
-            (combo.itemData(i) or "", combo.itemText(i))
-            for i in range(combo.count())
+            (combo.itemData(i) or "", combo.itemText(i)) for i in range(combo.count())
         ]
         if current == [(tid, tlabel) for tid, tlabel, _ in target]:
             combo.setEnabled(True)
@@ -319,9 +318,7 @@ class PipelineSelectors(QWidget):
             # ForegroundRole: акцент для coder в dev, иначе — сброс (None
             # не установить, ставим пустой QColor через invalid).
             if bold:
-                combo.setItemData(
-                    i, accent, Qt.ItemDataRole.ForegroundRole
-                )
+                combo.setItemData(i, accent, Qt.ItemDataRole.ForegroundRole)
             else:
                 combo.setItemData(i, None, Qt.ItemDataRole.ForegroundRole)
 

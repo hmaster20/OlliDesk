@@ -229,6 +229,7 @@ class ChatChunk(BaseModel):
             return data
         ...
 
+
 class ToolSchema(BaseModel):
     """JSON-схема инструмента для Ollama."""
 

@@ -16,9 +16,7 @@ def _spec(
     capabilities: list[str] | None = None,
     *,
     policy: ToolPolicy = ToolPolicy.AUTO,
-    modes: frozenset[AgentMode] = frozenset(
-        {AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT}
-    ),
+    modes: frozenset[AgentMode] = frozenset({AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT}),
 ) -> ToolSpec:
     return ToolSpec(
         name=name,
@@ -32,9 +30,7 @@ def _spec(
     )
 
 
-def _profile(
-    *, freedom: str = "development", tool_policies: dict | None = None
-) -> ProfileConfig:
+def _profile(*, freedom: str = "development", tool_policies: dict | None = None) -> ProfileConfig:
     return ProfileConfig(
         id="p",
         name="P",
@@ -68,17 +64,13 @@ class TestSecrets:
 class TestConfidential:
     def test_confidential_blocks_net(self) -> None:
         sec = SecurityPolicy(confidential=True)
-        p = effective_policy(
-            _spec(capabilities=["net"]), security=sec
-        )
+        p = effective_policy(_spec(capabilities=["net"]), security=sec)
         assert p.policy == ToolPolicy.EXCLUDED
         assert "confidential" in p.reason
 
     def test_confidential_allows_fs_read(self) -> None:
         sec = SecurityPolicy(confidential=True)
-        p = effective_policy(
-            _spec(capabilities=["fs.read"]), security=sec
-        )
+        p = effective_policy(_spec(capabilities=["fs.read"]), security=sec)
         assert p.allowed is True
 
 

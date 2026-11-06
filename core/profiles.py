@@ -121,9 +121,7 @@ class ProfileConfig(BaseModel):
     # open        — всё auto, кроме shell (ask_first) и secrets (always excluded).
     #
     # Уровень «open» требует явного подтверждения (см. `ui/dialogs/profile_editor_dialog.py`).
-    freedom_level: Literal["safe", "research", "development", "open"] = (
-        "development"
-    )
+    freedom_level: Literal["safe", "research", "development", "open"] = "development"
 
     @field_validator("n_ctx_hint")
     @classmethod
@@ -131,6 +129,7 @@ class ProfileConfig(BaseModel):
         if v < 0:
             raise ValueError(f"n_ctx_hint must be >= 0, got {v}")
         return v
+
 
 _DEFAULT_PROFILES: list[dict] = [
     {

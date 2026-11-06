@@ -19,18 +19,10 @@ from tools.browser_ops import (
 @pytest.fixture
 def fake_backend():
     backend = AsyncMock()
-    backend.open = AsyncMock(
-        return_value=PageSnapshot(url="u", title="t", text="x")
-    )
-    backend.snapshot = AsyncMock(
-        return_value=PageSnapshot(url="u", title="t", text="x")
-    )
-    backend.click = AsyncMock(
-        return_value=PageSnapshot(url="u", title="t", text="x")
-    )
-    backend.fill = AsyncMock(
-        return_value=PageSnapshot(url="u", title="t", text="x")
-    )
+    backend.open = AsyncMock(return_value=PageSnapshot(url="u", title="t", text="x"))
+    backend.snapshot = AsyncMock(return_value=PageSnapshot(url="u", title="t", text="x"))
+    backend.click = AsyncMock(return_value=PageSnapshot(url="u", title="t", text="x"))
+    backend.fill = AsyncMock(return_value=PageSnapshot(url="u", title="t", text="x"))
     backend.close = AsyncMock()
     yield backend
     import asyncio
@@ -41,8 +33,9 @@ def fake_backend():
 class TestBrowserOps:
     @pytest.mark.asyncio
     async def test_open_without_backend(self) -> None:
-        with patch("tools.browser_ops._BACKEND", None), patch(
-            "tools.browser_ops.create_backend", return_value=None
+        with (
+            patch("tools.browser_ops._BACKEND", None),
+            patch("tools.browser_ops.create_backend", return_value=None),
         ):
             out = await browser_open("https://example.com")
             assert "недоступен" in out.lower()

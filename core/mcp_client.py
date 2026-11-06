@@ -97,6 +97,7 @@ class MCPClient:
         creationflags = 0
         if os.name == "nt":
             import subprocess as _sp
+
             creationflags = _sp.CREATE_NO_WINDOW
 
         try:
@@ -111,9 +112,7 @@ class MCPClient:
                 creationflags=creationflags,
             )
         except FileNotFoundError as e:
-            raise MCPError(
-                f"MCP {self.name}: команда не найдена: {self.command} ({e})"
-            ) from e
+            raise MCPError(f"MCP {self.name}: команда не найдена: {self.command} ({e})") from e
 
         self._reader_task = asyncio.create_task(self._read_loop())
 
@@ -154,9 +153,7 @@ class MCPClient:
         if self.process is not None:
             with contextlib.suppress(Exception):
                 self.process.terminate()
-                await asyncio.wait_for(
-                    self.process.wait(), timeout=STOP_TIMEOUT
-                )
+                await asyncio.wait_for(self.process.wait(), timeout=STOP_TIMEOUT)
         if self.process is not None and self.process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 self.process.kill()
@@ -174,9 +171,7 @@ class MCPClient:
 
     async def list_tools(self) -> list[MCPToolInfo]:
         """Возвращает список инструментов из ``tools/list``."""
-        result = await asyncio.wait_for(
-            self._request("tools/list", {}), timeout=CALL_TIMEOUT
-        )
+        result = await asyncio.wait_for(self._request("tools/list", {}), timeout=CALL_TIMEOUT)
         raw_tools = result.get("tools") or []
         tools: list[MCPToolInfo] = []
         for t in raw_tools:
@@ -192,9 +187,7 @@ class MCPClient:
         logger.info(f"MCP {self.name}: {len(tools)} инструментов")
         return tools
 
-    async def call_tool(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> MCPToolResult:
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> MCPToolResult:
         """Вызывает MCP-инструмент."""
         result = await asyncio.wait_for(
             self._request(
@@ -281,9 +274,7 @@ class MCPClient:
                 try:
                     msg = json.loads(body)
                 except json.JSONDecodeError as e:
-                    logger.warning(
-                        f"MCP {self.name}: битый JSON ({e}): {body[:200]!r}"
-                    )
+                    logger.warning(f"MCP {self.name}: битый JSON ({e}): {body[:200]!r}")
                     continue
                 self._dispatch(msg)
         except asyncio.CancelledError:
@@ -297,11 +288,7 @@ class MCPClient:
             if future is not None and not future.done():
                 if "error" in msg:
                     err = msg["error"]
-                    future.set_exception(
-                        MCPError(
-                            f"MCP {self.name}: {err.get('message', err)}"
-                        )
-                    )
+                    future.set_exception(MCPError(f"MCP {self.name}: {err.get('message', err)}"))
                 else:
                     future.set_result(msg.get("result"))
             return

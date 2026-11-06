@@ -149,9 +149,7 @@ class HFDialog(QDialog):
         # --- Поиск ---
         search_row = QHBoxLayout()
         self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText(
-            "Например: Qwen2.5-Coder, Llama-3.1, Mistral"
-        )
+        self.query_edit.setPlaceholderText("Например: Qwen2.5-Coder, Llama-3.1, Mistral")
         self.query_edit.returnPressed.connect(self._on_search)
         search_row.addWidget(self.query_edit, stretch=2)
 
@@ -172,9 +170,7 @@ class HFDialog(QDialog):
         layout.addWidget(self.progress)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 2px 0;"
-        )
+        self.status_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
         layout.addWidget(self.status_label)
 
         # --- Сплиттер: список / карточка ---
@@ -182,9 +178,7 @@ class HFDialog(QDialog):
 
         # Слева — список результатов.
         self.results_list = QListWidget()
-        self.results_list.itemSelectionChanged.connect(
-            self._on_selection_changed
-        )
+        self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
         splitter.addWidget(self.results_list)
 
         # Справа — карточка (описание + файлы).
@@ -195,9 +189,7 @@ class HFDialog(QDialog):
         self.details_view = QTextBrowser()
         self.details_view.setOpenExternalLinks(False)
         self.details_view.setOpenLinks(False)
-        self.details_view.anchorClicked.connect(
-            lambda url: QDesktopServices.openUrl(QUrl(url.toString()))
-        )
+        self.details_view.anchorClicked.connect(lambda url: QDesktopServices.openUrl(QUrl(url.toString())))
         self.details_view.setStyleSheet(
             "QTextBrowser { background: #1e1e2e; color: #d4d4d4;"
             " border: 1px solid #3a3a48; border-radius: 4px; padding: 8px; }"
@@ -205,29 +197,17 @@ class HFDialog(QDialog):
         right_layout.addWidget(self.details_view, stretch=1)
 
         files_label = QLabel(".gguf-файлы:")
-        files_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 4px 0 0 0;"
-        )
+        files_label.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 0 0;")
         right_layout.addWidget(files_label)
 
         self.files_table = QTableWidget()
         self.files_table.setColumnCount(2)
         self.files_table.setHorizontalHeaderLabels(["Файл", "Размер"])
-        self.files_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
-        self.files_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.files_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self.files_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.files_table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
+        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.files_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         right_layout.addWidget(self.files_table, stretch=1)
 
         actions_row = QHBoxLayout()
@@ -238,8 +218,7 @@ class HFDialog(QDialog):
 
         self.add_catalog_btn = QPushButton("➕ Добавить в каталог")
         self.add_catalog_btn.setToolTip(
-            "Добавить модель в локальный каталог (slm_models.yaml). "
-            "Скачивание — отдельно, кнопкой «Скачать»."
+            "Добавить модель в локальный каталог (slm_models.yaml). Скачивание — отдельно, кнопкой «Скачать»."
         )
         self.add_catalog_btn.clicked.connect(self._on_add_to_catalog)
         self.add_catalog_btn.setEnabled(False)
@@ -286,12 +265,8 @@ class HFDialog(QDialog):
         self.results_list.clear()
         for m in models:
             tags_str = detect_tags(m.tags, m.pipeline_tag, m.repo_id)
-            tag_badge = (
-                f" [{'/'.join(tags_str)}]" if tags_str else ""
-            )
-            item = QListWidgetItem(
-                f"{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}"
-            )
+            tag_badge = f" [{'/'.join(tags_str)}]" if tags_str else ""
+            item = QListWidgetItem(f"{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}")
             item.setData(Qt.ItemDataRole.UserRole, m.repo_id)
             self.results_list.addItem(item)
         self.status_label.setText(f"Найдено: {len(models)} моделей")
@@ -401,16 +376,10 @@ class HFDialog(QDialog):
 
     @staticmethod
     def _render_details_html(details: HFModelDetails) -> str:
-        tags = detect_tags(
-            details.tags, details.pipeline_tag, details.repo_id
-        )
+        tags = detect_tags(details.tags, details.pipeline_tag, details.repo_id)
         tags_str = ", ".join(tags) if tags else "—"
         license_str = details.license or "—"
-        description = (
-            details.description.replace("\n", "<br>")
-            if details.description
-            else "(нет описания)"
-        )
+        description = details.description.replace("\n", "<br>") if details.description else "(нет описания)"
         return f"""
         <h3>{details.repo_id}</h3>
         <p>

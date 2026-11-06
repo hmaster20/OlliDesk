@@ -8,10 +8,7 @@ TASKS_DIR = Path(__file__).parent / "tasks"
 
 
 def _task_dirs() -> list[Path]:
-    return sorted(
-        d for d in TASKS_DIR.iterdir()
-        if d.is_dir() and (d / "task.md").exists()
-    )
+    return sorted(d for d in TASKS_DIR.iterdir() if d.is_dir() and (d / "task.md").exists())
 
 
 def test_tasks_exist() -> None:
@@ -30,9 +27,7 @@ def test_task_names_include_language() -> None:
     """Имя задачи должно начинаться с языка (py_/go_/ts_/cs_)."""
     valid_prefixes = ("py_", "go_", "ts_", "cs_")
     for task in _task_dirs():
-        assert task.name.startswith(valid_prefixes), (
-            f"{task.name}: имя должно начинаться с {valid_prefixes}"
-        )
+        assert task.name.startswith(valid_prefixes), f"{task.name}: имя должно начинаться с {valid_prefixes}"
 
 
 def test_py_fix_parser_structure() -> None:

@@ -91,9 +91,7 @@ class PermissionsDashboard(QDialog):
         self._config = config
         self._active_profile = active_profile
         self._current_mode = current_mode or AgentMode.AGENT
-        self._session_overrides: dict[str, ToolPolicy] = dict(
-            session_overrides or {}
-        )
+        self._session_overrides: dict[str, ToolPolicy] = dict(session_overrides or {})
 
         self.setWindowTitle("Разрешения (Permissions)")
         self.setMinimumSize(1100, 720)
@@ -110,15 +108,12 @@ class PermissionsDashboard(QDialog):
         # Шапка: активные override + кнопка сброса.
         header_row = QHBoxLayout()
         self._overrides_label = QLabel("")
-        self._overrides_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 2px 0;"
-        )
+        self._overrides_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
         header_row.addWidget(self._overrides_label, stretch=1)
 
         self._reset_overrides_btn = QPushButton("✕ Сбросить session overrides")
         self._reset_overrides_btn.setToolTip(
-            "Убрать все per-session overrides (2.7). Дальше — снова "
-            "действуют профиль и config."
+            "Убрать все per-session overrides (2.7). Дальше — снова действуют профиль и config."
         )
         self._reset_overrides_btn.clicked.connect(self._on_reset_overrides)
         header_row.addWidget(self._reset_overrides_btn)
@@ -159,28 +154,18 @@ class PermissionsDashboard(QDialog):
         layout.addWidget(info)
 
         profiles = list(self._config.profiles)
-        specs = sorted(
-            self._registry.get_all_specs(), key=lambda s: s.name
-        )
+        specs = sorted(self._registry.get_all_specs(), key=lambda s: s.name)
 
         self._matrix = QTableWidget()
         self._matrix.setColumnCount(2 + len(profiles))
         headers = ["Инструмент", "Capabilities"] + [p.name for p in profiles]
         self._matrix.setHorizontalHeaderLabels(headers)
-        self._matrix.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self._matrix.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
-        )
+        self._matrix.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._matrix.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         for i in range(2, 2 + len(profiles)):
-            self._matrix.horizontalHeader().setSectionResizeMode(
-                i, QHeaderView.ResizeMode.Stretch
-            )
+            self._matrix.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
         self._matrix.setRowCount(len(specs))
-        self._matrix.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self._matrix.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         for row, spec in enumerate(specs):
             self._matrix.setItem(row, 0, QTableWidgetItem(spec.name))
@@ -200,9 +185,7 @@ class PermissionsDashboard(QDialog):
                 )
                 cell = QTableWidgetItem(_policy_label(eff.policy.value))
                 cell.setForeground(_policy_color(eff.policy.value))
-                cell.setTextAlignment(
-                    Qt.AlignmentFlag.AlignCenter
-                )
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 cell.setToolTip(
                     f"Профиль: {profile.name}\n"
                     f"Политика: {eff.policy.value}\n"
@@ -242,25 +225,15 @@ class PermissionsDashboard(QDialog):
         active_profile = self._active_profile
         table = QTableWidget()
         table.setColumnCount(3)
-        table.setHorizontalHeaderLabels(
-            ["Capability", "Инструменты", "Политика (текущий профиль)"]
-        )
-        table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
+        table.setHorizontalHeaderLabels(["Capability", "Инструменты", "Политика (текущий профиль)"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setRowCount(len(groups))
         for row, (cap, names) in enumerate(sorted(groups.items())):
             table.setItem(row, 0, QTableWidgetItem(cap))
-            table.setItem(
-                row, 1, QTableWidgetItem(", ".join(sorted(names)))
-            )
+            table.setItem(row, 1, QTableWidgetItem(", ".join(sorted(names))))
             # Политика для capability в активном профиле.
             policy = "—"
             if active_profile is not None:
@@ -273,9 +246,7 @@ class PermissionsDashboard(QDialog):
             cell.setForeground(_policy_color(policy))
             cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if cap == "secrets":
-                cell.setToolTip(
-                    "secrets всегда excluded, независимо от профиля."
-                )
+                cell.setToolTip("secrets всегда excluded, независимо от профиля.")
             table.setItem(row, 2, cell)
 
         layout.addWidget(table, stretch=1)
@@ -303,15 +274,9 @@ class PermissionsDashboard(QDialog):
         self._audit_table.setHorizontalHeaderLabels(
             ["Время", "Инструмент", "Политика", "Approved", "Result hash", "Error", "Dangerous"]
         )
-        self._audit_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._audit_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._audit_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self._audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._audit_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._audit_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         layout.addWidget(self._audit_table, stretch=1)
 
         refresh_btn = QPushButton("🔄 Обновить")
@@ -332,21 +297,13 @@ class PermissionsDashboard(QDialog):
 
         self._audit_table.setRowCount(len(entries))
         for row, e in enumerate(entries):
-            self._audit_table.setItem(
-                row, 0, QTableWidgetItem(e.timestamp.replace("T", " "))
-            )
+            self._audit_table.setItem(row, 0, QTableWidgetItem(e.timestamp.replace("T", " ")))
             self._audit_table.setItem(row, 1, QTableWidgetItem(e.tool))
             self._audit_table.setItem(row, 2, QTableWidgetItem(e.policy))
-            self._audit_table.setItem(
-                row, 3, QTableWidgetItem("✓" if e.approved else "✗")
-            )
-            self._audit_table.setItem(
-                row, 4, QTableWidgetItem(e.result_hash[:8] if e.result_hash else "")
-            )
+            self._audit_table.setItem(row, 3, QTableWidgetItem("✓" if e.approved else "✗"))
+            self._audit_table.setItem(row, 4, QTableWidgetItem(e.result_hash[:8] if e.result_hash else ""))
             self._audit_table.setItem(row, 5, QTableWidgetItem(e.error))
-            self._audit_table.setItem(
-                row, 6, QTableWidgetItem("⚠️" if e.dangerous else "")
-            )
+            self._audit_table.setItem(row, 6, QTableWidgetItem("⚠️" if e.dangerous else ""))
 
     # ------------------------------------------------------------------
     # Вкладка 4: почему заблокировано
@@ -366,13 +323,9 @@ class PermissionsDashboard(QDialog):
         layout.addWidget(info)
 
         self._explain_combo = QComboBox()
-        for spec in sorted(
-            self._registry.get_all_specs(), key=lambda s: s.name
-        ):
+        for spec in sorted(self._registry.get_all_specs(), key=lambda s: s.name):
             self._explain_combo.addItem(spec.name, spec.name)
-        self._explain_combo.currentIndexChanged.connect(
-            self._on_explain_changed
-        )
+        self._explain_combo.currentIndexChanged.connect(self._on_explain_changed)
         layout.addWidget(self._explain_combo)
 
         self._explain_view = QTextBrowser()
@@ -394,9 +347,7 @@ class PermissionsDashboard(QDialog):
             return
         spec = self._registry.try_get_spec(name)
         if spec is None:
-            self._explain_view.setHtml(
-                '<p style="color:#e06c75;">Инструмент не найден</p>'
-            )
+            self._explain_view.setHtml('<p style="color:#e06c75;">Инструмент не найден</p>')
             return
 
         effective, steps = explain_policy(
@@ -464,17 +415,11 @@ class PermissionsDashboard(QDialog):
 
     def _refresh_overrides_label(self) -> None:
         if not self._session_overrides:
-            self._overrides_label.setText(
-                "Session overrides: — (нет)"
-            )
+            self._overrides_label.setText("Session overrides: — (нет)")
             self._reset_overrides_btn.setEnabled(False)
             return
-        pairs = ", ".join(
-            f"{k}={v.value}" for k, v in self._session_overrides.items()
-        )
-        self._overrides_label.setText(
-            f"Session overrides: {pairs}"
-        )
+        pairs = ", ".join(f"{k}={v.value}" for k, v in self._session_overrides.items())
+        self._overrides_label.setText(f"Session overrides: {pairs}")
         self._reset_overrides_btn.setEnabled(True)
 
     @Slot()
@@ -486,6 +431,7 @@ class PermissionsDashboard(QDialog):
         self._session_overrides.clear()
         # Применяем к конфигу (если передан).
         import contextlib
+
         with contextlib.suppress(Exception):
             self._config.session_overrides.clear()
         emit_event(
@@ -514,11 +460,7 @@ class PermissionsDashboard(QDialog):
 
 
 def _escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 __all__ = ["PermissionsDashboard"]

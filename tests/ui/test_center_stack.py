@@ -54,18 +54,14 @@ class TestInitialState:
 
 
 class TestEditorOpens:
-    def test_open_file_switches_to_editor(
-        self, main_window, tmp_path: Path
-    ) -> None:
+    def test_open_file_switches_to_editor(self, main_window, tmp_path: Path) -> None:
         target = tmp_path / "test.py"
         target.write_text("x = 1\n")
         main_window.open_file_in_editor(str(target))
         assert main_window.center_stack.currentIndex() == 1
         assert main_window.editor_widget.tab_count() == 1
 
-    def test_close_last_tab_switches_to_chat(
-        self, main_window, tmp_path: Path
-    ) -> None:
+    def test_close_last_tab_switches_to_chat(self, main_window, tmp_path: Path) -> None:
         target = tmp_path / "test.py"
         target.write_text("x = 1\n")
         main_window.open_file_in_editor(str(target))

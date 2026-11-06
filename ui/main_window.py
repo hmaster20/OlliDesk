@@ -418,11 +418,7 @@ class MainWindow(QMainWindow):
         self.center_stack = QStackedWidget()
 
         # --- Страница 0: чат (базовый экран) ---
-        default_model = (
-            self.config.default_model
-            if hasattr(self.config, "default_model")
-            else "llama3.2"
-        )
+        default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
             base_url="http://localhost:11434",
@@ -459,9 +455,7 @@ class MainWindow(QMainWindow):
 
             diff_action = QAction(self.editor_widget)
             diff_action.setShortcut(QKeySequence("Ctrl+D"))
-            diff_action.setShortcutContext(
-                Qt.ShortcutContext.WidgetWithChildrenShortcut
-            )
+            diff_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             diff_action.triggered.connect(self._diff_current_editor_file)
             self.editor_widget.addAction(diff_action)
         except Exception:
@@ -527,9 +521,7 @@ class MainWindow(QMainWindow):
             try:
                 self.chat_panel.set_theme(theme)
             except Exception:
-                logger.debug(
-                    "chat_panel.set_theme упал", exc_info=True
-                )
+                logger.debug("chat_panel.set_theme упал", exc_info=True)
 
     @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):
@@ -1259,9 +1251,7 @@ class MainWindow(QMainWindow):
             from core.config import load_config as _load_cfg
 
             _cfg = _load_cfg()
-            saved_visible = bool(
-                getattr(_cfg, "show_project_tree", False)
-            )
+            saved_visible = bool(getattr(_cfg, "show_project_tree", False))
         except Exception:
             saved_visible = False
 
@@ -1354,9 +1344,7 @@ class MainWindow(QMainWindow):
                 project_settings.git_hash = git_state["hash"]
                 project_settings.git_last_sync = git_state["timestamp"]
                 project_settings.save(self.project_path)
-                logger.info(
-                    f"git context: {git_state['branch']}@{git_state['hash']}"
-                )
+                logger.info(f"git context: {git_state['branch']}@{git_state['hash']}")
         except Exception:
             logger.debug("git snapshot не сохранён", exc_info=True)
 
@@ -1408,9 +1396,7 @@ class MainWindow(QMainWindow):
 
             git_state = snapshot_git_state(path)
             if git_state["branch"]:
-                logger.info(
-                    f"@dir git context: {git_state['branch']}@{git_state['hash']}"
-                )
+                logger.info(f"@dir git context: {git_state['branch']}@{git_state['hash']}")
         except Exception:
             pass
 
@@ -1648,9 +1634,7 @@ class MainWindow(QMainWindow):
         b_ack = bool(settings.get("browser_full_ack", False))
         if b_mode == "full" and not b_ack:
             # Защита: без ack не переключаем.
-            logger.warning(
-                "browser: full без явного подтверждения — откатываю на isolated"
-            )
+            logger.warning("browser: full без явного подтверждения — откатываю на isolated")
             b_mode = "isolated"
             b_ack = False
         self.config.browser.mode = b_mode  # type: ignore[assignment]
@@ -1691,9 +1675,7 @@ class MainWindow(QMainWindow):
         нечего. Сообщаем пользователю и остаёмся в чате.
         """
         if self.editor_widget.tab_count() == 0:
-            self.status_bar.showMessage(
-                "Редактор пуст: откройте файл из дерева проекта.", 3000
-            )
+            self.status_bar.showMessage("Редактор пуст: откройте файл из дерева проекта.", 3000)
             self._switch_to_chat()
             return
         self._switch_to_editor()
@@ -2170,8 +2152,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Память отключена",
-                "Включите память в настройках (⚙ → Память агента) или "
-                "в config.yaml: `memory.enabled: true`.",
+                "Включите память в настройках (⚙ → Память агента) или в config.yaml: `memory.enabled: true`.",
             )
             return
         if self.chat_panel is None:
@@ -2188,6 +2169,7 @@ class MainWindow(QMainWindow):
 
         dlg = MemoryDialog(service, self)
         dlg.exec()
+
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog
 
@@ -2209,10 +2191,9 @@ class MainWindow(QMainWindow):
         session_overrides = dict(self.config.session_overrides)
         # Плюс то, что ChatPanel накопил в `_current_session_overrides()`.
         import contextlib
+
         with contextlib.suppress(Exception):
-            session_overrides.update(
-                self.chat_panel._current_session_overrides()
-            )
+            session_overrides.update(self.chat_panel._current_session_overrides())
 
         from ui.dialogs.permissions_dashboard import PermissionsDashboard
 

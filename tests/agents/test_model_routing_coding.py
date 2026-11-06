@@ -26,17 +26,13 @@ class TestSelectCoder:
             patch.object(
                 SLMConfig, "get_model_by_id", side_effect=lambda mid: coder if mid == "my-coder" else None
             ),
-            patch(
-                "agents.download_slm.is_model_installed", return_value=True
-            ),
+            patch("agents.download_slm.is_model_installed", return_value=True),
         ):
             hw = HardwareProfile(
                 cpu=CPUInfo(physical_cores=8, logical_cores=16),
                 ram=RAMInfo(total_mb=32768, available_mb=30000),
             )
-            info = select_coder(
-                hw=hw, profile_coder_models=["my-coder"]
-            )
+            info = select_coder(hw=hw, profile_coder_models=["my-coder"])
             assert info is not None
             assert info.id == "my-coder"
 
@@ -60,12 +56,8 @@ class TestSelectCoder:
             size_mb=3000,
         )
         with (
-            patch.object(
-                SLMConfig, "get_chat_models", return_value=[coder, chat]
-            ),
-            patch(
-                "agents.download_slm.is_model_installed", return_value=True
-            ),
+            patch.object(SLMConfig, "get_chat_models", return_value=[coder, chat]),
+            patch("agents.download_slm.is_model_installed", return_value=True),
         ):
             hw = HardwareProfile(
                 cpu=CPUInfo(physical_cores=8, logical_cores=16),
@@ -87,9 +79,7 @@ class TestSelectCoder:
         )
         with (
             patch.object(SLMConfig, "get_chat_models", return_value=[chat]),
-            patch(
-                "agents.download_slm.is_model_installed", return_value=True
-            ),
+            patch("agents.download_slm.is_model_installed", return_value=True),
         ):
             hw = HardwareProfile(
                 cpu=CPUInfo(physical_cores=8, logical_cores=16),
@@ -111,9 +101,7 @@ class TestSelectCoder:
         )
         with (
             patch.object(SLMConfig, "get_chat_models", return_value=[chat]),
-            patch(
-                "agents.download_slm.is_model_installed", return_value=True
-            ),
+            patch("agents.download_slm.is_model_installed", return_value=True),
         ):
             hw = HardwareProfile(
                 cpu=CPUInfo(physical_cores=8, logical_cores=16),
