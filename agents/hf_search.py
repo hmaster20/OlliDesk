@@ -120,10 +120,14 @@ def _hf_token() -> str | None:
 
         token = (load_config().hf_token or "").strip()
         if token:
+            logger.debug("hf_search: используется токен из конфига")
             return token
     except Exception:
         pass
-    return os.environ.get("HF_TOKEN") or None
+    env_token = os.environ.get("HF_TOKEN")
+    if env_token:
+        logger.debug("hf_search: используется токен из переменной окружения HF_TOKEN")
+    return env_token or None
 
 
 def _get_api():
@@ -131,11 +135,10 @@ def _get_api():
     try:
         from huggingface_hub import HfApi
     except ImportError as e:
+        logger.error("hf_search: huggingface_hub не установлен")
         raise HFUnavailableError("huggingface_hub не установлен: `pip install huggingface_hub`") from e
     token = _hf_token()
-    if token:
-        return HfApi(token=token)
-    return HfApi()
+    return HfApi(token=token) if token else HfApi()
 
 
 # ---------------------------------------------------------------------------
@@ -167,12 +170,16 @@ async def search_models(
     """
     query = (query or "").strip()
     n = max(1, min(int(limit), 100))
-    cache_key = (query, filter_tag, sort)
+
+    valid_api_sorts = {"downloads", "likes", "lastModified", "createdAt", "id"}
+    api_sort = sort if sort in valid_api_sorts else "downloads"
+
+    cache_key = (query, filter_tag, api_sort)
     cached = _search_cache.get(cache_key)
     if cached is not None:
         ts, models = cached
         if time.time() - ts < _CACHE_TTL_S:
-            logger.debug(f"hf_search: cache hit {cache_key!r}")
+            logger.debug(f"hf_search: cache hit {cache_key!r} ({len(models)} моделей)")
             return models
 
     emit_event_safe("hf.search.started", {"query": query, "filter": filter_tag})
@@ -180,11 +187,13 @@ async def search_models(
 
     def _do() -> list[HFModel]:
         api = _get_api()
-        kwargs: dict[str, Any] = {"sort": sort, "limit": n, "full": False}
+        kwargs: dict[str, Any] = {"sort": api_sort, "limit": n, "full": False}
         if query:
             kwargs["search"] = query
         if filter_tag:
             kwargs["filter"] = filter_tag
+
+        logger.info(f"hf_search: api.list_models({kwargs})")
         try:
             iterator = api.list_models(**kwargs)
             results: list[HFModel] = []
@@ -201,31 +210,25 @@ async def search_models(
                 )
             return results
         except Exception as e:
+            logger.error(f"hf_search: ошибка HF API: {e}")
             raise HFUnavailableError(f"HF list_models: {e}") from e
 
     try:
         models = await asyncio.wait_for(asyncio.to_thread(_do), timeout=30.0)
     except TimeoutError as e:
+        logger.error("hf_search: timeout при запросе к HF API (30с)")
         raise HFUnavailableError("HF list_models: timeout 30s") from e
 
-    duration_ms = round((time.perf_counter() - started) * 1000, 2)
     _search_cache[cache_key] = (time.time(), models)
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
     if models:
-        emit_event_safe(
-            "hf.search.found",
-            {
-                "query": query,
-                "n_results": len(models),
-                "duration_ms": duration_ms,
-            },
-        )
+        logger.info(f"hf_search: '{query}' → {len(models)} моделей за {duration_ms} ms")
+        emit_event_safe("hf.search.found", {"query": query, "n_results": len(models), "duration_ms": duration_ms})
     else:
-        emit_event_safe(
-            "hf.search.empty",
-            {"query": query, "duration_ms": duration_ms},
-        )
-    logger.info(f"hf_search: {query!r} → {len(models)} моделей ({duration_ms} ms)")
+        logger.warning(f"hf_search: по запросу '{query}' ничего не найдено")
+        emit_event_safe("hf.search.empty", {"query": query, "duration_ms": duration_ms})
+
     return models
 
 
@@ -243,19 +246,23 @@ async def model_info(repo_id: str) -> HFModelDetails:
     """
     if not repo_id:
         raise ValueError("hf.model_info: пустой repo_id")
+
     cached = _info_cache.get(repo_id)
     if cached is not None:
         ts, info = cached
         if time.time() - ts < _CACHE_TTL_S:
+            logger.debug(f"hf_info: cache hit {repo_id}")
             return info
 
     def _do() -> HFModelDetails:
         api = _get_api()
+        logger.info(f"hf_info: запрос карточки {repo_id}")
         try:
             # ИСПРАВЛЕНИЕ: в новых версиях huggingface_hub аргумент cardData удален.
             # Данные карточки (description, tags) теперь всегда доступны через info.cardData.
             info = api.model_info(repo_id, files_metadata=True)
         except Exception as e:
+            logger.error(f"hf_info: ошибка получения {repo_id}: {e}")
             raise HFUnavailableError(f"HF model_info: {e}") from e
 
         card = getattr(info, "cardData", None) or {}
@@ -298,10 +305,11 @@ async def model_info(repo_id: str) -> HFModelDetails:
     try:
         details = await asyncio.wait_for(asyncio.to_thread(_do), timeout=30.0)
     except TimeoutError as e:
+        logger.error(f"hf_info: timeout при запросе карточки {repo_id}")
         raise HFUnavailableError("HF model_info: timeout 30s") from e
 
     _info_cache[repo_id] = (time.time(), details)
-    logger.info(f"hf_info: {repo_id} — {len(details.gguf_files)} .gguf, downloads={details.downloads}")
+    logger.info(f"hf_info: {repo_id} — {len(details.gguf_files)} .gguf файлов, downloads={details.downloads}")
     return details
 
 
@@ -357,7 +365,7 @@ def emit_event_safe(kind: str, payload: dict) -> None:
 
         emit_event(kind, payload)
     except Exception:
-        logger.debug(f"hf_search: emit_event({kind}) упал", exc_info=True)
+        logger.debug(f"hf_search: не удалось отправить событие {kind}", exc_info=True)
 
 
 __all__ = [

@@ -58,11 +58,11 @@ class _SearchThread(QThread):
     done = Signal(list)  # list[HFModel]
     error = Signal(str)
 
-    def __init__(self, query: str, filter_tag: str, sort_method: str, limit: int) -> None:
+    def __init__(self, query: str, filter_tag: str, api_sort: str, limit: int) -> None:
         super().__init__()
         self._query = query
         self._filter = filter_tag
-        self._sort = sort_method
+        self._api_sort = api_sort
         self._limit = limit
 
     def run(self) -> None:
@@ -71,7 +71,7 @@ class _SearchThread(QThread):
                 search_models(
                     self._query,
                     filter_tag=self._filter,
-                    sort=self._sort,
+                    sort=self._api_sort,
                     limit=self._limit,
                 )
             )
@@ -254,7 +254,12 @@ class HFDialog(QDialog):
             return
         query = self.query_edit.text().strip()
         filter_tag = self.filter_combo.currentData() or "gguf"
-        sort_method = self.sort_combo.currentData() or "downloads"
+
+        ui_sort = self.sort_combo.currentData() or "downloads"
+        # HF API не поддерживает сортировку по author (ломается с Bad Request).
+        # Поэтому для API мы всегда просим "downloads", а локально сортируем как просил юзер.
+        api_sort = ui_sort if ui_sort in ("downloads", "likes", "lastModified") else "downloads"
+
         self.progress.setVisible(True)
         self.search_btn.setEnabled(False)
         self.status_label.setText("Поиск на HuggingFace…")
@@ -264,7 +269,7 @@ class HFDialog(QDialog):
         self._current_details = None
         self._all_models = []
 
-        self._search_thread = _SearchThread(query, filter_tag, sort_method, limit=50)
+        self._search_thread = _SearchThread(query, filter_tag, api_sort, limit=50)
         self._search_thread.done.connect(self._on_search_done)
         self._search_thread.error.connect(self._on_search_error)
         self._search_thread.start()
@@ -282,7 +287,7 @@ class HFDialog(QDialog):
         self._render_results()
 
     def _render_results(self) -> None:
-        """Отрисовывает список моделей с учетом текущей сортировки."""
+        """Отрисовывает список моделей с учетом локальной сортировки."""
         self.results_list.clear()
         if not self._all_models:
             self.status_label.setText("Ничего не найдено")
@@ -317,13 +322,7 @@ class HFDialog(QDialog):
         self.progress.setVisible(False)
         self.search_btn.setEnabled(True)
         self.status_label.setText(f"❌ {error}")
-        QMessageBox.warning(
-            self,
-            "HF недоступен",
-            f"Не удалось выполнить поиск:\n{error}\n\n"
-            "Проверьте сеть или используйте локальный каталог "
-            "(View → Локальные модели).",
-        )
+        QMessageBox.warning(self, "HF недоступен", f"Не удалось выполнить поиск:\n{error}")
 
     @Slot()
     def _on_selection_changed(self) -> None:
@@ -355,6 +354,7 @@ class HFDialog(QDialog):
         for i, f in enumerate(details.gguf_files):
             self.files_table.setItem(i, 0, QTableWidgetItem(f.filename))
             self.files_table.setItem(i, 1, QTableWidgetItem(f.size_human))
+
         if details.gguf_files:
             self.files_table.selectRow(0)
             self.download_btn.setEnabled(True)
@@ -376,16 +376,8 @@ class HFDialog(QDialog):
         if row < 0 or row >= len(self._current_details.gguf_files):
             return
         f = self._current_details.gguf_files[row]
-        tags = detect_tags(
-            self._current_details.tags,
-            self._current_details.pipeline_tag,
-            self._current_details.repo_id,
-        )
-        payload = {
-            "repo_id": self._current_details.repo_id,
-            "filename": f.filename,
-            "tags": tags,
-        }
+        tags = detect_tags(self._current_details.tags, self._current_details.pipeline_tag, self._current_details.repo_id)
+        payload = {"repo_id": self._current_details.repo_id, "filename": f.filename, "tags": tags}
         self.download_requested.emit(payload)
 
     @Slot()
@@ -396,11 +388,7 @@ class HFDialog(QDialog):
         if row < 0 or row >= len(self._current_details.gguf_files):
             row = 0
         f = self._current_details.gguf_files[row]
-        tags = detect_tags(
-            self._current_details.tags,
-            self._current_details.pipeline_tag,
-            self._current_details.repo_id,
-        )
+        tags = detect_tags(self._current_details.tags, self._current_details.pipeline_tag, self._current_details.repo_id)
         payload = {
             "repo_id": self._current_details.repo_id,
             "filename": f.filename,
