@@ -19,6 +19,8 @@ from loguru import logger
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
+    QDragEnterEvent,
+    QDropEvent,
     QFont,
     QKeyEvent,
     QTextCharFormat,
@@ -1429,18 +1431,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [9.7] Drag&drop файлов в поле ввода.
         if obj is self.input_edit:
             if event.type() == QEvent.Type.DragEnter:
-                mime = getattr(event, "mimeData", lambda: None)()
-                if mime is not None and mime.hasUrls():
-                    self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px; border: 2px dashed #d4a373; border-radius: 4px;"
-                    )
+                mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
+                if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
+                    self.input_edit.setStyleSheet(...)
+                    event.acceptProposedAction()   # ← теперь тип известен
+                    return True
+
+            elif event.type() == QEvent.Type.Drop:
+                if isinstance(event, QDropEvent) and event.mimeData().hasUrls():
+                    for url in event.mimeData().urls():
+                        if url.isLocalFile():
+                            self._attach_local_file(url.toLocalFile())
                     event.acceptProposedAction()
                     return True
-            elif event.type() == QEvent.Type.DragLeave:
-                self.input_edit.setStyleSheet(
-                    "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
-                )
-                return False
             elif event.type() == QEvent.Type.Drop:
                 mime = getattr(event, "mimeData", lambda: None)()
                 if mime is not None and mime.hasUrls():
@@ -1455,7 +1458,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                     return True
             elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
                 if event.key() == Qt.Key.Key_Escape:
-                    self._command_completer.hide_popup()
+                    if self._command_completer is not None:
+                        self._command_completer.hide_popup()
                     self._command_popup_active = False
                     return True
 
@@ -3965,18 +3969,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._orchestrator is not None:
             self._orchestrator = None
         if self._model_pool is not None:
-            try:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._model_pool.aclose())
-                loop.close()
-            except Exception:
-                pass
+            pool = self._model_pool
             self._model_pool = None
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._model_pool.aclose())
-                loop.close()
+                try:
+                    loop.run_until_complete(pool.aclose())
+                finally:
+                    loop.close()
             except Exception:
+                logger.debug("ModelPool.aclose failed", exc_info=True)
                 pass
             self._model_pool = None
         # [2.11] Закрываем браузер.

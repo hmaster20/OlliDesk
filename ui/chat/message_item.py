@@ -828,19 +828,6 @@ class ReasoningWidget(QWidget):
             self._toggle_btn.setText("▼ Развернуть")
             self._animate_height(expand=False)
 
-    def _rebuild_diff_mode(self) -> None:
-        """Пересобирает UI diff-режима (кнопки, стили) — при смене темы."""
-        # Удаляем все layout-элементы, кроме header (index 0).
-        while self._body_layout.count() > 1:
-            item = self._body_layout.takeAt(1)
-            if item is None:
-                break
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self._toggle_btn = None
-        self._render_diff_mode()
-
     def apply_theme(self, dark: bool) -> None:
         """[9.5.1] Перекрашивает виджет под тему."""
         self._dark = dark
@@ -1102,11 +1089,6 @@ class ToolCallCard(QWidget):
         self._dark = dark
         c = _theme_colors(dark)
 
-        # при длинных arguments_json — tooltip с полным текстом.
-        if len(arguments_json) > 200:
-            self._name_label.setToolTip(arguments_json[:2000])
-        # Header — имя инструмента.
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
         outer.addWidget(self._container)
@@ -1129,6 +1111,10 @@ class ToolCallCard(QWidget):
         args_summary = _format_args_short(args)
         text = f"{name}({args_summary})" if args_summary else f"{name}()"
         self._name_label = QLabel(text)
+        # при длинных arguments_json — tooltip с полным текстом.
+        if len(arguments_json) > 200:
+            self._name_label.setToolTip(arguments_json[:2000])
+        # Header — имя инструмента.
         self._name_label.setTextFormat(Qt.TextFormat.PlainText)
         self._name_label.setWordWrap(True)
         self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1528,6 +1514,7 @@ class ChatMessageItem(QWidget):
         parent: QWidget | None = None,
         *,
         dark: bool = True,
+        images: list[str] | None = None,
     ):
         super().__init__(parent)
         self.role = role
@@ -1535,6 +1522,7 @@ class ChatMessageItem(QWidget):
         self.thinking = thinking
         self.mode_name = mode_name
         self._dark = dark
+        self._images: list[str] = images or []
 
         # Внутреннее состояние — по образцу ChatMessage(parts=[...]).
         self._reasoning_widget: ReasoningWidget | None = None
@@ -1548,6 +1536,7 @@ class ChatMessageItem(QWidget):
             self._ensure_reasoning_widget().set_text(thinking)
         if content:
             self._ensure_text_widget().set_text(content)
+        self._image_strip: QWidget | None = None
 
     def _build_ui(self) -> None:
         c = _theme_colors(self._dark)

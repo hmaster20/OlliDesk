@@ -216,6 +216,19 @@ class ChatChunk(BaseModel):
     done: bool = False
     finish_reason: str | None = None
 
+    # ── NEW: read-only совместимость со старым API ──
+    @property
+    def content(self) -> str:
+        return self.part.text if isinstance(self.part, TextPart) else ""
+
+    @property
+    def reasoning_content(self) -> str:
+        return self.part.text if isinstance(self.part, ReasoningPart) else ""
+
+    @property
+    def tool_calls(self) -> list[ToolCall] | None:
+        return self.part.calls if isinstance(self.part, ToolCallPart) else None
+
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_fields(cls, data: Any) -> Any:

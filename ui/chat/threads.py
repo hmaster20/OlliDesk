@@ -305,14 +305,14 @@ class AgentChatThread(QThread):
                 on_budget_exceeded=_on_budget_exceeded,
             )
             # [2.10] Финальный сигнал с причиной остановки.
-            self.agent_finished.emit(
-                {
-                    "finish_reason": loop.last_finish_reason,
-                    "budget": loop.last_budget_snapshot,
-                    "iterations": _budget.iteration_count,
-                    "elapsed_s": round(_budget.elapsed(), 1),
-                }
-            )
+            _iterations = _budget.iteration_count if _budget is not None else 0
+            _elapsed = round(_budget.elapsed(), 1) if _budget is not None else 0.0
+            self.agent_finished.emit({
+                "finish_reason": loop.last_finish_reason,
+                "budget": loop.last_budget_snapshot,
+                "iterations": _iterations,
+                "elapsed_s": _elapsed,
+            })
             return result, loop
 
         try:

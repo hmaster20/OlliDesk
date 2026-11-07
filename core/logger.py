@@ -136,8 +136,9 @@ def _event_bus_sink(record: dict) -> None:
     Любая ошибка глушится: sink не должен валить логирование.
     """
     try:
+        record = message.record
         level_no = record["level"].no
-        if level_no < 20:  # INFO
+        if level_no < 20:
             return
         msg = record.get("message", "")
         if not isinstance(msg, str):
@@ -150,9 +151,7 @@ def _event_bus_sink(record: dict) -> None:
         }
         EventBus.instance().emit(EventKind.LOG.value, payload)
     except Exception:
-        # Sink не должен валить логирование ни при каких условиях.
         logger.debug("EventBus-sink упал", exc_info=True)
-
 
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
@@ -193,7 +192,7 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
                 level=level,
                 format=fmt,
                 catch=True,
-                filter=_redact_filter,  # 0.1.2
+                filter=cast(Any, _redact_filter),
             )
         except Exception:
             # stderr сломан окончательно — файл всё равно останется.
@@ -207,7 +206,7 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
         level=level,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
         catch=True,
-        filter=_redact_filter,  # 0.1.2
+        filter=cast(Any, _redact_filter),
     )
 
     # 2.5: EventBus-sink — INFO+ уходит в UI (LiveEventsPanel).
@@ -222,6 +221,6 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
         _event_bus_sink,
         level="INFO",
         format="{message}",
-        filter=_redact_filter,
+        filter=cast(Any, _redact_filter),
         catch=True,
     )

@@ -40,8 +40,7 @@ from ui.chat.threads import (
 )
 
 if TYPE_CHECKING:
-    pass
-
+    from core.services.model_service import ModelService
 
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
@@ -53,6 +52,8 @@ class BackendsMixin:
     _ollama_client: OllamaClient
     _slm_client: LocalLLMClient | None
     _slm_loading: bool
+    _model_service: ModelService
+    _slm_model_id: str
     _slm_model_name: str
     _slm_load_generation: int
     _slm_load_thread: _SLMLoadThread | None

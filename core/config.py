@@ -997,7 +997,6 @@ class AppConfig(BaseModel):
     # Хранится в config.yaml, читается из env HF_TOKEN (приоритет — config).
     hf_token: str = ""
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
-    confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
