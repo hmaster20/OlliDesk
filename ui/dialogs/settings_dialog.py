@@ -1,6 +1,7 @@
 """Диалог настроек OlliDesk — глобальные и локальные (проектные) конфиги."""
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -10,7 +11,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -65,7 +65,11 @@ class ExcludePatternEditor(QWidget):
             self._list.takeItem(row)
 
     def get_patterns(self) -> list[str]:
-        return [self._list.item(i).text().strip() for i in range(self._list.count()) if self._list.item(i).text().strip()]
+        return [
+            self._list.item(i).text().strip()
+            for i in range(self._list.count())
+            if self._list.item(i).text().strip()
+        ]
 
 
 class ExtensionsEditor(QWidget):
@@ -90,6 +94,19 @@ class ExtensionsEditor(QWidget):
 class SettingsDialog(QDialog):
     """Диалог настроек — редактирование глобального и локального конфига."""
 
+    # 1. Выносим аннотации элементов PyQt на уровень класса.
+    # Это жестко привяжет их к типу QSpinBox/Editor для всех методов!
+    _global_ignore_editor: ExcludePatternEditor
+    _global_ext_editor: ExtensionsEditor
+    _global_max_size: QSpinBox
+    _global_chunk_size: QSpinBox
+    _global_chunk_overlap: QSpinBox
+
+    _local_ignore_editor: ExcludePatternEditor
+    _local_ext_editor: ExtensionsEditor
+    _local_max_size: QSpinBox
+    _local_chunk_size: QSpinBox
+
     def __init__(
         self,
         config: AppConfig,
@@ -97,8 +114,10 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self._config = config
-        self._project_path = project_path
+
+        # 1. Явно аннотируем конфигурацию и пути
+        self._config: AppConfig = config
+        self._project_path: Path | None = project_path
 
         self.setWindowTitle("Настройки OlliDesk")
         self.setMinimumSize(700, 500)
@@ -112,6 +131,8 @@ class SettingsDialog(QDialog):
         self._global_tab = self._create_global_tab()
         self._tabs.addTab(self._global_tab, "Глобальные")
 
+        self._tabs.addTab(self._create_backends_tab(), "Бэкенды LLM")
+
         # Вкладка локальных (проектных) настроек
         self._local_tab = self._create_local_tab()
         if project_path:
@@ -121,7 +142,9 @@ class SettingsDialog(QDialog):
             self._tabs.addTab(self._local_tab, "Проект (не открыт)")
 
         # Кнопки
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -130,21 +153,18 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Игнорируемые паттерны
         group = QGroupBox("Паттерны исключения (игнорирование файлов)")
         group_layout = QVBoxLayout(group)
         self._global_ignore_editor = ExcludePatternEditor(self._config.ignored_patterns)
         group_layout.addWidget(self._global_ignore_editor)
         layout.addWidget(group)
 
-        # Расширения для индексации
         group2 = QGroupBox("Расширения файлов для индексации")
         group2_layout = QVBoxLayout(group2)
         self._global_ext_editor = ExtensionsEditor(self._config.index_extensions)
         group2_layout.addWidget(self._global_ext_editor)
         layout.addWidget(group2)
 
-        # Числовые параметры
         nums_layout = QHBoxLayout()
 
         vbox1 = QVBoxLayout()
@@ -188,7 +208,6 @@ class SettingsDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # Игнорируемые паттерны (проектные)
         group = QGroupBox("Паттерны исключения (проектные)")
         group_layout = QVBoxLayout(group)
         local_patterns = self._get_local_value("ignored_patterns", [])
@@ -196,7 +215,6 @@ class SettingsDialog(QDialog):
         group_layout.addWidget(self._local_ignore_editor)
         layout.addWidget(group)
 
-        # Расширения для индексации (проектные)
         group2 = QGroupBox("Расширения файлов (проектные)")
         group2_layout = QVBoxLayout(group2)
         local_exts = self._get_local_value("index_extensions", [])
@@ -204,7 +222,6 @@ class SettingsDialog(QDialog):
         group2_layout.addWidget(self._local_ext_editor)
         layout.addWidget(group2)
 
-        # Числовые параметры (проектные)
         nums_layout = QHBoxLayout()
 
         vbox1 = QVBoxLayout()
@@ -243,6 +260,8 @@ class SettingsDialog(QDialog):
         # Сохраняем глобальный конфиг
         self._config.ignored_patterns = self._global_ignore_editor.get_patterns()
         self._config.index_extensions = self._global_ext_editor.get_extensions()
+
+        # Теперь эти строки встанут ровно на 267 и 268 позиции в файле
         self._config.max_file_size_kb = self._global_max_size.value()
         self._config.chunk_size_tokens = self._global_chunk_size.value()
         self._config.chunk_overlap_tokens = self._global_chunk_overlap.value()
@@ -252,24 +271,79 @@ class SettingsDialog(QDialog):
         if self._project_path:
             local_patterns = self._local_ignore_editor.get_patterns()
             local_exts = self._local_ext_editor.get_extensions()
-            local_max_size = self._local_max_size.value()
-            local_chunk_size = self._local_chunk_size.value()
 
-            local_data = {}
+            val_max_size = self._local_max_size.value()
+            val_chunk_size = self._local_chunk_size.value()
+
+            # Явно указываем dict[str, Any], чтобы mypy разрешил смешанные типы (list и int)
+            local_data: dict[str, Any] = {}
+
             if local_patterns:
                 local_data["ignored_patterns"] = local_patterns
             if local_exts:
                 local_data["index_extensions"] = local_exts
-            if local_max_size > 0:
-                local_data["max_file_size_kb"] = local_max_size
-            if local_chunk_size > 0:
-                local_data["chunk_size_tokens"] = local_chunk_size
+            if val_max_size > 0:
+                local_data["max_file_size_kb"] = val_max_size
+            if val_chunk_size > 0:
+                local_data["chunk_size_tokens"] = val_chunk_size
 
             if local_data:
                 local_path = self._project_path / ".ollidesk" / "config.yaml"
                 local_path.parent.mkdir(parents=True, exist_ok=True)
+
                 import yaml
+
                 with open(local_path, "w", encoding="utf-8") as f:
                     yaml.dump(local_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
+        # enabled-список
+        enabled = ["local_slm"]
+        if self._ollama_enabled_check.isChecked():
+            enabled.append("ollama")
+        self._config.backends.enabled = enabled
+
         self.accept()
+
+    def _create_backends_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel(
+            "OlliDesk по умолчанию работает <b>полностью локально</b> на "
+            "встроенной SLM-модели (llama.cpp). Внешние сервисы <b>не "
+            "подключаются автоматически</b> — включите их здесь, если хотите "
+            "использовать.<br><br>"
+            "Даже при включённом Ollama встроенная SLM остаётся приоритетной: "
+            "Ollama используется как запасной вариант, когда локальная модель "
+            "ещё не загружена."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #888; font-size: 12px; padding: 4px 4px 12px 4px;")
+        layout.addWidget(info)
+
+        self._slm_enabled_check = QCheckBox("🖥 Встроенная SLM (llama.cpp)")
+        self._slm_enabled_check.setChecked(True)
+        self._slm_enabled_check.setEnabled(False)  # всегда включена
+        self._slm_enabled_check.setToolTip("Базовый локальный режим. Всегда включён.")
+        layout.addWidget(self._slm_enabled_check)
+
+        self._ollama_enabled_check = QCheckBox("🌐 Ollama (внешний сервис)")
+        self._ollama_enabled_check.setChecked("ollama" in self._config.backends.enabled)
+        self._ollama_enabled_check.setToolTip(
+            "Внешний сервис на localhost:11434. Даёт доступ к более крупным "
+            "моделям, но требует запущенного сервиса и сетевого трафика. "
+            "Отключено по умолчанию."
+        )
+        layout.addWidget(self._ollama_enabled_check)
+
+        hint = QLabel(
+            "При включении Ollama приложение начнёт опрашивать "
+            "<code>http://localhost:11434</code> при запуске, чтобы проверить "
+            "доступность. Локальная SLM остаётся основным бэкендом."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px; padding-left: 24px;")
+        layout.addWidget(hint)
+
+        layout.addStretch()
+        return tab

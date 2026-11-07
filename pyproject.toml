@@ -1,23 +1,33 @@
 [project]
 name = "ollidesk"
-version = "0.1.0"
+version = "0.1.2"
 description = "Local AI coding assistant for Windows 10"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "PySide6>=6.7,<6.8",
     "pydantic>=2.9,<2.10",
     "pydantic-settings>=2.5,<2.6",
     "PyYAML>=6.0,<6.1",
+    "types-pyyaml>=6.0.12,<6.1",
     "loguru>=0.7,<0.8",
-    "httpx>=0.27,<0.28",
+    "httpx>=0.28,<0.29",
     "chromadb>=0.5,<0.6",
     "sentence-transformers>=3.0,<3.1",
     "tokenizers>=0.20,<0.21",
-    "duckduckgo-search>=6.2,<6.3",
     "rapidocr-onnxruntime>=1.4,<1.5",
     "GitPython>=3.1,<3.2",
     "pathspec>=0.12,<0.13",
     "watchdog>=5.0,<5.1",
+    "ddgs>=9.1,<10.0",
+    "curl-cffi>=0.15,<0.16",
+    "beautifulsoup4>=4.15,<4.16",
+    "pygments>=2.20,<2.21",
+    # --- SLM (встроенная модель) ---
+    "llama-cpp-python>=0.3.0",
+    "huggingface-hub>=0.25.0",
+    "hf_xet>=0.1",
+    # --- Для опроса железа ---
+    "psutil>=5.9,<6.0",
 ]
 
 [project.optional-dependencies]
@@ -28,37 +38,216 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.3",
     "mypy>=1.9",
-    "black>=24.0",
-    "isort>=5.13",
+]
+intel = [
+  "tree-sitter>=0.21",
+  "tree-sitter-python>=0.21",
+  "tree-sitter-c-sharp>=0.21",
+  "tree-sitter-ruby>=0.21",
+  "tree-sitter-yaml>=0.0.4",
+  "python-hcl2>=4.3",          # Terraform/HCL
+  "networkx>=3.2",             # графы/топосорт
+]
+lsp = [
+  "pygls>=1.3",                # клиент LSP (общий)
+]
+# [9.4] Документы для профиля «Исследование».
+# `rapidocr-onnxruntime` уже в основных зависимостях; здесь — парсеры
+# PDF/DOCX/PPTX/XLSX/RTF + pdf2image для OCR сканов (нужен Poppler в системе).
+docs = [
+  "pdfplumber>=0.11,<0.12",
+  "pypdf>=5.0,<6.0",
+  "python-docx>=1.1,<2.0",
+  "python-pptx>=1.0,<2.0",
+  "openpyxl>=3.1,<4.0",
+  "striprtf>=0.0.26,<0.1",
+  # OCR сканов: pdf2image + системный Poppler.
+  "pdf2image>=1.17,<2.0",
 ]
 
 [tool.ruff]
-line-length = 100
-target-version = "py311"
+line-length = 110 # Максимальная длина строки (символов)
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
+# select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "RET", "SIM"]
+# ignore = [
+# "E501",   # Игнорировать слишком длинные строки
+# "SIM108"  # Игнорировать замену If на тернарный оператор
+# ]
+# РАЗРЕШАЕМ КИРИЛЛИЦУ: этот параметр должен лежать строго здесь | важно для RUF
+allowed-confusables = [
+    "А", "а", "Б", "б", "В", "в", "Г", "г", "Д", "д", "Е", "е", "Ж", "ж",
+    "З", "з", "И", "и", "Й", "й", "К", "к", "Л", "л", "М", "м", "Н", "н",
+    "О", "о", "П", "п", "Р", "р", "С", "с", "Т", "т", "У", "у", "Ф", "ф",
+    "Х", "х", "Ц", "ц", "Ч", "ч", "Ш", "ш", "Щ", "щ", "Ъ", "ъ", "Ы", "ы",
+    "Ь", "ь", "Э", "э", "Ю", "ю", "Я", "я"
+]
+# Базовый набор правил для максимального качества, строгости и безопасности
+select = [
+    # --- ВАШИ ИСХОДНЫЕ ПРАВИЛА ---
+    "E",  # pycodestyle (Errors): критические нарушения базового стиля кода
+    "F",      # Pyflakes: логические ошибки, синтаксические баги, неиспользуемые переменные
+    "I",      # isort: строгая сортировка, группировка и чистота секции импортов
+    "N",      # pep8-naming: жесткое соблюдение стандартов именования (CamelCase, snake_case)
+    "UP",     # pyupgrade: автообновление синтаксиса до актуальной версии Python
+    "B",      # flake8-bugbear: поиск неочевидных багов, которые Python пропускает в рантайме
+    "A",      # flake8-builtins: запрет на затенение (перезапись) встроенных функций Python (id, list)
+    "C4",     # flake8-comprehensions: оптимизация и упрощение создания списков, словарей и множеств
+    "PT",     # flake8-pytest-style: унификация стилей написания тестов для pytest
+    "RET",    # flake8-return: контроль за логикой return (убирает лишние else после return)
+    "SIM",    # flake8-simplify: упрощение запутанных условий и избыточных конструкций
+    # --- ДОПОЛНЕНИЯ ДЛЯ МАКСИМАЛЬНОГО КАЧЕСТВА И БЕЗОПАСНОСТИ ---
+#    "ASYNC",  # flake8-async: ловит критические ошибки асинхронности (забытые await, блокирующий ввод-вывод)
+#    "S",      # flake8-bandit: безопасность (поиск уязвимостей, паролей в коде, небезопасных eval/exec)
+#    "BLE",    # flake8-blind-except: запрет на слепой перехват `except Exception: pass`, скрывающий баги
+#    "FBT",    # flake8-boolean-trap: запрет позиционных bool-аргументов в функциях (повышает читаемость)
+#    "C90",    # mccabe: контроль цикломатической сложности (ругается, если функция слишком запутанная)
+#    "COM",    # flake8-commas: контроль висячих запятых (делает git diff чистым и однозначным)
+#    "DTZ",    # flake8-datetimez: запрет datetime без таймзон (избавляет от багов со временем на сервере)
+#    "T10",    # flake8-debugger: гарантирует, что в продакшен не улетят забытые `breakpoint()` и дебаггеры
+#    "ISC",    # flake8-implicit-str-concat: ловит неявное объединение строк (частая опечатка в списках)
+#    "PIE",    # flake8-pie: мелкие улучшения качества кода и удаление дублирующихся конструкций
+#    "RSE",    # flake8-raise: однозначность при вызове исключений (убирает избыточные скобки у raise)
+#    "RUF",    # Ruff-specific rules: глубокие внутренние проверки самого Ruff (утечки памяти и т.д.)
+#    "YTT",    # flake8-2020: ловит устаревшие и ненадёжные способы проверки версии Python
+]
+ignore = [
+    # --- ИСХОДНЫЕ ИСКЛЮЧЕНИЯ ---
+    "E501",    # line-too-long: длинные строки разрешены (удобно для больших экранов и SQL-запросов)
+    "SIM108",  # use-ternary-operator: отключает принудительное сжатие if-else условий в тернарные
+    # --- ТЕХНИЧЕСКИЕ ИСКЛЮЧЕНИЯ ДЛЯ СОВМЕСТИМОСТИ ---
+    "COM812",  # missing-trailing-comma: отключает конфликт запятых, если используется `ruff format`
+    "ISC001",  # single-line-implicit-string-concatenation: отключает конфликт склеивания строк с форматером
+]
+
+[tool.ruff.format]
+quote-style = "preserve" # Оставлять кавычки (одинарные или двойные) такими, как есть
+# ##### quote-style = "single" # Использовать одинарные кавычки '' вместо двойных ""
+indent-style = "space" # Использовать пробелы для отступов
+docstring-code-format = true # Автоматически форматировать примеры кода внутри докстрингов
+
+[tool.ruff.lint.pep8-naming]
+ignore-names = [
+    "eventFilter",
+    "keyPressEvent",
+    "initStyleOption",
+    "closeEvent",
+    "resizeEvent",
+]
+
+# Форматирование и импорты - только ruff (Black-совместимый режим).
+# black и isort удалены из dev-зависимостей: в CI их не было, а ruff
+# покрывает и форматирование, и сортировку импортов (правило I).
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
+# disallow_untyped_defs = true  # Требовать аннотации типов для всех функций
+ignore_missing_imports = true # Игнорировать библиотеки без поддержки типов
+# ВРЕМЕННО ОТКЛЮЧАЕМ ЖЕСТКИЕ ПРАВИЛА:
+disallow_untyped_defs = false       # Разрешаем функции без -> None и типов
+disallow_incomplete_defs = false    # Разрешаем частично аннотированные функции
+check_untyped_defs = true           # Но внутри функций код всё равно проверяем!
+disallow_untyped_calls = false      # Уберет ошибки [no-untyped-call]
+disallow_any_generics = false       # Уберет ошибки [type-arg] для dict без указания типов
+plugins = ["pydantic.mypy"]
 
+[tool.pydantic-mypy]
+init_forbid_extra = false
+init_typed = false
+warn_required_dynamic_aliases = true
+
+# Фаза 1.3: инфраструктура и агенты уже с полными аннотациями — включаем строгие
+# правила для них. ui/ и tests/ пока остаются на общих послаблениях.
 [[tool.mypy.overrides]]
-module = "ui.dialogs.wizard"
-ignore_errors = true
+module = [
+    "core.*",
+    "agents.*",
+    "fs.*",
+    "state.*",
+    "tools.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
-[tool.black]
-line-length = 100
-target-version = ["py311"]
+#    [tool.mypy]
+#    python_version = "3.12"
+#    strict = true
+#    warn_return_any = true
+#    warn_unused_configs = true
+#    ignore_missing_imports = true
+#    disallow_untyped_defs = false
+#    disallow_incomplete_defs = false
+#    check_untyped_defs = true
+#    disallow_untyped_calls = false
+#    disallow_any_generics = false
+#
+#    # Pydantic v2: без плагина mypy не понимает `model_validator(mode="before")`
+#    # и ругается «Unexpected keyword argument "content" for "ChatMessage"» на
+#    # каждый ChatMessage(content=...)/ChatChunk(content=...). Плагин ставится
+#    # вместе с pydantic, отдельная зависимость не нужна.
+#    plugins = ["pydantic.mypy"]
+#
+#    [[tool.mypy.overrides]]
+#    module = [
+#        "core.*",
+#        "agents.*",
+#        "fs.*",
+#        "state.*",
+#        "tools.*",
+#    ]
+#    disallow_untyped_defs = true
+#    disallow_incomplete_defs = true
+#
+#    [tool.pydantic-mypy]
+#    init_forbid_extra = false
+#    init_typed = false
+#    warn_required_dynamic_aliases = true
 
-[tool.isort]
-profile = "black"
-line_length = 100
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=ollidesk --cov-report=term-missing"
+addopts = "--cov=agents --cov=core --cov=fs --cov=state --cov=tools --cov=ui --cov-report=term-missing"
+
+[tool.setuptools]
+packages = ["agents", "core", "fs", "state", "tools", "ui"]
+
+[dependency-groups]
+dev = [
+    "bump-my-version>=1.5,<2.0",
+    "mypy>=1.19.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.15.20",
+]
+
+# Релизный процесс — docs/VERSION.md. `bump-my-version bump patch|minor`
+# поднимает версию в pyproject.toml и core/_version.py, затем вызывает git-cliff,
+# делает релизный коммит и ставит тег v{new_version}.
+[tool.bumpversion]
+current_version = "0.1.2"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+commit = true
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+commit_message = "chore: release v{new_version}"
+message = "chore: release v{new_version}\n\n{current_version} -> {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+
+[[tool.bumpversion.files]]
+filename = "core/_version.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+[[tool.bumpversion.hooks]]
+setup = "git cliff --tag v{new_version} -o CHANGELOG.md"

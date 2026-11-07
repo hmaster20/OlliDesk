@@ -1,7 +1,10 @@
 # Python
+.coverage
+htmlcov/
 __pycache__/
 *.pyc
 .venv/
+.venv_/
 venv/
 *.egg-info/
 dist/
@@ -27,8 +30,16 @@ desktop.ini
 # docs/generated/
 
 ui/web_editor/vendor
-unused
 
 # Локальная база и параметризация
 .ollidesk/vector_db
 .ollidesk/project_settings.yaml
+
+Notes.md
+Roadmap.md
+Model.md
+
+# Локальные отчёты
+mypy-report.txt
+coverage.xml
+.coverage

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -7,9 +8,14 @@ from pydantic import ValidationError
 from core.config import (
     AgentMode,
     AppConfig,
+    BackendSettings,
     ConfigLoader,
+    EmbedModels,
     ModelConfig,
     ModelRole,
+    RerankSettings,
+    SLMConfig,
+    SLMModelInfo,
     ToolPolicy,
     get_model_by_role,
 )
@@ -62,7 +68,7 @@ def _write_yaml(path: Path, data: dict):
 
 class TestAppConfig:
     def test_valid_config(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         assert config.default_model == "qwen2.5-coder:7b"
         assert config.embed_model == "nomic-embed-text"
         assert len(config.models) == 2
@@ -106,6 +112,41 @@ class TestAppConfig:
     def test_empty_models(self):
         config = AppConfig(default_model="test", embed_model="test")
         assert config.models == []
+
+    def test_confirm_defaults_to_no_dialog(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        assert config.confirm.enabled is False
+        assert config.confirm.web_search is False
+
+    def test_confirm_from_yaml(self):
+        config = AppConfig.model_validate({**SAMPLE_GLOBAL_CONFIG, "confirm": {"web_search": True}})
+        assert config.confirm.web_search is True
+        assert config.confirm.enabled is False
+
+    def test_confirm_survives_dump(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        restored = AppConfig.model_validate(config.model_dump())
+        assert restored.confirm == config.confirm
+
+    def test_iteration_defaults(self):
+        config = AppConfig(default_model="test", embed_model="test")
+        assert config.agent_max_iterations == 30
+        assert config.chat_max_iterations == 7
+
+    def test_iteration_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            AppConfig(default_model="test", embed_model="test", agent_max_iterations=0)
+
+    def test_iteration_survives_dump(self):
+        config = AppConfig(default_model="test", embed_model="test", agent_max_iterations=42)
+        restored = AppConfig.model_validate(config.model_dump())
+        assert restored.agent_max_iterations == 42
+
+    def test_tool_policies_from_yaml(self):
+        config = AppConfig.model_validate(
+            {**SAMPLE_GLOBAL_CONFIG, "tool_policies": {"write_file": "ask_first"}}
+        )
+        assert config.tool_policies["write_file"] == ToolPolicy.ASK_FIRST
 
 
 class TestConfigLoader:
@@ -199,7 +240,7 @@ class TestConfigLoader:
         config_path = tmp_path / ".ollidesk" / "config.yaml"
         loader.global_config_path = config_path
 
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         loader.save_config(config)
 
         loaded = loader.load_config()
@@ -224,19 +265,93 @@ class TestConfigLoader:
         assert loaded.embed_model == "local-embed"
 
 
+class TestConfigMigration:
+    def test_legacy_extensions_expanded(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {
+                **SAMPLE_GLOBAL_CONFIG,
+                "schema_version": "v1",
+                "index_extensions": [
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".tsx",
+                    ".jsx",
+                    ".html",
+                    ".css",
+                    ".md",
+                    ".json",
+                    ".yaml",
+                    ".yml",
+                ],
+            },
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.schema_version == "v2"
+        assert ".cs" in config.index_extensions
+        assert ".go" in config.index_extensions
+        assert ".py" in config.index_extensions
+
+    def test_custom_extensions_preserved(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {**SAMPLE_GLOBAL_CONFIG, "index_extensions": [".py", ".js", ".ts"]},
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.index_extensions == [".py", ".js", ".ts"]
+        assert config.schema_version == "v2"
+
+    def test_v2_config_not_changed(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        _write_yaml(
+            global_config,
+            {**SAMPLE_GLOBAL_CONFIG, "schema_version": "v2", "index_extensions": [".py"]},
+        )
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert config.index_extensions == [".py"]
+
+    def test_missing_extensions_get_default(self, tmp_path: Path):
+        global_config = tmp_path / ".ollidesk" / "config.yaml"
+        data = dict(SAMPLE_GLOBAL_CONFIG)
+        data.pop("index_extensions")
+        _write_yaml(global_config, data)
+
+        loader = ConfigLoader()
+        loader.global_config_path = global_config
+
+        config = loader.load_config()
+        assert ".cs" in config.index_extensions
+        assert ".py" in config.index_extensions
+
+
 class TestGetModelByRole:
     def test_find_chat_model(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         model = get_model_by_role(config, ModelRole.CHAT)
         assert model.name == "Qwen 2.5 Coder 7B"
 
     def test_find_embed_model(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         model = get_model_by_role(config, ModelRole.EMBED)
         assert model.name == "Nomic Embed Text"
 
     def test_model_not_found(self):
-        config = AppConfig(**SAMPLE_GLOBAL_CONFIG)
+        config = AppConfig.model_validate(SAMPLE_GLOBAL_CONFIG)
         with pytest.raises(ConfigError, match="не найдена"):
             get_model_by_role(config, ModelRole.RERANK)
 
@@ -293,3 +408,123 @@ class TestEnumValues:
         assert AgentMode.CHAT.value == "chat"
         assert AgentMode.PLAN.value == "plan"
         assert AgentMode.AGENT.value == "agent"
+
+
+class TestBackendSettings:
+    """Настройки выбора бэкендов, которые читает agents/model_router.py."""
+
+    def test_defaults(self):
+        cfg = AppConfig(default_model="m", embed_model="e")
+        assert cfg.backends.priority == ["local_slm", "ollama"]
+        assert cfg.backends.embed_backend == "auto"
+
+    def test_priority_rejects_unknown_backend(self):
+        with pytest.raises(ValidationError):
+            BackendSettings(priority=["ollama", "gpt"])
+
+    def test_priority_deduplicates(self):
+        settings = BackendSettings(priority=["local_slm", "ollama", "local_slm"])
+        assert settings.priority == ["local_slm", "ollama"]
+
+    def test_embed_backend_accepts_known_values(self):
+        for value in ("auto", "ollama", "local_slm"):
+            assert BackendSettings(embed_backend=value).embed_backend == value
+
+    def test_embed_backend_rejects_unknown(self):
+        with pytest.raises(ValidationError):
+            BackendSettings(embed_backend="vllm")
+
+    def test_slm_first_order_preserved(self):
+        # Именно так секция приходит из config.yaml — сырым словарём.
+        cfg = AppConfig(
+            default_model="m",
+            embed_model="e",
+            backends=cast(BackendSettings, {"priority": ["local_slm", "ollama"]}),
+        )
+        assert cfg.backends.priority == ["local_slm", "ollama"]
+
+
+class TestSLMThreads:
+    """n_threads=0 означает авто-определение по числу физических ядер."""
+
+    def test_default_is_auto(self):
+        assert SLMConfig().n_threads == 0
+
+    def test_explicit_value_kept(self):
+        assert SLMConfig(n_threads=6).n_threads == 6
+
+
+class TestSLMModels:
+    """Встроенный каталог SLM-моделей и per-model окно контекста."""
+
+    def test_builtin_models_include_14b(self):
+        ids = {m.id for m in SLMConfig().get_chat_models()}
+        # В каталоге 14B идёт с суффиксом квантования (q4_k_m/q5_k_m/q6_k).
+        assert any("14b" in mid for mid in ids), sorted(ids)
+
+    def test_chat_models_have_context(self):
+        for model in SLMConfig().get_chat_models():
+            assert model.n_ctx > 0
+
+    def test_stale_config_list_is_synced(self):
+        # Сохранённый список без 14B должен дополниться встроенными моделями.
+        stale = SLMConfig(
+            available_models=[
+                SLMModelInfo(
+                    id="qwen2.5-7b-instruct",
+                    repo="old/repo",
+                    file="old.gguf",
+                    display_name="Old",
+                    kind="chat",
+                )
+            ],
+        )
+        by_id = {m.id: m for m in stale.available_models}
+        assert any("14b" in mid for mid in by_id), sorted(by_id)
+        # Пользовательская (не встроенная) модель тоже сохранилась.
+        assert "qwen2.5-7b-instruct" in by_id
+
+    def test_custom_model_preserved(self):
+        custom = SLMConfig(
+            available_models=[
+                SLMModelInfo(
+                    id="my-custom",
+                    repo="me/custom",
+                    file="custom.gguf",
+                    display_name="Custom",
+                    kind="chat",
+                    n_ctx=2048,
+                )
+            ],
+        )
+        by_id = {m.id: m for m in custom.available_models}
+        assert by_id["my-custom"].n_ctx == 2048
+
+
+class TestRerankSettings:
+    def test_defaults_disabled(self):
+        settings = RerankSettings()
+        assert settings.enabled is False
+        assert settings.top_k == 20
+        assert settings.model
+
+    def test_top_k_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            RerankSettings(top_k=0)
+
+    def test_appconfig_has_rerank_default(self):
+        config = AppConfig(default_model="m", embed_model="e")
+        assert config.rerank.enabled is False
+
+
+class TestEmbedModels:
+    def test_defaults_empty(self):
+        config = AppConfig(default_model="m", embed_model="e")
+        assert config.embed_models.code is None
+        assert config.embed_models.docs is None
+
+    def test_accepts_split_models(self):
+        models = EmbedModels(code="code-embed", docs="doc-embed")
+        config = AppConfig(default_model="m", embed_model="e", embed_models=models)
+        assert config.embed_models.code == "code-embed"
+        assert config.embed_models.docs == "doc-embed"

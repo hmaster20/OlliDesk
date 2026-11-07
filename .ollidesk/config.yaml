@@ -27,9 +27,12 @@ models:
       - "embed"
     context_length: 8192
 
+# --- Встроенная SLM (fallback) ---
+
 tool_policies:
   write_file: "ask_first"
   web_search: "ask_first"
+  get_weather: "auto"
   read_file: "auto"
   search_codebase: "auto"
 

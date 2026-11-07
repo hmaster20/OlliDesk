@@ -111,6 +111,16 @@ class TestFileIndexer:
         assert chunks[0].start_line == 1
         assert chunks[0].end_line == 3
 
+    async def test_chunk_file_stores_mtime(self, indexer):
+        chunks = indexer.chunk_file("line1\nline2", "test.py", mtime=1234.5)
+
+        assert chunks[0].metadata["mtime"] == 1234.5
+
+    async def test_chunk_file_without_mtime_omits_key(self, indexer):
+        chunks = indexer.chunk_file("line1\nline2", "test.py")
+
+        assert "mtime" not in chunks[0].metadata
+
     async def test_chunk_file_multiple_chunks(self, indexer):
         # chunk_size_tokens=512, token/line~15 => ~34 lines per chunk
         lines = [f"line{i}" for i in range(100)]
@@ -203,3 +213,61 @@ class TestFileIndexerSync:
 
         ids = [c.id for c in chunks]
         assert len(ids) == len(set(ids)), "Chunk IDs must be unique"
+
+    def test_list_project_files_filters(self, tmp_path, indexer):
+        (tmp_path / "main.py").write_text("x = 1")
+        (tmp_path / "logo.png").write_text("img")
+
+        files = indexer.list_project_files(tmp_path)
+
+        assert files == ["main.py"]
+
+
+class TestIgnoreFiles:
+    """Загрузка .gitignore / .indexignore / .ollideskignore."""
+
+    async def test_gitignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".gitignore").write_text("secret.py\nbuild/\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "secret.py").write_text("password")
+        build = tmp_path / "build"
+        build.mkdir()
+        (build / "artifact.py").write_text("y = 2")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        paths = {f.path for f in files}
+        assert "keep.py" in paths
+        assert "secret.py" not in paths
+        assert "build/artifact.py" not in paths
+
+    async def test_indexignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".indexignore").write_text("# comment\n\ndraft.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "draft.py").write_text("wip")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}
+
+    async def test_ollideskignore_patterns_applied(self, tmp_path, config):
+        (tmp_path / ".ollideskignore").write_text("generated.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+        (tmp_path / "generated.py").write_text("auto")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}
+
+    async def test_indexignore_negation_overrides_gitignore(self, tmp_path, config):
+        (tmp_path / ".gitignore").write_text("keep.py\n")
+        (tmp_path / ".indexignore").write_text("!keep.py\n")
+        (tmp_path / "keep.py").write_text("x = 1")
+
+        indexer = FileIndexer(config, tmp_path)
+        files = await indexer.scan_project(tmp_path)
+
+        assert {f.path for f in files} == {"keep.py"}

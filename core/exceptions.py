@@ -31,6 +31,16 @@ class IndexingError(OlliDeskError):
     pass
 
 
+class EmbedderError(OlliDeskError):
+    """Ошибка вычисления эмбеддингов.
+
+    Бэкенд недоступен, модель эмбеддингов не загружена или вернула
+    неожиданное число векторов. Следует из неё, что RAG работать не будет.
+    """
+
+    pass
+
+
 class ToolExecutionError(OlliDeskError):
     """Ошибка выполнения инструмента агента."""
 

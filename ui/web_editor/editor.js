@@ -1,30 +1,39 @@
 /**
- * OlliDesk Editor — Monaco Editor with Python Bridge
+ * OlliDesk Editor — Monaco Editor с несколькими моделями (вкладками).
+ *
+ * Тема: `_pendingTheme` хранит желаемую тему (по умолчанию `'vs-dark'`),
+ * `setTheme(theme)` вызывается из Python (`EditorWidget.set_theme`).
+ * Если вызов приходит до того, как Monaco инициализирован
+ * (`monaco` ещё не глобальный), тема сохраняется в `_pendingTheme` и
+ * применяется в `initEditor` / `closeDiff` / `showDiff`.
+ * Это защищает от гонки: `MainWindow._create_center_panel` вызывает
+ * `set_theme(self.config.theme)` сразу после создания EditorWidget,
+ * а страница может ещё не завершить загрузку.
  */
 
 let monacoEditor = null;
 let diffEditor = null;
 let pythonBridge = null;
 let currentFilePath = null;
-let isDirty = false;
-let originalContent = '';
 let monacoReady = false;
 let pendingFiles = [];
 let requestCounter = 0;
 let pendingRequests = {};
+let _pendingTheme = 'vs-dark';
+
+// path -> { model, viewState, originalContent, isDirty }
+const fileModels = new Map();
 
 async function initEditor() {
-    require.config({
-        paths: { vs: 'vendor/monaco/min/vs' }
-    });
-
+    require.config({ paths: { vs: 'vendor/monaco/min/vs' } });
     await initPythonBridge();
 
-    require(['vs/editor/editor.main'], function() {
+    require(['vs/editor/editor.main'], function () {
         monacoEditor = monaco.editor.create(document.getElementById('container'), {
-            value: '// OlliDesk Editor\n// Select a file to edit',
+            value: '',
             language: 'plaintext',
-            theme: 'vs-dark',
+            // theme не указываем здесь: применяем через setTheme(_pendingTheme),
+            // чтобы не было «вспышки» дефолтной темы до вызова из Python.
             automaticLayout: true,
             fontSize: 14,
             minimap: { enabled: true },
@@ -34,25 +43,53 @@ async function initEditor() {
             insertSpaces: true,
         });
 
-        monacoEditor.onDidChangeModelContent(function() {
-            isDirty = true;
-            updateStatusBar('Modified');
+        // Применяем сохранённую тему. Если Python уже вызвал setTheme до
+        // инициализации Monaco — _pendingTheme уже содержит нужное значение.
+        monaco.editor.setTheme(_pendingTheme);
+
+        monacoEditor.onDidChangeModelContent(function () {
+            const entry = fileModels.get(currentFilePath);
+            if (!entry) return;
+            const dirty = monacoEditor.getValue() !== entry.originalContent;
+            if (dirty !== entry.isDirty) {
+                entry.isDirty = dirty;
+                if (pythonBridge && pythonBridge.set_dirty) {
+                    pythonBridge.set_dirty(currentFilePath, dirty);
+                }
+            }
         });
 
         setupKeybindings();
         monacoReady = true;
-        console.log('Monaco Editor initialized');
+        console.log('Monaco Editor initialized, theme=' + _pendingTheme);
 
-        pendingFiles.forEach(function(fp) {
-            _openFile(fp);
-        });
+        pendingFiles.forEach(item => _openFile(item.filePath, item.line));
         pendingFiles = [];
     });
 }
 
+/**
+ * Переключает тему Monaco.
+ *
+ * Вызывается из Python (`EditorWidget.set_theme`) через
+ * `runJavaScript("setTheme('vs')")` / `setTheme('vs-dark')`.
+ * Может быть вызван до загрузки Monaco — тогда только запоминает тему.
+ *
+ * @param {string} theme - 'vs' | 'vs-dark' | 'hc-black'
+ */
+function setTheme(theme) {
+    _pendingTheme = theme || 'vs-dark';
+    if (typeof monaco !== 'undefined' && monaco.editor) {
+        monaco.editor.setTheme(_pendingTheme);
+        if (diffEditor) {
+            diffEditor.updateOptions({ theme: _pendingTheme });
+        }
+    }
+}
+
 async function initPythonBridge() {
-    return new Promise(function(resolve) {
-        new QWebChannel(qt.webChannelTransport, function(channel) {
+    return new Promise(resolve => {
+        new QWebChannel(qt.webChannelTransport, function (channel) {
             pythonBridge = channel.objects.pythonBridge;
             console.log('Python Bridge connected');
             resolve();
@@ -60,108 +97,126 @@ async function initPythonBridge() {
     });
 }
 
+// ---------- File I/O через Python ----------
+
 function readFile(path) {
-    var requestId = 'r' + (requestCounter++);
-    return new Promise(function(resolve, reject) {
+    const requestId = 'r' + (requestCounter++);
+    return new Promise((resolve, reject) => {
         pendingRequests[requestId] = resolve;
-        try {
-            pythonBridge.read_file(requestId, path);
-        } catch (e) {
-            delete pendingRequests[requestId];
-            reject(e);
-        }
+        try { pythonBridge.read_file(requestId, path); }
+        catch (e) { delete pendingRequests[requestId]; reject(e); }
     });
 }
 
 function writeFile(path, content) {
-    var requestId = 'w' + (requestCounter++);
-    return new Promise(function(resolve, reject) {
+    const requestId = 'w' + (requestCounter++);
+    return new Promise((resolve, reject) => {
         pendingRequests[requestId] = resolve;
-        try {
-            pythonBridge.write_file(requestId, path, content);
-        } catch (e) {
-            delete pendingRequests[requestId];
-            reject(e);
-        }
+        try { pythonBridge.write_file(requestId, path, content); }
+        catch (e) { delete pendingRequests[requestId]; reject(e); }
     });
 }
 
 function onFileContentReady(data) {
-    var resolve = pendingRequests[data.requestId];
-    if (resolve) {
-        delete pendingRequests[data.requestId];
-        resolve(data.content);
-    }
+    const resolve = pendingRequests[data.requestId];
+    if (resolve) { delete pendingRequests[data.requestId]; resolve(data.content); }
 }
 
 function onFileWriteResult(data) {
-    var resolve = pendingRequests[data.requestId];
-    if (resolve) {
-        delete pendingRequests[data.requestId];
-        resolve(data.success);
-    }
+    const resolve = pendingRequests[data.requestId];
+    if (resolve) { delete pendingRequests[data.requestId]; resolve(data.success); }
 }
 
-function openFile(filePath) {
+// ---------- Многомодельный режим ----------
+
+function openFile(filePath, line) {
     if (!monacoReady) {
-        pendingFiles.push(filePath);
+        pendingFiles.push({ filePath, line: line || 0 });
         return;
     }
-    _openFile(filePath);
+    _openFile(filePath, line);
 }
 
-async function _openFile(filePath) {
+async function _openFile(filePath, line) {
     try {
-        updateStatusBar('Loading...');
-        var content = await readFile(filePath);
+        let entry = fileModels.get(filePath);
 
-        if (content === null || content === undefined) {
-            updateStatusBar('Error: file not found');
-            return;
+        if (!entry) {
+            updateStatusBar('Loading...');
+            const content = await readFile(filePath);
+            if (content === null || content === undefined) {
+                updateStatusBar('Error: file not found');
+                return;
+            }
+            const language = detectLanguage(filePath);
+            let model;
+            try {
+                model = monaco.editor.createModel(content, language);
+            } catch (e) {
+                console.warn('Language "' + language + '" unknown, plaintext:', e);
+                model = monaco.editor.createModel(content, 'plaintext');
+            }
+            entry = { model, viewState: null, originalContent: content, isDirty: false };
+            fileModels.set(filePath, entry);
         }
 
+        // Сохраняем view state предыдущей модели.
+        if (monacoEditor && currentFilePath) {
+            const prev = fileModels.get(currentFilePath);
+            if (prev) prev.viewState = monacoEditor.saveViewState();
+        }
+
+        monacoEditor.setModel(entry.model);
         currentFilePath = filePath;
-        originalContent = content;
-        isDirty = false;
 
-        var language = detectLanguage(filePath);
-        try {
-            var model = monaco.editor.createModel(content, language);
-            monacoEditor.setModel(model);
-        } catch (e) {
-            console.warn('Failed to set language ' + language + ', fallback to plaintext:', e);
-            var model = monaco.editor.createModel(content, 'plaintext');
-            monacoEditor.setModel(model);
+        if (entry.viewState) monacoEditor.restoreViewState(entry.viewState);
+        if (line && line > 0) {
+            monacoEditor.revealLineInCenter(line);
+            monacoEditor.setPosition({ lineNumber: line, column: 1 });
         }
-
+        monacoEditor.focus();
         updateStatusBar(filePath);
         console.log('File opened: ' + filePath);
     } catch (error) {
-        var msg = error.message || error.toString();
+        const msg = error.message || error.toString();
         updateStatusBar('Error: ' + msg);
         console.error('Error opening file:', error);
     }
 }
 
-async function saveFile() {
-    if (!currentFilePath) {
-        updateStatusBar('No file open');
-        return;
-    }
+function closeFile(filePath) {
+    const entry = fileModels.get(filePath);
+    if (!entry) return;
+    if (entry.model) entry.model.dispose();
+    fileModels.delete(filePath);
+    if (currentFilePath === filePath) currentFilePath = null;
+}
 
-    if (!isDirty) {
-        updateStatusBar('No changes');
-        return;
-    }
+function renameOpenFile(oldPath, newPath) {
+    const entry = fileModels.get(oldPath);
+    if (!entry) return;
+    fileModels.delete(oldPath);
+    fileModels.set(newPath, entry);
+    if (currentFilePath === oldPath) currentFilePath = newPath;
+    console.log('Renamed in editor: ' + oldPath + ' -> ' + newPath);
+}
+
+async function saveFile() {
+    if (!currentFilePath) { updateStatusBar('No file open'); return; }
+    const entry = fileModels.get(currentFilePath);
+    if (!entry) return;
+    if (!entry.isDirty) { updateStatusBar('No changes'); return; }
 
     try {
         updateStatusBar('Saving...');
-        var content = monacoEditor.getValue();
-        var success = await writeFile(currentFilePath, content);
-
+        const content = monacoEditor.getValue();
+        const success = await writeFile(currentFilePath, content);
         if (success) {
-            originalContent = content;
-            isDirty = false;
+            entry.originalContent = content;
+            entry.isDirty = false;
+            if (pythonBridge && pythonBridge.set_dirty) {
+                pythonBridge.set_dirty(currentFilePath, false);
+            }
             updateStatusBar('Saved: ' + currentFilePath);
         } else {
             updateStatusBar('Error saving file');
@@ -172,43 +227,41 @@ async function saveFile() {
     }
 }
 
+// ---------- Diff ----------
+
 function showDiff(originalText, modifiedText, language) {
     if (!language) language = 'plaintext';
-
-    if (monacoEditor) {
-        monacoEditor.dispose();
-        monacoEditor = null;
-    }
+    if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
 
     diffEditor = monaco.editor.createDiffEditor(document.getElementById('container'), {
-        theme: 'vs-dark',
+        theme: _pendingTheme,
         automaticLayout: true,
         readOnly: false,
         renderSideBySide: true,
     });
 
-    var originalModel = monaco.editor.createModel(originalText, language);
-    var modifiedModel = monaco.editor.createModel(modifiedText, language);
-
-    diffEditor.setModel({
-        original: originalModel,
-        modified: modifiedModel,
-    });
-
+    const originalModel = monaco.editor.createModel(originalText, language);
+    const modifiedModel = monaco.editor.createModel(modifiedText, language);
+    diffEditor.setModel({ original: originalModel, modified: modifiedModel });
     updateStatusBar('Diff mode');
 }
 
 async function acceptDiff() {
     if (!diffEditor || !currentFilePath) return;
-
     try {
-        var modifiedContent = diffEditor.getModel().modified.getValue();
-        var success = await writeFile(currentFilePath, modifiedContent);
-
+        const modifiedContent = diffEditor.getModel().modified.getValue();
+        const success = await writeFile(currentFilePath, modifiedContent);
         if (success) {
             updateStatusBar('Changes applied');
+            const path = currentFilePath;
+            const entry = fileModels.get(path);
+            if (entry) {
+                entry.model.setValue(modifiedContent);
+                entry.originalContent = modifiedContent;
+                entry.isDirty = false;
+            }
             closeDiff();
-            await openFile(currentFilePath);
+            openFile(path);
         }
     } catch (error) {
         updateStatusBar('Error: ' + error);
@@ -217,86 +270,98 @@ async function acceptDiff() {
 
 function rejectDiff() {
     updateStatusBar('Changes rejected');
+    const path = currentFilePath;
     closeDiff();
-    if (currentFilePath) {
-        openFile(currentFilePath);
-    }
+    if (path) openFile(path);
 }
 
 function closeDiff() {
-    if (diffEditor) {
-        diffEditor.dispose();
-        diffEditor = null;
-    }
-
+    if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
     monacoEditor = monaco.editor.create(document.getElementById('container'), {
         value: '',
         language: 'plaintext',
-        theme: 'vs-dark',
+        // theme применяем через setTheme, чтобы избежать «вспышки» дефолта.
         automaticLayout: true,
         fontSize: 14,
         minimap: { enabled: true },
     });
-
+    monaco.editor.setTheme(_pendingTheme);
     setupKeybindings();
+    if (currentFilePath) {
+        const entry = fileModels.get(currentFilePath);
+        if (entry) monacoEditor.setModel(entry.model);
+    }
 }
 
 function setupKeybindings() {
     monacoEditor.addCommand(
         monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-        function() { saveFile(); }
+        function () { saveFile(); }
     );
 }
 
+// ---------- Определение языка ----------
+
 function detectLanguage(filePath) {
-    var ext = filePath.split('.').pop().toLowerCase();
-    var langMap = {
-        'py': 'python',
-        'js': 'javascript',
-        'ts': 'typescript',
-        'tsx': 'typescript',
-        'jsx': 'javascript',
-        'html': 'html',
-        'css': 'css',
-        'md': 'markdown',
-        'json': 'json',
-        'yaml': 'yaml',
-        'yml': 'yaml',
-        'xml': 'xml',
-        'sql': 'sql',
-        'sh': 'shell',
-        'bash': 'shell',
+    const name = filePath.split(/[/\\]/).pop().toLowerCase();
+    const dotIdx = name.lastIndexOf('.');
+    const ext = dotIdx >= 0 ? name.substring(dotIdx + 1) : '';
+
+    const langMap = {
+        'py': 'python', 'pyi': 'python', 'pyw': 'python',
+        'js': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript', 'jsx': 'javascript',
+        'ts': 'typescript', 'tsx': 'typescript',
+        'html': 'html', 'htm': 'html',
+        'css': 'css', 'scss': 'scss', 'sass': 'scss', 'less': 'less',
+        'vue': 'html', 'svelte': 'html',
+        'json': 'json', 'jsonc': 'json',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'toml': 'ini', 'ini': 'ini', 'cfg': 'ini',
+        'xml': 'xml', 'svg': 'xml', 'xaml': 'xml',
+        'md': 'markdown', 'markdown': 'markdown',
+        'sh': 'shell', 'bash': 'shell', 'zsh': 'shell',
+        'ps1': 'powershell', 'psm1': 'powershell',
+        'bat': 'bat', 'cmd': 'bat',
+        'c': 'c', 'h': 'c',
+        'cpp': 'cpp', 'cxx': 'cpp', 'cc': 'cpp',
+        'hpp': 'cpp', 'hh': 'cpp', 'hxx': 'cpp',
+        'cs': 'csharp', 'csproj': 'xml',
+        'java': 'java', 'kt': 'kotlin', 'kts': 'kotlin',
+        'go': 'go', 'rs': 'rust', 'rb': 'ruby', 'php': 'php',
+        'pl': 'perl', 'lua': 'lua', 'r': 'r', 'dart': 'dart',
+        'swift': 'swift', 'm': 'objective-c', 'mm': 'objective-c',
+        'scala': 'scala', 'groovy': 'groovy', 'sql': 'sql',
     };
+
+    if (name === 'dockerfile' || name.startsWith('dockerfile.')) return 'dockerfile';
+    if (name === 'makefile' || name === 'gnumakefile') return 'makefile';
+    if (name === '.env' || name.startsWith('.env.')) return 'ini';
+
     return langMap[ext] || 'plaintext';
 }
 
+// ---------- Status bar ----------
+
 function updateStatusBar(message) {
-    var statusBar = document.getElementById('status-bar');
+    const statusBar = document.getElementById('status-bar');
     if (!statusBar) return;
     statusBar.textContent = message;
     statusBar.style.display = 'block';
-
     if (message.indexOf('Error') !== 0) {
-        setTimeout(function() {
-            statusBar.style.display = 'none';
-        }, 3000);
+        setTimeout(function () { statusBar.style.display = 'none'; }, 3000);
     }
 }
 
 function getContent() {
-    if (monacoEditor) {
-        return monacoEditor.getValue();
-    }
-    if (diffEditor) {
-        return diffEditor.getModel().modified.getValue();
-    }
+    if (monacoEditor) return monacoEditor.getValue();
+    if (diffEditor) return diffEditor.getModel().modified.getValue();
     return '';
 }
 
 function setContent(content, language) {
     if (!language) language = 'plaintext';
     if (monacoEditor) {
-        var model = monaco.editor.createModel(content, language);
+        const model = monaco.editor.createModel(content, language);
         monacoEditor.setModel(model);
     }
 }

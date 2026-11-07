@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background: #1e1e2e;
+            color: #e6e6e6;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        #diagram {
+            padding: 12px;
+            text-align: center;
+        }
+
+        #diagram svg {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+    <!-- Относительный путь резолвится от file:// директории этого HTML.
+         Работает ТОЛЬКО при load() через QUrl.fromLocalFile, не setHtml. -->
+    <script src="vendor/mermaid.min.js"></script>
+</head>
+
+<body>
+    <div id="diagram" class="mermaid"></div>
+    <script>
+        window.renderMermaid = function (code, theme) {
+            var el = document.getElementById('diagram');
+            if (!el) return;
+            if (typeof mermaid === 'undefined') {
+                el.textContent = 'Mermaid JS не загружен (проверьте vendor/mermaid.min.js)';
+                return;
+            }
+            el.removeAttribute('data-processed');
+            el.innerHTML = '';
+            el.textContent = code || '';
+            try {
+                mermaid.initialize({
+                    startOnLoad: false,
+                    theme: theme || 'dark',
+                    securityLevel: 'strict',
+                    fontFamily: "'Segoe UI', sans-serif",
+                });
+                mermaid.run({ nodes: [el] }).catch(function (err) {
+                    el.textContent = 'Mermaid error: ' + err;
+                });
+            } catch (e) {
+                el.textContent = 'Mermaid error: ' + e;
+            }
+        };
+    </script>
+</body>
+
+</html>

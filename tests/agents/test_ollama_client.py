@@ -138,10 +138,13 @@ class TestOllamaClient:
             async for chunk in client.chat(model="test-model", messages=messages):
                 chunks.append(chunk)
 
-        assert len(chunks) == 3
-        assert chunks[0].content == "Hello"
-        assert chunks[1].content == " world"
-        assert chunks[2].done is True
+        # [4.8.E] start + N delta + end. Считаем только delta — это
+        # семантический payload, устойчиво к числу граничных маркеров.
+        deltas = [c for c in chunks if c.event_type == "delta"]
+        assert [d.content for d in deltas] == ["Hello", " world"]
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
+        assert chunks[-1].done is True
 
     @pytest.mark.asyncio
     async def test_chat_non_stream(self, client):
@@ -162,9 +165,11 @@ class TestOllamaClient:
             async for chunk in client.chat(model="test-model", messages=messages, stream=False):
                 chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0].content == "Full response"
-        assert chunks[0].done is True
+        deltas = [c for c in chunks if c.event_type == "delta"]
+        assert [d.content for d in deltas] == ["Full response"]
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
+        assert chunks[-1].done is True
 
     @pytest.mark.asyncio
     async def test_chat_with_tools(self, client):
@@ -173,9 +178,7 @@ class TestOllamaClient:
         mock_response.json.return_value = {
             "message": {
                 "content": "",
-                "tool_calls": [
-                    {"id": "call_1", "name": "read_file", "arguments": {"path": "main.py"}}
-                ],
+                "tool_calls": [{"function": {"name": "read_file", "arguments": {"path": "main.py"}}}],
             },
             "done": True,
         }
@@ -193,17 +196,21 @@ class TestOllamaClient:
             ):
                 chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0].tool_calls is not None
-        assert chunks[0].tool_calls[0].name == "read_file"
+        tool_chunks = [c for c in chunks if c.event_type == "tool_call"]
+        assert len(tool_chunks) == 1
+        calls = tool_chunks[0].tool_calls
+        assert calls is not None
+        assert len(calls) == 1
+        assert calls[0].name == "read_file"
+        assert calls[0].arguments == {"path": "main.py"}
+        assert chunks[0].event_type == "start"
+        assert chunks[-1].event_type == "end"
 
     @pytest.mark.asyncio
     async def test_chat_connection_error(self, client):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.stream.side_effect = httpx.ConnectError("connection refused")
-
         messages = [ChatMessage(role="user", content="hi")]
-
         with (
             patch.object(client, "_get_client", return_value=mock_client),
             pytest.raises(OllamaConnectionError, match="Не удалось подключиться"),
@@ -234,9 +241,7 @@ class TestOllamaClient:
     async def test_embed_success(self, client):
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        }
+        mock_response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = mock_response
@@ -275,9 +280,7 @@ class TestOllamaClient:
         options = ChatOptions(temperature=0.5)
 
         with patch.object(client, "_get_client", return_value=mock_client):
-            async for _ in client.chat(
-                model="test", messages=messages, options=options, stream=False
-            ):
+            async for _ in client.chat(model="test", messages=messages, options=options, stream=False):
                 pass
 
         call_kwargs = mock_client.post.call_args[1]

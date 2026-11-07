@@ -1,18 +1,18 @@
 """Инициализация приложения OlliDesk."""
 
 import sys
-from pathlib import Path
 
 from loguru import logger
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
+from core._version import __version__
 from core.config import AppConfig, load_config
 from core.exceptions import ConfigError
 from core.logger import setup_logger
-from core.utils import get_app_data_dir
+from core.utils import get_app_data_dir, get_app_icon
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
-from ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 
 
 def _check_config_exists() -> bool:
@@ -22,7 +22,6 @@ def _check_config_exists() -> bool:
 
 def _load_config_or_wizard() -> AppConfig | None:
     """Загружает конфиг или показывает визард.
-
     Returns:
         AppConfig или None, если визард не был завершён
     """
@@ -39,6 +38,7 @@ def _load_config_or_wizard() -> AppConfig | None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     import yaml
+
                     data = yaml.safe_load(f) or {}
                 if data.get("wizard_dismissed"):
                     logger.info("Визард отключён пользователем, использую конфиг по умолчанию")
@@ -50,7 +50,7 @@ def _load_config_or_wizard() -> AppConfig | None:
             except Exception:
                 pass
 
-        logger.info("Запуск визарда первого запуска...")
+        logger.info("Запуск визарда для первого запуска...")
         wizard = SetupWizard()
         if wizard.exec():
             try:
@@ -73,7 +73,6 @@ class OlliDeskApp:
     def run(self) -> int:
         """
         Запускает приложение.
-
         Returns:
             int: Код выхода (0 — успех)
         """
@@ -82,8 +81,17 @@ class OlliDeskApp:
         logger.info("Запуск OlliDesk...")
 
         self.app = QApplication(sys.argv)
+
+        # [FIX] Иконка приложения — до создания любых окон, иначе
+        # SetupWizard (в _load_config_or_wizard) откроется без неё.
+        # QApplication.setWindowIcon распространяется на все QDialog
+        # (QMessageBox, QFileDialog, наши *Dialog) автоматически.
+        icon = get_app_icon()
+        if icon is not None:
+            self.app.setWindowIcon(icon)
+
+        self.app.setApplicationVersion(__version__)
         self.app.setApplicationName("OlliDesk")
-        self.app.setApplicationVersion("1.0.0")
         self.app.setOrganizationName("OlliDesk")
 
         self.config = _load_config_or_wizard()
@@ -94,37 +102,80 @@ class OlliDeskApp:
         self._apply_theme(self.config.theme)
 
         self.main_window = MainWindow(self.config)
+
+        # [FIX] last_model — это имя модели Ollama. Применять его к ChatPanel
+        # имеет смысл только когда Ollama разрешена в backends.enabled.
+        # Иначе:
+        #   * combo моделей скрыт (`_update_model_selector_visibility`),
+        #   * сам combo получает «фантомное» значение 7B,
+        #   * при любом mode_changed `_on_chat_settings_changed` перетирает
+        #     last_model ещё раз — и в config.yaml навсегда оседает 7B,
+        #     хотя реально грузится SLM `qwen2.5-3b-instruct-q4_k_m`.
+        # Правильно: применять last_model только когда Ollama активна,
+        # и логировать одну понятную строку, если проигнорировали.
+        ollama_enabled = "ollama" in self.config.backends.enabled
+
+        if self.config.last_model and ollama_enabled:
+            logger.info(f"Применяю last_model={self.config.last_model}")
+            self.main_window.chat_panel.set_model(self.config.last_model)
+        elif self.config.last_model:
+            logger.info(
+                f"last_model={self.config.last_model!r} не применяется: "
+                f"Ollama выключена (backends.enabled={self.config.backends.enabled}). "
+                f"SLM использует selected_model={self.config.slm.selected_model!r}."
+            )
+
+        if self.config.last_mode:
+            logger.info(f"Применяю last_mode={self.config.last_mode}")
+            # 2.4: публичный API вместо прямого доступа к mode_combo.
+            self.main_window.chat_panel.set_mode_by_name(self.config.last_mode)
+
         self.main_window.theme_changed.connect(self._on_theme_changed)
-        self.main_window.show()
+        self.main_window.showMaximized()
         logger.info("Приложение готово к работе")
 
         return self.app.exec()
 
     def _apply_theme(self, theme: str) -> None:
-        """Применяет тему к приложению.
+        """[9.1] Применяет тему из дизайн-системы (ui.theme).
 
-        Args:
-            theme: 'light' или 'dark'
+        Палитра и QSS приходят из одного источника — `get_colors` и
+        `get_stylesheet`. Дублирование цветов из QSS в палитре убрано.
         """
-        stylesheet = DARK_STYLESHEET if theme == "dark" else LIGHT_STYLESHEET
-        self.app.setStyleSheet(stylesheet)
+        if self.app is None:
+            return
+        from ui.theme import get_colors, get_stylesheet
+
+        self.app.setStyleSheet(get_stylesheet(theme))
+        c = get_colors(theme)
+        palette = self.app.palette()
+        palette.setColor(palette.ColorRole.Window, QColor(c.bg))
+        palette.setColor(palette.ColorRole.WindowText, QColor(c.text))
+        palette.setColor(palette.ColorRole.Base, QColor(c.surface))
+        palette.setColor(palette.ColorRole.Text, QColor(c.text))
+        palette.setColor(palette.ColorRole.Highlight, QColor(c.accent))
+        palette.setColor(palette.ColorRole.HighlightedText, QColor(c.accent_text))
+        palette.setColor(palette.ColorRole.Button, QColor(c.surface))
+        palette.setColor(palette.ColorRole.ButtonText, QColor(c.text))
+        self.app.setPalette(palette)
 
     def _on_theme_changed(self, theme: str) -> None:
         """Обрабатывает смену темы от MainWindow.
-
         Args:
             theme: 'light' или 'dark'
         """
+        if self.config is None:
+            return
         self.config.theme = theme
         self._apply_theme(theme)
         from core.config import save_config
+
         save_config(self.config)
 
 
 def main() -> int:
     """
     Главная функция приложения.
-
     Returns:
         int: Код выхода
     """

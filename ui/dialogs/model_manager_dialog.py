@@ -1,21 +1,31 @@
 """Диалог управления реестром моделей."""
+
 import subprocess
 import sys
-from pathlib import Path
 
+from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit, QLabel,
-    QProgressBar, QWidget, QToolButton, QMenu, QInputDialog
+    QDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
 )
-from loguru import logger
-from core.model_registry import ModelRegistry, ModelInfo
+
+from core.model_registry import ModelInfo, ModelRegistry
+
 
 class PullThread(QThread):
     """Поток для выполнения ollama pull."""
+
     finished = Signal(str, bool)  # model_name, success
-    progress = Signal(str)        # строка вывода
+    progress = Signal(str)  # строка вывода
 
     def __init__(self, model_name: str):
         super().__init__()
@@ -29,11 +39,13 @@ class PullThread(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",
                 bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
-            for line in iter(process.stdout.readline, ''):
-                self.progress.emit(line.strip())
+            if process.stdout is not None:
+                for line in iter(process.stdout.readline, ''):
+                    self.progress.emit(line.strip())
             process.wait()
             success = process.returncode == 0
             self.finished.emit(self.model_name, success)
@@ -57,8 +69,8 @@ class ModelManagerDialog(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Модель", "Локально", "Tools", "Описание", "Действие"])
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
 
         # Кнопки управления
@@ -100,7 +112,7 @@ class ModelManagerDialog(QDialog):
             # Локально
             local_text = "✅" if info.is_local else "⬇️"
             item_local = QTableWidgetItem(local_text)
-            item_local.setTextAlignment(Qt.AlignCenter)
+            item_local.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 1, item_local)
             # Tools
             if info.supports_tools is True:
@@ -114,7 +126,7 @@ class ModelManagerDialog(QDialog):
                 tooltip = "Не проверено"
             item_tools = QTableWidgetItem(tools_text)
             item_tools.setToolTip(tooltip)
-            item_tools.setTextAlignment(Qt.AlignCenter)
+            item_tools.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 2, item_tools)
             # Описание
             desc_item = QTableWidgetItem(info.description)
@@ -136,6 +148,7 @@ class ModelManagerDialog(QDialog):
         """Синхронизирует реестр с Ollama (обновляет локальность)."""
         # Получаем список моделей из Ollama
         import httpx
+
         try:
             resp = httpx.get(f"{self.ollama_url}/api/tags", timeout=5)
             if resp.status_code == 200:
@@ -143,7 +156,9 @@ class ModelManagerDialog(QDialog):
                 ollama_models = [m["name"] for m in data.get("models", [])]
                 self.registry.sync_with_ollama(ollama_models)
                 self.populate_table()
-                QMessageBox.information(self, "Синхронизация", f"Обновлено. Найдено {len(ollama_models)} моделей.")
+                QMessageBox.information(
+                    self, "Синхронизация", f"Обновлено. Найдено {len(ollama_models)} моделей."
+                )
             else:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось получить список моделей: {resp.status_code}")
         except Exception as e:
@@ -152,11 +167,12 @@ class ModelManagerDialog(QDialog):
     def pull_model(self, model_name: str):
         """Запускает загрузку модели через ollama pull."""
         reply = QMessageBox.question(
-            self, "Подтверждение",
+            self,
+            "Подтверждение",
             f"Загрузить модель '{model_name}'?\nЭто может занять время.",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # неопределённый прогресс
@@ -182,25 +198,34 @@ class ModelManagerDialog(QDialog):
         """Проверяет поддержку инструментов для модели."""
         # Вызываем метод из основного приложения? Проще запустить проверку здесь же.
         # Но можно вызвать через сигнал или просто выполнить.
-        from agents.ollama_client import OllamaClient
         import asyncio
+
+        from agents.ollama_client import OllamaClient
+
         async def check():
             client = OllamaClient(base_url=self.ollama_url)
             async with client:
                 return await client.check_tools_support(model_name)
+
         try:
             loop = asyncio.new_event_loop()
             supports = loop.run_until_complete(check())
             loop.close()
             self.registry.update_tool_support(model_name, supports)
             self.populate_table()
-            QMessageBox.information(self, "Результат", f"Модель '{model_name}' {'поддерживает' if supports else 'не поддерживает'} инструменты.")
+            QMessageBox.information(
+                self,
+                "Результат",
+                f"Модель '{model_name}' {'поддерживает' if supports else 'не поддерживает'} инструменты.",
+            )
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось проверить: {e}")
 
     def add_model(self):
         """Ручное добавление модели в реестр."""
-        model_name, ok = QInputDialog.getText(self, "Добавить модель", "Введите имя модели (например, llama3.2):")
+        model_name, ok = QInputDialog.getText(
+            self, "Добавить модель", "Введите имя модели (например, llama3.2):"
+        )
         if ok and model_name.strip():
             if model_name in self.registry.models:
                 QMessageBox.warning(self, "Ошибка", "Модель уже существует в реестре.")
@@ -211,7 +236,7 @@ class ModelManagerDialog(QDialog):
                 description="Пользовательская модель. Отредактируйте описание вручную.",
                 recommended_modes=["chat"],
                 supports_tools=None,
-                is_local=False
+                is_local=False,
             )
             self.registry.save()
             self.populate_table()
@@ -225,11 +250,12 @@ class ModelManagerDialog(QDialog):
             return
         # Спрашиваем подтверждение
         reply = QMessageBox.question(
-            self, "Подтверждение",
+            self,
+            "Подтверждение",
             f"Будет загружено {len(to_pull)} моделей. Продолжить?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         # Запускаем последовательную загрузку (можно сделать параллельно, но осторожно)
         # Пока простой вариант: загружаем по одной
@@ -261,4 +287,5 @@ class ModelManagerDialog(QDialog):
         self.progress_bar.setValue(self.progress_bar.value() + 1)
         # Задержка, чтобы не перегружать сеть
         from PySide6.QtCore import QTimer
+
         QTimer.singleShot(1000, self.pull_all_next)

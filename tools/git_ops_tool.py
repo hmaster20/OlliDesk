@@ -1,6 +1,5 @@
 """Инструменты для работы с Git, доступные агенту."""
 
-
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
 from tools.git_ops import create_snapshot, get_git_status, undo_last_snapshot
@@ -10,7 +9,7 @@ from tools.git_ops import create_snapshot, get_git_status, undo_last_snapshot
     name="get_git_status",
     description="Показывает текущий статус Git-репозитория: ветка, изменённые файлы",
     policy=ToolPolicy.AUTO,
-    modes=[AgentMode.PLAN, AgentMode.AGENT],
+    modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
 )
 def tool_git_status(project_root: str = "") -> str:
     """Возвращает статус Git-репозитория.
