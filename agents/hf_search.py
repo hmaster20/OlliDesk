@@ -252,7 +252,9 @@ async def model_info(repo_id: str) -> HFModelDetails:
     def _do() -> HFModelDetails:
         api = _get_api()
         try:
-            info = api.model_info(repo_id, files_metadata=True, cardData=True)
+            # ИСПРАВЛЕНИЕ: в новых версиях huggingface_hub аргумент cardData удален.
+            # Данные карточки (description, tags) теперь всегда доступны через info.cardData.
+            info = api.model_info(repo_id, files_metadata=True)
         except Exception as e:
             raise HFUnavailableError(f"HF model_info: {e}") from e
 

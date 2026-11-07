@@ -3,12 +3,9 @@
 Открывается кнопкой «🔍 Поиск HF» из `SLMModelsDialog`.
 
 Три панели:
-  * Слева — поиск: QLineEdit + QComboBox фильтра + QListWidget
-    (результаты `search_models`).
-  * Справа сверху — карточка (`model_info`): описание, теги, лицензия,
-    ссылка.
-  * Справа снизу — `.gguf`-файлы (`HFGgufFile`) + кнопка «⬇️ Скачать» /
-    «➕ Добавить в каталог».
+  * Слева — поиск: QLineEdit + QComboBox фильтра + QComboBox сортировки + QListWidget.
+  * Справа сверху — карточка (`model_info`): описание, теги, лицензия, ссылка.
+  * Справа снизу — `.gguf`-файлы (`HFGgufFile`) + кнопка «⬇️ Скачать» / «➕ Добавить в каталог».
 
 Сеть в фоне (`QThread`). Оффлайн — диалог показывает сообщение и не падает.
 """
@@ -49,6 +46,7 @@ from agents.hf_search import (
     search_models,
 )
 
+
 # ---------------------------------------------------------------------------
 # Фоновые потоки
 # ---------------------------------------------------------------------------
@@ -60,10 +58,11 @@ class _SearchThread(QThread):
     done = Signal(list)  # list[HFModel]
     error = Signal(str)
 
-    def __init__(self, query: str, filter_tag: str, limit: int) -> None:
+    def __init__(self, query: str, filter_tag: str, sort_method: str, limit: int) -> None:
         super().__init__()
         self._query = query
         self._filter = filter_tag
+        self._sort = sort_method
         self._limit = limit
 
     def run(self) -> None:
@@ -72,6 +71,7 @@ class _SearchThread(QThread):
                 search_models(
                     self._query,
                     filter_tag=self._filter,
+                    sort=self._sort,
                     limit=self._limit,
                 )
             )
@@ -124,6 +124,7 @@ class HFDialog(QDialog):
         self._current_details: HFModelDetails | None = None
         self._search_thread: _SearchThread | None = None
         self._info_thread: _InfoThread | None = None
+        self._all_models: list[HFModel] = []
 
         self.setWindowTitle("Поиск моделей на HuggingFace")
         self.setMinimumSize(1100, 700)
@@ -158,6 +159,14 @@ class HFDialog(QDialog):
         self.filter_combo.addItem("Все", "")
         self.filter_combo.addItem("text-generation", "text-generation")
         search_row.addWidget(self.filter_combo)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("По скачиваниям", "downloads")
+        self.sort_combo.addItem("По лайкам", "likes")
+        self.sort_combo.addItem("По дате обновления", "lastModified")
+        self.sort_combo.addItem("По издателю (А-Я)", "author")
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        search_row.addWidget(self.sort_combo)
 
         self.search_btn = QPushButton("🔍 Найти")
         self.search_btn.clicked.connect(self._on_search)
@@ -245,6 +254,7 @@ class HFDialog(QDialog):
             return
         query = self.query_edit.text().strip()
         filter_tag = self.filter_combo.currentData() or "gguf"
+        sort_method = self.sort_combo.currentData() or "downloads"
         self.progress.setVisible(True)
         self.search_btn.setEnabled(False)
         self.status_label.setText("Поиск на HuggingFace…")
@@ -252,8 +262,9 @@ class HFDialog(QDialog):
         self.details_view.clear()
         self.files_table.setRowCount(0)
         self._current_details = None
+        self._all_models = []
 
-        self._search_thread = _SearchThread(query, filter_tag, limit=50)
+        self._search_thread = _SearchThread(query, filter_tag, sort_method, limit=50)
         self._search_thread.done.connect(self._on_search_done)
         self._search_thread.error.connect(self._on_search_error)
         self._search_thread.start()
@@ -262,14 +273,44 @@ class HFDialog(QDialog):
     def _on_search_done(self, models: list[HFModel]) -> None:
         self.progress.setVisible(False)
         self.search_btn.setEnabled(True)
+        self._all_models = models
+        self._render_results()
+
+    @Slot()
+    def _on_sort_changed(self) -> None:
+        """Пересортировывает текущий список без повторного запроса."""
+        self._render_results()
+
+    def _render_results(self) -> None:
+        """Отрисовывает список моделей с учетом текущей сортировки."""
         self.results_list.clear()
-        for m in models:
+        if not self._all_models:
+            self.status_label.setText("Ничего не найдено")
+            return
+
+        sort_key = self.sort_combo.currentData()
+
+        # Сортировка
+        if sort_key == "downloads":
+            sorted_models = sorted(self._all_models, key=lambda m: m.downloads, reverse=True)
+        elif sort_key == "likes":
+            sorted_models = sorted(self._all_models, key=lambda m: m.likes, reverse=True)
+        elif sort_key == "lastModified":
+            sorted_models = sorted(self._all_models, key=lambda m: m.last_modified, reverse=True)
+        elif sort_key == "author":
+            # Сортируем по издателю (часть до /)
+            sorted_models = sorted(self._all_models, key=lambda m: m.repo_id.lower())
+        else:
+            sorted_models = self._all_models
+
+        for m in sorted_models:
             tags_str = detect_tags(m.tags, m.pipeline_tag, m.repo_id)
             tag_badge = f" [{'/'.join(tags_str)}]" if tags_str else ""
             item = QListWidgetItem(f"{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}")
             item.setData(Qt.ItemDataRole.UserRole, m.repo_id)
             self.results_list.addItem(item)
-        self.status_label.setText(f"Найдено: {len(models)} моделей")
+
+        self.status_label.setText(f"Найдено: {len(sorted_models)} моделей")
 
     @Slot(str)
     def _on_search_error(self, error: str) -> None:
