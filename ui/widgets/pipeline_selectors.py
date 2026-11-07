@@ -42,6 +42,7 @@ class PipelineSelectors(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
+        self._project_path: str | None = None
         self._updating = False
         # [9.3.2] Активный профиль — для подсветки coder-моделей.
         self._active_profile_id: str = ""
@@ -105,6 +106,9 @@ class PipelineSelectors(QWidget):
         layout.addWidget(self.more_btn)
 
         self.refresh_models()
+
+    def set_project_path(self, path: str) -> None:
+        self._project_path = path
 
     def set_recommended_model(self, model_id: str, profile_name: str = "") -> None:
         """[9.4] Подсвечивает рекомендованную профилем модель в обоих ComboBox.
@@ -386,8 +390,16 @@ class PipelineSelectors(QWidget):
             return
         self._config.slm.planner_model_id = model_id
         save_config(self._config)
+
+        if self._project_path:
+            from pathlib import Path
+            from state.project_settings import ProjectSettings
+            s = ProjectSettings.load(Path(self._project_path))
+            s.planner_model_id = model_id
+            s.save(Path(self._project_path))
+
         logger.info(f"Pipeline: planner={model_id or '(авто)'}")
-        self._sync_combo_tooltip(self.planner_combo)  # NEW
+        self._sync_combo_tooltip(self.planner_combo)
         self.planner_changed.emit(model_id)
 
     def _on_analyst_selected(self, index: int) -> None:
@@ -401,8 +413,16 @@ class PipelineSelectors(QWidget):
             return
         self._config.slm.analyst_model_id = model_id
         save_config(self._config)
+
+        if self._project_path:
+            from pathlib import Path
+            from state.project_settings import ProjectSettings
+            s = ProjectSettings.load(Path(self._project_path))
+            s.analyst_model_id = model_id
+            s.save(Path(self._project_path))
+
         logger.info(f"Pipeline: analyst={model_id or '(авто)'}")
-        self._sync_combo_tooltip(self.analyst_combo)  # NEW
+        self._sync_combo_tooltip(self.analyst_combo)
         self.analyst_changed.emit(model_id)
 
     def _warn_same_model(self) -> None:

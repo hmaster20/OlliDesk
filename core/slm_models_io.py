@@ -61,7 +61,7 @@ def load_slm_models(path: Path | None = None) -> list[SLMModelInfo] | None:
             models.append(SLMModelInfo(**raw))
         except (ValidationError, TypeError) as e:
             logger.warning(f"slm_models.yaml: пропускаю невалидную запись {raw!r}: {e}")
-    logger.info(f"slm_models.yaml: загружено {len(models)} моделей из {p}")
+    logger.debug(f"slm_models.yaml: загружено {len(models)} моделей из {p}")
     return models
 
 

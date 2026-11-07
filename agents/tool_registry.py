@@ -129,6 +129,11 @@ def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
 # Допустимые capability-строки. Закрытый список — правило: capability
 # описывает класс доступа, а не конкретный инструмент. Новые добавляются
 # осознанно, потому что от них зависит Policy Engine (2.7).
+#
+# ВАЖНО: `_FREEDOM_MATRIX` в core/policy.py должен содержать ключ для
+# КАЖДОЙ capability из этого набора — иначе freedom-слой молча
+# дефолтит в "auto" (см. `per_cap = [matrix.get(cap, "auto") ...]`),
+# что для `browser` и `shell` было бы дырой в безопасности.
 _VALID_CAPABILITIES: frozenset[str] = frozenset(
     {
         "fs.read",  # чтение файлов проекта (read_file, list_directory, …)
@@ -138,6 +143,7 @@ _VALID_CAPABILITIES: frozenset[str] = frozenset(
         "git",  # git-операции (status/diff/stash/commit)
         "ui",  # внутреннее состояние агента (гипотезы, RAG-контекст)
         "secrets",  # доступ к секретам (.env, *.pem, id_rsa*) — 2.7
+        "browser",  # browser_control (2.11): isolated / extension / full
     }
 )
 

@@ -3580,6 +3580,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._project_scan_root = None
         self._rag_scope = None
 
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.set_project_path(project_root)
+
         # полный сброс пайплайна вместо ручного обнуления
         self.reset_pipeline()
 
@@ -3606,6 +3609,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if 0 <= idx < self.mode_combo.count():
             self.mode_combo.setCurrentIndex(idx)
         self._show_reasoning = bool(settings.get("show_reasoning", True))
+
+        # [FIX] Подхватываем сохраненный выбор моделей для этого проекта
+        if self._pipeline_selectors is not None:
+            if settings.get("planner_model_id"):
+                self._pipeline_selectors.set_planner(settings["planner_model_id"])
+            if settings.get("analyst_model_id"):
+                self._pipeline_selectors.set_analyst(settings["analyst_model_id"])
 
     def export_chat(self, parent: QWidget | None = None) -> None:
         """[9.6.3] Открывает диалог экспорта текущего чата."""

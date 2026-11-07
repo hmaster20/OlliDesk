@@ -25,6 +25,10 @@ class ProjectSettings(BaseModel):
     # нет (например, при демонстрации).
     show_reasoning: bool = True
 
+    # [FIX] Сохраняем выбор пайплайна для конкретного проекта
+    planner_model_id: str = ""
+    analyst_model_id: str = ""
+
     # [9.4] Git-контекст на момент последнего сохранения.
     git_branch: str = ""
     git_hash: str = ""

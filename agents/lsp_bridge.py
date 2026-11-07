@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 import shutil
 import subprocess
 import threading
@@ -47,8 +48,8 @@ class LspServerSpec:
 INSTALLERS: dict[str, LspServerSpec] = {
     "python": LspServerSpec(
         "python",
-        ["python", "-m", "pip", "install", "pylsp"],
-        ["pylsp"],
+        [sys.executable, "-m", "pip", "install", "pylsp"],
+        [sys.executable, "-m", "pylsp"],
         size_mb_est=15,
     ),
     "csharp": LspServerSpec(
@@ -502,7 +503,10 @@ class LspBridge:
                     logger.error(f"LSP {language}: {e}")
                     return False
 
-        env = {**os.environ, "PIP_TARGET": str(self.cache / "py")}
+        # Было:
+        # env = {**os.environ, "PIP_TARGET": str(self.cache / "py")}
+        # Стало:
+        env = {**os.environ}
         try:
             subprocess.run(
                 spec.cmd_install,
@@ -518,7 +522,17 @@ class LspBridge:
 
     async def _get_client(self, language: str, project_root: str | None) -> _LspClient | None:
         if not self.available(language):
-            return None
+            # [FIX] Динамическая автоустановка LSP при первом запросе
+            if getattr(self.policy, "allow_lsp_download", False):
+                logger.info(f"LSP {language}: сервер не найден, пробую установить...")
+                import asyncio
+                # Запускаем в отдельном потоке, чтобы не блокировать event loop
+                installed = await asyncio.to_thread(self.ensure_installed, language, interactive_confirm=False)
+                if not installed:
+                    return None
+            else:
+                return None
+
         cached = self._clients.get(language)
         if cached is not None:
             return cached

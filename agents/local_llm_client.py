@@ -146,7 +146,9 @@ class LocalLLMClient:
             type_k=kv_type_int,
             type_v=kv_type_int,
             verbose=verbose,
-            chat_format="chatml",
+            # [FIX] Убран chat_format="chatml". Для Qwen2.5 в llama-cpp-python
+            # он вызывает баг со "съеданием" пробелов (слипшийся текст).
+            # Без него llama.cpp использует встроенный chat_template из GGUF.
         )
         load_ms = (time.perf_counter() - load_started) * 1000
 

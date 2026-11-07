@@ -997,6 +997,22 @@ class AgentLoop:
                     await on_token(part.text)
         except Exception as e:
             logger.error(f"Ошибка финального синтеза ({reason}): {e}")
+
+        # [FIX] Очистка от JSON-вызовов, если слабая модель зациклилась
+        if final_text:
+            import re
+            # Удаляем блоки ```json ... ```
+            final_text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", final_text, flags=re.DOTALL)
+            # Удаляем инлайн JSON объекты
+            final_text = re.sub(r'\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\}', '', final_text)
+            final_text = re.sub(r'\{"name":\s*"[^"]+"\}', '', final_text)
+            # Удаляем пустые блоки markdown
+            final_text = re.sub(r"```(?:json)?\s*```", "", final_text)
+            final_text = final_text.strip()
+
+            if not final_text:
+                final_text = "⚠️ Модель зациклилась на вызове инструментов и не смогла сформировать финальный ответ. Попробуйте переформулировать запрос."
+
         return final_text
 
     async def run(
@@ -1566,7 +1582,7 @@ class AgentLoop:
                         extra["search_cache"] = context.search_cache
                     if context.attached_files:
                         extra["attached_files"] = context.attached_files
-                    if context.hypotheses:
+                    if context.hypotheses is not None:
                         extra["hypotheses"] = context.hypotheses
                     if context.security:
                         extra["security"] = context.security

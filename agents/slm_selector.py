@@ -316,7 +316,17 @@ def select_park(
 
     # Analyst — как в select_pair (для research-флоу).
     if Role.ANALYST not in result:
+        # 1. Пробуем найти по тегу
         picked = _pick("analyst", prefer_gpu=False, min_tier=2, max_tier=2)
+        # 2. Фолбэк: просто tier 2 chat-модель, влезающая в RAM (как в select_pair)
+        if not picked:
+            analyst_pool = sorted(
+                [f for f in fits if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"],
+                key=lambda f: f.score,
+                reverse=True,
+            )
+            if analyst_pool:
+                picked = analyst_pool[0].info
         if picked:
             result[Role.ANALYST] = picked
 

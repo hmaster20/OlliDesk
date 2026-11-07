@@ -1749,7 +1749,14 @@ class ChatMessageItem(QWidget):
     # ---------------------------------------------------------------
 
     def _copy_to_clipboard(self) -> None:
-        QApplication.clipboard().setText(self.content)
+        text = self.content
+        if not text and self._text_widget is not None:
+            # Фолбэк, если текст рендерился через parts
+            text = self._text_widget.document().toPlainText()
+
+        if text:
+            QApplication.clipboard().setText(text)
+            logger.debug(f"Скопировано в буфер: {len(text)} символов")
 
     # ---------------------------------------------------------------
     # Обёртка для обратной совместимости (используется в тестах)
