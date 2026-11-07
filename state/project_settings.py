@@ -30,30 +30,6 @@ class ProjectSettings(BaseModel):
     git_hash: str = ""
     git_last_sync: str = ""  # ISO timestamp
 
-
-def snapshot_git_state(project_path: Path) -> dict[str, str]:
-    """[9.4] Снимок git-состояния проекта: ветка, hash, timestamp.
-
-    Используется `ChatPanel` при открытии проекта / перед запросом —
-    чтобы `ProjectSettings.git_branch/hash` не отставали от реальности.
-
-    Args:
-        project_path: Корень проекта.
-
-    Returns:
-        dict ``{"branch": ..., "hash": ..., "timestamp": ...}``. Пустые
-        значения, если проект не под git.
-    """
-    from datetime import datetime
-
-    from tools.git_ops import get_branch_hash, get_current_branch
-
-    return {
-        "branch": get_current_branch(project_path) or "",
-        "hash": get_branch_hash(project_path) or "",
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-    }
-
     def save(self, project_path: Path) -> None:
         """Сохраняет настройки в .ollidesk/project_settings.yaml."""
         settings_dir = project_path / ".ollidesk"
@@ -84,3 +60,27 @@ def snapshot_git_state(project_path: Path) -> dict[str, str]:
         except Exception as e:
             logger.error(f"Ошибка загрузки настроек проекта: {e}")
             return cls()
+
+
+def snapshot_git_state(project_path: Path) -> dict[str, str]:
+    """[9.4] Снимок git-состояния проекта: ветка, hash, timestamp.
+
+    Используется `ChatPanel` при открытии проекта / перед запросом —
+    чтобы `ProjectSettings.git_branch/hash` не отставали от реальности.
+
+    Args:
+        project_path: Корень проекта.
+
+    Returns:
+        dict ``{"branch": ..., "hash": ..., "timestamp": ...}``. Пустые
+        значения, если проект не под git.
+    """
+    from datetime import datetime
+
+    from tools.git_ops import get_branch_hash, get_current_branch
+
+    return {
+        "branch": get_current_branch(project_path) or "",
+        "hash": get_branch_hash(project_path) or "",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }

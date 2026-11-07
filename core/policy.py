@@ -164,9 +164,8 @@ def effective_policy(
         return EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:secrets")
 
     # 1. SecurityPolicy: confidential → блокируем опасные capabilities.
-    if security is not None and security.confidential:
-        if caps & {"net", "shell", "git", "browser"}:
-            return EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:confidential")
+    if security is not None and security.confidential and caps & {"net", "shell", "git", "browser"}:
+        return EffectivePolicy(ToolPolicy.EXCLUDED, False, "security:confidential")
 
     # 2. Режим: инструмент не для текущего режима.
     if current_mode is not None and current_mode not in spec.modes:

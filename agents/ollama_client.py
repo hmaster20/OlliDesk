@@ -227,7 +227,19 @@ class ChatChunk(BaseModel):
             data.pop("reasoning_content", None)
             data.pop("tool_calls", None)
             return data
-        ...
+
+        reasoning = data.pop("reasoning_content", None)
+        content = data.pop("content", None)
+        tool_calls = data.pop("tool_calls", None)
+
+        if reasoning:
+            data["part"] = {"kind": "reasoning", "text": reasoning}
+        elif content:
+            data["part"] = {"kind": "text", "text": content}
+        elif tool_calls:
+            data["part"] = {"kind": "tool_call", "calls": tool_calls}
+
+        return data
 
 
 class ToolSchema(BaseModel):

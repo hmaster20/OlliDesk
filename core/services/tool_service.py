@@ -266,9 +266,7 @@ class ToolService:
             return True
         if tool_name == "git_commit":
             return True
-        if "shell" in effective_policy.reason:
-            return True
-        return False
+        return "shell" in effective_policy.reason
 
 
 __all__ = ["ToolService"]

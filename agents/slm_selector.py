@@ -155,9 +155,6 @@ def select_pair(
     analyst: SLMModelInfo | None = cfg.slm.get_analyst_info()
     planner_source = "явно из конфига" if planner else "автовыбор"
     analyst_source = "явно из конфига" if analyst else "автовыбор"
-
-    planner_source = "явно из конфига" if planner else "автовыбор"
-    analyst_source = "явно из конфига" if analyst else "автовыбор"
     logger.debug(f"select_pair: planner_source={planner_source}, analyst_source={analyst_source}")
 
     # --- 2. Автовыбор planner ---
@@ -206,7 +203,7 @@ def select_pair(
                 f"после автовыбора (второй подходящей модели нет). "
                 f"Работаем в single-model режиме."
             )
-        # analyst = None  ← УДАЛЕНО: не обнуляем, пусть будет тот же объект.
+    return {"planner": planner, "analyst": analyst}
 
 
 def select_park(

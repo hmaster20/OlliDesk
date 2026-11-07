@@ -648,7 +648,7 @@ class ToolRegistry:
                 is_error=True,
                 error_category=ErrorCategory.DIFFERENT_PATH,
             )
-        except (ConnectionError, TimeoutError, httpx.TransportError) as e:
+        except (ConnectionError, httpx.TransportError) as e:
             logger.warning(f"Инструмент {tool_call.name}: временная сетевая ошибка: {e}")
             return ToolResult(
                 tool_call_id=tool_call.id,

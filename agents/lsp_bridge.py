@@ -273,6 +273,45 @@ class _LspClient:
             return []
         return [r for r in result if isinstance(r, dict)]
 
+    async def diagnostics(self, file_path: str, language_id: str) -> list[dict]:
+        """Запрашивает `textDocument/publishDiagnostics` через сервер (10.8).
+
+        LSP-сервер шлёт diagnostics асинхронно (notifications). Мы:
+          1. Открываем файл (`didOpen`/`didChange`).
+          2. Ждём `publishDiagnostics` для этого URI (до таймаута).
+          3. Возвращаем список диагностик.
+
+        Упрощение: не делаем ручной запрос, а слушаем нотификации —
+        их копит `_read_loop`. См. `_diagnostics_by_uri`.
+        """
+        # Открываем файл — сервер начнёт анализ.
+        await self.ensure_open(file_path, language_id)
+        # Даём серверу время прислать diagnostics (у pylsp это быстро;
+        # для C# (roslyn-lsp) может занять 200–500 мс).
+        try:
+            await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            raise
+        uri = Path(file_path).as_uri()
+        raw = self._diagnostics_by_uri.pop(uri, [])
+        # Приводим к единому формату.
+        result: list[dict] = []
+        for d in raw:
+            rng = d.get("range", {}) or {}
+            start = rng.get("start", {}) or {}
+            result.append(
+                {
+                    "file": file_path,
+                    "line": int(start.get("line", 0)) + 1,
+                    "column": int(start.get("character", 0)) + 1,
+                    "severity": int(d.get("severity", 1)),
+                    "message": str(d.get("message", "")),
+                    "source": str(d.get("source", "")),
+                }
+            )
+        return result
+
+
     async def stop(self) -> None:
         """Graceful shutdown → SIGTERM → SIGKILL."""
         if self._initialized and self.process is not None:
@@ -362,7 +401,7 @@ class LspBridge:
         *,
         language: str | None = None,
         timeout_s: float = 5.0,
-    ) -> list[dict]:
+        ) -> list[dict]:
         """Возвращает LSP-диагностику файла (10.8).
 
         Args:
@@ -400,7 +439,7 @@ class LspBridge:
         *,
         language: str | None = None,
         timeout_s: float = 5.0,
-    ) -> list[dict]:
+        ) -> list[dict]:
         """Sync-обёртка `diagnostics_async` — для инструментов.
 
         Создаёт новый event loop, если вызов идёт из sync-контекста
@@ -427,18 +466,6 @@ class LspBridge:
             )
         finally:
             new_loop.close()
-
-
-def _language_for_path(path: Path) -> str | None:
-    """10.8: маппинг расширения в идентификатор LSP-языка."""
-    ext = path.suffix.lower()
-    return {
-        ".py": "python",
-        ".cs": "csharp",
-        ".rb": "ruby",
-        ".go": "go",
-        ".tf": "terraform",
-    }.get(ext)
 
     def available(self, language: str) -> bool:
         """True, если бинарь сервера уже в PATH."""
@@ -555,40 +582,14 @@ def _language_for_path(path: Path) -> str | None:
                 await client.stop()
         self._clients.clear()
 
-    async def diagnostics(self, file_path: str, language_id: str) -> list[dict]:
-        """Запрашивает `textDocument/publishDiagnostics` через сервер (10.8).
 
-        LSP-сервер шлёт diagnostics асинхронно (notifications). Мы:
-          1. Открываем файл (`didOpen`/`didChange`).
-          2. Ждём `publishDiagnostics` для этого URI (до таймаута).
-          3. Возвращаем список диагностик.
-
-        Упрощение: не делаем ручной запрос, а слушаем нотификации —
-        их копит `_read_loop`. См. `_diagnostics_by_uri`.
-        """
-        # Открываем файл — сервер начнёт анализ.
-        await self.ensure_open(file_path, language_id)
-        # Даём серверу время прислать diagnostics (у pylsp это быстро;
-        # для C# (roslyn-lsp) может занять 200–500 мс).
-        try:
-            await asyncio.sleep(0.3)
-        except asyncio.CancelledError:
-            raise
-        uri = Path(file_path).as_uri()
-        raw = self._diagnostics_by_uri.pop(uri, [])
-        # Приводим к единому формату.
-        result: list[dict] = []
-        for d in raw:
-            rng = d.get("range", {}) or {}
-            start = rng.get("start", {}) or {}
-            result.append(
-                {
-                    "file": file_path,
-                    "line": int(start.get("line", 0)) + 1,
-                    "column": int(start.get("character", 0)) + 1,
-                    "severity": int(d.get("severity", 1)),
-                    "message": str(d.get("message", "")),
-                    "source": str(d.get("source", "")),
-                }
-            )
-        return result
+def _language_for_path(path: Path) -> str | None:
+    """10.8: маппинг расширения в идентификатор LSP-языка."""
+    ext = path.suffix.lower()
+    return {
+        ".py": "python",
+        ".cs": "csharp",
+        ".rb": "ruby",
+        ".go": "go",
+        ".tf": "terraform",
+    }.get(ext)

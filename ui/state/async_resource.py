@@ -5,9 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
 class ResourceState(StrEnum):
@@ -21,7 +18,7 @@ class ResourceState(StrEnum):
 
 
 @dataclass
-class AsyncResource(Generic[T]):
+class AsyncResource[T]:
     """Контейнер с состоянием и latest-значением (2.9)."""
 
     state: ResourceState = ResourceState.IDLE
@@ -60,9 +57,7 @@ class AsyncResource(Generic[T]):
         """True, если UI может рисовать latest."""
         if self.state in (ResourceState.READY, ResourceState.REFRESHING):
             return True
-        if self.state == ResourceState.ERROR and self.latest is not None:
-            return True
-        return False
+        return self.state == ResourceState.ERROR and self.latest is not None
 
     def is_loading_first_time(self) -> bool:
         """True, если идёт первая загрузка (latest is None)."""

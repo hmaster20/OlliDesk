@@ -64,10 +64,13 @@ from core.chat_commands import (
 )
 from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
+from core.event_bus import emit_event
+from core.events import EventKind
 from core.model_registry import ModelInfo, ModelRegistry
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
 from core.security import SecurityPolicy
+from core.services.tool_service import ToolService
 from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
 from state.inbox import SessionInbox
@@ -98,6 +101,7 @@ from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 from ui.widgets.command_completer import CommandCompleter
 from ui.widgets.live_events import LiveEventsPanel, QtEventBus
 from ui.widgets.pipeline_selectors import PipelineSelectors
+from ui.widgets.profiles_selector import ProfilesSelector
 
 if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
@@ -1449,10 +1453,21 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                             self._attach_local_file(url.toLocalFile())
                     event.acceptProposedAction()
                     return True
-            if key == Qt.Key.Key_Escape:
-                self._command_completer.hide_popup()
-                self._command_popup_active = False
-                return True
+            elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
+                if event.key() == Qt.Key.Key_Escape:
+                    self._command_completer.hide_popup()
+                    self._command_popup_active = False
+                    return True
+
+        if (
+            obj is self.input_edit
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Return
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self._toggle_send_stop()
+            return True
 
         if (
             obj is self.input_edit
@@ -2058,6 +2073,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         mode: AgentMode,
         rag_context: str,
         override_limit: int | None = None,
+        override_budget=None,
     ):
         """Запускает ReAct-цикл в режимах Plan / Agent.
 
@@ -2174,6 +2190,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_thinking_content = ""
 
         model_name = self.get_current_model()
+        registry = self._build_registry(mode)
         self._agent_thread = AgentChatThread(
             client=client,
             registry=self._build_registry(mode),

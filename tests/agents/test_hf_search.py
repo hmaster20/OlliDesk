@@ -80,6 +80,7 @@ class TestSearchModels:
             r2 = await search_models("qwen", limit=10)
 
         assert len(r1) == 1
+        assert r2 is r1  # второй вызов вернул кэш — тот же объект
         assert r1[0].repo_id == "test/model"
         # Второй вызов — из кэша, API не вызывается.
         assert mock_api.list_models.call_count == 1

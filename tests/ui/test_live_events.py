@@ -17,8 +17,7 @@ from core.events import EventKind  # noqa: E402
 
 @pytest.fixture(scope="module")
 def qapp():
-    app = QApplication.instance() or QApplication([])
-    return app
+    return QApplication.instance() or QApplication([])
 
 
 @pytest.fixture(autouse=True)

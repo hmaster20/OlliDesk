@@ -26,6 +26,8 @@ from typing import Any
 
 from loguru import logger
 
+from agents.ollama_client import ChatMessage
+
 
 @dataclass
 class TaskResult:
@@ -59,9 +61,6 @@ class BenchSummary:
     tool_success_rate: float
     invalid_args_rate: float
     results: list[TaskResult]
-
-
-from agents.ollama_client import ChatMessage
 
 
 def _make_user(content: str) -> ChatMessage:

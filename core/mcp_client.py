@@ -241,14 +241,16 @@ class MCPClient:
         await self._write({"jsonrpc": "2.0", "method": method, "params": params})
 
     async def _write(self, msg: dict) -> None:
-        assert self.process is not None and self.process.stdin is not None
+        assert self.process is not None
+        assert self.process.stdin is not None
         body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         self.process.stdin.write(header + body)
         await self.process.stdin.drain()
 
     async def _read_loop(self) -> None:
-        assert self.process is not None and self.process.stdout is not None
+        assert self.process is not None
+        assert self.process.stdout is not None
         try:
             while True:
                 headers: dict[str, str] = {}
