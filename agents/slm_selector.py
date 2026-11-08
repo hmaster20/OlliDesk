@@ -399,7 +399,7 @@ def select_coder(
                 logger.warning(f"select_coder: профиль ссылается на {model_id!r}, но в каталоге такой нет")
                 continue
             if not is_model_installed(info.file):
-                logger.info(f"select_coder: {model_id!r} не установлена — пропускаю")
+                logger.debug(f"select_coder: {model_id!r} не установлена — пропускаю")
                 continue
             return info
 

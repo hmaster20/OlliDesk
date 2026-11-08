@@ -227,9 +227,16 @@ class BackendsMixin:
         """Человекочитаемое имя активного бэкенда (для UI)."""
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
-            # get_current_model — метод ChatPanel.
-            return f"🌐 Ollama · {self.get_current_model()}"  # type: ignore[attr-defined]
+            return f"🌐 Ollama · {self.get_current_model()}"
         if backend == BackendType.LOCAL_SLM:
+            # Показываем, какие модели реально загружены в пайплайн
+            if getattr(self, "_orchestrator", None) is not None and getattr(self, "_model_pool", None) is not None:
+                try:
+                    p = self._model_pool.spec(Role.PLANNER).model_id.split(".gguf")[0][:15]
+                    a = self._model_pool.spec(Role.ANALYST).model_id.split(".gguf")[0][:15]
+                    return f"🖥 SLM · P:{p} A:{a}"
+                except Exception:
+                    pass
             name = self._slm_model_name or "локальная модель"
             return f"🖥 Локально · {name}"
         if backend == BackendType.RULE_BASED:

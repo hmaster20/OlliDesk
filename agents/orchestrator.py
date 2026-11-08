@@ -439,7 +439,14 @@ class Orchestrator:
             counter=self.counter,
             pieces={"system": prompt, "repo_map": "", "evidence": "", "dynamic": "", "history": ""},
         )
+
+        # [Priority 3] Адаптивный max_tokens
         max_tok = bp.output_reserve
+        if op == OpType.SYNTHESIS:
+            max_tok = min(ctx - bp.available_input, 3000) # Увеличиваем до 3000 для синтеза
+        elif op == OpType.REGEN:
+            max_tok = min(ctx - bp.available_input, 2000)
+
         trimmed = trim_to_tokens(self.counter, prompt, bp.available_input)
         spec = self.pool.spec(role)
         grammar = None

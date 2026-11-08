@@ -202,11 +202,16 @@ class LocalLLMClient:
         stream: bool = True,
         op_type: str | None = None,
         **kwargs: Any,
-    ) -> AsyncIterator[ChatChunk]:
+        ) -> AsyncIterator[ChatChunk]:
         """Генерирует ответ через llama.cpp с построчным стримингом."""
         self.reset_cancel()
 
         chat_messages = self._prepare_messages(messages, tools)
+
+        grammar_str = None
+        if tools and op_type == "tool_call":
+            from agents.gbnf import get_tool_call_grammar
+            grammar_str = get_tool_call_grammar()
 
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
@@ -258,6 +263,7 @@ class LocalLLMClient:
                         top_p=0.8,
                         stream=True,
                         stop=["<|im_end|>", "<|im_start|>"],
+                        grammar=grammar_str,
                     )
                     for chunk in response:
                         if self._cancel_requested:
@@ -274,6 +280,16 @@ class LocalLLMClient:
                         content = str(delta.get("content") or "")
                         if not content:
                             continue
+
+                        # [FIX] Эвристика для склеивания пробелов у Qwen2.5
+                        if full_text_parts:
+                            prev = full_text_parts[-1]
+                            if prev and prev[-1].isalnum() and content[0].isalnum():
+                                if not content.startswith((".", ",", "!", "?", ")", "]", "}", ":", ";")):
+                                    # Проверяем, что это не часть кода/JSON
+                                    if not (prev.endswith('"') or content.startswith('"')):
+                                        content = " " + content
+
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                         full_text_parts.append(content)
@@ -284,7 +300,6 @@ class LocalLLMClient:
                                 done=False,
                             )
                         )
-
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 # [4.2] Метрики prefix caching.

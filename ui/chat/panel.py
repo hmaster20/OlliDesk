@@ -3934,6 +3934,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """
         light = file_count <= 100 and total_bytes <= 300_000
         if light:
+            q_low = question.lower()
+            # Если явно просят схему/архитектуру — включаем Orchestrator (7B Analyst)
+            if any(w in q_low for w in ("схем", "архитектур", "компонент", "структур", "изучи")):
+                return {
+                    "research": True,
+                    "max_iters": 10,
+                    "split_thoughts": True,
+                    "hypotheses": True,
+                    "phases": "full",
+                }
             return {
                 "research": False,
                 "max_iters": 3,
@@ -4013,6 +4023,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         logger.info(f"Pipeline: planner={model_id or '(авто)'} — reset_pipeline")
         self.reset_pipeline()
         self._update_pipeline_status()
+        if self.project_root:
+            QTimer.singleShot(100, self._ensure_orchestrator)
 
     @Slot(str)
     def _on_analyst_changed(self, model_id: str) -> None:
@@ -4020,6 +4032,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reset_pipeline")
         self.reset_pipeline()
         self._update_pipeline_status()
+        if self.project_root:
+            QTimer.singleShot(100, self._ensure_orchestrator)
 
     # ------------------------------------------------------------------
     # [9.4] Профили использования
