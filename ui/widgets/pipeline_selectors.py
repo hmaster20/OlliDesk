@@ -403,11 +403,33 @@ class PipelineSelectors(QWidget):
         if self._updating:
             return
         model_id = self.planner_combo.itemData(index) or ""
+
+        # [FIX] Защита от выбора недокачанной/битой модели
+        if model_id:
+            from agents.download_slm import is_model_installed, get_model_path
+            info = self._config.slm.get_model_by_id(model_id)
+            if info and not is_model_installed(info.file):
+                QMessageBox.warning(self, "Модель не скачана",
+                    f"Модель {info.display_name} не найдена или повреждена.\n"
+                    f"Скачайте её через меню «...» или выберите другую.")
+                self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
+                return
+            # Проверка размера (если файл < 1 МБ, он точно битый)
+            if info:
+                path = get_model_path(info.file)
+                if path and path.exists() and path.stat().st_size < 1024 * 1024:
+                    QMessageBox.warning(self, "Файл поврежден",
+                        f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
+                        f"Удалите его и скачайте заново.")
+                    self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
+                    return
+
         analyst_id = self.analyst_combo.currentData() or ""
         if model_id and analyst_id and model_id == analyst_id:
             self._warn_same_model()
             self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
             return
+
         self._config.slm.planner_model_id = model_id
         save_config(self._config)
 
@@ -426,11 +448,32 @@ class PipelineSelectors(QWidget):
         if self._updating:
             return
         model_id = self.analyst_combo.itemData(index) or ""
+
+        # [FIX] Защита от выбора недокачанной/битой модели
+        if model_id:
+            from agents.download_slm import is_model_installed, get_model_path
+            info = self._config.slm.get_model_by_id(model_id)
+            if info and not is_model_installed(info.file):
+                QMessageBox.warning(self, "Модель не скачана",
+                    f"Модель {info.display_name} не найдена или повреждена.\n"
+                    f"Скачайте её через меню «...» или выберите другую.")
+                self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
+                return
+            if info:
+                path = get_model_path(info.file)
+                if path and path.exists() and path.stat().st_size < 1024 * 1024:
+                    QMessageBox.warning(self, "Файл поврежден",
+                        f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
+                        f"Удалите его и скачайте заново.")
+                    self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
+                    return
+
         planner_id = self.planner_combo.currentData() or ""
         if model_id and planner_id and model_id == planner_id:
             self._warn_same_model()
             self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
             return
+
         self._config.slm.analyst_model_id = model_id
         save_config(self._config)
 

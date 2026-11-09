@@ -468,25 +468,43 @@ class ResearchMixin:
             self._research_mode_active = False
             self.status_label.setText("Готов к работе")
 
+    def _get_role_name(self, role: Role) -> str:
+        """Возвращает красивое имя роли с размером модели (например, Planner 3B)."""
+        if self._model_pool is not None:
+            try:
+                spec = self._model_pool.spec(role)
+                # Ищем размер модели в ID (например, qwen2.5-14b-instruct-q4_k_m -> 14B)
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?[bBmM])', spec.model_id)
+                size = f" {match.group(1).upper()}" if match else ""
+                role_ru = "Planner" if role == Role.PLANNER else "Analyst"
+                return f"{role_ru}{size}"
+            except Exception:
+                pass
+        return "Planner" if role == Role.PLANNER else "Analyst"
+
     @Slot(str, dict)
     def _on_orchestrator_event(self, kind: str, data: dict) -> None:
-        """Пробрасывает событие Orchestrator'а в UI (статус + thought)."""
+        """Пробрасывает событие Orchestrator'а в UI с реальными именами моделей."""
+        planner_name = self._get_role_name(Role.PLANNER)
+        analyst_name = self._get_role_name(Role.ANALYST)
+
         if kind == "classify":
-            self.status_label.setText("🧠 Классификация…")
+            self.status_label.setText(f"🧠 {planner_name}: Классификация…")
         elif kind == "plan":
             task = data.get("task", "?")
             files = data.get("files", 0)
             deep = data.get("deep", False)
-            self.status_label.setText(f"📋 План: {task}, файлов={files}" + (" (deep)" if deep else ""))
+            self.status_label.setText(f"📋 {planner_name}: План [{task}], файлов={files}" + (" (deep)" if deep else ""))
         elif kind == "coverage":
             val = float(data.get("value", 0.0))
             self.status_label.setText(f"📊 Покрытие: {val:.0%}")
         elif kind == "synthesize":
-            self.status_label.setText("✍️ Синтез (7B CPU)…")
+            self.status_label.setText(f"✍️ {analyst_name}: Синтез ответа (это может занять время)…")
         elif kind == "regen":
-            self.status_label.setText(f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}")
+            self.status_label.setText(f"🔄 {analyst_name}: Регенерация ({str(data.get('reason', ''))[:80]})")
         elif kind == "fallback":
-            self._add_message(  # type: ignore[attr-defined]
+            self._add_message(
                 "system",
                 f"⚠️ Оркестратор упал, использую старый ReAct: {data.get('reason', '')[:120]}",
             )

@@ -223,7 +223,14 @@ def _place_layers(
     if per_layer_total <= 0:
         return 0, 0, model_size_mb + kv_mb
 
-    layers = int(budget / per_layer_total)
+    # Оригинальный расчет словев
+    # layers = int(budget / per_layer_total)
+    # layers = max(0, min(layers, n_layer))
+
+    # Тестовый — пропорциональный offload.
+    # Берем 90% от бюджета, чтобы оставить запас на фрагментацию Windows WDDM
+    safe_budget = int(budget * 0.9)
+    layers = int(safe_budget / per_layer_total)
     layers = max(0, min(layers, n_layer))
 
     # КРИТИЧНО: частичный offload хуже 50% — контрпродуктивен.

@@ -357,7 +357,11 @@ class AgentChatThread(QThread):
             # Зеркалим прогресс в thought-stream — пользователь видит,
             # что работа идёт (без каракулей).
             if kind == "classify":
-                self.thought_chunk.emit(f"🤔 Классификация: {str(data.get('query', ''))[:80]}\n")
+                # Увеличиваем лимит до 200 символов для отображения
+                query_preview = str(data.get('query', ''))[:200]
+                if len(str(data.get('query', ''))) > 200:
+                    query_preview += "…"
+                self.thought_chunk.emit(f"🤔 Классификация: {query_preview}\n")
             elif kind == "plan":
                 self.thought_chunk.emit(
                     f"📋 План: task={data.get('task')}, "
@@ -727,6 +731,12 @@ class _ModelPoolLoadThread(QThread):
                 park_roles = {}
                 profile_n_ctx_hint = 0
 
+            # [FIX] Приоритет 1: явный выбор пользователя из PipelineSelectors
+            if cfg.slm.planner_model_id:
+                park_roles["planner"] = cfg.slm.planner_model_id
+            if cfg.slm.analyst_model_id:
+                park_roles["analyst"] = cfg.slm.analyst_model_id
+
             if park_roles:
                 park = select_park(profile_park_roles=park_roles)
             else:
@@ -833,19 +843,45 @@ class _ModelPoolLoadThread(QThread):
                                 timeout=self._ROLE_LOAD_TIMEOUT,
                             )
                         )
-                    except TimeoutError:
-                        logger.error(
-                            f"SLM pool: таймаут {role.value} ({spec.model_id}) за {self._ROLE_LOAD_TIMEOUT} с"
-                        )
-                        self.error.emit(
-                            f"Таймаут загрузки {role.value} ({spec.model_id}) "
-                            f"за {self._ROLE_LOAD_TIMEOUT:.0f} с. "
-                            f"Скорее всего не хватает VRAM/RAM."
-                        )
-                        return
                     except Exception as e:
-                        logger.exception(f"SLM pool: ошибка {role.value}")
-                        self.error.emit(f"Ошибка загрузки {role.value}: {e}")
+                        logger.error(f"SLM pool: ошибка {role.value}: {e}")
+
+                        # [FIX] Если упал Planner или Router — пробуем загрузить базовую 3B
+                        if role in (Role.PLANNER, Role.ROUTER):
+                            self.progress.emit(f"⚠️ Ошибка {role.value}. Пробую fallback: qwen2.5-3b-instruct-q4_k_m")
+                            from agents.download_slm import get_model_path
+                            from agents.slm_optimizer import optimize
+
+                            fb_info = cfg.slm.get_model_by_id("qwen2.5-3b-instruct-q4_k_m")
+                            if fb_info:
+                                fb_path = get_model_path(fb_info.file)
+                                if fb_path and fb_path.exists():
+                                    try:
+                                        fb_params = optimize(fb_path, target_n_ctx=8192, device="GPU")
+                                        fb_spec = RoleSpec(
+                                            role=role,
+                                            model_id=fb_info.id,
+                                            device="GPU",
+                                            n_ctx=fb_params.n_ctx,
+                                            kv_cache=fb_params.kv_cache_type,
+                                            n_gpu_layers=fb_params.n_gpu_layers,
+                                            temperature=0.0,
+                                            file=str(fb_path),
+                                        )
+                                        optim_params[role] = fb_params
+                                        loop.run_until_complete(
+                                            asyncio.wait_for(
+                                                pool.add_role(fb_spec, factory),
+                                                timeout=self._ROLE_LOAD_TIMEOUT,
+                                            )
+                                        )
+                                        logger.info(f"Fallback для {role.value} успешно загружен.")
+                                        continue
+                                    except Exception as fb_err:
+                                        logger.error(f"Fallback тоже упал: {fb_err}")
+
+                        # Если это Analyst или fallback не помог — показываем ошибку
+                        self.error.emit(f"Ошибка загрузки {role.value} ({spec.model_id}): {e}")
                         return
                     # 2.5 + 4.1: событие slm.loaded с ролью.
                     emit_event(
