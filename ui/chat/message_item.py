@@ -174,6 +174,8 @@ def _inline(text: str) -> str:
         r' border-radius:3px;">\1</span>',
         text,
     )
+    # Каждый кусок кода сохраняется в EvidenceStore и получает ID: [E1], [E2], скрываем это в отчете
+    text = re.sub(r"\[E\d+(?:\s*,\s*E\d+)*\]", "", text)
 
     def _restore_code(m: re.Match[str]) -> str:
         code = html_mod.escape(inline_codes[int(m.group(1))])
