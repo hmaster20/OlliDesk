@@ -1,22 +1,23 @@
 """Генератор GBNF-грамматик для надежного JSON (Priority 1)."""
 from __future__ import annotations
-import json
 
-def json_schema_to_gbnf(schema: dict) -> str:
-    """Упрощенный конвертер JSON Schema в GBNF грамматику llama.cpp."""
-    # Для инструментов мы ожидаем строго объект: {"name": "...", "arguments": {...}}
-    # Это базовая грамматика, которая не даст модели выдать невалидный JSON.
+def get_unified_grammar() -> str:
+    """
+    Грамматика позволяет модели либо выдать JSON-вызов инструмента,
+    либо обычный текст (финальный ответ). Это защищает от зацикливания.
+    """
     return r'''
-root ::= "{" ws "\"name\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "}"
-string ::= "\"" [a-zA-Z0-9_\-]+ "\""
+root ::= json_call | text
+
+json_call ::= "{" ws "\"name\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "}"
 object ::= "{" ws ( pair ( ws "," ws pair )* )? ws "}"
 pair ::= string ws ":" ws value
 value ::= string | number | "true" | "false" | "null" | object | array
 array ::= "[" ws ( value ( ws "," ws value )* )? ws "]"
+
+text ::= [^\x00-\x1F"{}]+ ( "\"" [^\x00-\x1F"{}]* )?
+# Разрешаем кириллицу, латиницу, знаки препинания и переносы строк (кроме незакрытых скобок)
+string ::= "\"" [a-zA-Z0-9_\-а-яА-ЯёЁ \.]+ "\""
 number ::= "-"? [0-9]+ ( "." [0-9]+ )?
 ws ::= [ \t\n]*
 '''
-
-def get_tool_call_grammar() -> str:
-    """Возвращает GBNF для вызова инструментов."""
-    return json_schema_to_gbnf({})

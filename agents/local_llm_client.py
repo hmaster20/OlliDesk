@@ -208,10 +208,14 @@ class LocalLLMClient:
 
         chat_messages = self._prepare_messages(messages, tools)
 
+        # [Priority 1] GBNF грамматика для надежного Tool Call
         grammar_str = None
         if tools and op_type == "tool_call":
-            from agents.gbnf import get_tool_call_grammar
-            grammar_str = get_tool_call_grammar()
+            try:
+                from agents.gbnf import get_unified_grammar
+                grammar_str = get_unified_grammar()
+            except ImportError:
+                logger.warning("GBNF модуль не найден, работаем без грамматики")
 
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
@@ -281,14 +285,9 @@ class LocalLLMClient:
                         if not content:
                             continue
 
-                        # [FIX] Эвристика для склеивания пробелов у Qwen2.5
-                        if full_text_parts:
-                            prev = full_text_parts[-1]
-                            if prev and prev[-1].isalnum() and content[0].isalnum():
-                                if not content.startswith((".", ",", "!", "?", ")", "]", "}", ":", ";")):
-                                    # Проверяем, что это не часть кода/JSON
-                                    if not (prev.endswith('"') or content.startswith('"')):
-                                        content = " " + content
+                        # [FIX] Заменяем маркеры пробелов SentencePiece и BPE на обычный пробел.
+                        # Больше НИКАКИХ isalnum() хаков, которые ломают слова.
+                        content = content.replace("▁", " ").replace("Ġ", " ")
 
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
@@ -340,14 +339,7 @@ class LocalLLMClient:
                     + f", промпт ~{prompt_chars} симв., "
                     f"cache: {cache_reads} reads / {cache_writes} writes"
                 )
-                logger.info(
-                    f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
-                    f"({tokens / (gen_ms / 1000):.1f} ток/с)"
-                    + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
-                    + f", промпт ~{prompt_chars} симв."
-                )
 
-                # [9.5] Tool calls парсятся на полном тексте после стрима.
                 tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
                     tool_calls = self._parse_tool_calls(full_text, tools)
@@ -506,34 +498,34 @@ class LocalLLMClient:
             '  {"name": "read_file", "arguments": {"path": "README.md"}}',
             '  {"name": "search_codebase", "arguments": {"query": "точка входа приложения"}}',
             '  {"name": "get_weather", "arguments": {"city": "Москва"}}',
-            '  {"name": "web_search", "arguments": {"query": "последняя версия Python"}}',
             '  {"name": "get_current_datetime", "arguments": {}}',
+            "",
+            "ВАЖНО ПРО AGENTS.md:",
+            "  Если в проекте есть файл `AGENTS.md` — ПРОЧИТАЙ ЕГО ПЕРВЫМ. Это сводка от автора проекта.",
+            "  Если файла нет — не страшно, изучи проект сам.",
             "",
             "ЗАПРЕЩЕНО:",
             "  • Отвечать на вопросы про структуру, архитектуру, логику или код проекта,",
             "    прочитав ТОЛЬКО список файлов (list_directory).",
-            "  • Возвращать список файлов как финальный ответ на «изучи проект», «опиши",
-            "    архитектуру», «как устроено», «расскажи про проект» и т.п.",
             "  • Выдумывать содержимое файлов — их нужно читать через read_file.",
             "",
             "ПРАВИЛЬНЫЙ ПОРЯДОК для «изучи проект и нарисуй архитектуру»:",
             '  1. list_directory(path=".")             — обзор структуры',
-            '  2. read_file(path="README.md")           — что за проект',
-            '  3. read_file(path="<точка входа>")       — как запускается',
-            '  4. read_file(path="<главный модуль>")    — как устроен',
+            '  2. read_file(path="AGENTS.md")           — если есть (главный приоритет)',
+            '  3. read_file(path="README.md")           — что за проект',
+            '  4. read_file(path="<точка входа>")       — как запускается',
             '  5. read_file(path="<ещё 2-3 файла>")     — детали',
             "  6. Только теперь — финальный ответ текстом с ASCII-схемой.",
             "",
-            "Если задача — «объясни архитектуру» или «как устроено», после",
-            "list_directory ОБЯЗАТЕЛЬНО прочитай не менее 3-5 ключевых файлов.",
-            "Отвечать после одного list_directory — ЗАПРЕЩЕНО.",
+            "СОХРАНЕНИЕ ЗНАНИЙ:",
+            "  Если ты успешно изучил проект, но файла `AGENTS.md` не было —",
+            "  ОБЯЗАТЕЛЬНО вызови `write_file`, чтобы создать `AGENTS.md` и сохранить",
+            "  туда архитектуру, стек и основные компоненты проекта.",
             "",
             "ПРАВИЛА:",
             "- Вызывай инструменты САМ, а не советуй пользователю.",
             "- НЕ выдумывай содержимое файлов — читай их.",
-            "- Данных не хватает — вызови инструмент ещё раз.",
             "- Инструмент вернул ошибку — честно сообщи, не подменяй выдумкой.",
-            '- Общие знания ("Что такое SOLID?") — отвечай без инструментов.',
             "",
             "ДОСТУПНЫЕ ИНСТРУМЕНТЫ:",
         ]

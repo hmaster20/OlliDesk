@@ -361,10 +361,11 @@ class ResearchMixin:
             logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
             self.status_label.setText("✅ Двухмодельный пайплайн готов")
             self._update_pipeline_status()
-            # Обновляем селекторы Planner/Analyst (могли измениться id).
-            refresh = getattr(self, "refresh_pipeline_selectors", None)
-            if callable(refresh):
-                refresh()
+
+            # [FIX] Синхронизируем UI селекторы с реально загруженным пулом
+            if self._pipeline_selectors is not None:
+                self._pipeline_selectors.update_from_pool(pool)
+
         except Exception as e:
             logger.exception("Не удалось создать Orchestrator")
             self._on_pool_error(f"Orchestrator init: {e}")

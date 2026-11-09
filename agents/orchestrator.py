@@ -373,6 +373,29 @@ class Orchestrator:
                     relevance=0.7,
                 )
             )
+
+        # [FIX] Принудительно читаем все файлы из корня проекта,
+        # чтобы 7B не думала, что проект состоит из одного app.py
+        import os
+        root = Path(intel.root)
+        for f in os.listdir(root):
+            fp = root / f
+            if fp.is_file() and f.endswith((".py", ".md", ".txt")):
+                if f in (intel.entry_points or []):
+                    continue # уже прочитано
+                ex = self._read_excerpt(fp, lines=(1, 60))
+                evidence.put(
+                    EvidenceItem(
+                        id="",
+                        kind="file_excerpt",
+                        source_path=f,
+                        start_line=1,
+                        end_line=60,
+                        content=ex,
+                        relevance=0.75,
+                    )
+                )
+
         # 5. RAG-досбор по focus-термам плана (векторный + BM25 через vector_store).
         focus_terms = plan_obj.get("focus", []) + plan_obj.get("must_read", [])
         if self.vector_store and focus_terms and not light:

@@ -1198,6 +1198,7 @@ class AgentLoop:
                     messages=messages,
                     tools=tools_to_send,
                     stream=True,
+                    op_type="tool_call" if tools_to_send else "synthesis",
                 )
 
                 async for chunk in stream:

@@ -110,6 +110,26 @@ class PipelineSelectors(QWidget):
     def set_project_path(self, path: str) -> None:
         self._project_path = path
 
+    def update_from_pool(self, pool) -> None:
+        """Синхронизирует селекторы с реально загруженными моделями в ModelPool."""
+        from agents.model_pool import Role
+        try:
+            p_spec = pool.spec(Role.PLANNER)
+            a_spec = pool.spec(Role.ANALYST)
+
+            self._updating = True
+            p_idx = self.planner_combo.findData(p_spec.model_id)
+            a_idx = self.analyst_combo.findData(a_spec.model_id)
+
+            if p_idx >= 0:
+                self.planner_combo.setCurrentIndex(p_idx)
+            if a_idx >= 0:
+                self.analyst_combo.setCurrentIndex(a_idx)
+        except Exception as e:
+            logger.debug(f"Не удалось синхронизировать селекторы с пулом: {e}")
+        finally:
+            self._updating = False
+
     def set_recommended_model(self, model_id: str, profile_name: str = "") -> None:
         """[9.4] Подсвечивает рекомендованную профилем модель в обоих ComboBox.
 

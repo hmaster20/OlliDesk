@@ -285,8 +285,6 @@ def _mermaid(
     nmap = {n.id: n for n in nodes}
     lines = ["flowchart TD"]
 
-    # Стиль стрелки по типу связи. Осмысленно: пунктир для «использует»,
-    # жирная — для жёстких зависимостей.
     arrow_styles = {
         "imports": "-->",
         "references": "-.->",
@@ -307,16 +305,23 @@ def _mermaid(
             "module_tf": "[[{lbl}]]",
             "box": "([lbl])",
         }.get(n.kind, "[{lbl}]")
-        lbl = f"{n.kind}: {_short(n)}"
-        lines.append(f"  {_mid(n.id)} {shape.format(lbl=_esc(lbl))}")
+
+        # [FIX] Оборачиваем label в двойные кавычки, чтобы Mermaid
+        # не ломался на пробелах и двоеточиях.
+        raw_lbl = f"{n.kind}: {_short(n)}".replace('"', "'")
+        lbl = f'"{raw_lbl}"'
+
+        lines.append(f"  {_mid(n.id)} {shape.format(lbl=lbl)}")
 
     for e in edges:
         if e.source in nmap and e.target in nmap:
             style = arrow_styles.get(e.kind, "-->")
+            # Убираем лишние дефисы, Mermaid понимает только стандартные стрелки
+            if "---" in style:
+                style = "-->"
             lines.append(f"  {_mid(e.source)} {style}|{e.kind}| {_mid(e.target)}")
 
     return "\n".join(lines)
-
 
 def _mid(nid: str) -> str:
     import hashlib
