@@ -1055,7 +1055,8 @@ class AgentLoop:
         )
         research_mode = is_research_question(last_user.content if last_user else "")
         self.was_research_mode = research_mode
-        split_thoughts = research_mode and on_thought is not None
+        # split_thoughts = research_mode and on_thought is not None
+        split_thoughts = on_thought is not None  # для всех режимо
         state = InvestigationState()
         self._preseed_state_from_context(state, context)
 

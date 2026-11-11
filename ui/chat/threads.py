@@ -384,11 +384,17 @@ class AgentChatThread(QThread):
                 preview = ", ".join(str(g) for g in gaps[:3])
                 self.thought_chunk.emit(f"🔁 Досбор данных (итерация {data.get('iter')}): {preview}\n")
 
+        # [FIX] Колбэк для стриминга токенов в UI (печатная машинка)
+        async def _on_token(token: str) -> None:
+            self.chunk_received.emit(token)
+
         project_root = Path(self.context.project_root or ".")
         if not project_root.exists():
             raise FileNotFoundError(f"Корень проекта не найден: {project_root}")
 
         self.status_changed.emit("🧠 Оркестратор: классификация…")
+
+        # [FIX] Передаем on_token в orchestrator.run
         result: RunResult = await self.orchestrator.run(
             user_query,
             project_root=project_root,
@@ -396,18 +402,17 @@ class AgentChatThread(QThread):
             on_event=_on_event,
             quality_mode=False,
             time_budget_s=ORCHESTRATOR_TIME_BUDGET_S,
+            on_token=_on_token, # <-- ПЕРЕДАЕМ СЮДА
         )
 
-        # Стримим ответ одним куском (оркестратор не стримит токены).
-        # ChatPanel._on_chunk создаст ChatMessageItem.
-        self.research_mode_detected.emit(False)
-        if result.answer:
-            self.chunk_received.emit(result.answer)
+        # ВАЖНО: Теперь мы НЕ делаем self.chunk_received.emit(result.answer),
+        # потому что текст уже был отправлен по кусочкам через _on_token!
+        # Убираем эту строку:
+        # if result.answer:
+        #     self.chunk_received.emit(result.answer)
 
         # Полный RunResult (answer + diagram + evidence) — Panel разрулит.
         self.orchestrator_result.emit(result)
-        # НЕ эмитим finish_received — Panel сделает cleanup в
-        # _on_orchestrator_result; иначе будет дубль сообщения.
 
     async def _on_token(self, token: str):
         self.chunk_received.emit(token)

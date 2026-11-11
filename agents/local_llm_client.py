@@ -208,15 +208,6 @@ class LocalLLMClient:
 
         chat_messages = self._prepare_messages(messages, tools)
 
-        # [Priority 1] GBNF грамматика для надежного Tool Call
-        grammar_str = None
-        if tools and op_type == "tool_call":
-            try:
-                from agents.gbnf import get_unified_grammar
-                grammar_str = get_unified_grammar()
-            except ImportError:
-                logger.warning("GBNF модуль не найден, работаем без грамматики")
-
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
         )
@@ -267,7 +258,6 @@ class LocalLLMClient:
                         top_p=0.8,
                         stream=True,
                         stop=["<|im_end|>", "<|im_start|>"],
-                        grammar=grammar_str,
                     )
                     for chunk in response:
                         if self._cancel_requested:

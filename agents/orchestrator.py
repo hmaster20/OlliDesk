@@ -15,7 +15,7 @@ import asyncio
 import json
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,6 +85,7 @@ class Orchestrator:
         quality_mode: bool = False,
         deep: bool | None = None,
         time_budget_s: float | None = None,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
     ) -> RunResult:
         t0 = time.time()
 
@@ -143,7 +144,9 @@ class Orchestrator:
         analyst = self.pool.client(Role.ANALYST)
         ev("synthesize", {"role": "analyst", "input_chars": len(synth_prompt)})
         t_synth = time.time()
-        prose = await self._gen(analyst, Role.ANALYST, OpType.SYNTHESIS, synth_prompt)
+
+        # Передаем on_token в _gen
+        prose = await self._gen(analyst, Role.ANALYST, OpType.SYNTHESIS, synth_prompt, on_token=on_token)
         synth_s = time.time() - t_synth
 
         answer = self._merge(prose, diagram)
@@ -159,24 +162,16 @@ class Orchestrator:
         )
         if (not ver.ok or not crit.ok) and not light:
             # Регенерация стоит столько же, сколько синтез (~synth_s).
-            # Если она не укладывается в бюджет — берём первый ответ как есть.
             elapsed = time.time() - t0
             if time_budget_s is not None and elapsed + synth_s > time_budget_s:
-                ev(
-                    "regen_skipped",
-                    {
-                        "reason": "бюджет времени исчерпан",
-                        "elapsed_s": round(elapsed, 1),
-                        "synth_s": round(synth_s, 1),
-                        "verify_ok": ver.ok,
-                        "critique_ok": crit.ok,
-                    },
-                )
+                ev("regen_skipped", {"reason": "бюджет времени исчерпан"})
             else:
                 ev("regen", {"reason": ver.summary() or crit.hint})
                 fix = self._regen_hint(ver, crit)
+
+                # Передаем on_token и в регенерацию
                 prose2 = await self._gen(
-                    analyst, Role.ANALYST, OpType.REGEN, synth_prompt + "\n\nИСПРАВЬ: " + fix
+                    analyst, Role.ANALYST, OpType.REGEN, synth_prompt + "\n\nИСПРАВЬ: " + fix, on_token=on_token
                 )
                 answer2 = self._merge(prose2, diagram)
                 ver2 = verify(
@@ -454,6 +449,7 @@ class Orchestrator:
         role: Role,
         op: OpType,
         prompt: str,
+        on_token: Callable[[str], Awaitable[None]] | None = None, # <-- ДОБАВИТЬ
     ) -> str:
         ctx = self.pool.runtime_ctx(role)
         bp = plan_budget(
@@ -466,25 +462,31 @@ class Orchestrator:
         # [Priority 3] Адаптивный max_tokens
         max_tok = bp.output_reserve
         if op == OpType.SYNTHESIS:
-            max_tok = min(ctx - bp.available_input, 3000) # Увеличиваем до 3000 для синтеза
+            max_tok = min(ctx - bp.available_input, 3000)
         elif op == OpType.REGEN:
             max_tok = min(ctx - bp.available_input, 2000)
 
         trimmed = trim_to_tokens(self.counter, prompt, bp.available_input)
         spec = self.pool.spec(role)
-        grammar = None
-        json_schema = None
-        if op in (OpType.CLASSIFY, OpType.PLAN, OpType.CRITIQUE):
-            json_schema = {"type": "object"}  # structured output для 3B
-        res = await client.generate(
-            trimmed,
-            max_tokens=max_tok,
-            temperature=spec.temperature,
-            grammar=grammar,
-            json_schema=json_schema,
-            stream=False,
-        )
-        return res if isinstance(res, str) else getattr(res, "content", str(res))
+
+        # [FIX] Используем stream=True для стриминга в UI
+        from agents.ollama_client import ChatMessage
+        messages = [ChatMessage(role="user", content=trimmed)]
+
+        res_parts: list[str] = []
+
+        async for chunk in client.chat(
+            model="",
+            messages=messages,
+            stream=True,
+            op_type="synthesis" if op == OpType.SYNTHESIS else "plan",
+        ):
+            if chunk.content:
+                res_parts.append(chunk.content)
+                if on_token:
+                    await on_token(chunk.content)
+
+        return "".join(res_parts)
 
     def _evidence_budget(self) -> int:
         """Бюджет evidence-пакета в токенах.
