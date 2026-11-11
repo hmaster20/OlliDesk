@@ -88,7 +88,7 @@ from ui.chat.message_item import (
 )
 from ui.chat.research import ResearchMixin
 from ui.chat.research_passport import ChatResearchPassport
-from ui.chat.thought_stream import ChatThoughtStream
+from ui.chat.reasoning_panel import ReasoningPanel
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
@@ -300,7 +300,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._research_cancelled: bool = False
         self._pending_final_answer: str = ""
         self._last_research_summary: dict | None = None
-        self._current_thought_stream: ChatThoughtStream | None = None
 
         self._generating = False
         self._last_run_params: dict | None = None  # для кнопки «Продолжить»
@@ -511,7 +510,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         pending_cards: dict[str, list[ToolCallCard]] = {}
         for part in msg.parts:
             if isinstance(part, ReasoningPart) and part.text:
-                widget.append_reasoning(part.text)
+                # [UI-2024] reasoning идёт в панель, а не в старый ReasoningWidget.
+                widget.reasoning_panel().append_thought_block(part.text)
             elif isinstance(part, TextPart) and part.text:
                 widget.append_text(part.text)
             elif isinstance(part, ToolCallPart):
@@ -1011,19 +1011,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self._update_bubble_width(item.widget())
 
     @Slot(str)
-    @Slot(str)
     def _on_thinking(self, token: str):
         if not token:
             return
-        # 0.1.3b: reasoning аккумулируется в буфер НЕЗАВИСИМО от того,
-        # показываем ли его в UI (_show_reasoning). Иначе при выключенном
-        # тумблере история сессии теряла бы reasoning_content.
         self._current_assistant_reasoning += token
         if not self._show_reasoning:
             return
         self._current_thinking_content += token
+        # [UI-2024] reasoning идёт в панель пузыря, а не в отдельный ReasoningWidget.
         widget = self._ensure_assistant_widget()
-        widget.append_reasoning(token)
+        widget.reasoning_panel().append_thought_token(token)
         self.scroll_area.scroll_to_bottom_if_sticky()
 
     @Slot(str)
@@ -1603,7 +1600,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._hypothesis_widgets.clear()
         self._last_research_summary = None
         self._pending_final_answer = ""
-        self._current_thought_stream = None
         self._research_mode_active = False
         self._research_cancelled = False
         if not keep_session:
@@ -1677,9 +1673,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self._agent_thread.terminate()
                 self._agent_thread.wait(500)
 
-        # Помечаем серый поток как прерванный.
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted("Рассуждение прервано пользователем.")
+        if self._last_assistant_widget is not None:
+            self._last_assistant_widget.reasoning_panel().mark_interrupted(
+                "Рассуждение прервано пользователем."
+            )
 
         # [9.5.7] Активная карточка могла остаться «⏳» — прерываем.
         if self._active_tool_card is not None:
@@ -1710,7 +1707,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_assistant_reasoning = ""
         self._research_mode_active = False
         self._research_cancelled = False
-        self._current_thought_stream = None
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
 
@@ -2416,60 +2412,28 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
 
     @Slot(str, str, bool, object)
-    def _on_tool_executed(
-        self,
-        name: str,
-        content: str,
-        is_error: bool,
-        metadata: dict | None = None,
-    ):
-        """[9.5.7] Обновляет tool-карточку результатом (✓/✗ + preview).
-
-        [9.6.1] `metadata` (dict | None) — структурированные данные от
+    def _on_tool_executed(self, name, content, is_error, metadata=None):
+        """Обновляет tool-карточку результатом (✓/✗ + preview).
+        `metadata` (dict | None) — структурированные данные от
         инструмента. Для `write_file` запускает diff-режим карточки.
         """
-        card_was_present = self._active_tool_card is not None
-
-        # 0.1.3b: фиксируем результат в буфере. Порядок в буфере —
-        # ToolCallPart → ToolResultPart → ToolCallPart → … — важен
-        # для _render_assistant_parts, который матчит результат с
-        # последней pending-карточкой по name.
         self._current_assistant_parts.append(
-            ToolResultPart(
-                call_id="",
-                name=name,
-                content=content or "",
-                is_error=bool(is_error),
-            )
+            ToolResultPart(call_id="", name=name, content=content or "", is_error=bool(is_error))
         )
-
-        # [9.5.4] Возвращаемся в «думает» — модель обработает результат.
         self._set_activity_state("thinking")
 
-        # 1. Обновляем активную карточку.
+        # [UI-2024] Результат — в reasoning-панель (компактно) и в tool-карточку.
+        widget = self._last_assistant_widget
+        if widget is not None:
+            preview = (content or "").strip().replace("\n", " ")[:200]
+            widget.reasoning_panel().append_result(name, ok=not is_error, preview=preview)
+
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(content or "", is_error, metadata)
             self._active_tool_card = None
 
-        # 2. Серый трейс — компактная запись результата (research).
-        if self._current_thought_stream is not None and name not in (
-            "record_hypothesis",
-            "update_hypothesis",
-        ):
-            preview = (content or "").strip().replace("\n", " ")[:200]
-            self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
-
-        # 3. Гипотезы — отдельный виджет (как было).
-        if (
-            name in ("record_hypothesis", "update_hypothesis")
-            and not is_error
-            and self._update_hypothesis_widget(content)
-        ):
-            return
-
-        # 4. Fallback: если карточки не было — отдельное сообщение.
-        if not card_was_present and not self._research_mode_active:
-            self._add_tool_message(name, content, is_error)
+        if name in ("record_hypothesis", "update_hypothesis") and not is_error:
+            self._update_hypothesis_widget(content)
 
     # ------------------------------------------------------------------
     # [9.6.1] Diff-карточка write_file — слоты
@@ -2504,14 +2468,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         path = str(payload.get("path") or "")
         original = str(payload.get("original_content") or "")
         is_new_file = bool(payload.get("is_new_file"))
+        snapshot_id = str(payload.get("snapshot_id") or "")
         if not path:
             return
 
         target = Path(path)
         if is_new_file and target.exists():
             reply = QMessageBox.question(
-                self,
-                "Откат создания файла",
+                self, "Откат создания файла",
                 f"Удалить созданный агентом файл?\n\n{path}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
@@ -2525,9 +2489,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось удалить файл:\n{e}")
             return
 
+        # [UI-2024] Предпочитаем снапшот: он восстанавливает файл бинарно и
+        # корректно обрабатывает новые файлы.
+        if snapshot_id:
+            try:
+                from tools.git_ops import restore_snapshot
+                restored = restore_snapshot(snapshot_id)
+                self.status_label.setText(f"↩ Восстановлено из снапшота: {len(restored)} файл(ов)")
+                logger.info(f"revert write_file: snapshot {snapshot_id} → {restored}")
+                self.source_activated.emit(path, 0)
+                return
+            except Exception as e:
+                logger.warning(f"restore_snapshot({snapshot_id}) упал: {e}; fallback на write_text")
+                # продолжаем — fallback ниже
+
         reply = QMessageBox.question(
-            self,
-            "Откат изменений",
+            self, "Откат изменений",
             f"Восстановить предыдущее содержимое?\n\n{path}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -2538,10 +2515,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             target.write_text(original, encoding="utf-8")
             self.status_label.setText(f"↩ Откат: {target.name}")
             logger.info(f"revert write_file: восстановлен {path}")
-            # Обновляем git-статус.
-            if hasattr(self, "source_activated"):
-                # Файл мог быть открыт в редакторе — перечитать.
-                self.source_activated.emit(path, 0)
+            self.source_activated.emit(path, 0)
         except OSError as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось восстановить файл:\n{e}")
 
@@ -2590,7 +2564,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
-        """[9.5.7] Карточка tool-call создаётся ДО выполнения инструмента.
+        """Карточка tool-call создаётся ДО выполнения инструмента.
 
         В `AgentLoop` `on_tool_start` вызывается до `ask_first` (см. патч
         `agents/agent_loop.py`), поэтому пользователь видит карточку с ⏳
@@ -2605,66 +2579,24 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
             args = {}
-        arg_summary = ", ".join(f"{k}={v}" for k, v in args.items())
-        # 0.1.3b: фиксируем вызов в буфере текущего ответа.
-        # При восстановлении сессии _render_assistant_parts восстановит
-        # карточку и привяжет к ней результат из ToolResultPart.
         self._current_assistant_parts.append(ToolCallPart(calls=[ToolCall(name=name, arguments=args)]))
-        tool_labels = {
-            "read_file": "📖 Чтение файла",
-            "write_file": "✏️ Запись файла",
-            "list_directory": "📁 Просмотр директории",
-            "search_codebase": "🔍 Поиск в кодовой базе",
-            "web_search": "🌐 Поиск в интернете",
-            "get_weather": "🌤 Погода",
-            "get_current_datetime": "🕒 Дата/время",
-            "get_exchange_rate": "💱 Курс валюты",
-            "get_exchange_rates_multi": "💱 Курсы валют",
-            "get_git_status": "🔎 Проверка Git-статуса",
-            "create_snapshot": "📸 Создание снапшота Git",
-            "undo_last_snapshot": "⏪ Откат снапшота Git",
-            "read_attached_file": "📄 Дочитывание файла",
-            "record_hypothesis": "💡 Запись гипотезы",
-            "update_hypothesis": "🔬 Обновление гипотезы",
-            "list_hypotheses": "📋 Список гипотез",
-            "run_shell_command": "⚡ Shell-команда",
-        }
-        label = tool_labels.get(name, f"🛠️ {name}")
-        activity = f"{label}: {arg_summary}" if arg_summary else label
 
-        # [9.5.3] Создаём трейс в Agent/Plan (не в Chat), пишем action.
-        stream = self._ensure_thought_stream()
-        if stream is not None:
-            stream.append_action(name, args)
-
-        # [9.5.4] Статус: выполняет инструмент (без дубля иконки).
-        self._set_activity_state("tool", name)
-
-        # Activity-строка только в Chat-режиме (где трейса нет).
-        if stream is None and not self._research_mode_active:
-            self._show_activity(activity)
-
-        # [9.5.7] Карточка tool-call ВСЕГДА (и в research, и в обычном).
+        # [UI-2024] Всё в ОДИН пузырь: reasoning-панель + tool-карточка.
         widget = self._ensure_assistant_widget()
+        widget.reasoning_panel().append_action(name, args)
+
+        # Кнопки Diff/Откатить — доработаем в 1.5.
         card = widget.append_tool_call(name, arguments_json)
         self._active_tool_card = card
-
-        # [9.6.1] Подключаем сигналы diff-режима (write_file).
         if card is not None:
             card.open_in_editor_requested.connect(self._on_open_tool_result_in_editor)
             card.revert_requested.connect(self._on_revert_write_file)
-            # [9.8] «Показать diff» — Monaco DiffEditor.
             card.show_diff_requested.connect(self._on_show_tool_diff)
-            # [10.9] Откат файлового снапшота.
             card.snapshot_undo_requested.connect(self._on_undo_file_snapshot)
 
-        # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
-        # следующий текст пойдёт в новый пузырь (это новый ответ модели).
-        # Если текста не было (multi-tool-call) — продолжаем в тот же пузырь.
-        if self._current_assistant_content or self._current_thinking_content:
-            self._last_assistant_widget = None
-            self._current_assistant_content = ""
-            self._current_thinking_content = ""
+        self._set_activity_state("tool", name)
+        # [UI-2024] НЕ сбрасываем _last_assistant_widget — иначе reasoning
+        # и текст обрываются и уходят в новый пузырь.
 
     @Slot(str, dict)
     def _on_bus_event(self, kind: str, payload: dict) -> None:
@@ -2680,21 +2612,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str)
     def _on_status_event(self, text: str):
-        """[9.5.3] Статус — в серый трейс (Agent/Plan/research) или activity (Chat)."""
         if not text:
             return
-        stream = self._ensure_thought_stream()
-        if stream is not None:
-            if text.startswith("🔁") or text.startswith("🪞"):
-                stream.append_nudge(text)
-            elif text.startswith("📌"):
-                stream.append_phase(text)
-            else:
-                stream.append_status(text)
-        # Activity-строка только в Chat-режиме (где трейса нет).
-        if stream is None and not self._research_mode_active:
-            self._show_activity(text)
-        # В статус-строке — только если не перетёрто другим состоянием.
+        widget = self._ensure_assistant_widget()
+        panel = widget.reasoning_panel()
+        if text.startswith("🔁") or text.startswith("🪞"):
+            panel.append_nudge(text)
+        elif text.startswith("📌"):
+            panel.append_phase(text)
+        else:
+            panel.append_status(text)
         if self._activity_state == "idle":
             self.status_label.setText(text)
 
@@ -2874,6 +2801,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [2.12] Закрытие inbox-записи.
         self._finalize_inbox(reason=reason)
 
+        # [UI-2024] Паспорт в Agent/Plan: показываем, если есть evidence.
+        if (
+            self._last_research_summary is not None
+            and self._last_assistant_widget is not None
+            and self._should_show_passport(self._last_research_summary)
+        ):
+            self._show_research_passport(self._last_research_summary)
+
         # [4.3] Автоматическая рефлексия при успешном/частичном завершении.
         if reason in (None, "stop", "length", "budget.exceeded"):
             outcome = {
@@ -2928,36 +2863,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 int(stats.get("cache_reads", 0)),
                 int(stats.get("cache_writes", 0)),
             )
-
-    # ------------------------------------------------------------------
-    # [9.5.3] Серый трейс в обычном Agent/Plan (не только research)
-    # ------------------------------------------------------------------
-
-    def _ensure_thought_stream(self) -> "ChatThoughtStream | None":
-        """Возвращает серый трейс для текущего прогона, создаёт при необходимости.
-
-        [9.5.3] В Agent/Plan (не research) трейс создаётся с первым
-        tool-call или статусом — до этого момента виджета нет.
-        В Chat-режиме (tools off, обычно одна итерация) трейс не нужен:
-        статусы идут плоскими `ChatActivityItem`.
-        В research `_current_thought_stream` уже создан в
-        `_on_thought_chunk` — просто возвращаем.
-        """
-        if self._current_thought_stream is not None:
-            return self._current_thought_stream
-        # Chat-режим: плоский activity, без трейса.
-        if self._current_mode() == AgentMode.CHAT and not self._research_mode_active:
-            return None
-        self._current_thought_stream = ChatThoughtStream()
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, self._current_thought_stream)
-        self.scroll_layout.setStretch(self.scroll_layout.indexOf(self._current_thought_stream), 0)
-        # [9.10]
-        self._maybe_collapse_old_messages()
-        return self._current_thought_stream
-
-    # ------------------------------------------------------------------
-    # [9.10] Виртуализация длинных чатов
-    # ------------------------------------------------------------------
 
     def _is_message_widget(self, widget: QWidget | None) -> bool:
         """True, если виджет — «сообщение» (можно сворачивать в placeholder).
@@ -3239,6 +3144,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 assistant_message = self._build_assistant_message(fallback_text=final_text)
                 self._messages.append(assistant_message)
                 self.session_store.save_message(self._session_id, assistant_message)
+
+            # [UI-2024] Паспорт показываем не только в research, но и в Agent/Plan,
+            # если есть evidence (файлы/гипотезы/поиски).
+            if (
+                self._last_research_summary is not None
+                and self._last_assistant_widget is not None
+                and self._should_show_passport(self._last_research_summary)
+            ):
+                self._show_research_passport(self._last_research_summary)
 
             self._reset_send_button()
             self._current_assistant_content = ""
@@ -4669,3 +4583,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             logger.debug("MCP для permissions не зарегистрирован", exc_info=True)
         return registry
+
+    def _reasoning_panel(self) -> ReasoningPanel | None:
+        """Панель рассуждений текущего пузыря ассистента (если он есть)."""
+        if self._last_assistant_widget is None:
+            return None
+        return self._last_assistant_widget.reasoning_panel()
+
+    def _show_research_passport(self, summary: dict) -> None:
+        """Встраивает ChatResearchPassport в конец пузыря ассистента."""
+        if self._last_assistant_widget is None:
+            return
+        from ui.chat.research_passport import ChatResearchPassport
+        try:
+            widget = ChatResearchPassport(summary)
+        except Exception as e:
+            logger.warning(f"Не удалось построить паспорт исследования: {e}")
+            return
+        self._last_assistant_widget._parts_layout.addWidget(widget)
+        QTimer.singleShot(0, self._scroll_to_bottom)

@@ -1446,13 +1446,14 @@ class ToolCallCard(QWidget):
         self._body_layout.addLayout(btn_row)
 
     def _on_revert_clicked(self) -> None:
-        """Эмитит сигнал отката с данными из metadata."""
         if not self._metadata:
             return
         payload = {
             "path": self._metadata.get("path", ""),
             "original_content": self._metadata.get("original_content", ""),
             "is_new_file": bool(self._metadata.get("is_new_file")),
+            # [UI-2024] передаём snapshot_id для restore_snapshot.
+            "snapshot_id": self._metadata.get("snapshot_id", ""),
         }
         self.revert_requested.emit(payload)
 
@@ -1637,7 +1638,7 @@ class ChatMessageItem(QWidget):
         bubble_layout.addWidget(self._parts_container)
 
         if is_assistant:
-            from ui.chat.thought_stream import ChatThoughtStream
+            from ui.chat.reasoning_panel import ReasoningPanel
             self._thought_stream = ChatThoughtStream(parent=self._parts_container)
             self._parts_layout.addWidget(self._thought_stream)
 
@@ -1694,6 +1695,17 @@ class ChatMessageItem(QWidget):
                     self._text_widget.set_text(self.content)
             self._parts_layout.addWidget(self._text_widget)
         return self._text_widget
+
+def _ensure_reasoning_panel(self) -> ReasoningPanel:
+    """Лениво создаёт ReasoningPanel — первую секцию пузыря ассистента."""
+    if self._reasoning_panel is None:
+        self._reasoning_panel = ReasoningPanel()
+        self._parts_layout.insertWidget(0, self._reasoning_panel)
+    return self._reasoning_panel
+
+def reasoning_panel(self) -> ReasoningPanel:
+    """Публичный доступ: ChatPanel пишет в него reasoning/статусы/tools."""
+    return self._ensure_reasoning_panel()
 
     # ---------------------------------------------------------------
     # Стриминг: новые части
@@ -1754,15 +1766,21 @@ class ChatMessageItem(QWidget):
     # Копирование
     # ---------------------------------------------------------------
 
-    def _copy_to_clipboard(self) -> None:
-        text = self.content
-        if not text and self._text_widget is not None:
-            # Фолбэк, если текст рендерился через parts
-            text = self._text_widget.document().toPlainText()
-
-        if text:
-            QApplication.clipboard().setText(text)
-            logger.debug(f"Скопировано в буфер: {len(text)} символов")
+def _copy_to_clipboard(self) -> None:
+    """Копирует ВЕСЬ пузырь: reasoning + ответ (+ паспорт, если встроен)."""
+    parts: list[str] = []
+    if self._reasoning_panel is not None:
+        panel_text = self._reasoning_panel.to_plain_text().strip()
+        if panel_text:
+            parts.append(panel_text)
+    text = self.content or (
+        self._text_widget.document().toPlainText() if self._text_widget is not None else ""
+    )
+    if text.strip():
+        parts.append(text)
+    if parts:
+        QApplication.clipboard().setText("\n\n".join(parts))
+        logger.debug(f"Скопировано в буфер: {sum(len(p) for p in parts)} символов")
 
     # ---------------------------------------------------------------
     # Обёртка для обратной совместимости (используется в тестах)
@@ -1796,6 +1814,7 @@ class ChatDiagramItem(QWidget):
         self._ascii = ascii_diagram or ""
         self._mermaid = mermaid_diagram or ""
         self._mermaid_enabled = False
+        self._reasoning_panel: ReasoningPanel | None = None
 
         container = QFrame(self)
         container.setObjectName("_diagram_item")

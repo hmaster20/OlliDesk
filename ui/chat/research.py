@@ -107,34 +107,17 @@ class ResearchMixin:
 
     @Slot(str)
     def _on_thought_chunk(self, token: str) -> None:
-        """Токен мысли — в серый поток.
-
-        [M4] looks_like_ascii_junk рассчитан на блоки ≥20 символов, поэтому
-        на каждом отдельном токене не срабатывает. Проверяем накопленный
-        буфер (до 500 символов): если в нём уже накопилось ≥3 «каракулей» —
-        показываем вместо мыслей строку «резервный сбор данных».
-        """
+        """Токен мысли"""
         from agents.tool_grammar import looks_like_ascii_junk
-        from ui.chat.thought_stream import ChatThoughtStream
 
-        if self._current_thought_stream is None:
-            self._current_thought_stream = ChatThoughtStream()
-            self.scroll_layout.insertWidget(
-                self.scroll_layout.count() - 1,
-                self._current_thought_stream,
-            )
+        widget = self._ensure_assistant_widget()
+        panel = widget.reasoning_panel()
+        panel.append_thought_token(token)
 
-        self._current_thought_stream.append_thought_token(token)
-
-        # Периодически проверяем накопленный буфер (после ~5 токенов
-        # по 4+ символа он станет ≥20 и детектор начнёт работать).
-        buf = self._current_thought_stream._current_thought_buffer
+        buf = panel._current_thought_buffer
         if len(buf) >= 40 and looks_like_ascii_junk(buf):
-            # Сворачиваем «мысли» и оставляем только пометку.
-            self._current_thought_stream._current_thought_buffer = ""
-            self._current_thought_stream.append_nudge(
-                "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
-            )
+            panel._current_thought_buffer = ""
+            panel.append_nudge("⚙️ Резервный сбор данных (модель не вызвала инструмент)")
 
         QTimer.singleShot(0, self._scroll_to_bottom)
 

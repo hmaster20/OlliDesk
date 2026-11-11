@@ -872,15 +872,7 @@ class AgentLoop:
             "hypotheses": hypotheses_data,
         }
 
-    def _finalize(
-        self,
-        research_mode: bool,
-        state: InvestigationState,
-        context: AgentContext,
-        *,
-        finish_reason: str | None = None,
-        soft_budget: SoftBudget | None = None,
-    ) -> None:
+    def _finalize(self, research_mode, state, context, *, finish_reason=None, soft_budget=None):
         """Кладёт сводку research-прогона в `last_research_summary`.
 
         [2.10] Фиксирует причину остановки и снимок бюджета —
@@ -888,10 +880,9 @@ class AgentLoop:
         [2.5] То же событие идёт в `EventBus` (``agent.finished``) —
         видно в `LiveEventsPanel` и `StatusDashboard` без Qt-связи.
         """
-        if research_mode:
-            self.last_research_summary = self._make_research_summary(state, context)
-        else:
-            self.last_research_summary = None
+        # [UI-2024] summary собираем ВСЕГДА, а не только в research-режиме:
+        # паспорт показывается в Agent/Plan, если есть evidence.
+        self.last_research_summary = self._make_research_summary(state, context)
         self.last_finish_reason = finish_reason
         self.last_budget_snapshot = soft_budget.snapshot() if soft_budget else None
 
