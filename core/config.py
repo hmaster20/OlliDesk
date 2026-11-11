@@ -91,6 +91,17 @@ class SLMModelInfo(BaseModel):
 
     n_ctx — тренировочный контекст модели в токенах (верхняя граница для
         оптимизатора). 0 = взять slm.target_n_ctx как ориентир.
+
+    **9.3.3** — модель стала расширяемой:
+        * ``tags`` — роли/характер: ``"chat"``, ``"coder"``, ``"reasoning"``,
+          ``"router"``, ``"planner"``, ``"verifier"``, ``"analyst"``,
+          ``"embed"``, ``"moE"``. Используются ``agents.slm_selector.select_park``
+          и подсветкой в UI (``PipelineSelectors``, 9.3.2).
+        * ``description`` — человекочитаемое описание для tooltip.
+        * ``recommended_profile`` — id профиля, где модель рекомендуется
+          (``"development"``, ``"research"``, ``"learning"``).
+        * ``moe``, ``active_params_b`` — MoE-метаданные (Qwen3-Coder-30B-A3B):
+          ``active_params_b`` — сколько миллиардов параметров активно на токен.
     """
 
     id: str
@@ -99,11 +110,13 @@ class SLMModelInfo(BaseModel):
     display_name: str
     size_mb: int = 0
     kind: Literal["chat", "embed"] = "chat"
-    # Окно контекста этой модели в токенах (0 = взять slm.n_ctx).
-    # Задаётся per-model, потому что маленьким моделям KV-кэш дешёв,
-    # а крупным — большой n_ctx упирается в VRAM/RAM.
     n_ctx: int = 0
     tier: int = 2
+    tags: list[str] = Field(default_factory=lambda: ["chat"])
+    description: str = ""
+    recommended_profile: str = ""
+    moe: bool = False
+    active_params_b: float = 0.0
 
     @field_validator("tier")
     @classmethod
@@ -146,6 +159,8 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "size_mb": 1930,
         "tier": 1,
         "n_ctx": 16384,
+        "tags": ["chat", "router", "planner", "verifier"],
+        "description": "Планировщик: classify/plan/critique. На GPU — 40–60 tok/s.",
     },
     {
         "id": "qwen2.5-3b-instruct-q6_k",
@@ -353,6 +368,27 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "size_mb": 19500,
         "tier": 4,
         "n_ctx": 32768,
+        "tags": ["chat", "coder"],
+        "description": "Топ качества для кода, но на CPU медленно (1–3 tok/s).",
+        "recommended_profile": "development",
+    },
+    # --- 4.1: MoE-модель, новая точка равновесия на T1200 ---
+    {
+        "id": "qwen3-coder-30b-a3b-instruct-q4_k_m",
+        "repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "file": "qwen3-coder-30b-a3b-instruct-q4_k_m.gguf",
+        "display_name": "Qwen3 Coder 30B-A3B (MoE) · 5–10 tok/s на CPU",
+        "size_mb": 18500,
+        "tier": 4,
+        "n_ctx": 65536,
+        "tags": ["chat", "coder", "moE"],
+        "description": (
+            "MoE-модель: ~3B активных параметров на токен. Качество близко "
+            "к 30B, скорость на CPU как у 7B. Основная coder-модель для T1200."
+        ),
+        "recommended_profile": "development",
+        "moe": True,
+        "active_params_b": 3.3,
     },
     {
         "id": "qwen2.5-coder-32b-instruct-q5_k_m",
@@ -746,17 +782,176 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "last_mode",
         "agent_max_iterations",
         "chat_max_iterations",
-        # [9.4] Профили — глобальные, не per-project.
         "profiles",
         "active_profile",
-        # [9.4] Документы — общий индекс, не per-project.
         "index_documents",
         "max_document_size_mb",
         "document_ocr",
-        # [9.8] Поведение редактора — глобальное, не per-project.
         "open_modified_as_diff",
+        "allow_arbitrary_shell",
+        "soft_budget_time_s",
+        "soft_budget_tokens",
+        "soft_budget_iterations",
+        "memory",
+        "session_overrides",
+        "mcp",
+        "browser",
+        "search",
+        "hf_token",
     }
 )
+
+
+class MemoryConfig(BaseModel):
+    """4.3: эпизодическая память."""
+
+    enabled: bool = True
+    recall_top_k: int = 3
+    recall_max_age_days: int = 90
+    # Записывать рефлексию после каждой успешной задачи.
+    auto_remember: bool = True
+    # Показывать top-K рефлексий в system-промпте.
+    inject_into_prompt: bool = True
+    # Заглушка: реальное шифрование вне scope 4.3.
+    encrypt: bool = False
+
+    @field_validator("recall_top_k")
+    @classmethod
+    def _validate_top_k(cls, v: int) -> int:
+        if not 1 <= v <= 10:
+            raise ValueError(f"recall_top_k must be 1..10, got {v}")
+        return v
+
+    @field_validator("recall_max_age_days")
+    @classmethod
+    def _validate_age(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"recall_max_age_days must be >= 0, got {v}")
+        return v
+
+
+class BrowserConfig(BaseModel):
+    """Настройки browser_control (2.11).
+
+    Attributes:
+        mode: Режим доступа.
+            * ``isolated`` — отдельный профиль Chromium, никакого доступа
+              к кукам/логинам реального браузера. Публичные страницы.
+            * ``extension`` — через браузерное расширение (Playwright MCP
+              Bridge). Пользователь явно разрешает вкладки.
+            * ``full`` — CDP к копии реального профиля. Все сессии.
+              Только по явному согласию; красное предупреждение.
+        dedicated_profile_path: Где хранится изолированный профиль.
+        extension_bridge_port: Порт WebSocket для режима ``extension``.
+        full_access_acknowledged: Пользователь явно подтвердил ``full``.
+            Пока ``False``, ``mode="full"`` не активируется — при попытке
+            переключения UI показывает диалог.
+        headless: Запускать ли браузер в headless-режиме. Для ``isolated``
+            лучше ``False`` — пользователь видит, что делает агент.
+    """
+
+    mode: Literal["isolated", "extension", "full"] = "isolated"
+    dedicated_profile_path: str = "~/.ollidesk/browser_profile"
+    extension_bridge_port: int = 8765
+    full_access_acknowledged: bool = False
+    headless: bool = False
+
+    @field_validator("extension_bridge_port")
+    @classmethod
+    def _validate_port(cls, v: int) -> int:
+        if not 1024 <= v <= 65535:
+            raise ValueError(f"extension_bridge_port must be 1024..65535, got {v}")
+        return v
+
+
+class SearchConfig(BaseModel):
+    """Настройки цепочки поиска (2.13).
+
+    Каждый провайдер — отдельный backend. Цепочка пробует по порядку,
+    пока один не вернёт результат. Падение одного не роняет остальные.
+
+    Attributes:
+        providers: Порядок провайдеров. Допустимые id:
+            ``searxng``, ``openserp``, ``yandex``, ``ollama``, ``ddg``.
+        searxng_url: URL локального SearXNG (``http://localhost:8080``).
+        openserp_url: URL локального OpenSERP (``http://localhost:7000``).
+        yandex_api_key: API-ключ Yandex Search API (опционально, платный).
+        yandex_folder_id: Folder ID Yandex Cloud (обязателен для Yandex API).
+        ollama_api_key: API-ключ Ollama Web Search (опционально).
+        timeout_s: Таймаут одного провайдера (секунды).
+        cache_ttl_hours: Время жизни результата в `SearchCache`.
+        max_results: Сколько результатов запрашивать у провайдера.
+    """
+
+    providers: list[str] = Field(default_factory=lambda: ["searxng", "openserp", "yandex", "ollama", "ddg"])
+    searxng_url: str = "http://localhost:8080"
+    openserp_url: str = "http://localhost:7000"
+    yandex_api_key: str = ""
+    yandex_folder_id: str = ""
+    ollama_api_key: str = ""
+    timeout_s: int = 15
+    cache_ttl_hours: int = 24
+    max_results: int = 5
+
+    @field_validator("providers")
+    @classmethod
+    def _validate_providers(cls, v: list[str]) -> list[str]:
+        allowed = {"searxng", "openserp", "yandex", "ollama", "ddg"}
+        unknown = [p for p in v if p not in allowed]
+        if unknown:
+            raise ValueError(f"Неизвестные search-провайдеры: {unknown}. Допустимые: {sorted(allowed)}")
+        seen: list[str] = []
+        for p in v:
+            if p not in seen:
+                seen.append(p)
+        return seen
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, v: int) -> int:
+        if not 1 <= v <= 120:
+            raise ValueError(f"timeout_s must be 1..120, got {v}")
+        return v
+
+    @field_validator("max_results")
+    @classmethod
+    def _validate_max_results(cls, v: int) -> int:
+        if not 1 <= v <= 20:
+            raise ValueError(f"max_results must be 1..20, got {v}")
+        return v
+
+
+class MCPServerConfig(BaseModel):
+    """Один MCP-сервер (7).
+
+    Attributes:
+        name: Уникальное имя (``"filesystem"``, ``"github"``).
+        command: Исполняемый файл (``"npx"``, ``"python"``, ``"uvx"``).
+        args: Аргументы.
+        env: Дополнительные переменные окружения (секреты — сюда).
+        cwd: Рабочий каталог (``None`` — cwd родителя).
+        enabled: Включён ли сервер.
+        capabilities: Whitelist capabilities для инструментов сервера.
+            Если MCP-инструмент заявляет capability вне списка — инструмент
+            заблокирован (`effective_policy` вернёт `excluded`).
+            ``secrets`` здесь не работает: он всегда excluded (2.7).
+    """
+
+    name: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    enabled: bool = True
+    capabilities: list[str] = Field(default_factory=lambda: ["fs.read"])
+
+
+class MCPConfig(BaseModel):
+    """Настройки MCP (7)."""
+
+    enabled: bool = False  # по умолчанию выключено — пользователь явно включает
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+    connect_timeout_s: int = 30
 
 
 class AppConfig(BaseModel):
@@ -791,9 +986,20 @@ class AppConfig(BaseModel):
             "list_hypotheses",
         ]
     )
+    # [2.7] Per-session override политик. Сбрасывается при закрытии
+    # сессии. Ключ — имя инструмента, значение — policy. Не пишется
+    # в YAML (это runtime-состояние).
+    session_overrides: dict[str, ToolPolicy] = Field(default_factory=dict)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
+    # [9.3.1] HF-токен для обхода rate-limit при поиске/скачивании моделей.
+    # Хранится в config.yaml, читается из env HF_TOKEN (приоритет — config).
+    hf_token: str = ""
     confirm: ConfirmSettings = Field(default_factory=ConfirmSettings)
     backends: BackendSettings = Field(default_factory=BackendSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     slm: SLMConfig = Field(default_factory=SLMConfig)
     ignored_patterns: list[str] = Field(
         default_factory=lambda: [
@@ -854,6 +1060,22 @@ class AppConfig(BaseModel):
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
+    # [2.10] Мягкие бюджеты цикла агента. Жёсткий `max_iterations`
+    # больше не основной выход — `AgentLoop` идёт до `finish_reason=stop`
+    # или `user_cancel`, а бюджеты сигналят о «дорого/долго».
+    # `soft_budget_iterations` — safety net для AGENT; для CHAT/PLAN
+    # переопределяется `chat_max_iterations`/`agent_max_iterations`.
+    soft_budget_time_s: int = 600
+    soft_budget_tokens: int = 100_000
+    soft_budget_iterations: int = 100
+
+    @field_validator("soft_budget_time_s", "soft_budget_tokens", "soft_budget_iterations")
+    @classmethod
+    def validate_soft_budget(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"soft_budget must be >= 1, got {v}")
+        return v
+
     # [9.2] Видимость дерева проекта (переключается кнопкой «📁» в верхней
     # панели чата и F4). Дефолт — False, дерево скрыто.
     show_project_tree: bool = False
@@ -862,6 +1084,12 @@ class AppConfig(BaseModel):
     # По умолчанию False — обычное открытие; diff доступен через
     # контекстное меню и Ctrl+D в редакторе.
     open_modified_as_diff: bool = False
+    # [0.1.1] Разрешить произвольные shell-команды (dangerous mode).
+    # По умолчанию False — run_shell_command работает только по allowlist
+    # (Test-Path, Get-Content, git status, python -m pytest, …).
+    # Включается через ⚙ → Безопасность или config.yaml. Даже при включении
+    # чёрный список (rm -rf, format, …) продолжает блокировать.
+    allow_arbitrary_shell: bool = False
     # [9.3] Показывать ли верхнюю панель со статусами Planner/Analyst.
     show_pipeline_selectors: bool = True
     # [9.4] Профили использования.
@@ -930,9 +1158,26 @@ class ConfigLoader:
             merged_config = global_config
         self._migrate_config(merged_config)
         try:
-            return AppConfig(**merged_config)
+            config = AppConfig(**merged_config)
         except Exception as e:
             raise ConfigError(f"Ошибка валидации конфигурации: {e}") from e
+
+        # 9.3.3: каталог SLM-моделей живёт в отдельном `slm_models.yaml`.
+        # Если файла нет — создаём из `_DEFAULT_SLM_MODELS`; если есть —
+        # мержим (пользовательские модели сохраняются, встроенные
+        # обновляются новыми полями tags/description).
+        try:
+            from core.config import _DEFAULT_SLM_MODELS
+            from core.slm_models_io import ensure_slm_models_file
+
+            defaults = [SLMModelInfo(**m) for m in _DEFAULT_SLM_MODELS]
+            config.slm.available_models = ensure_slm_models_file(defaults)
+        except Exception as e:
+            logger.warning(
+                f"slm_models.yaml: не удалось загрузить/обновить ({e}); "
+                f"использую config.slm.available_models как fallback"
+            )
+        return config
 
     def _migrate_config(self, config: dict[str, Any]) -> None:
         """Приводит устаревший конфиг к текущей схеме (in-place).
@@ -994,6 +1239,10 @@ class ConfigLoader:
             self._save_yaml(config_dict, self.global_config_path)
 
     def _save_yaml(self, data: dict[str, Any], path: Path) -> None:
+        # 9.3.3: каталог моделей больше НЕ пишется в config.yaml —
+        # источник правды `~/.ollidesk/slm_models.yaml` (см. load_config).
+        if isinstance(data.get("slm"), dict):
+            data["slm"].pop("available_models", None)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(path, "w", encoding="utf-8") as f:

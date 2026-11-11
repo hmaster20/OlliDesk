@@ -146,8 +146,8 @@ class ChatResearchPassport(QWidget):
             conv.setHtml(render_markdown(final_answer))
             # Автовысота под контент (в разумных пределах)
             conv.document().setTextWidth(760)
-            h = int(conv.document().size().height()) + 8
-            conv.setFixedHeight(min(max(h, 80), 600))
+            content_height = int(conv.document().size().height()) + 8
+            conv.setFixedHeight(min(max(content_height, 80), 600))
             body_inner.addWidget(conv)
 
         # 2. KPI
@@ -198,7 +198,8 @@ class ChatResearchPassport(QWidget):
 
             counts: dict[str, int] = {}
             for h in hypotheses:
-                counts[str(h.get("status") or "open")] = counts.get(str(h.get("status") or "open"), 0) + 1
+                status = str(h.get("status") or "open")
+                counts[status] = counts.get(status, 0) + 1
             summary_parts: list[str] = []
             for key in ("verified", "partial", "refuted", "inconclusive", "open"):
                 if counts.get(key):

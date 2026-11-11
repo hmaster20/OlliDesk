@@ -16,6 +16,8 @@ from typing import Final
 
 from loguru import logger
 
+from core import redaction
+
 
 class NetworkMode(StrEnum):
     """Режим исходящего трафика для web_search."""
@@ -58,6 +60,9 @@ class SecurityPolicy:
     allow_lsp_download: bool = True  # dev-инструменты из allowlist
     lsp_download_size_mb_warn: int = 50  # порог «большой объём» → спросить/фон
     redaction_enabled: bool = True
+    # 0.1.1: dangerous mode для run_shell_command. По умолчанию False —
+    # работаем только по allowlist. Включается явно в ⚙ → Безопасность.
+    allow_arbitrary_shell: bool = False
 
     def effective_web_mode(self) -> NetworkMode:
         if self.confidential:
@@ -78,6 +83,7 @@ class SecurityPolicy:
             confidential=bool(d.get("confidential", False)),
             allow_lsp_download=bool(net.get("lsp_download", True)),
             lsp_download_size_mb_warn=int(net.get("lsp_download_size_mb_warn", 50)),
+            allow_arbitrary_shell=bool(d.get("allow_arbitrary_shell", False)),
         )
 
 
@@ -111,8 +117,11 @@ _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
     ("rel_path_src", re.compile(r"\b[\w./\\-]+\.(?:cs|py|rb|tf|yml|yaml|hcl|csproj|sln|json|toml)\b")),
     ("dotnet_ns", re.compile(r"\b(?:LocalMessenger|Hmaster20)(?:\.[\w.]+)+\b")),
     (
-        "env_secret",
-        re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME|TOKEN|SECRET|PASSWORD|API[_-]?KEY)\b\s*[:=]", re.I),
+        # Только специфичные для проектов OlliDesk env-переменные.
+        # Общие секреты (TOKEN, SECRET, PASSWORD, API_KEY) — в core.redaction.
+        # Захватываем `key=value` целиком, чтобы не оставить значение.
+        "env_secret_project",
+        re.compile(r"\b(?:PROXY|DNS_IP|DNS_NAME)\s*[:=]\s*[^\s,;]+", re.I),
     ),
     (
         "host_or_ip",
@@ -127,16 +136,26 @@ _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
 def redact_query(text: str) -> tuple[str, list[str]]:
     """Вырезать чувствительное из поискового запроса.
 
+    Порядок:
+      1. ``core.redaction.redact`` — общие секреты (API-ключи, JWT,
+         приватные ключи, пароли в URL/DSN, env-переменные с секретными
+         именами). Заменяет значение, ключ оставляет — удобно для аудита.
+      2. Проектные паттерны этого модуля (``_PATTERNS``): номера договоров,
+         пути, IP, неймспейсы LocalMessenger, vault-ссылки.
+
     Returns:
         (очищенный_текст, список сработавших категорий). Пустой список
         категорий означает «утечек не найдено, можно слать».
     """
-    hits: list[str] = []
-    out = text
+    # 1. Общие секреты — единая точка в core.redaction (0.1.2).
+    out, hits = redaction.redact(text)
+
+    # 2. Проектные паттерны (номера договоров, пути, IP, …).
     for name, pat in _PATTERNS:
         if pat.search(out):
             hits.append(name)
             out = pat.sub("[REDACTED]", out)
+
     # Схлопываем пробелы после redact.
     out = re.sub(r"\s{2,}", " ", out).strip()
     if hits:

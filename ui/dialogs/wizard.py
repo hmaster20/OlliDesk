@@ -75,9 +75,13 @@ class SetupWizard(QWizard):
 
     def _read_dismissed(self) -> bool:
         """Читает состояние чекбокса 'Не показывать' со страницы подтверждения."""
-        for page in self.findChildren(ConfirmationPage):
-            return page.dismiss_checkbox.isChecked()
-        return False
+        # findChildren в новых стабах PySide6 возвращает Iterable[_T],
+        # а не list[_T]. Материализуем, иначе mypy падает на аннотации.
+        pages: list[ConfirmationPage] = list(self.findChildren(ConfirmationPage))
+        if not pages:
+            return False
+        # PySide6-стабы: isChecked() возвращает Any, приводим к bool явно.
+        return bool(pages[0].dismiss_checkbox.isChecked())
 
     def _create_config(self) -> AppConfig:
         """Создает конфигурацию на основе выбора пользователя."""

@@ -18,13 +18,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import html as html_mod
 import json
 import re
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -32,11 +33,59 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
+
+from ui.theme import ColorTokens, get_colors
+
+
+def _theme_colors(dark: bool) -> ColorTokens:
+    """Токены текущей темы (единственная точка правды для стилей чата)."""
+    return get_colors("dark" if dark else "light")
+
+
+# [9.5.1] Единый стиль action-кнопок в пузыре и карточках.
+# Убраны 6 разных inline-стилей (Copy, «Показать полностью», «Открыть»,
+# «Откатить», «Показать diff», «Вернуть к чату»).
+_ACTION_BTN_CSS_TEMPLATE = """
+QPushButton {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 10px;
+    color: {text_muted};
+    font-size: 11px;
+    padding: 2px 10px;
+    margin: 2px 0;
+}}
+QPushButton:hover {{
+    background: {surface_hover};
+    color: {text};
+}}
+QPushButton:pressed {{
+    background: {surface_pressed};
+}}
+QPushButton:disabled {{
+    color: {text_disabled};
+    border-color: {border};
+}}
+"""
+
+
+def _action_btn_css(dark: bool) -> str:
+    c = _theme_colors(dark)
+    return _ACTION_BTN_CSS_TEMPLATE.format(
+        border=c.border,
+        text=c.text,
+        text_muted=c.text_muted,
+        surface_hover=c.surface_hover,
+        surface_pressed=c.surface_pressed,
+        text_disabled=c.text_disabled,
+    )
+
 
 # ============================================================================
 # Markdown → HTML (без изменений; используется research_passport.py)
@@ -57,16 +106,23 @@ _TASK_ITEM_RE = re.compile(r"^\[(?P<state>[ xX])\]\s+(?P<text>.*)$")
 _TABLE_SEP_CELL_RE = re.compile(r"^:?-{2,}:?$")
 
 
-def _render_code_block(code: str, lang: str) -> str:
-    """Подсвечивает код в блоке (pygments) или экранирует как есть."""
+def _render_code_block(code: str, lang: str, *, dark: bool = True) -> str:
+    """Подсвечивает код в блоке (pygments) или экранирует как есть.
+
+    Палитра pygments и header — по текущей теме. На тёмной — `monokai`,
+    на светлой — `friendly`. Заголовок-«шапка» с языком показывается
+    только если `lang` известен.
+    """
     code = code.rstrip("\n")
     highlighted: str
+    c = _theme_colors(dark)
     try:
         from pygments import highlight as _highlight
         from pygments.formatters import HtmlFormatter
         from pygments.lexers import get_lexer_by_name, guess_lexer
 
-        formatter = HtmlFormatter(style="monokai", nowrap=True, noclasses=True)
+        pyg_style = "monokai" if dark else "friendly"
+        formatter = HtmlFormatter(style=pyg_style, nowrap=True, noclasses=True)
         lexer = get_lexer_by_name(lang, stripall=True) if lang else guess_lexer(code)
         highlighted = _highlight(code, lexer, formatter).rstrip("\n")
     except Exception:
@@ -75,17 +131,20 @@ def _render_code_block(code: str, lang: str) -> str:
     header = ""
     if lang:
         header = (
-            '<div style="background:#2f2f3c; padding:3px 12px;'
+            f'<div style="background:{c.code_header_bg}; padding:3px 12px;'
             " font-family:'Cascadia Mono','Consolas','Courier New',monospace;"
-            ' font-size:11px; color:#9a9ab0; border-bottom:1px solid #3a3a48;">'
+            f' font-size:11px; color:{c.code_header_text};'
+            f' border-bottom:1px solid {c.border};">'
             f"{html_mod.escape(lang)}</div>"
         )
 
     return (
-        '<div style="background:#23232c; border:1px solid #3a3a48; border-radius:8px;'
-        ' margin:8px 0; overflow:hidden;">' + header + '<pre style="margin:0; padding:8px 12px;'
+        f'<div style="background:{c.code_bg}; border:1px solid {c.border};'
+        ' border-radius:8px; margin:8px 0; overflow:hidden;">'
+        + header
+        + '<pre style="margin:0; padding:8px 12px;'
         " font-family:'Cascadia Mono','Consolas','Courier New',monospace;"
-        ' font-size:13px; color:#e0e0e0;"><code>' + highlighted + "</code></pre></div>"
+        f' font-size:13px; color:{c.code_text};"><code>' + highlighted + "</code></pre></div>"
     )
 
 
@@ -115,6 +174,8 @@ def _inline(text: str) -> str:
         r' border-radius:3px;">\1</span>',
         text,
     )
+    # Каждый кусок кода сохраняется в EvidenceStore и получает ID: [E1], [E2], скрываем это в отчете
+    text = re.sub(r"\[E\d+(?:\s*,\s*E\d+)*\]", "", text)
 
     def _restore_code(m: re.Match[str]) -> str:
         code = html_mod.escape(inline_codes[int(m.group(1))])
@@ -380,7 +441,8 @@ def render_markdown(text: str, *, dark: bool = True) -> str:
 
     def _stash(m: re.Match[str]) -> str:
         lang = (m.group("lang") or "").strip()
-        code_blocks.append(_render_code_block(m.group("code"), lang))
+        # [9.5.1] Палитра кода — по теме.
+        code_blocks.append(_render_code_block(m.group("code"), lang, dark=dark))
         return f"\x00CB{len(code_blocks) - 1}\x00"
 
     stashed = _CODE_FENCE_RE.sub(_stash, text)
@@ -485,29 +547,52 @@ def format_source_label(file_path: str, start: int, end: int) -> str:
 
 
 class ReasoningWidget(QWidget):
-    """Сворачиваемый блок размышлений модели (ReasoningPart).
+    """Сворачиваемый блок размышлений модели (ReasoningPart) — 0.1.3a.
 
-    Во время стриминга развёрнут на первом токене и остаётся развёрнутым,
-    пока пользователь не свернёт вручную. `collapse()` вызывается в
-    `ChatMessageItem.finalize()` — после завершения ответа блок сам
-    схлопывается, чтобы не занимать визуальное место.
+    Авто-высота: тело растёт по контенту до потолка (~40 % высоты чата),
+    дальше — внутренний скролл. При разворачивании/сворачивании —
+    ``QPropertyAnimation`` на ``maximumHeight`` (150 мс). При ``append_text``
+    — внутренний авто-скролл к последнему токену, чтобы новые токены
+    были видны без ручного скролла.
+
+    Контракт не меняется: ``set_text`` / ``append_text`` / ``collapse``.
     """
 
-    _PREVIEW_CHARS = 0  # 0 = показываем весь текст; заголовок только со счётчиком
+    # Fallback-потолок, если QScrollArea не нашлась и окно ещё не показано.
+    _FALLBACK_MAX_HEIGHT = 480
+    # Доля высоты viewport чата, под которую пускаем reasoning.
+    _MAX_HEIGHT_RATIO = 0.4
+    # Минимальная полезная высота тела.
+    _MIN_BODY_HEIGHT = 40
+    # Длительность анимации раскрытия/сворачивания.
+    _ANIM_DURATION_MS = 150
 
-    def __init__(self, initial_text: str = "", parent: QWidget | None = None):
+    def __init__(
+        self,
+        initial_text: str = "",
+        parent: QWidget | None = None,
+        *,
+        dark: bool = True,
+        images: list[str] | None = None,
+    ):
         super().__init__(parent)
+        self._dark = dark
         self._text = initial_text or ""
-        self._expanded = bool(self._text)
+        self._expanded = True
+        self._anim: QPropertyAnimation | None = None
 
+        c = _theme_colors(dark)
         container = QFrame(self)
         container.setObjectName("_reasoning_widget")
+        self._container = container  # ← теперь container уже существует
         container.setStyleSheet(
             "QFrame#_reasoning_widget {"
-            " background: rgba(120, 120, 140, 0.06);"
-            " border: 1px solid #3a3a48;"
+            f" background: {c.reasoning_bg};"
+            f" border: 1px solid {c.bubble_border};"
             " border-radius: 6px;"
-            " padding: 4px 8px; }"
+            " padding: 4px 10px;"
+            " margin: 2px 0;"
+            "}"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
@@ -528,11 +613,8 @@ class ReasoningWidget(QWidget):
         self._toggle_btn = QPushButton("▲ Свернуть" if self._expanded else "▼ Развернуть")
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._toggle_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none;"
-            " color: #888; font-size: 11px; padding: 0 4px; }"
-            " QPushButton:hover { color: #ccc; text-decoration: underline; }"
-        )
+
+        self._toggle_btn.setStyleSheet(_action_btn_css(dark))
         self._toggle_btn.clicked.connect(self._toggle)
         header_row.addWidget(self._toggle_btn)
 
@@ -545,27 +627,87 @@ class ReasoningWidget(QWidget):
         self._browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._browser.setStyleSheet(
             "QTextBrowser {"
-            " background: transparent; border: none; color: #a8a8b8;"
+            f" background: transparent; border: none; color: {c.reasoning_text};"
             " font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 12px; padding: 2px 0; }"
         )
-        self._browser.setMaximumHeight(240)
+        self._browser.setMinimumHeight(0)
+        self._browser.setMaximumHeight(self._compute_max_height())
         body.addWidget(self._browser)
 
         self._refresh_browser()
         self._apply_visibility()
 
+    # ---------------------------------------------------------------
+    # Высота
+    # ---------------------------------------------------------------
+
+    def _compute_max_height(self) -> int:
+        """Потолок высоты: 40 % viewport ближайшего QScrollArea, иначе окна.
+
+        Ищем ``QScrollArea`` вверх по иерархии: ``ChatPanel`` использует
+        ``AutoScrollArea`` (наследник ``QScrollArea``), поэтому обычно
+        находим именно его. Если виджет ещё не встроен — берём высоту
+        окна; если и её нет (headless) — ``_FALLBACK_MAX_HEIGHT``.
+        """
+        p: QWidget | None = self.parent()  # type: ignore[assignment]
+        while p is not None:
+            if isinstance(p, QScrollArea):
+                vh = p.viewport().height()
+                if vh > 0:
+                    return max(self._MIN_BODY_HEIGHT * 2, int(vh * self._MAX_HEIGHT_RATIO))
+                break
+            p = p.parent()  # type: ignore[assignment]
+        try:
+            wh = self.window().height()
+        except Exception:
+            wh = 0
+        if wh > 0:
+            return max(self._MIN_BODY_HEIGHT * 2, int(wh * self._MAX_HEIGHT_RATIO))
+        return self._FALLBACK_MAX_HEIGHT
+
+    def _natural_height(self) -> int:
+        """Естественная высота документа при текущей ширине viewport."""
+        vw = self._browser.viewport().width()
+        if vw <= 0:
+            return self._MIN_BODY_HEIGHT
+        doc: QTextDocument = self._browser.document()
+        doc.setTextWidth(vw)
+        return max(self._MIN_BODY_HEIGHT, int(doc.size().height()) + 8)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        """Пересчитываем потолок при изменении ширины/высоты (0.1.3a).
+
+        Если идёт анимация — не мешаем ей; иначе сразу применяем cap,
+        чтобы при ресайзе окна reasoning не «залипал» на старой высоте.
+        """
+        super().resizeEvent(event)
+        if self._expanded and self._anim is None:
+            self._browser.setMaximumHeight(self._compute_max_height())
+
+    # ---------------------------------------------------------------
+    # Содержимое
+    # ---------------------------------------------------------------
+
     def _refresh_browser(self) -> None:
-        """Пересобирает HTML из `_text` (курсив, серый)."""
+        """Пересобирает HTML из `_text`; высота — по контенту с потолком."""
+        c = _theme_colors(self._dark)
         safe = (
             self._text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         )
-        self._browser.setHtml(f'<div style="color:#a8a8b8; font-style:italic;">{safe}</div>')
-        # Авто-высота: ~16px на строку, потолок 240.
-        line_count = self._text.count("\n") + 1
-        h = min(max(40, line_count * 16 + 8), 240)
-        self._browser.setFixedHeight(h)
+        self._browser.setHtml(f'<div style="color:{c.reasoning_text}; font-style:italic;">{safe}</div>')
+        cap = self._compute_max_height()
+        self._browser.setMaximumHeight(cap)
+        # Внутренний авто-скролл к последнему токену: пользователь видит
+        # свежие мысли, не прокручивая вручную.
+        if self._expanded:
+            QTimer.singleShot(0, self._scroll_body_to_end)
         self._refresh_header()
+
+    def _scroll_body_to_end(self) -> None:
+        """Скроллит внутренний QTextBrowser к последнему токену."""
+        sb = self._browser.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _refresh_header(self) -> None:
         n = len(self._text)
@@ -580,15 +722,87 @@ class ReasoningWidget(QWidget):
             f'<span style="color: #6a6a7a; font-size: 11px;">· {n} {unit}</span>'
         )
 
+    # ---------------------------------------------------------------
+    # Видимость и анимация
+    # ---------------------------------------------------------------
+
     def _apply_visibility(self) -> None:
+        """Мгновенное состояние (без анимации) — для __init__ и set_text."""
         self._browser.setVisible(self._expanded)
+        if self._expanded:
+            self._browser.setMaximumHeight(self._compute_max_height())
+        else:
+            self._browser.setMaximumHeight(0)
         self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
 
-    def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        self._apply_visibility()
+    def _stop_anim(self) -> None:
+        """Останавливает текущую анимацию (если идёт)."""
+        if self._anim is not None:
+            with contextlib.suppress(Exception):
+                self._anim.stop()
+            self._anim = None
 
-    # --- Публичный API ---
+    def _animate_height(self, *, expand: bool) -> None:
+        """Плавно меняет maximumHeight: 0 ⇄ cap, 150 мс (0.1.3a).
+
+        Вырожденный случай (``start == target``) обрабатываем явно: в
+        PySide6 ``QPropertyAnimation.finished`` не гарантирован для no-op
+        анимаций, а нам критично вызвать ``hide()`` после сворачивания.
+        Для collapse дополнительно ставим ``QTimer.singleShot`` — safety
+        net на случай, если ``finished`` всё равно не сработает.
+        """
+        self._stop_anim()
+        self._browser.setVisible(True)
+        # ``height()`` до первого layout может быть 0. ``max(1, ...)``
+        # гарантирует, что анимация не вырожденная и ``finished`` сработает.
+        start = max(1, self._browser.height())
+        target = self._compute_max_height() if expand else 0
+        if start == target:
+            self._browser.setMaximumHeight(target)
+            if not expand:
+                self._browser.hide()
+            return
+        anim = QPropertyAnimation(self._browser, b"maximumHeight", self)
+        anim.setDuration(self._ANIM_DURATION_MS)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        if not expand:
+            anim.finished.connect(self._on_collapse_finished)
+            # Safety net: даже если finished не придёт — тело скроется.
+            QTimer.singleShot(
+                self._ANIM_DURATION_MS + 20,
+                self._finalize_collapse_if_still_collapsed,
+            )
+        anim.start()
+        self._anim = anim
+
+    def _on_collapse_finished(self) -> None:
+        """Сработал ``finished`` анимации сворачивания — скрываем тело."""
+        self._anim = None
+        self._browser.hide()
+
+    def _finalize_collapse_if_still_collapsed(self) -> None:
+        """Safety net: гарантированно скрыть тело после collapse.
+
+        Если ``finished`` уже отработал — no-op. Если пользователь успел
+        развернуть обратно (``_expanded=True``) — не трогаем, чтобы не
+        «моргнуть» открытым блоком.
+        """
+        if not self._expanded:
+            self._browser.hide()
+            self._browser.setMaximumHeight(0)
+
+    def _toggle(self) -> None:
+        """Разворачивает/сворачивает тело с анимацией."""
+        self._expanded = not self._expanded
+        self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
+        self._animate_height(expand=self._expanded)
+        if self._expanded:
+            QTimer.singleShot(self._ANIM_DURATION_MS, self._scroll_body_to_end)
+
+    # ---------------------------------------------------------------
+    # Публичный API (контракт не меняется)
+    # ---------------------------------------------------------------
 
     def set_text(self, text: str) -> None:
         self._text = text or ""
@@ -610,10 +824,34 @@ class ReasoningWidget(QWidget):
         self._refresh_browser()
 
     def collapse(self) -> None:
-        """Свернуть блок (вызывается на finish)."""
+        """Свернуть блок (вызывается в ChatMessageItem.finalize)."""
         if self._expanded:
             self._expanded = False
-            self._apply_visibility()
+            self._toggle_btn.setText("▼ Развернуть")
+            self._animate_height(expand=False)
+
+    def apply_theme(self, dark: bool) -> None:
+        """[9.5.1] Перекрашивает виджет под тему."""
+        self._dark = dark
+        c = _theme_colors(dark)
+        container = self._container  # см. `self._container = container` в __init__
+        container.setStyleSheet(
+            "QFrame#_reasoning_widget {"
+            f" background: {c.reasoning_bg};"
+            f" border: 1px solid {c.bubble_border};"
+            " border-radius: 6px;"
+            " padding: 4px 10px;"
+            " margin: 2px 0;"
+            "}"
+        )
+        self._toggle_btn.setStyleSheet(_action_btn_css(dark))
+        self._browser.setStyleSheet(
+            "QTextBrowser {"
+            f" background: transparent; border: none; color: {c.reasoning_text};"
+            " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 12px; padding: 2px 0; }"
+        )
+        self._refresh_browser()
 
 
 class TextWidget(QTextBrowser):
@@ -631,21 +869,28 @@ class TextWidget(QTextBrowser):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.document().setDocumentMargin(0)
+        self._apply_style()
+        if initial_text:
+            self.set_text(initial_text)
+
+    def _apply_style(self) -> None:
+        """[9.5.1] Применяет QSS по текущей теме."""
+        c = _theme_colors(self._dark)
         self.setStyleSheet(
             "QTextBrowser {"
             " font-family: 'Segoe UI', Roboto, sans-serif;"
-            " font-size: 14px; color: #e0e0e0;"
+            " font-size: 14px;"
+            f" color: {c.text};"
             " background: transparent; border: none; padding: 0;"
             " }"
         )
-        if initial_text:
-            self.set_text(initial_text)
 
     def set_dark(self, dark: bool) -> None:
         """[9.6.6] Переключает цвет таблиц в markdown."""
         if dark == self._dark:
             return
         self._dark = dark
+        self._apply_style()
         if self._raw_text:
             self.set_text(self._raw_text)
 
@@ -688,6 +933,10 @@ class TextWidget(QTextBrowser):
         super().resizeEvent(event)
         self._adjust_height()
 
+    def apply_theme(self, dark: bool) -> None:
+        """[9.5.1] Синоним `set_dark` — единый API темы."""
+        self.set_dark(dark)
+
 
 def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
     """Обрезает текст для preview-строки в карточке tool-call.
@@ -708,6 +957,42 @@ def _truncate_preview(text: str, limit: int = 200) -> tuple[str, bool]:
     if limit <= 0:
         return ("…", True)
     return (clean[: limit - 1] + "…", True)
+
+
+def _make_thumbnail_label(data_url: str, max_size: int = 120) -> QLabel | None:
+    """[9.7] Возвращает QLabel с миниатюрой из base64 data-url.
+
+    Клик по миниатюре открывает полный размер в системном просмотрщике
+    (через `QDesktopServices.openUrl` — но data-url не открывается;
+    вместо этого копируем в temp и открываем).
+    """
+    if not data_url.startswith("data:image/"):
+        return None
+    try:
+        header, _, b64 = data_url.partition(",")
+        import base64
+
+        raw = base64.b64decode(b64)
+    except Exception:
+        return None
+    try:
+        from PySide6.QtGui import QPixmap
+    except Exception:
+        return None
+    pix = QPixmap()
+    if not pix.loadFromData(raw):
+        return None
+    pix = pix.scaled(
+        max_size,
+        max_size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    label = QLabel()
+    label.setPixmap(pix)
+    label.setStyleSheet("QLabel { border: 1px solid #3a3a48; border-radius: 6px; padding: 2px; }")
+    label.setToolTip("Прикреплённое изображение")
+    return label
 
 
 def _escape_diff(text: str) -> str:
@@ -733,10 +1018,12 @@ class ToolCallCard(QWidget):
     """
 
     # [9.6.1] Сигналы diff-режима `write_file`.
-    open_in_editor_requested = Signal(str)  # path
-    revert_requested = Signal(dict)  # {"path", "original_content", "is_new_file"}
+    open_in_editor_requested = Signal(str)
+    revert_requested = Signal(dict)
     # [9.8] Показать diff в Monaco DiffEditor (третья кнопка).
-    show_diff_requested = Signal(dict)  # {"path", "original", "modified", "language"}
+    show_diff_requested = Signal(dict)
+    # [10.9] Откат файлового снапшота.
+    snapshot_undo_requested = Signal(str)
 
     _ICONS: dict[str, str] = {
         "read_file": "📖",
@@ -758,14 +1045,21 @@ class ToolCallCard(QWidget):
         "run_shell_command": "⚡",
     }
 
-    # Палитра состояний (фон/граница/иконка статуса).
-    _STATE_STYLES: dict[str, tuple[str, str, str]] = {
-        # pending: серый
-        "pending": ("rgba(120,120,140,0.06)", "#3a3a48", "⏳"),
-        # ok: зелёный
-        "ok": ("rgba(80,160,80,0.08)", "#4a6a4a", "✓"),
-        # error: красный
-        "error": ("rgba(200,80,80,0.10)", "#7a3a3a", "✗"),
+    # [9.5.1] Палитра для тёмной/светлой темы: (bg, border, status_icon).
+    # Выбор — в `_apply_state_style` по `self._dark`.
+    _STATE_STYLES: dict[str, tuple[tuple[str, str, str], tuple[str, str, str]]] = {
+        "pending": (
+            ("rgba(120,120,140,0.06)", "#3a3a48", "⏳"),
+            ("rgba(120,120,140,0.04)", "#d0d0d0", "⏳"),
+        ),
+        "ok": (
+            ("rgba(80,160,80,0.08)", "#4a6a4a", "✓"),
+            ("rgba(80,160,80,0.08)", "#a5d6a7", "✓"),
+        ),
+        "error": (
+            ("rgba(200,80,80,0.10)", "#7a3a3a", "✗"),
+            ("rgba(200,80,80,0.08)", "#e0a0a0", "✗"),
+        ),
     }
 
     def __init__(
@@ -773,6 +1067,8 @@ class ToolCallCard(QWidget):
         name: str,
         arguments_json: str,
         parent: QWidget | None = None,
+        *,
+        dark: bool = True,
     ):
         super().__init__(parent)
         try:
@@ -792,6 +1088,8 @@ class ToolCallCard(QWidget):
         # Внешний контейнер (для смены стиля без пересоздания).
         self._container = QFrame(self)
         self._container.setObjectName("_tool_card")
+        self._dark = dark
+        c = _theme_colors(dark)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
@@ -815,15 +1113,20 @@ class ToolCallCard(QWidget):
         args_summary = _format_args_short(args)
         text = f"{name}({args_summary})" if args_summary else f"{name}()"
         self._name_label = QLabel(text)
+        # при длинных arguments_json — tooltip с полным текстом.
+        if len(arguments_json) > 200:
+            self._name_label.setToolTip(arguments_json[:2000])
+        # Header — имя инструмента.
         self._name_label.setTextFormat(Qt.TextFormat.PlainText)
         self._name_label.setWordWrap(True)
         self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._name_label.setStyleSheet(
-            "color: #8db1d6; font-family: 'Consolas','Cascadia Mono',monospace; font-size: 12px;"
+            f"color: {c.info}; font-family: 'Consolas','Cascadia Mono',monospace; font-size: 12px;"
         )
         header.addWidget(self._name_label, stretch=1)
-
+        # Status — по цвету темы.
         self._status_label = QLabel("⏳")
+        self._apply_state_style()  # выставит стиль статуса
         self._status_label.setStyleSheet("color: #7a7a8a; font-size: 13px; padding-left: 4px;")
         self._status_label.setToolTip("Инструмент ещё не выполнен")
         header.addWidget(self._status_label)
@@ -840,21 +1143,31 @@ class ToolCallCard(QWidget):
             "color: #a8a8b8; font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 11px; padding: 2px 0 0 20px;"
         )
+        # Preview.
+        self._preview_label.setStyleSheet(
+            f"color: {c.tool_preview_text};"
+            " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 11px; padding: 4px 0 0 22px;"
+        )
         self._preview_label.setVisible(False)
         body.addWidget(self._preview_label)
 
+        # Full browser.
         # --- Полный текст (скрыт, раскрывается кнопкой) ---
         self._full_browser = QTextBrowser()
         self._full_browser.setReadOnly(True)
         self._full_browser.setFrameShape(QFrame.Shape.NoFrame)
         self._full_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._full_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        full_bg = "rgba(0,0,0,0.15)" if dark else "rgba(0,0,0,0.04)"
         self._full_browser.setStyleSheet(
             "QTextBrowser {"
-            " background: rgba(0,0,0,0.15); border: none;"
-            " color: #b8b8c8;"
+            f" background: {full_bg}; border: none;"
+            f" color: {c.text};"
             " font-family: 'Consolas','Cascadia Mono',monospace;"
-            " font-size: 11px; padding: 4px 6px;"
+            " font-size: 11px; padding: 6px 8px;"
+            " border-radius: 4px;"
             "}"
         )
         self._full_browser.setMaximumHeight(220)
@@ -862,6 +1175,23 @@ class ToolCallCard(QWidget):
         body.addWidget(self._full_browser)
 
         self._apply_state_style()
+
+    def _add_lsp_link(self, line: int, col: int, msg: str, path: str) -> None:
+        """Кликабельная ссылка на LSP-ошибку (jump-to-line в редакторе)."""
+        link = QPushButton(f"  стр. {line}:{col} — {msg}")
+        link.setCursor(Qt.CursorShape.PointingHandCursor)
+        link.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        link.setStyleSheet(
+            "QPushButton { background: transparent; border: none;"
+            " text-align: left; color: #6ba3d6;"
+            " font-family: 'Consolas', monospace; font-size: 11px;"
+            " padding: 0 20px; }"
+            " QPushButton:hover { text-decoration: underline; color: #8bc0f0; }"
+        )
+        link.clicked.connect(
+            lambda _checked=False, ln=line, p=path: self.open_in_editor_requested.emit(f"{p}:{ln}")
+        )
+        self._body_layout.addWidget(link)
 
     # ------------------------------------------------------------------
     # Публичный API
@@ -910,27 +1240,30 @@ class ToolCallCard(QWidget):
     # ------------------------------------------------------------------
 
     def _apply_state_style(self) -> None:
-        bg, border, icon = self._STATE_STYLES[self._state]
+        # [9.5.1] Палитра по теме.
+        style_pair = self._STATE_STYLES[self._state]
+        bg, border, icon = style_pair[0] if self._dark else style_pair[1]
         self._container.setStyleSheet(
             "QFrame#_tool_card {"
             f" background: {bg};"
             f" border: 1px solid {border};"
-            " border-radius: 6px;"
+            " border-radius: 8px;"
             " padding: 0;"
             "}"
         )
         self._status_label.setText(icon)
+        c = _theme_colors(self._dark)
         if self._state == "pending":
-            self._status_label.setStyleSheet("color: #7a7a8a; font-size: 13px; padding-left: 4px;")
+            self._status_label.setStyleSheet(f"color: {c.text_muted}; font-size: 13px; padding-left: 6px;")
             self._status_label.setToolTip("Инструмент ещё не выполнен")
         elif self._state == "ok":
             self._status_label.setStyleSheet(
-                "color: #98c379; font-size: 13px; padding-left: 4px; font-weight: 700;"
+                f"color: {c.success}; font-size: 13px; padding-left: 6px; font-weight: 700;"
             )
             self._status_label.setToolTip("Успешно")
         else:
             self._status_label.setStyleSheet(
-                "color: #e06c75; font-size: 13px; padding-left: 4px; font-weight: 700;"
+                f"color: {c.danger}; font-size: 13px; padding-left: 6px; font-weight: 700;"
             )
             self._status_label.setToolTip("Ошибка")
 
@@ -943,10 +1276,12 @@ class ToolCallCard(QWidget):
 
         preview, truncated = _truncate_preview(content, limit=200)
         self._preview_label.setText(preview)
+        c = _theme_colors(self._dark)
+        color = c.danger if self._result_is_error else c.tool_preview_text
         self._preview_label.setStyleSheet(
-            ("color: #e8a8a8;" if self._result_is_error else "color: #a8a8b8;")
-            + " font-family: 'Consolas','Cascadia Mono',monospace;"
-            " font-size: 11px; padding: 2px 0 0 20px;"
+            f"color: {color};"
+            " font-family: 'Consolas','Cascadia Mono',monospace;"
+            " font-size: 11px; padding: 4px 0 0 22px;"
         )
         self._preview_label.setVisible(True)
 
@@ -1019,7 +1354,13 @@ class ToolCallCard(QWidget):
             parts.append('<span style="color:#6ba3d6;">(новый файл)</span>')
         summary = " · ".join(parts)
 
+        # [9.5.1] Длинные пути — обрезка + tooltip.
+        path_display = path
+        if len(path_display) > 60:
+            path_display = "…" + path_display[-58:]
+        parts.append(f"<b>📄 {_escape_diff(path_display)}</b>")
         self._preview_label.setText(summary)
+        self._preview_label.setToolTip(path)
         self._preview_label.setTextFormat(Qt.TextFormat.RichText)
         self._preview_label.setStyleSheet(
             "color: #d4d4d4; font-family: 'Segoe UI', sans-serif; font-size: 12px; padding: 4px 0 2px 20px;"
@@ -1036,21 +1377,51 @@ class ToolCallCard(QWidget):
             )
             self._body_layout.addWidget(err_label)
 
+        # [10.8] LSP-диагностика — красный блок с jump-to-line.
+        lsp_errors = meta.get("lsp_errors") or []
+        if lsp_errors:
+            lsp_header = QLabel(f"⚠️ LSP: {len(lsp_errors)} ошибок")
+            lsp_header.setStyleSheet(
+                "color: #e06c75; font-weight: 600; font-size: 11px; padding: 2px 0 2px 20px;"
+            )
+            self._body_layout.addWidget(lsp_header)
+            for err in lsp_errors[:5]:
+                line = err.get("line", "?")
+                col = err.get("column", "?")
+                msg = str(err.get("message", ""))[:200]
+                self._add_lsp_link(line, col, msg, path)
+            if len(lsp_errors) > 5:
+                more = QLabel(f"… ещё {len(lsp_errors) - 5}")
+                more.setStyleSheet("color: #888; font-size: 11px; padding: 0 20px;")
+                self._body_layout.addWidget(more)
+
+        # [10.9] Кнопка «↩ Откатить снапшот», если есть snapshot_id.
+        snapshot_id = str(meta.get("snapshot_id") or "")
+        if snapshot_id:
+            snap_btn = QPushButton(f"↩ Откатить (snapshot {snapshot_id[:15]}…)")
+            snap_btn.setToolTip("Восстановить файл из снапшота, сделанного перед записью.")
+            snap_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid #444;"
+                " border-radius: 10px; color: #e5c07b; font-size: 11px;"
+                " padding: 2px 10px; }"
+                " QPushButton:hover { background: rgba(229,192,123,0.15); }"
+            )
+            snap_btn.clicked.connect(
+                lambda _checked=False, sid=snapshot_id: self.snapshot_undo_requested.emit(sid)
+            )
+            self._body_layout.addWidget(snap_btn)
+
             # Кнопки: «📂 Открыть» / «🔍 Показать diff» / «↩ Откатить».
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(20, 2, 0, 0)
         btn_row.setSpacing(6)
 
+        action_css = _action_btn_css(self._dark)
+
         open_btn = QPushButton("📂 Открыть в редакторе")
         open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        open_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444;"
-            " border-radius: 10px; color: #6ba3d6; font-size: 11px;"
-            " padding: 2px 10px; }"
-            " QPushButton:hover { background: rgba(107,163,214,0.15);"
-            " color: #8bc0f0; }"
-        )
+        open_btn.setStyleSheet(action_css)
         open_btn.clicked.connect(lambda _checked=False, p=path: self.open_in_editor_requested.emit(p))
         btn_row.addWidget(open_btn)
 
@@ -1058,13 +1429,7 @@ class ToolCallCard(QWidget):
         diff_btn = QPushButton("🔍 Показать diff")
         diff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         diff_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        diff_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444;"
-            " border-radius: 10px; color: #a8a8b8; font-size: 11px;"
-            " padding: 2px 10px; }"
-            " QPushButton:hover { background: rgba(168,168,184,0.15);"
-            " color: #d4d4d4; }"
-        )
+        diff_btn.setStyleSheet(action_css)
         diff_btn.setEnabled(bool(meta.get("original_content")) or is_new_file)
         diff_btn.clicked.connect(lambda _checked=False: self._on_show_diff_clicked())
         btn_row.addWidget(diff_btn)
@@ -1073,13 +1438,7 @@ class ToolCallCard(QWidget):
         revert_btn.setToolTip("Восстановить исходное содержимое файла (запись была уже сделана)")
         revert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         revert_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        revert_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444;"
-            " border-radius: 10px; color: #e5c07b; font-size: 11px;"
-            " padding: 2px 10px; }"
-            " QPushButton:hover { background: rgba(229,192,123,0.15);"
-            " color: #f0d494; }"
-        )
+        revert_btn.setStyleSheet(action_css)
         revert_btn.clicked.connect(lambda _checked=False: self._on_revert_clicked())
         btn_row.addWidget(revert_btn)
 
@@ -1155,12 +1514,17 @@ class ChatMessageItem(QWidget):
         thinking: str = "",
         mode_name: str = "",
         parent: QWidget | None = None,
+        *,
+        dark: bool = True,
+        images: list[str] | None = None,
     ):
         super().__init__(parent)
         self.role = role
         self.content = content
         self.thinking = thinking
         self.mode_name = mode_name
+        self._dark = dark
+        self._images: list[str] = images or []
 
         # Внутреннее состояние — по образцу ChatMessage(parts=[...]).
         self._reasoning_widget: ReasoningWidget | None = None
@@ -1174,10 +1538,12 @@ class ChatMessageItem(QWidget):
             self._ensure_reasoning_widget().set_text(thinking)
         if content:
             self._ensure_text_widget().set_text(content)
+        self._image_strip: QWidget | None = None
 
     def _build_ui(self) -> None:
+        c = _theme_colors(self._dark)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setContentsMargins(0, 6, 0, 6)
         outer.setSpacing(0)
 
         bubble = QFrame()
@@ -1186,84 +1552,112 @@ class ChatMessageItem(QWidget):
         is_assistant = self.role == "assistant"
         is_tool = self.role in ("tool", "system")
 
+        # [9.5.1] Стиль пузыря по токенам:
+        # * user — surface_alt, скругление 12, без рамки;
+        # * assistant — bubble_bg + тонкая рамка, скругление 10;
+        # * tool/system — прозрачный, без рамки.
         if is_user:
-            bg = "#3d3d3d"
-            text_color = "#e0e0e0"
-            border = "1px solid #555"
+            bubble.setStyleSheet(
+                "QFrame#_bubble {"
+                f" background-color: {c.bubble_user_bg};"
+                " border-radius: 12px;"
+                " padding: 10px 14px;"
+                " border: none;"
+                "}"
+            )
+            self.text_color = c.text
         elif is_assistant:
-            bg = "transparent"
-            text_color = "#e0e0e0"
-            border = "none"
+            bubble.setStyleSheet(
+                "QFrame#_bubble {"
+                f" background-color: {c.bubble_bg};"
+                " border-radius: 10px;"
+                " padding: 12px 14px;"
+                f" border: 1px solid {c.bubble_border};"
+                "}"
+            )
+            self.text_color = c.text
         else:
-            bg = "transparent"
-            text_color = "#999"
-            border = "none"
-
-        bubble.setStyleSheet(f"""
-            QFrame#_bubble {{
-                background-color: {bg};
-                border-radius: 12px;
-                padding: 6px 12px;
-                border: {border};
-            }}
-        """)
+            bubble.setStyleSheet(
+                "QFrame#_bubble {"
+                " background-color: transparent;"
+                " border-radius: 0;"
+                " padding: 6px 12px;"
+                " border: none;"
+                "}"
+            )
+            self.text_color = c.text_muted
 
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(0, 0, 0, 0)
-        bubble_layout.setSpacing(4)
+        # [9.5.1] SPACE.md = 8 px между секциями.
+        bubble_layout.setSpacing(8)
         self._bubble_layout = bubble_layout
         self.bubble = bubble
-        self.text_color = text_color
 
-        # Заголовок для assistant
+        # header (только assistant)
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(4)
+        header_row.setSpacing(6)
         if not is_tool and not is_user:
             header = f"Ассистент ({self.mode_name})" if is_assistant else self.role
             role_label = QLabel(header)
-            role_label.setStyleSheet(f"""
-                background-color: {bg};
-                color: {text_color};
-                font-weight: 600;
-                font-size: 11px;
-                padding: 2px 0 4px 0;
-            """)
+            role_label.setStyleSheet(
+                "background: transparent;"
+                f" color: {c.text_muted};"
+                " font-weight: 600;"
+                " font-size: 11px;"
+                " padding: 0 0 4px 0;"
+            )
             header_row.addWidget(role_label)
         header_row.addStretch()
         bubble_layout.addLayout(header_row)
 
-        # Сюда добавляются части (reasoning/text/tool_call) через _ensure_*.
+        # [9.7] Миниатюры прикреплённых изображений.
+        if self._images and is_user:
+            self._image_strip = QWidget()
+            img_layout = QHBoxLayout(self._image_strip)
+            img_layout.setContentsMargins(0, 4, 0, 4)
+            img_layout.setSpacing(6)
+            for b64 in self._images:
+                thumb = _make_thumbnail_label(b64, max_size=120)
+                if thumb is not None:
+                    img_layout.addWidget(thumb)
+            img_layout.addStretch()
+            bubble_layout.addWidget(self._image_strip)
+        else:
+            self._image_strip = None
+
+        # parts container
         self._parts_container = QWidget()
         parts_layout = QVBoxLayout(self._parts_container)
         parts_layout.setContentsMargins(0, 0, 0, 0)
-        parts_layout.setSpacing(4)
+        # [9.5.1] 8 px между reasoning/text/tool-cards.
+        parts_layout.setSpacing(8)
         self._parts_layout = parts_layout
         bubble_layout.addWidget(self._parts_container)
 
-        # Кнопка «Копировать» под текстом
+        if is_assistant:
+            from ui.chat.thought_stream import ChatThoughtStream
+            self._thought_stream = ChatThoughtStream(parent=self._parts_container)
+            self._parts_layout.addWidget(self._thought_stream)
+
         if is_user or is_assistant:
             copy_row = QHBoxLayout()
-            copy_row.setContentsMargins(0, 2, 0, 0)
+            copy_row.setContentsMargins(0, 4, 0, 0)
             copy_row.setSpacing(4)
             copy_row.addStretch()
             copy_btn = QPushButton("Копировать")
             copy_btn.setToolTip("Копировать сообщение (markdown)")
             copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            copy_btn.setStyleSheet(
-                "QPushButton { background: transparent; border: 1px solid #555;"
-                " border-radius: 10px; color: #888; font-size: 11px; padding: 1px 10px; }"
-                " QPushButton:hover { background: rgba(128,128,128,0.2); color: #ddd; }"
-                " QPushButton:pressed { background: rgba(128,128,128,0.35); }"
-            )
+            copy_btn.setStyleSheet(_action_btn_css(self._dark))
             copy_btn.clicked.connect(self._copy_to_clipboard)
             copy_row.addWidget(copy_btn)
             self.copy_button = copy_btn
             bubble_layout.addLayout(copy_row)
 
         inner = QHBoxLayout()
-        inner.setContentsMargins(6, 0, 6, 0)
+        inner.setContentsMargins(8, 0, 8, 0)
         if is_user:
             inner.addStretch()
             inner.addWidget(bubble, 1)
@@ -1278,13 +1672,14 @@ class ChatMessageItem(QWidget):
 
     def _ensure_reasoning_widget(self) -> ReasoningWidget:
         if self._reasoning_widget is None:
-            self._reasoning_widget = ReasoningWidget()
+            self._reasoning_widget = ReasoningWidget(dark=self._dark)
             self._parts_layout.addWidget(self._reasoning_widget)
         return self._reasoning_widget
 
     def _ensure_text_widget(self) -> TextWidget:
         if self._text_widget is None:
             self._text_widget = TextWidget()
+            self._text_widget.set_dark(self._dark)
             # [9.6.5] Убираем лишние вертикальные отступы `<p style="margin:8px 0">`
             # (первый/последний абзац в пузыре). Для assistant это не нужно
             # (там воздух между блоками уместен), а для user/коротких
@@ -1325,7 +1720,7 @@ class ChatMessageItem(QWidget):
         if self.role != "assistant":
             logger.debug(f"append_tool_call для role={self.role!r} — игнорирую")
             return None
-        card = ToolCallCard(name, arguments_json)
+        card = ToolCallCard(name, arguments_json, dark=self._dark)
         self._tool_cards.append(card)
         self._parts_layout.addWidget(card)
         return card
@@ -1360,7 +1755,14 @@ class ChatMessageItem(QWidget):
     # ---------------------------------------------------------------
 
     def _copy_to_clipboard(self) -> None:
-        QApplication.clipboard().setText(self.content)
+        text = self.content
+        if not text and self._text_widget is not None:
+            # Фолбэк, если текст рендерился через parts
+            text = self._text_widget.document().toPlainText()
+
+        if text:
+            QApplication.clipboard().setText(text)
+            logger.debug(f"Скопировано в буфер: {len(text)} символов")
 
     # ---------------------------------------------------------------
     # Обёртка для обратной совместимости (используется в тестах)

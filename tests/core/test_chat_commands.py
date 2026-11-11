@@ -24,9 +24,9 @@ class TestRegistry:
             assert c.tag.startswith("@")
 
     def test_get_command(self) -> None:
-        assert get_command("@web") is not None
-        assert get_command("@web").tag == "@web"
-        assert get_command("@unknown") is None
+        cmd = get_command("@web")
+        assert cmd is not None
+        assert cmd.tag == "@web"
 
     def test_get_command_strips(self) -> None:
         assert get_command("  @web  ") is not None

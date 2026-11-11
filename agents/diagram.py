@@ -88,7 +88,7 @@ def _to_layers(
     roots: Sequence[str],
 ) -> list[list[GraphNode]]:
     """Слои по расстоянию от корней (BFS по directed-рёбрам imports/references/depends_on/includes/provisions)."""
-    fwd = defaultdict(list)
+    fwd: defaultdict[str, list[str]] = defaultdict(list)
     for e in edges:
         if e.kind in {
             "imports",
@@ -122,7 +122,7 @@ def _to_layers(
     # только обратным belongs_to), докладываем undirected-BFS, иначе схема
     # вырождается в один слой из одних файлов.
     if len(layer) < len({n.id for n in nodes}):
-        und = defaultdict(list)
+        und: defaultdict[str, list[str]] = defaultdict(list)
         for e in edges:
             und[e.source].append(e.target)
             und[e.target].append(e.source)
@@ -285,8 +285,6 @@ def _mermaid(
     nmap = {n.id: n for n in nodes}
     lines = ["flowchart TD"]
 
-    # Стиль стрелки по типу связи. Осмысленно: пунктир для «использует»,
-    # жирная — для жёстких зависимостей.
     arrow_styles = {
         "imports": "-->",
         "references": "-.->",
@@ -307,16 +305,23 @@ def _mermaid(
             "module_tf": "[[{lbl}]]",
             "box": "([lbl])",
         }.get(n.kind, "[{lbl}]")
-        lbl = f"{n.kind}: {_short(n)}"
-        lines.append(f"  {_mid(n.id)} {shape.format(lbl=_esc(lbl))}")
+
+        # [FIX] Оборачиваем label в двойные кавычки, чтобы Mermaid
+        # не ломался на пробелах и двоеточиях.
+        raw_lbl = f"{n.kind}: {_short(n)}".replace('"', "'")
+        lbl = f'"{raw_lbl}"'
+
+        lines.append(f"  {_mid(n.id)} {shape.format(lbl=lbl)}")
 
     for e in edges:
         if e.source in nmap and e.target in nmap:
             style = arrow_styles.get(e.kind, "-->")
+            # Убираем лишние дефисы, Mermaid понимает только стандартные стрелки
+            if "---" in style:
+                style = "-->"
             lines.append(f"  {_mid(e.source)} {style}|{e.kind}| {_mid(e.target)}")
 
     return "\n".join(lines)
-
 
 def _mid(nid: str) -> str:
     import hashlib

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,11 +23,13 @@ from loguru import logger
 from PySide6.QtCore import QTimer, Slot
 
 from agents.model_pool import ModelPool, Role
+from agents.ollama_client import MessagePart, TextPart
 from agents.orchestrator import Orchestrator, RunResult
 from core.budget import ApproxCounter
 
 if TYPE_CHECKING:
-    pass
+    from agents.ollama_client import ChatMessage
+    from ui.chat.message_item import ChatMessageItem
 
 
 class ResearchMixin:
@@ -51,6 +54,24 @@ class ResearchMixin:
     project_root: str
     status_label: Any  # QLabel
 
+    # --- NEW: поля, использованные в _reset_research_state / _on_orchestrator_result ---
+    _current_assistant_parts: list[MessagePart]
+    _current_assistant_text: str
+    _current_assistant_reasoning: str
+    _current_assistant_content: str
+    _current_thinking_content: str
+    _last_assistant_widget: ChatMessageItem | None
+    _session_id: str | None
+    _messages: list[ChatMessage]
+    session_store: Any
+    scroll_layout: Any
+
+    # --- NEW: методы ChatPanel, которые вызывает ResearchMixin ---
+    _scroll_to_bottom: Callable[[], None]
+    _sync_dashboard: Callable[[], None]
+    _reset_send_button: Callable[[], None]
+    pipeline_status_changed: Any  # Signal(str)
+
     # ------------------------------------------------------------------
     # Сброс research-состояния (вызывается перед каждым запросом).
     # ------------------------------------------------------------------
@@ -62,6 +83,11 @@ class ResearchMixin:
         self._pending_final_answer = ""
         self._last_research_summary = None
         self._current_thought_stream = None
+        # 0.1.3b: буферы частей должны быть пусты к началу нового прогона —
+        # иначе parts предыдущего ответа «прилипнут» к следующему.
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
 
     # ------------------------------------------------------------------
     # Слоты research-режима (подключаются в _connect_agent_thread_signals).
@@ -93,8 +119,8 @@ class ResearchMixin:
 
         if self._current_thought_stream is None:
             self._current_thought_stream = ChatThoughtStream()
-            self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-                self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+            self.scroll_layout.insertWidget(
+                self.scroll_layout.count() - 1,
                 self._current_thought_stream,
             )
 
@@ -110,7 +136,7 @@ class ResearchMixin:
                 "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
             )
 
-        QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     @Slot()
     def _on_final_answer_started(self) -> None:
@@ -159,11 +185,11 @@ class ResearchMixin:
         except Exception as e:
             logger.warning(f"Не удалось построить паспорт исследования: {e}")
             return
-        self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-            self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+        self.scroll_layout.insertWidget(
+            self.scroll_layout.count() - 1,
             widget,
         )
-        QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     # ------------------------------------------------------------------
     # Индикатор пайплайна
@@ -228,10 +254,10 @@ class ResearchMixin:
 
         # Приборная панель.
         if self._dashboard is not None:
-            self._sync_dashboard()  # type: ignore[attr-defined]
+            self._sync_dashboard()
 
         # Сигнал наружу (MainWindow).
-        self.pipeline_status_changed.emit(text)  # type: ignore[attr-defined]
+        self.pipeline_status_changed.emit(text)
 
     def _pipeline_tooltip(self) -> str:
         """Подробности о загруженных planner/analyst для tooltip."""
@@ -335,10 +361,11 @@ class ResearchMixin:
             logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
             self.status_label.setText("✅ Двухмодельный пайплайн готов")
             self._update_pipeline_status()
-            # Обновляем селекторы Planner/Analyst (могли измениться id).
-            refresh = getattr(self, "refresh_pipeline_selectors", None)
-            if callable(refresh):
-                refresh()
+
+            # [FIX] Синхронизируем UI селекторы с реально загруженным пулом
+            if self._pipeline_selectors is not None:
+                self._pipeline_selectors.update_from_pool(pool)
+
         except Exception as e:
             logger.exception("Не удалось создать Orchestrator")
             self._on_pool_error(f"Orchestrator init: {e}")
@@ -365,17 +392,20 @@ class ResearchMixin:
         from ui.chat.message_item import ChatDiagramItem
 
         try:
-            if self._last_assistant_widget is not None:  # type: ignore[attr-defined]
-                self._last_assistant_widget.finalize()  # type: ignore[attr-defined]
+            if self._last_assistant_widget is not None:
+                self._last_assistant_widget.finalize()
 
-            # Сохраняем assistant-сообщение в историю.
+            # Сохраняем assistant-сообщение в историю (0.1.3b).
             if result.answer:
-                assistant_message = ChatMessage(role="assistant", content=result.answer)
-                self._messages.append(assistant_message)  # type: ignore[attr-defined]
-                if self._session_id:  # type: ignore[attr-defined]
-                    self.session_store.save_message(  # type: ignore[attr-defined]
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    parts=[TextPart(text=result.answer)],
+                )
+                self._messages.append(assistant_message)
+                if self._session_id:
+                    self.session_store.save_message(
                         self._session_id,
-                        assistant_message,  # type: ignore[attr-defined]
+                        assistant_message,
                     )
 
             # Диаграмма компонентов.
@@ -384,8 +414,8 @@ class ResearchMixin:
                     result.ascii_diagram or "",
                     result.mermaid_diagram or "",
                 )
-                self.scroll_layout.insertWidget(  # type: ignore[attr-defined]
-                    self.scroll_layout.count() - 1,  # type: ignore[attr-defined]
+                self.scroll_layout.insertWidget(
+                    self.scroll_layout.count() - 1,
                     diagram_item,
                 )
 
@@ -401,41 +431,80 @@ class ResearchMixin:
                 )
                 if unsupported:
                     summary += f" · без доказательств: {unsupported}"
+            # [10.7] Coding-флоу: показываем прогресс тестов и патчи.
+            if result.coding_flow:
+                tests_ok = result.tests_failed == 0 and result.tests_errors == 0
+                icon = "✅" if tests_ok else "❌"
+                summary = f"{icon} Coding: {result.tests_passed} passed"
+                if result.tests_failed:
+                    summary += f", {result.tests_failed} failed"
+                if result.tests_errors:
+                    summary += f", {result.tests_errors} errors"
+                summary += f" · итераций: {result.iterations}"
+                if result.patches:
+                    applied_ok = sum(1 for p in result.patches if p.get("status") == "ok")
+                    summary += f" · патчей: {applied_ok}/{len(result.patches)}"
                 self._add_message("system", summary)  # type: ignore[attr-defined]
 
-            QTimer.singleShot(0, self._scroll_to_bottom)  # type: ignore[attr-defined]
+                # Патчи с ошибками — отдельным блоком.
+                failed_patches = [p for p in result.patches if p.get("status") == "error"]
+                if failed_patches:
+                    lines = ["⚠️ Не применены патчи:"]
+                    for p in failed_patches:
+                        lines.append(f"  • {p.get('path', '?')}: {p.get('error', '')}")
+                    self._add_message("system", "\n".join(lines))  # type: ignore[attr-defined]
+
+            QTimer.singleShot(0, self._scroll_to_bottom)
         except Exception:
             logger.exception("_on_orchestrator_result failed")
         finally:
-            self._reset_send_button()  # type: ignore[attr-defined]
-            self._current_assistant_content = ""  # type: ignore[attr-defined]
-            self._current_thinking_content = ""  # type: ignore[attr-defined]
-            self._last_assistant_widget = None  # type: ignore[attr-defined]
+            self._reset_send_button()
+            self._current_assistant_content = ""
+            self._current_thinking_content = ""
+            self._last_assistant_widget = None
             self._current_thought_stream = None
             self._pending_final_answer = ""
             self._last_research_summary = None
             self._research_mode_active = False
             self.status_label.setText("Готов к работе")
 
+    def _get_role_name(self, role: Role) -> str:
+        """Возвращает красивое имя роли с размером модели (например, Planner 3B)."""
+        if self._model_pool is not None:
+            try:
+                spec = self._model_pool.spec(role)
+                # Ищем размер модели в ID (например, qwen2.5-14b-instruct-q4_k_m -> 14B)
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?[bBmM])', spec.model_id)
+                size = f" {match.group(1).upper()}" if match else ""
+                role_ru = "Planner" if role == Role.PLANNER else "Analyst"
+                return f"{role_ru}{size}"
+            except Exception:
+                pass
+        return "Planner" if role == Role.PLANNER else "Analyst"
+
     @Slot(str, dict)
     def _on_orchestrator_event(self, kind: str, data: dict) -> None:
-        """Пробрасывает событие Orchestrator'а в UI (статус + thought)."""
+        """Пробрасывает событие Orchestrator'а в UI с реальными именами моделей."""
+        planner_name = self._get_role_name(Role.PLANNER)
+        analyst_name = self._get_role_name(Role.ANALYST)
+
         if kind == "classify":
-            self.status_label.setText("🧠 Классификация…")
+            self.status_label.setText(f"🧠 {planner_name}: Классификация…")
         elif kind == "plan":
             task = data.get("task", "?")
             files = data.get("files", 0)
             deep = data.get("deep", False)
-            self.status_label.setText(f"📋 План: {task}, файлов={files}" + (" (deep)" if deep else ""))
+            self.status_label.setText(f"📋 {planner_name}: План [{task}], файлов={files}" + (" (deep)" if deep else ""))
         elif kind == "coverage":
             val = float(data.get("value", 0.0))
             self.status_label.setText(f"📊 Покрытие: {val:.0%}")
         elif kind == "synthesize":
-            self.status_label.setText("✍️ Синтез (7B CPU)…")
+            self.status_label.setText(f"✍️ {analyst_name}: Синтез ответа (это может занять время)…")
         elif kind == "regen":
-            self.status_label.setText(f"🔄 Регенерация: {str(data.get('reason', ''))[:80]}")
+            self.status_label.setText(f"🔄 {analyst_name}: Регенерация ({str(data.get('reason', ''))[:80]})")
         elif kind == "fallback":
-            self._add_message(  # type: ignore[attr-defined]
+            self._add_message(
                 "system",
                 f"⚠️ Оркестратор упал, использую старый ReAct: {data.get('reason', '')[:120]}",
             )

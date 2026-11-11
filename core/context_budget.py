@@ -186,3 +186,104 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     if max_chars <= len(marker):
         return text[:max_chars]
     return text[: max_chars - len(marker)] + marker
+
+
+# ---------------------------------------------------------------------------
+# 4.2: иерархический контекст
+# ---------------------------------------------------------------------------
+
+# Доля окна под горячее окно (последние реплики + активные tool-results).
+# Не режется компактором: если модель читает 10 файлов в ReAct-цикле, эти
+# tool-results критичны, их нельзя выбрасывать «ради места».
+HOT_WINDOW_SHARE = 0.35
+
+# Доля окна под тёплый слой (RAG/repomap/AGENTS.md) — режется первым
+# при переполнении. Согласовано с `SYSTEM_PROMPT_SHARE`.
+WARM_LAYER_SHARE = 0.25
+
+# Минимум горячего окна — даже при крошечном n_ctx, ниже этого ReAct
+# не работает (модель забывает, что уже сделала).
+MIN_HOT_WINDOW_TOKENS = 2048
+
+# Минимум тёплого слоя.
+MIN_WARM_LAYER_TOKENS = 1024
+
+
+def hot_window_tokens(num_ctx: int) -> int:
+    """Сколько токенов резервировать под горячее окно (4.2).
+
+    Горячее окно — это последние реплики диалога + tool-results активного
+    ReAct-цикла. Компактор ``agents.history_compactor`` **не** режет эти
+    сообщения: они нужны модели, чтобы не повторять tool_calls и не терять
+    результаты инструментов.
+
+    Args:
+        num_ctx: Окно контекста модели в токенах.
+
+    Returns:
+        Бюджет горячего окна. Для 8k → 2867, для 16k → 5734, для 32k →
+        11468, для 64k → 22937. Всегда ≥ ``MIN_HOT_WINDOW_TOKENS``.
+    """
+    if num_ctx <= 0:
+        return MIN_HOT_WINDOW_TOKENS
+    return max(MIN_HOT_WINDOW_TOKENS, int(num_ctx * HOT_WINDOW_SHARE))
+
+
+def warm_layer_tokens(num_ctx: int) -> int:
+    """Сколько токенов резервировать под тёплый слой (RAG/repomap/AGENTS.md).
+
+    Тёплый слой — переменный контекст проекта. При переполнении режется
+    первым (с конца: сначала RAG-выдержки, потом карта проекта, потом
+    правила).
+
+    Args:
+        num_ctx: Окно контекста модели в токенах.
+
+    Returns:
+        Бюджет тёплого слоя. Всегда ≥ ``MIN_WARM_LAYER_TOKENS``.
+    """
+    if num_ctx <= 0:
+        return MIN_WARM_LAYER_TOKENS
+    return max(MIN_WARM_LAYER_TOKENS, int(num_ctx * WARM_LAYER_SHARE))
+
+
+def cold_tokens(num_ctx: int) -> int:
+    """Бюджет холодного слоя (полная история, «остаток» окна).
+
+    Вычисляется как разница: `num_ctx - hot - warm - output - safety`.
+    Используется для отображения в ``StatusDashboard`` (не для обрезки —
+    холодный слой доступен только через инструменты).
+    """
+    if num_ctx <= 0:
+        return 0
+    return max(0, num_ctx - hot_window_tokens(num_ctx) - warm_layer_tokens(num_ctx))
+
+
+# ---------------------------------------------------------------------------
+# 4.2: порог сжатия зависит от размера окна
+# ---------------------------------------------------------------------------
+
+
+def compactor_threshold(num_ctx: int) -> float:
+    """Порог срабатывания компактора истории (4.2).
+
+    Для больших окон (≥32k) порог выше — модель может держать больше
+    истории, чем при 8k. Для маленьких окон порог ниже, чтобы не упираться
+    в лимит резко.
+
+    Args:
+        num_ctx: Окно контекста модели в токенах.
+
+    Returns:
+        Доля окна (0..1), после которой вызывается ``compact_history``.
+        * ``num_ctx < 8192`` → 0.75
+        * ``num_ctx < 32768`` → 0.80
+        * ``num_ctx >= 32768`` → 0.90
+    """
+    if num_ctx <= 0:
+        return 0.80
+    if num_ctx < 8192:
+        return 0.75
+    if num_ctx < 32768:
+        return 0.80
+    return 0.90

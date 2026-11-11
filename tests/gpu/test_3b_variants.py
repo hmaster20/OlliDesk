@@ -1,12 +1,13 @@
-# test_3b_variants.py — тот же промпт на всех доступных 3B
 import os
 
 os.environ["LLAMA_LOG_LEVEL"] = "WARN"
 
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 from llama_cpp import Llama
+from llama_cpp.llama_types import CreateChatCompletionResponse
 
 MODELS_DIR = Path.home() / ".ollidesk" / "models"
 CANDS = [
@@ -32,10 +33,15 @@ for name in CANDS:
             verbose=False,
         )
         t0 = perf_counter()
-        out = llm.create_chat_completion(
-            messages=[{"role": "user", "content": PROMPT}],
-            max_tokens=128,
-            temperature=0.2,
+        # stream=False → CreateChatCompletionResponse (стабы дают union).
+        out = cast(
+            CreateChatCompletionResponse,
+            llm.create_chat_completion(
+                messages=[{"role": "user", "content": PROMPT}],
+                max_tokens=128,
+                temperature=0.2,
+                stream=False,
+            ),
         )
         dt = perf_counter() - t0
         n_tok = out["usage"]["completion_tokens"]

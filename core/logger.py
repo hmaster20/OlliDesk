@@ -7,6 +7,10 @@ from typing import Any, TextIO, cast
 
 from loguru import logger
 
+from core import redaction
+from core.event_bus import EventBus
+from core.events import EventKind
+
 
 class _SafeStream:
     """Обёртка над sys.stderr, которая не падает при записи.
@@ -90,6 +94,65 @@ def _is_null_stream(stream: object) -> bool:
         return True
 
 
+def _redact_filter(record: dict) -> bool:
+    """Loguru-filter: вырезает секреты из сообщения ДО форматирования.
+
+    Мутирует ``record["message"]`` in-place. Возвращает ``True`` всегда —
+    строку не отбрасываем, только чистим. Loguru применяет ``format``
+    ПОСЛЕ фильтра, поэтому ``{message}`` в format-строке получит уже
+    очищенный текст.
+
+    Покрывает ``logger.info(f"…{secret}…")``, ``logger.opt(exception=…)``
+    (только сообщение; сам трейсбек не чистим — см. §12 «Подводные камни»),
+    ``logger.bind(...)`` (тоже message).
+    """
+    try:
+        msg = record.get("message")
+        if isinstance(msg, str) and msg:
+            cleaned, hits = redaction.redact(msg)
+            if cleaned != msg:
+                record["message"] = cleaned
+                # Не логируем в тот же sink (рекурсия): пишем в debug-уровень
+                # напрямую в файл нельзя — sink ещё не отформатирован.
+                # Просто оставляем пометку в самом сообщении.
+                record["message"] = f"{cleaned}  [redacted:{','.join(hits)}]"
+    except Exception:
+        # Фильтр не должен ронять логирование ни при каких условиях.
+        pass
+    return True
+
+
+def _event_bus_sink(record: dict) -> None:
+    """Зеркалит loguru-record в EventBus (2.5).
+
+    Фильтр по уровню — на уровне sink'а (`level="INFO"` в `logger.add`),
+    но проверка дублируется для документации и на случай, если sink
+    подключат через `logger.add(_event_bus_sink)` без явного `level=`.
+
+    Внутри — только то, что нужно UI: level, message, source, timestamp.
+    Никаких `record["extra"]` — они не для UI. Секреты уже вырезаны
+    `_redact_filter` (0.1.2), повторная редокция не нужна.
+
+    Любая ошибка глушится: sink не должен валить логирование.
+    """
+    try:
+        record = message.record
+        level_no = record["level"].no
+        if level_no < 20:
+            return
+        msg = record.get("message", "")
+        if not isinstance(msg, str):
+            return
+        payload: dict = {
+            "level": record["level"].name,
+            "message": msg,
+            "source": f"{record['name']}:{record['function']}",
+            "timestamp": record["time"].strftime("%H:%M:%S"),
+        }
+        EventBus.instance().emit(EventKind.LOG.value, payload)
+    except Exception:
+        logger.debug("EventBus-sink упал", exc_info=True)
+
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
 
@@ -129,6 +192,7 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
                 level=level,
                 format=fmt,
                 catch=True,
+                filter=cast(Any, _redact_filter),
             )
         except Exception:
             # stderr сломан окончательно — файл всё равно останется.
@@ -141,5 +205,22 @@ def setup_logger(log_dir: Path, level: str = "INFO") -> None:
         retention="7 days",
         level=level,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        catch=True,
+        filter=cast(Any, _redact_filter),
+    )
+
+    # 2.5: EventBus-sink — INFO+ уходит в UI (LiveEventsPanel).
+    # `filter=_redact_filter` применять НЕ нужно: loguru вызывает filter
+    # для каждого sink'а на том же record, поэтому к моменту вызова
+    # EventBus-sink'а `record["message"]` уже отредактирован (соседним
+    # sink'ом). Если формат `{message}` — берём готовую строку.
+    # 2.5 + 0.1.2: EventBus-sink идёт последним, но полагаться на порядок
+    # не будем — повторный filter идемпотентен (маркеры `[REDACTED:*]`
+    # не матчатся заново), поэтому безопасно применить его явно.
+    logger.add(
+        _event_bus_sink,
+        level="INFO",
+        format="{message}",
+        filter=cast(Any, _redact_filter),
         catch=True,
     )

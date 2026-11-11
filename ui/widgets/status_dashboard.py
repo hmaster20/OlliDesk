@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 # Цвета семантических индикаторов (в стиле «приборной панели»).
@@ -30,7 +30,12 @@ _C_INFO = "#d4a373"
 
 
 class _PillLabel(QLabel):
-    """Кликабельный статус-индикатор в стиле «pill»."""
+    """Кликабельный статус-индикатор в стиле «pill».
+
+    2.5: `set_pulse(True)` включает мигание точки (QTimer 500 мс,
+    toggle между двумя оттенками) — визуальный признак «программа
+    работает». Tooltip можно переопределить независимо от текста.
+    """
 
     clicked = Signal()
 
@@ -51,14 +56,47 @@ class _PillLabel(QLabel):
             " color: #d4a373;"
             "}"
         )
+        self._current_color: str = _C_OFF
+        self._current_text: str = ""
+        self._pulse_active: bool = False
+        self._pulse_on: bool = False
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(500)
+        self._pulse_timer.timeout.connect(self._on_pulse_tick)
 
     def set_state(self, text: str, color: str, tooltip: str = "") -> None:
         """Обновляет текст и цвет индикатора (цвет — как маркер)."""
-        self.setText(f'<span style="color:{color};">●</span> {text}')
-        self.setTextFormat(Qt.TextFormat.RichText)
+        self._current_text = text
+        self._current_color = color
+        self._apply()
+
+    def set_tooltip(self, tooltip: str) -> None:
+        """Только tooltip (текст/цвет не трогаются)."""
         if tooltip:
             self.setToolTip(tooltip)
-        self._current_color = color
+
+    def set_pulse(self, active: bool) -> None:
+        """Включает/выключает мигание точки."""
+        if active == self._pulse_active:
+            return
+        self._pulse_active = active
+        if active:
+            self._pulse_timer.start()
+        else:
+            self._pulse_timer.stop()
+            self._pulse_on = False
+            self._apply()
+
+    def _on_pulse_tick(self) -> None:
+        self._pulse_on = not self._pulse_on
+        self._apply()
+
+    def _apply(self) -> None:
+        color = self._current_color
+        if self._pulse_active and self._pulse_on:
+            color = "#f0d494"  # осветлённый цвет — «вспышка»
+        self.setText(f'<span style="color:{color};">●</span> {self._current_text}')
+        self.setTextFormat(Qt.TextFormat.RichText)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.button() == Qt.MouseButton.LeftButton:
@@ -79,6 +117,12 @@ class StatusDashboard(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+
+        # Индикатор активности (2.5): пульсирует пока идёт работа,
+        # tooltip — последнее событие из EventBus.
+        self.activity = _PillLabel("💤 idle")
+        self.activity.setToolTip("Активность: ожидание")
+        layout.addWidget(self.activity)
 
         # Бэкенд: SLM / Ollama / Резерв.
         self.backend = _PillLabel("backend")
@@ -107,16 +151,132 @@ class StatusDashboard(QWidget):
         self.tools.setToolTip("Активность инструментов текущего запроса")
         layout.addWidget(self.tools)
 
+        # [2.10] Бюджет + причина остановки.
+        self.budget = _PillLabel("budget")
+        self.budget.setToolTip("Мягкий бюджет агента (итерации · токены · время)")
+        layout.addWidget(self.budget)
+
+        # [4.2] Prefix caching: сколько токенов переиспользуется из KV.
+        self.cache = _PillLabel("cache")
+        self.cache.setToolTip("Prefix caching: reads/writes в KV-кэше")
+        layout.addWidget(self.cache)
+
         # Начальное состояние.
         self.set_backend("slm", "SLM", "—")
         self.set_pipeline("💤", "не активирован")
         self.set_tok_per_sec(0.0)
         self.set_rag(0, "не проиндексирован")
         self.set_tools_active(False)
+        # [10.6] Coder-модель для coding-задач.
+        self.coder = _PillLabel("coder")
+        self.coder.setToolTip("Coder-модель (выбирается профилем)")
+        layout.addWidget(self.coder)
+
+        # [2.11] Режим браузера.
+        self.browser = _PillLabel("browser")
+        self.browser.setToolTip("Режим browser_control: isolated / extension / full / off")
+        layout.addWidget(self.browser)
+
+        # [2.13] Провайдер поиска.
+        self.search = _PillLabel("search")
+        self.search.setToolTip("Цепочка поиска: первый доступный провайдер")
+        layout.addWidget(self.search)
+
+        # [9.4] Git-ветка проекта.
+        self.git_branch = _PillLabel("git")
+        self.git_branch.setToolTip("Текущая git-ветка и hash")
+        layout.addWidget(self.git_branch)
+
+        # [4.3] Эпизодическая память.
+        self.memory = _PillLabel("mem")
+        self.memory.setToolTip("Память: рефлексии по завершённым задачам")
+        layout.addWidget(self.memory)
+
+        # [7] MCP-серверы.
+        self.mcp = _PillLabel("mcp")
+        self.mcp.setToolTip("MCP: подключённые серверы")
+        layout.addWidget(self.mcp)
+
+        # [9.12] Свобода активного профиля.
+        self.freedom = _PillLabel("profile")
+        self.freedom.setToolTip("freedom_level активного профиля")
+        layout.addWidget(self.freedom)
+
+        # [2.12] Индикатор inbox (pending запросы).
+        self.inbox = _PillLabel("inbox")
+        self.inbox.setToolTip("Durable inbox: запросы в очереди")
+        layout.addWidget(self.inbox)
+
+        self.set_budget(None)
+        self.set_cache(0, 0)
+        self.set_coder("⚡", "coder", "—")
+        self.set_browser("isolated", available=False)
+        self.set_search("", available=False)
+        self.set_git_branch("", "")  # [9.4]
+        self.set_memory(0, [])  # [4.3]
+        self.set_mcp(0, [])  # [7]
+        self.set_freedom("development")  # [9.12]
+        self.set_inbox(0)
 
     # ------------------------------------------------------------------
     # Публичный API (вызывается из MainWindow/ChatPanel)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 2.5: активность + последнее событие
+    # ------------------------------------------------------------------
+
+    _ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
+        "idle": ("💤 idle", _C_OFF),
+        "thinking": ("🤔 думает", _C_WARN),
+        "tool": ("🔧 tool", _C_INFO),
+        "streaming": ("✍️ стрим", _C_OK),
+        "error": ("❌ ошибка", _C_ERR),
+        "cancelled": ("⏹ стоп", _C_OFF),
+    }
+
+    # ------------------------------------------------------------------
+    # [10.6] Coder-модель
+    # ------------------------------------------------------------------
+
+    def set_coder(self, icon: str, label: str, model_name: str) -> None:
+        """Показывает coder-модель.
+
+        Args:
+            icon: ``"⚡"`` (coder) | ``"⚠️"`` (fallback / нет модели).
+            label: ``"coder"`` | ``"coder (fallback)"`` | …
+            model_name: Человекочитаемое имя модели.
+        """
+        color = _C_OK if icon == "⚡" else _C_WARN
+        text = f"{icon} {label}"
+        tooltip = f"Модель: {model_name}"
+        if icon != "⚡":
+            tooltip += "\nСкачайте coder-модель через «View → Локальные модели»."
+        self.coder.set_state(text, color, tooltip)
+
+    def set_activity_state(self, state: str) -> None:
+        """Обновляет индикатор активности (2.5)."""
+        label, color = self._ACTIVITY_LABELS.get(state, ("●", _C_OFF))
+        self.activity.set_state(label, color)
+        self.activity.set_pulse(state in ("thinking", "tool", "streaming"))
+        if state == "idle":
+            self.activity.set_tooltip("Активность: ожидание")
+        elif state == "cancelled":
+            self.activity.set_tooltip("Остановлено пользователем")
+
+    def set_last_event_tooltip(self, kind: str, payload: dict) -> None:
+        """Tooltip индикатора активности — последнее событие (2.5)."""
+        text = f"{kind}"
+        msg = payload.get("message")
+        if isinstance(msg, str) and msg:
+            text += f": {msg[:120]}"
+        else:
+            # Показываем ключевые поля payload (без private-ключей).
+            for key in ("query", "name", "model_id", "model", "error"):
+                if payload.get(key):
+                    text += f": {str(payload[key])[:120]}"
+                    break
+        self.activity.set_tooltip(text)
 
     def set_backend(self, kind: str, display: str, model: str) -> None:
         """kind ∈ {'slm','ollama','rule','none'}."""
@@ -160,9 +320,274 @@ class StatusDashboard(QWidget):
         else:
             self.tools.set_state("🔧 tools", _C_OFF, "Инструменты не используются")
 
+    # ------------------------------------------------------------------
+    # [2.10] Бюджет агента и причина остановки
+    # ------------------------------------------------------------------
+
+    def set_budget(self, snapshot: dict | None) -> None:
+        """Обновляет индикатор бюджета.
+
+        Args:
+            snapshot: ``SoftBudget.snapshot()`` или ``None`` (сброс).
+                Ключи: ``iterations``, ``iterations_limit``, ``tokens``,
+                ``tokens_limit``, ``time_s``, ``time_limit_s``, ``status``.
+        """
+        if snapshot is None:
+            self.budget.set_state("— budget", _C_OFF, "Бюджет не активен")
+            return
+
+        status = str(snapshot.get("status", "ok"))
+        iterations = int(snapshot.get("iterations", 0))
+        iterations_limit = int(snapshot.get("iterations_limit", 0))
+        tokens = int(snapshot.get("tokens", 0))
+        time_s = float(snapshot.get("time_s", 0.0))
+
+        color = _C_OK if status == "ok" else _C_WARN if status == "warning" else _C_ERR
+        icon = "" if status == "ok" else "⚠️ " if status == "warning" else "⛔ "
+        text = f"{icon}{iterations}/{iterations_limit} ит."
+        tooltip = (
+            f"Итерации: {iterations}/{iterations_limit}\n"
+            f"Токены: {tokens}/{int(snapshot.get('tokens_limit', 0))}\n"
+            f"Время: {time_s:.0f}с/{int(snapshot.get('time_limit_s', 0))}с"
+        )
+        self.budget.set_state(text, color, tooltip)
+
+    def set_finish_reason(self, reason: str | None) -> None:
+        """Показывает причину остановки последнего прогона.
+
+        Args:
+            reason: ``"stop"`` | ``"length"`` | ``"budget.exceeded"`` |
+                ``"user_cancel"`` | ``None``.
+        """
+        if not reason:
+            return
+        labels = {
+            "stop": ("✅ завершено", _C_OK),
+            "length": ("✂️ обрезано (max_tokens)", _C_WARN),
+            "tool_calls": ("🔧 вызовы инструментов", _C_INFO),
+            "budget.exceeded": ("⛔ бюджет исчерпан", _C_ERR),
+            "user_cancel": ("⏹ отменено пользователем", _C_OFF),
+        }
+        text, color = labels.get(reason, (reason, _C_OFF))
+        self.budget.set_state(text, color, f"finish_reason={reason}")
+
+    # ------------------------------------------------------------------
+    # [4.2] Prefix caching
+    # ------------------------------------------------------------------
+
+    def set_cache(self, reads: int, writes: int) -> None:
+        """Показывает статистику prefix caching последнего ответа.
+
+        Args:
+            reads: Сколько токенов промпта уже было в KV (переиспользовано).
+            writes: Сколько токенов промпта обработано заново.
+
+        Note:
+            llama.cpp переиспользует KV по общему префиксу; значения —
+            эвристика (``self.llm.n_tokens`` до/после вызова). Для Ollama
+            всегда ``0/0`` — поле не заполняется.
+        """
+        if reads == 0 and writes == 0:
+            self.cache.set_state("— cache", _C_OFF, "Prefix caching не активен")
+            return
+        total = max(1, reads + writes)
+        hit_pct = int(100 * reads / total)
+        icon = "⚡" if hit_pct >= 50 else "—"
+        text = f"{icon} cache {reads}/{writes}"
+        tooltip = (
+            f"Prefix caching: {reads} reads / {writes} writes\n"
+            f"Hit rate: {hit_pct}% (уже в KV / обработано заново)"
+        )
+        self.cache.set_state(text, _C_OK if hit_pct >= 50 else _C_WARN, tooltip)
+
+    # ------------------------------------------------------------------
+    # [4.3] Эпизодическая память
+    # ------------------------------------------------------------------
+
+    def set_memory(self, count: int, recent: list[str] | None = None) -> None:
+        """Показывает количество рефлексий в памяти.
+
+        Args:
+            count: Сколько записей в `MemoryService`.
+            recent: Последние N summary (для tooltip, до 3-х).
+        """
+        if count <= 0:
+            self.memory.set_state("— mem", _C_OFF, "Память пуста")
+            return
+        text = f"🧠 mem: {count}"
+        tooltip = f"Рефлексий в памяти: {count}"
+        if recent:
+            tooltip += "\n\nПоследние:\n" + "\n".join(f"  • {r[:80]}" for r in recent[:3])
+        self.memory.set_state(text, _C_INFO, tooltip)
+
+    # ------------------------------------------------------------------
+    # [7] MCP
+    # ------------------------------------------------------------------
+
+    def set_mcp(self, connected: int, servers: list[str] | None = None) -> None:
+        """Показывает количество подключённых MCP-серверов.
+
+        Args:
+            connected: Сколько серверов ответили на ``initialize``.
+            servers: Имена серверов (для tooltip).
+        """
+        if connected <= 0:
+            self.mcp.set_state("— mcp", _C_OFF, "MCP не подключён")
+            return
+        text = f"🔌 mcp: {connected}"
+        tooltip = f"Подключено MCP-серверов: {connected}"
+        if servers:
+            tooltip += "\n\n" + "\n".join(f"  • {s}" for s in servers[:5])
+            if len(servers) > 5:
+                tooltip += f"\n  … ещё {len(servers) - 5}"
+        self.mcp.set_state(text, _C_OK, tooltip)
+
+    # ------------------------------------------------------------------
+    # [9.12] freedom_level
+    # ------------------------------------------------------------------
+
+    def set_freedom(self, level: str) -> None:
+        """Показывает freedom_level активного профиля.
+
+        Args:
+            level: ``"safe"`` | ``"research"`` | ``"development"`` | ``"open"``.
+        """
+        icons = {
+            "safe": "🔒",
+            "research": "🔍",
+            "development": "🛠",
+            "open": "🌐",
+        }
+        colors = {
+            "safe": _C_OFF,
+            "research": _C_INFO,
+            "development": _C_OK,
+            "open": _C_ERR,  # «open» — максимальная свобода, красный
+        }
+        short = {
+            "safe": "safe",
+            "research": "research",
+            "development": "dev",
+            "open": "OPEN",
+        }
+        tooltips = {
+            "safe": "safe — только чтение; shell/git/browser запрещены",
+            "research": "research — чтение + web; shell/git/browser запрещены",
+            "development": "development — запись auto; shell/git ask_first",
+            "open": "open — всё auto (shell ask_first, secrets никогда)",
+        }
+        if level not in icons:
+            self.freedom.set_state("— profile", _C_OFF, "freedom_level не задан")
+            return
+        self.freedom.set_state(
+            f"{icons[level]} {short[level]}",
+            colors[level],
+            tooltips[level],
+        )
+
     def set_tools_from_label(self, label: str) -> None:
         """Совместимость с текущим `tool_status_label.setText(...)`."""
         self.tools.set_state(label, _C_OK if "актив" in label.lower() else _C_WARN, label)
+
+    # ------------------------------------------------------------------
+    # [2.11] Режим браузера
+    # ------------------------------------------------------------------
+
+    def set_browser(self, mode: str, *, available: bool = True) -> None:
+        """Показывает режим браузера.
+
+        Args:
+            mode: ``isolated`` | ``extension`` | ``full``.
+            available: ``False`` — playwright/websockets не установлены.
+        """
+        if not available:
+            self.browser.set_state("— browser", _C_OFF, "playwright/websockets не установлены")
+            return
+        color = {
+            "isolated": _C_OK,
+            "extension": _C_INFO,
+            "full": _C_ERR,  # красный — максимальный доступ
+        }.get(mode, _C_OFF)
+        icon = {
+            "isolated": "🔒",
+            "extension": "🔗",
+            "full": "⚠️",
+        }.get(mode, "•")
+        text = f"{icon} browser: {mode}"
+        tooltip = {
+            "isolated": "Изолированный профиль Chromium. Без доступа к вашим кукам/логинам.",
+            "extension": "Через расширение. Только вкладки, которые вы разрешили.",
+            "full": "CDP к копии реального профиля. Все ваши сессии доступны.",
+        }.get(mode, "")
+        self.browser.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [2.13] Провайдер поиска
+    # ------------------------------------------------------------------
+
+    def set_search(self, provider: str, *, available: bool = True) -> None:
+        """Показывает провайдера, который отработает первым.
+
+        Args:
+            provider: ``"searxng"`` / ``"openserp"`` / ``"yandex"`` /
+                ``"ollama"`` / ``"ddg"``.
+            available: ``False`` — ни один не настроен.
+        """
+        if not available or not provider:
+            self.search.set_state("— search", _C_OFF, "Ни один провайдер не настроен")
+            return
+        color = _C_OK if provider in ("searxng", "openserp") else _C_WARN
+        text = f"🔍 search: {provider}"
+        tooltip = (
+            f"Первый в цепочке: {provider}\n"
+            f"Если упадёт — перейдёт к следующему.\n"
+            f"Настроить: config.yaml → search.providers"
+        )
+        self.search.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [2.12] Durable inbox
+    # ------------------------------------------------------------------
+
+    def set_inbox(self, pending: int) -> None:
+        """Показывает счётчик pending-запросов.
+
+        Args:
+            pending: Сколько запросов в состоянии ``pending``.
+        """
+        if pending <= 0:
+            self.inbox.set_state("— inbox", _C_OFF, "Durable inbox пуст")
+            return
+        color = _C_WARN if pending >= 5 else _C_INFO
+        text = f"📥 inbox: {pending}"
+        tooltip = (
+            f"{pending} незавершённых запросов.\n"
+            f"«running» при упавшем процессе автоматически "
+            f"переходит в «pending» при старте."
+        )
+        self.inbox.set_state(text, color, tooltip)
+
+    # ------------------------------------------------------------------
+    # [9.4] Git-ветка
+    # ------------------------------------------------------------------
+
+    def set_git_branch(self, branch: str, commit_hash: str) -> None:
+        """Показывает текущую git-ветку и hash.
+
+        Args:
+            branch: Имя ветки (пусто — не git-репозиторий).
+            commit_hash: Короткий hash HEAD.
+        """
+        if not branch:
+            self.git_branch.set_state("— git", _C_OFF, "Проект не под git")
+            return
+        text = f"🌿 {branch}"
+        if commit_hash:
+            text += f"@{commit_hash}"
+        tooltip = f"Ветка: {branch}"
+        if commit_hash:
+            tooltip += f"\nhash: {commit_hash}"
+        self.git_branch.set_state(text, _C_INFO, tooltip)
 
 
 __all__ = ["StatusDashboard"]

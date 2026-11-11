@@ -27,6 +27,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from typing import Any, cast
 
 from loguru import logger
 from PySide6.QtCore import QRunnable, QThreadPool, QTimer, Signal, Slot
@@ -486,11 +487,15 @@ class GitStatusDelegate(QStyledItemDelegate):
             else:
                 return
 
-            option.palette.setColor(QPalette.ColorRole.Text, color)
-            option.palette.setColor(QPalette.ColorRole.HighlightedText, color)
+            # В стабах PySide6 у QStyleOptionViewItem нет .palette/.text,
+            # но в рантайме (C++) оба поля существуют. Приводим к Any,
+            # чтобы не размазывать `# type: ignore` по каждой строке.
+            opt = cast(Any, option)
+            opt.palette.setColor(QPalette.ColorRole.Text, color)
+            opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 
             # Добавляем букву рядом с именем, как в VS Code.
-            if letter and option.text:
-                option.text = f"{option.text}  {letter}"
+            if letter and opt.text:
+                opt.text = f"{opt.text}  {letter}"
         except Exception:
             logger.debug("GitStatusDelegate.initStyleOption failed", exc_info=True)

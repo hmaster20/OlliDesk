@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from loguru import logger
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig, SLMModelInfo, save_config
+from ui.state.async_resource import AsyncResource
 
 
 class PipelineSelectors(QWidget):
@@ -40,7 +42,25 @@ class PipelineSelectors(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
+        self._project_path: str | None = None
         self._updating = False
+        # [9.3.2] Активный профиль — для подсветки coder-моделей.
+        self._active_profile_id: str = ""
+        # Иконки ролей (9.3.2): coder / reasoning / moE / router / planner /
+        # verifier / embed. Показываются в префиксе названия.
+        self._role_icons: dict[str, str] = {
+            "coder": "⚡",
+            "reasoning": "🧠",
+            "moE": "📦",
+            "router": "🔀",
+            "planner": "📋",
+            "verifier": "✅",
+            "embed": "🔤",
+        }
+
+        # [9.11] Ресурс «список моделей». Не мигает при refresh:
+        # при обновлении combo сохраняет старые items до `set_value`.
+        self._models_resource: AsyncResource[list[SLMModelInfo]] = AsyncResource()
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
@@ -87,6 +107,29 @@ class PipelineSelectors(QWidget):
 
         self.refresh_models()
 
+    def set_project_path(self, path: str) -> None:
+        self._project_path = path
+
+    def update_from_pool(self, pool) -> None:
+        """Синхронизирует селекторы с реально загруженными моделями в ModelPool."""
+        from agents.model_pool import Role
+        try:
+            p_spec = pool.spec(Role.PLANNER)
+            a_spec = pool.spec(Role.ANALYST)
+
+            self._updating = True
+            p_idx = self.planner_combo.findData(p_spec.model_id)
+            a_idx = self.analyst_combo.findData(a_spec.model_id)
+
+            if p_idx >= 0:
+                self.planner_combo.setCurrentIndex(p_idx)
+            if a_idx >= 0:
+                self.analyst_combo.setCurrentIndex(a_idx)
+        except Exception as e:
+            logger.debug(f"Не удалось синхронизировать селекторы с пулом: {e}")
+        finally:
+            self._updating = False
+
     def set_recommended_model(self, model_id: str, profile_name: str = "") -> None:
         """[9.4] Подсвечивает рекомендованную профилем модель в обоих ComboBox.
 
@@ -121,16 +164,33 @@ class PipelineSelectors(QWidget):
     # Заполнение ComboBox'ов
     # ------------------------------------------------------------------
 
-    def refresh_models(self) -> None:
-        """Перечитывает список моделей из конфига и обновляет ComboBox'ы.
+    def set_active_profile(self, profile_id: str) -> None:
+        """[9.3.2] Обновляет активный профиль и перерисовывает ComboBox'ы.
 
-        Для каждого пункта выставляется подробный HTML-tooltip: сам
-        display_name в списке усечён по ширине, а в tooltip'е — целиком
-        (id, tier, n_ctx, размер, файл, репозиторий, статус).
+        В профиле ``development`` coder-модели выделяются жирным и
+        цветом-акцентом. В ``research``/``learning`` — обычный стиль.
+
+        Args:
+            profile_id: ``"development"`` | ``"research"`` | ``"learning"``
+                или id пользовательского профиля.
+        """
+        if profile_id == self._active_profile_id:
+            return
+        self._active_profile_id = profile_id
+        # Перерисовываем без похода в HF — только метки.
+        self._apply_models_to_combos()
+
+    def refresh_models(self) -> None:
+        """Перечитывает список моделей через `AsyncResource` (9.11).
+
+        Правило guard'а: `begin_load()` → `set_value()`/`set_error()`.
+        Если в ресурсе уже есть `latest` (повторный вызов) — состояние
+        будет `REFRESHING`, combo сохранит старые items до `set_value`.
+        Это устраняет «вспышку» пустого combo при `refresh_models_requested`.
         """
         from agents.download_slm import is_model_installed
 
-        self._updating = True
+        self._models_resource.begin_load()
         try:
             chat_models = self._config.slm.get_chat_models()
             sorted_models = sorted(
@@ -141,41 +201,150 @@ class PipelineSelectors(QWidget):
                     m.display_name.lower(),
                 ),
             )
+            self._models_resource.set_value(sorted_models)
+        except Exception as e:
+            logger.exception("PipelineSelectors.refresh_models failed")
+            self._models_resource.set_error(e)
 
-            for combo, current_id in (
-                (self.planner_combo, self._config.slm.planner_model_id),
-                (self.analyst_combo, self._config.slm.analyst_model_id),
-            ):
-                combo.blockSignals(True)
-                combo.clear()
+        self._apply_models_to_combos()
 
-                # «(автовыбор)» тоже с tooltip — объясняем, как работает автовыбор.
-                auto_tip = (
-                    "<b>(автовыбор)</b><br>"
-                    "Модель выбирается автоматически по tier и свободной VRAM "
-                    "при загрузке проекта (см. <code>agents.slm_selector.select_pair</code>)."
+    def _apply_models_to_combos(self) -> None:
+        """Рендерит `_models_resource` в оба ComboBox (guard-паттерн 9.11).
+
+        В состоянии `LOADING` (первая загрузка) — показываем плейсхолдер.
+        В `READY`/`REFRESHING`/`ERROR с latest` — рендерим `latest`.
+        Ошибка без `latest` → плейсхолдер «Ошибка загрузки».
+        """
+
+        self._updating = True
+        try:
+            if self._models_resource.loaded():
+                models = self._models_resource.value_or([])
+                for combo, current_id in (
+                    (self.planner_combo, self._config.slm.planner_model_id),
+                    (self.analyst_combo, self._config.slm.analyst_model_id),
+                ):
+                    self._fill_combo(combo, models, current_id)
+            elif self._models_resource.is_loading_first_time():
+                for combo in (self.planner_combo, self.analyst_combo):
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItem("Загрузка…", "")
+                    combo.setEnabled(False)
+                    combo.blockSignals(False)
+            else:
+                # ERROR без latest.
+                err_text = (
+                    f"Ошибка: {type(self._models_resource.error).__name__}"
+                    if self._models_resource.error
+                    else "Ошибка загрузки"
                 )
-                combo.addItem("(автовыбор)", "")
-                combo.setItemData(0, auto_tip, Qt.ItemDataRole.ToolTipRole)
-
-                for m in sorted_models:
-                    installed = is_model_installed(m.file)
-                    prefix = "✅ " if installed else "⬇️ "
-                    idx = combo.count()
-                    combo.addItem(f"{prefix}{m.display_name}", m.id)
-                    combo.setItemData(
-                        idx,
-                        self._build_model_tooltip(m, installed),
-                        Qt.ItemDataRole.ToolTipRole,
-                    )
-
-                idx = combo.findData(current_id) if current_id else 0
-                combo.setCurrentIndex(idx if idx >= 0 else 0)
-                combo.blockSignals(False)
-                # Tooltip на самом ComboBox — показываем текущий выбор подробно.
-                self._sync_combo_tooltip(combo)
+                for combo in (self.planner_combo, self.analyst_combo):
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItem(err_text, "")
+                    combo.setEnabled(False)
+                    combo.blockSignals(False)
         finally:
             self._updating = False
+
+    def _fill_combo(
+        self,
+        combo: QComboBox,
+        models: list[SLMModelInfo],
+        current_id: str,
+    ) -> None:
+        """Заполняет один ComboBox (guard 9.11) + подсветка coder (9.3.2).
+
+        * Иконки ролей (⚡ coder, 🧠 reasoning, 📦 moE, …) — в префиксе.
+        * В профиле ``development`` модели с тегом ``coder`` выделяются
+          жирным шрифтом и цветом-акцентом.
+        * Метки пересчитываются при `set_active_profile`, без запроса в HF.
+        """
+        from agents.download_slm import is_model_installed
+
+        is_dev = self._active_profile_id == "development"
+        accent = QColor("#d4a373")
+
+        # Собираем целевой список.
+        target: list[tuple[str, str, str]] = [("", "(автовыбор)", "")]
+        for m in models:
+            installed = is_model_installed(m.file)
+            install_prefix = "✅ " if installed else "⬇️ "
+            # Иконки ролей (может быть несколько — берём первые 2).
+            role_icons: list[str] = []
+            for tag in m.tags:
+                icon = self._role_icons.get(tag)
+                if icon and icon not in role_icons:
+                    role_icons.append(icon)
+            role_prefix = "".join(role_icons[:2])
+            if role_prefix:
+                role_prefix += " "
+            label = f"{role_prefix}{install_prefix}{m.display_name}"
+            target.append((m.id, label, self._build_model_tooltip(m, installed)))
+
+        # Сверяем с текущими (без учёта стилей — только text/data).
+        current: list[tuple[str, str]] = [
+            (combo.itemData(i) or "", combo.itemText(i)) for i in range(combo.count())
+        ]
+        if current == [(tid, tlabel) for tid, tlabel, _ in target]:
+            combo.setEnabled(True)
+            # Даже если текст не менялся, могли измениться стили —
+            # применяем идемпотентно (setItemData без изменения).
+            self._apply_coder_highlight(combo, models, is_dev, accent)
+            return
+
+        combo.blockSignals(True)
+        combo.clear()
+        for tid, label, tooltip in target:
+            idx = combo.count()
+            combo.addItem(label, tid)
+            if tooltip:
+                combo.setItemData(idx, tooltip, Qt.ItemDataRole.ToolTipRole)
+        idx = combo.findData(current_id) if current_id else 0
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+        combo.setEnabled(True)
+
+        # [9.3.2] Подсветка coder-моделей в профиле development.
+        self._apply_coder_highlight(combo, models, is_dev, accent)
+        self._sync_combo_tooltip(combo)
+
+    def _apply_coder_highlight(
+        self,
+        combo: QComboBox,
+        models: list[SLMModelInfo],
+        is_dev: bool,
+        accent: QColor,
+    ) -> None:
+        """Устанавливает/снимает bold+цвет для coder-моделей.
+
+        Идемпотентно: если стиль уже установлен — повторный вызов
+        не меняет `itemText` и не дёргает `currentIndexChanged`.
+
+        Args:
+            combo: ComboBox для применения.
+            models: Модели, которые сейчас в combo (по id через itemData).
+            is_dev: ``True`` — профиль development (подсвечивать).
+            accent: Цвет акцента.
+        """
+        models_by_id = {m.id: m for m in models}
+        for i in range(combo.count()):
+            model_id = combo.itemData(i) or ""
+            info = models_by_id.get(str(model_id)) if model_id else None
+            is_coder = bool(info and "coder" in info.tags)
+            bold = bool(is_dev and is_coder)
+
+            font = QFont()
+            font.setBold(bold)
+            combo.setItemData(i, font, Qt.ItemDataRole.FontRole)
+
+            # ForegroundRole: акцент для coder в dev, иначе — сброс (None
+            # не установить, ставим пустой QColor через invalid).
+            if bold:
+                combo.setItemData(i, accent, Qt.ItemDataRole.ForegroundRole)
+            else:
+                combo.setItemData(i, None, Qt.ItemDataRole.ForegroundRole)
 
     @staticmethod
     def _build_model_tooltip(m: SLMModelInfo, installed: bool) -> str:
@@ -234,30 +403,89 @@ class PipelineSelectors(QWidget):
         if self._updating:
             return
         model_id = self.planner_combo.itemData(index) or ""
+
+        # [FIX] Защита от выбора недокачанной/битой модели
+        if model_id:
+            from agents.download_slm import is_model_installed, get_model_path
+            info = self._config.slm.get_model_by_id(model_id)
+            if info and not is_model_installed(info.file):
+                QMessageBox.warning(self, "Модель не скачана",
+                    f"Модель {info.display_name} не найдена или повреждена.\n"
+                    f"Скачайте её через меню «...» или выберите другую.")
+                self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
+                return
+            # Проверка размера (если файл < 1 МБ, он точно битый)
+            if info:
+                path = get_model_path(info.file)
+                if path and path.exists() and path.stat().st_size < 1024 * 1024:
+                    QMessageBox.warning(self, "Файл поврежден",
+                        f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
+                        f"Удалите его и скачайте заново.")
+                    self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
+                    return
+
         analyst_id = self.analyst_combo.currentData() or ""
         if model_id and analyst_id and model_id == analyst_id:
             self._warn_same_model()
             self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
             return
+
         self._config.slm.planner_model_id = model_id
         save_config(self._config)
+
+        if self._project_path:
+            from pathlib import Path
+            from state.project_settings import ProjectSettings
+            s = ProjectSettings.load(Path(self._project_path))
+            s.planner_model_id = model_id
+            s.save(Path(self._project_path))
+
         logger.info(f"Pipeline: planner={model_id or '(авто)'}")
-        self._sync_combo_tooltip(self.planner_combo)  # NEW
+        self._sync_combo_tooltip(self.planner_combo)
         self.planner_changed.emit(model_id)
 
     def _on_analyst_selected(self, index: int) -> None:
         if self._updating:
             return
         model_id = self.analyst_combo.itemData(index) or ""
+
+        # [FIX] Защита от выбора недокачанной/битой модели
+        if model_id:
+            from agents.download_slm import is_model_installed, get_model_path
+            info = self._config.slm.get_model_by_id(model_id)
+            if info and not is_model_installed(info.file):
+                QMessageBox.warning(self, "Модель не скачана",
+                    f"Модель {info.display_name} не найдена или повреждена.\n"
+                    f"Скачайте её через меню «...» или выберите другую.")
+                self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
+                return
+            if info:
+                path = get_model_path(info.file)
+                if path and path.exists() and path.stat().st_size < 1024 * 1024:
+                    QMessageBox.warning(self, "Файл поврежден",
+                        f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
+                        f"Удалите его и скачайте заново.")
+                    self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
+                    return
+
         planner_id = self.planner_combo.currentData() or ""
         if model_id and planner_id and model_id == planner_id:
             self._warn_same_model()
             self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
             return
+
         self._config.slm.analyst_model_id = model_id
         save_config(self._config)
+
+        if self._project_path:
+            from pathlib import Path
+            from state.project_settings import ProjectSettings
+            s = ProjectSettings.load(Path(self._project_path))
+            s.analyst_model_id = model_id
+            s.save(Path(self._project_path))
+
         logger.info(f"Pipeline: analyst={model_id or '(авто)'}")
-        self._sync_combo_tooltip(self.analyst_combo)  # NEW
+        self._sync_combo_tooltip(self.analyst_combo)
         self.analyst_changed.emit(model_id)
 
     def _warn_same_model(self) -> None:

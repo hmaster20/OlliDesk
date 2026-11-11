@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from agents.hardware_profile import HardwareProfile, get_hardware_profile
+from agents.model_pool import Role
 from agents.slm_optimizer import model_total_size_mb
 from core.config import SLMModelInfo, load_config
 
@@ -154,6 +155,7 @@ def select_pair(
     analyst: SLMModelInfo | None = cfg.slm.get_analyst_info()
     planner_source = "явно из конфига" if planner else "автовыбор"
     analyst_source = "явно из конфига" if analyst else "автовыбор"
+    logger.debug(f"select_pair: planner_source={planner_source}, analyst_source={analyst_source}")
 
     # --- 2. Автовыбор planner ---
     if planner is None:
@@ -201,15 +203,227 @@ def select_pair(
                 f"после автовыбора (второй подходящей модели нет). "
                 f"Работаем в single-model режиме."
             )
-        # analyst = None  ← УДАЛЕНО: не обнуляем, пусть будет тот же объект.
-
-    logger.info(
-        f"Автовыбор SLM (pair): "
-        f"planner={planner.display_name if planner else None} ({planner_source}), "
-        f"analyst={analyst.display_name if analyst else None} ({analyst_source}) "
-        f"[VRAM={vram} МБ, RAM={hw.ram.available_mb} МБ]"
-    )
     return {"planner": planner, "analyst": analyst}
 
 
-# ------
+def select_park(
+    hw: HardwareProfile | None = None,
+    *,
+    profile_park_roles: dict[str, str] | None = None,
+) -> dict[Role, SLMModelInfo]:
+    """Выбирает модели под все роли парка (4.1).
+
+    Приоритет:
+      1. Явные id из ``profile_park_roles`` (значения — ``SLMModelInfo.id``).
+         Несуществующий id → ``warning``, роль пропускается.
+      2. Автовыбор по тегам:
+         * ``router`` — первая модель с тегом ``router``, tier ≤ 1, влезает в VRAM.
+         * ``planner`` — как в :func:`select_pair` (tier 1, VRAM).
+         * ``coder`` — модель с тегом ``coder``, максимальный tier, влезает в RAM.
+         * ``verifier`` — если ``router`` и ``verifier`` — один файл, вернётся
+           тот же ``SLMModelInfo``; иначе первая с тегом ``verifier``.
+         * ``analyst`` — как в :func:`select_pair` (tier 2, RAM).
+         * ``embed`` — не входит в парк (embed-модель отдельная).
+
+    Args:
+        hw: Профиль железа (по умолчанию собирается).
+        profile_park_roles: ``ProfileConfig.park_roles`` — dict
+            ``{"router": "qwen2.5-3b-...", "coder": "qwen3-coder-30b-..."}``.
+
+    Returns:
+        Словарь ``{Role: SLMModelInfo}``. Пустые роли не входят.
+    """
+    hw = hw or get_hardware_profile()
+    cfg = load_config()
+    candidates = cfg.slm.get_chat_models()
+    if not candidates:
+        logger.warning("select_park: нет chat-моделей в конфиге")
+        return {}
+
+    # Явный выбор по ролям из профиля.
+    explicit: dict[Role, SLMModelInfo] = {}
+    for role_value, model_id in (profile_park_roles or {}).items():
+        try:
+            role = Role(role_value)
+        except ValueError:
+            logger.warning(f"select_park: неизвестная роль {role_value!r}")
+            continue
+        info = cfg.slm.get_model_by_id(model_id)
+        if info is None:
+            logger.warning(
+                f"select_park: профиль ссылается на {model_id!r} ({role.value}), "
+                f"но такой модели нет в каталоге"
+            )
+            continue
+        explicit[role] = info
+
+    result: dict[Role, SLMModelInfo] = dict(explicit)
+
+    # Автоподбор недостающих ролей по тегам.
+    fits = [_score_model(m, hw) for m in candidates]
+    gpu = hw.best_gpu
+    vram = gpu.usable_vram_mb if gpu else 0
+
+    def _pick(
+        tag: str,
+        *,
+        prefer_gpu: bool,
+        min_tier: int = 0,
+        max_tier: int = 5,
+    ) -> SLMModelInfo | None:
+        pool = [
+            f
+            for f in fits
+            if tag in f.info.tags
+            and min_tier <= f.info.tier <= max_tier
+            and (f.fits_vram if prefer_gpu else f.fits_ram)
+        ]
+        pool.sort(key=lambda f: f.score, reverse=True)
+        return pool[0].info if pool else None
+
+    # Router / verifier — GPU, tier ≤ 1.
+    if Role.ROUTER not in result and vram > 0:
+        picked = _pick("router", prefer_gpu=True, max_tier=1)
+        if picked:
+            result[Role.ROUTER] = picked
+
+    # Planner — GPU, tier == 1.
+    if Role.PLANNER not in result:
+        picked = _pick("planner", prefer_gpu=True, min_tier=1, max_tier=1)
+        if picked:
+            result[Role.PLANNER] = picked
+
+    # Verifier — GPU; если router уже выбран и его файл подходит, делим
+    # файл (ModelPool закэширует по file).
+    if Role.VERIFIER not in result:
+        router_info = result.get(Role.ROUTER)
+        if router_info is not None and "verifier" in router_info.tags:
+            result[Role.VERIFIER] = router_info
+        else:
+            picked = _pick("verifier", prefer_gpu=True, max_tier=1)
+            if picked:
+                result[Role.VERIFIER] = picked
+
+    # Coder — CPU (или GPU, если помещается), максимальный tier.
+    if Role.CODER not in result:
+        coder_pool = [f for f in fits if "coder" in f.info.tags]
+        coder_pool.sort(
+            key=lambda f: (f.fits_vram, f.fits_ram, f.info.tier),
+            reverse=True,
+        )
+        if coder_pool:
+            result[Role.CODER] = coder_pool[0].info
+
+    # Analyst — как в select_pair (для research-флоу).
+    if Role.ANALYST not in result:
+        # 1. Пробуем найти по тегу
+        picked = _pick("analyst", prefer_gpu=False, min_tier=2, max_tier=2)
+        # 2. Фолбэк: просто tier 2 chat-модель, влезающая в RAM (как в select_pair)
+        if not picked:
+            analyst_pool = sorted(
+                [f for f in fits if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"],
+                key=lambda f: f.score,
+                reverse=True,
+            )
+            if analyst_pool:
+                picked = analyst_pool[0].info
+        if picked:
+            result[Role.ANALYST] = picked
+
+    logger.info("select_park: " + ", ".join(f"{role.value}={info.id}" for role, info in result.items()))
+    return result
+
+
+def select_pair_park(hw: HardwareProfile | None = None) -> dict[Role, SLMModelInfo]:
+    """Fallback: только planner+analyst (совместимость с 4.7).
+
+    Используется, если профиль не задаёт ``park_roles`` и мы хотим
+    сохранить текущее двухмодельное поведение research-флоу. По сути
+    оборачивает :func:`select_pair`.
+    """
+    pair = select_pair(hw)
+    result: dict[Role, SLMModelInfo] = {}
+    if pair.get("planner"):
+        result[Role.PLANNER] = pair["planner"]
+    if pair.get("analyst"):
+        result[Role.ANALYST] = pair["analyst"]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 10.6: coder-модель для coding-задач
+# ---------------------------------------------------------------------------
+
+
+def select_coder(
+    hw: HardwareProfile | None = None,
+    *,
+    profile_coder_models: list[str] | None = None,
+    allow_fallback: bool = True,
+) -> SLMModelInfo | None:
+    """Выбирает coder-модель для coding-задач (10.6).
+
+    Приоритет:
+      1. ``profile_coder_models`` (``ProfileConfig.coder_models`` — список id).
+         Первая установленная и влезающая модель.
+      2. Авто: первый тег ``coder``, влезающий в VRAM; иначе — тег ``coder``,
+         влезающий в RAM; максимальный tier.
+      3. Fallback (если ``allow_fallback=True``): обычная chat-модель
+         (tier 2, влезает в RAM) — помечается как ``None`` coder, но
+         вызывающий код может взять её для роли ``ANALYST``.
+
+    Args:
+        hw: Профиль железа (по умолчанию собирается один раз).
+        profile_coder_models: Список id из ``ProfileConfig.coder_models``.
+        allow_fallback: ``True`` — вернуть обычную chat-модель, если
+            coder-модели нет. ``False`` — вернуть ``None``.
+
+    Returns:
+        ``SLMModelInfo`` coder-модели или ``None`` (если ничего нет).
+    """
+    from agents.download_slm import is_model_installed
+
+    hw = hw or get_hardware_profile()
+    cfg = load_config()
+    candidates = cfg.slm.get_chat_models()
+    if not candidates:
+        return None
+
+    fits = [_score_model(m, hw) for m in candidates]
+
+    # 1. Явные id из профиля.
+    if profile_coder_models:
+        for model_id in profile_coder_models:
+            info = cfg.slm.get_model_by_id(model_id)
+            if info is None:
+                logger.warning(f"select_coder: профиль ссылается на {model_id!r}, но в каталоге такой нет")
+                continue
+            if not is_model_installed(info.file):
+                logger.debug(f"select_coder: {model_id!r} не установлена — пропускаю")
+                continue
+            return info
+
+    # 2. Авто: coder-тег, максимальный tier, влезает в VRAM/RAM.
+    coder_fits = [f for f in fits if "coder" in f.info.tags]
+    coder_fits.sort(
+        key=lambda f: (f.fits_vram, f.fits_ram, f.info.tier),
+        reverse=True,
+    )
+    if coder_fits:
+        best = coder_fits[0]
+        logger.info(
+            f"select_coder: {best.info.id} (tier={best.info.tier}, {'VRAM' if best.fits_vram else 'RAM'})"
+        )
+        return best.info
+
+    # 3. Fallback на обычную chat-модель.
+    if allow_fallback:
+        chat_fits = sorted(
+            (f for f in fits if f.fits_ram),
+            key=lambda f: f.info.tier,
+            reverse=True,
+        )
+        if chat_fits:
+            logger.info(f"select_coder: coder-модели нет, fallback на {chat_fits[0].info.id}")
+            return chat_fits[0].info
+    return None

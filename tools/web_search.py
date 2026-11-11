@@ -1,246 +1,51 @@
-"""Инструмент поиска в интернете.
+"""Инструмент поиска в интернете (2.13: цепочка провайдеров с fallback).
 
-Стратегии (в порядке приоритета):
-  1. Яндекс (парсинг HTML через curl_cffi) — основной для РФ.
-  2. DDGS (ddgs / duckduckgo_search)       — старый проверенный движок.
-  3. DDG HTML (curl_cffi)                  — прямой HTML-парсинг.
-  4. SearXNG (публичные инстансы)          — последний резерв.
+Стратегии отделены в `agents/search_providers.py`. Здесь — тонкая обёртка:
 
-Порядок подобран эмпирически: Яндекс даёт лучшую выдачу для русскоязычных
-запросов, DDGS — стабильный fallback. Если Яндекс ловит SmartCaptcha —
-молча падаем на следующий движок.
+  1. `web_search_hygiene.filter_query` — очистка от чувствительного.
+  2. `build_chain` — собирает доступных провайдеров из `SearchConfig`.
+  3. Идём по цепочке, пока один не вернёт результат.
+  4. `EventBus.emit("search.provider.used")` — какой сработал.
+  5. Кэш `SearchCache` — не платим дважды.
+  6. Каждый результат обёрнут в `<untrusted>…</untrusted>`.
 """
 
-import asyncio
-import urllib.parse
-from typing import Any
+from __future__ import annotations
+
+import time
 
 from loguru import logger
 
+from agents.search_providers import (
+    SearchProviderError,
+    SearchResult,
+    build_chain,
+)
 from agents.tool_registry import tool
-from core.config import AgentMode, ToolPolicy
+from core.config import AgentMode, SearchConfig, ToolPolicy
+from core.event_bus import emit_event
+from core.events import EventKind
 from core.search_cache import SearchCache
 from core.security import NetworkMode, SecurityPolicy
 from tools.web_search_hygiene import filter_query
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-)
 
-_HEADERS = {
-    "User-Agent": _USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "DNT": "1",
-}
+def _get_search_config() -> SearchConfig:
+    """Читает `SearchConfig` из текущего конфига (fallback на дефолт)."""
+    try:
+        from core.config import load_config
 
-_SEARX_INSTANCES = (
-    "https://searx.be",
-    "https://search.bus-hit.me",
-    "https://priv.au",
-)
+        return load_config().search
+    except Exception:
+        return SearchConfig()
 
 
-# ---------------------------------------------------------------------------
-# Стратегия 1: Яндекс (парсинг)
-# ---------------------------------------------------------------------------
-
-
-async def _search_yandex(query: str, max_results: int) -> list[dict[str, str]]:
-    """Парсит выдачу yandex.ru/search/?text=... через curl_cffi."""
-    from bs4 import BeautifulSoup
-    from curl_cffi import requests
-
-    def _do() -> str:
-        session: requests.Session[Any] = requests.Session()
-        resp = session.get(
-            "https://yandex.ru/search/",
-            params={"text": query},
-            headers=_HEADERS,
-            impersonate="chrome",
-            timeout=25,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"HTTP {resp.status_code}")
-        return str(resp.text)
-
-    html = await asyncio.to_thread(_do)
-
-    # Яндекс может вернуть капчу с HTTP 200 — проверяем содержимое.
-    if "SmartCaptcha" in html or "captcha" in html.lower():
-        raise RuntimeError("Yandex SmartCaptcha triggered")
-
-    soup = BeautifulSoup(html, "html.parser")
-    results: list[dict[str, str]] = []
-
-    # Селекторы Яндекса меняются, поэтому пробуем несколько вариантов.
-    for item in soup.select("li.serp-item, li.serp-item_card"):
-        title_el = item.select_one("h2 a, .organic__url-text, .OrganicTitle-Link")
-        snippet_el = item.select_one(".organic__content-wrapper, .OrganicTextContentSpan")
-        url_el = item.select_one("a.organic__url, a[href^='http']")
-
-        if not title_el:
-            continue
-
-        title = title_el.get_text(strip=True)
-        href = ""
-        if url_el:
-            raw = url_el.get("href", "")
-            href = raw if isinstance(raw, str) else ""
-        if not href:
-            raw_title_href = title_el.get("href", "")
-            href = raw_title_href if isinstance(raw_title_href, str) else ""
-
-        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-
-        if title and href:
-            results.append({"title": title, "href": href, "body": snippet})
-        if len(results) >= max_results:
-            break
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Стратегия 2: DDGS (ddgs / duckduckgo_search)
-# ---------------------------------------------------------------------------
-
-
-async def _search_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
-    """DuckDuckGo через ddgs."""
-
-    def _do() -> list[dict]:
-        from ddgs import DDGS
-
-        with DDGS() as ddgs:
-            return list(
-                ddgs.text(
-                    query,
-                    max_results=max_results,
-                    region="ru-ru",
-                )
-            )
-
-    raw = await asyncio.to_thread(_do)
-    return [
-        {
-            "title": r.get("title", ""),
-            "href": r.get("href", r.get("url", "")),
-            "body": r.get("body", r.get("snippet", "")),
-        }
-        for r in raw
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Стратегия 3: DDG HTML (curl_cffi)
-# ---------------------------------------------------------------------------
-
-
-async def _search_ddg_html(query: str, max_results: int) -> list[dict[str, str]]:
-    """Прямой парсинг html.duckduckgo.com/html/ через curl_cffi."""
-    from bs4 import BeautifulSoup
-    from curl_cffi import requests
-
-    def _do() -> str:
-        session: requests.Session[Any] = requests.Session()
-        resp = session.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query, "ia": "web"},
-            headers=_HEADERS,
-            impersonate="chrome",
-            timeout=20,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"HTTP {resp.status_code}")
-        return str(resp.text)
-
-    html = await asyncio.to_thread(_do)
-    soup = BeautifulSoup(html, "html.parser")
-
-    results: list[dict[str, str]] = []
-    for item in soup.select(".result"):
-        title_el = item.select_one(".result__title a, .result__a")
-        snippet_el = item.select_one(".result__snippet")
-        if not title_el:
-            continue
-
-        title = title_el.get_text(strip=True)
-        raw_href = title_el.get("href", "")
-        href = raw_href if isinstance(raw_href, str) else ""
-        if href.startswith("//"):
-            href = "https:" + href
-        # DDG отдаёт редирект /l/?uddg=<url> — извлекаем целевой URL.
-        if href.startswith("/l/") or "duckduckgo.com/l/" in href:
-            try:
-                parsed = urllib.parse.urlparse(href)
-                qs = urllib.parse.parse_qs(parsed.query)
-                if "uddg" in qs:
-                    href = urllib.parse.unquote(qs["uddg"][0])
-            except Exception:
-                pass
-
-        body = snippet_el.get_text(strip=True) if snippet_el else ""
-        if title and href:
-            results.append({"title": title, "href": href, "body": body})
-        if len(results) >= max_results:
-            break
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Стратегия 4: SearXNG
-# ---------------------------------------------------------------------------
-
-
-async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
-    """SearXNG публичные инстансы (best-effort)."""
-    from curl_cffi import requests
-
-    last_err: Exception | None = None
-
-    def _fetch(base: str) -> dict[str, Any]:
-        session: requests.Session[Any] = requests.Session()
-        resp = session.get(
-            f"{base}/search",
-            params={"q": query, "format": "json"},
-            headers=_HEADERS,
-            impersonate="chrome",
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"{base} HTTP {resp.status_code}")
-        data: dict[str, Any] = resp.json()
-        return data
-
-    for base in _SEARX_INSTANCES:
-        try:
-            data = await asyncio.to_thread(_fetch, base)
-            raw = data.get("results") or []
-            results = [
-                {
-                    "title": r.get("title", ""),
-                    "href": r.get("url", ""),
-                    "body": r.get("content", ""),
-                }
-                for r in raw[:max_results]
-            ]
-            if results:
-                return results
-        except Exception as e:
-            last_err = e
-            logger.debug(f"SearX {base} failed: {type(e).__name__}: {e}")
-
-    if last_err:
-        raise last_err
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Публичный инструмент
-# ---------------------------------------------------------------------------
+def _render_results(results: list[SearchResult], provider: str) -> str:
+    """Форматирует результаты с указанием провайдера."""
+    parts = [f"Провайдер: {provider}", ""]
+    for i, r in enumerate(results, 1):
+        parts.append(r.render(i))
+    return "\n\n".join(parts)
 
 
 @tool(
@@ -254,6 +59,8 @@ async def _search_searx(query: str, max_results: int) -> list[dict[str, str]]:
     ),
     policy=ToolPolicy.ASK_FIRST,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["net"],
+    timeout_s=120.0,  # 5 провайдеров × timeout_s
 )
 async def web_search(
     query: str,
@@ -261,19 +68,17 @@ async def web_search(
     search_cache: SearchCache | None = None,
     security: SecurityPolicy | None = None,
 ) -> str:
-    """Ищет в интернете с hygiene-фильтром.
+    """Ищет в интернете с hygiene-фильтром и цепочкой провайдеров.
 
     Args:
         query: Поисковый запрос (будет очищен от чувствительных данных).
         max_results: Количество результатов (1-10).
         search_cache: Кэш запросов (пробрасывается автоматически).
-        security: Политика безопасности проекта (default — NEUTRAL_ONLY,
-            redaction on). Передаётся из ChatPanel/Orchestrator'а после
-            загрузки config v3.
+        security: Политика безопасности проекта.
 
     Returns:
-        Отформатированные результаты в ``<untrusted>`` или сообщение об
-        ошибке/отказе.
+        Отформатированные результаты в ``<untrusted>`` или сообщение
+        об ошибке/отказе.
     """
     if not query or not query.strip():
         return "Ошибка: пустой поисковый запрос."
@@ -302,18 +107,12 @@ async def web_search(
             "</untrusted>"
         )
 
-    return await _web_search_impl(clean, max_results, search_cache)
-
-
-async def _web_search_impl(
-    query: str,
-    max_results: int,
-    search_cache: SearchCache | None,
-) -> str:
-    """Реализация поиска (Yandex → DDGS → DDG HTML → SearX)."""
+    # Кэш — до похода в сеть.
+    cache_ttl = _get_search_config().cache_ttl_hours
     if search_cache:
-        cached = search_cache.get(query)
+        cached = search_cache.get(clean, max_age_hours=cache_ttl)
         if cached:
+            logger.debug(f"web_search: cache hit для {clean[:60]!r}")
             return cached
 
     try:
@@ -321,37 +120,73 @@ async def _web_search_impl(
     except (ValueError, TypeError):
         n = 5
 
-    strategies = [
-        ("Yandex", _search_yandex),
-        ("DDGS", _search_ddgs),
-        ("DDG HTML", _search_ddg_html),
-        ("SearX", _search_searx),
-    ]
+    chain = build_chain(_get_search_config())
+    if not chain:
+        return (
+            "<untrusted>\n"
+            "Не настроен ни один поисковый провайдер. Проверьте "
+            "`search.providers` в config.yaml: нужен хотя бы один из "
+            "searxng/openserp/yandex/ollama/ddg (с URL/ключом).\n"
+            "</untrusted>"
+        )
 
+    attempted: list[str] = []
     errors: list[str] = []
-    for name, strategy in strategies:
+    for provider in chain:
+        attempted.append(provider.name)
+        started = time.perf_counter()
         try:
-            results = await strategy(query, n)
-            if results:
-                parts = []
-                for i, r in enumerate(results, 1):
-                    title = r.get("title", "Без заголовка")
-                    href = r.get("href", "")
-                    body = (r.get("body", "") or "")[:400]
-                    parts.append(f"{i}. {title}\n   {href}\n   {body}")
-                text = "\n\n".join(parts)
-                logger.info(f"web_search: '{query}' via {name}, {len(results)} results")
-                if search_cache:
-                    search_cache.set(query, text)
-                return "<untrusted>\n" + text + "\n</untrusted>"
-            errors.append(f"{name}: no results")
+            results = await provider.search(clean, n)
+        except SearchProviderError as e:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            logger.warning(f"web_search: {provider.name} failed за {duration_ms} ms: {e}")
+            errors.append(f"{provider.name}: {e}")
+            continue
         except Exception as e:
-            logger.warning(f"web_search {name} failed: {type(e).__name__}: {e}")
-            errors.append(f"{name}: {type(e).__name__}")
+            logger.exception(f"web_search: {provider.name} упал с исключением")
+            errors.append(f"{provider.name}: {type(e).__name__}: {e}")
+            continue
 
-    logger.error(f"web_search: all strategies failed for '{query}': {errors}")
-    return (
-        f"<untrusted>\nНе удалось найти информацию по запросу «{query}». "
-        f"Все стратегии поиска вернули ошибку. Попробуйте переформулировать "
-        f"запрос.\n</untrusted>"
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        emit_event(
+            EventKind.SEARCH_PROVIDER_USED.value,
+            {
+                "provider": provider.name,
+                "duration_ms": duration_ms,
+                "n_results": len(results),
+            },
+        )
+
+        if results:
+            text = _render_results(results, provider.name)
+            wrapped = "<untrusted>\n" + text + "\n</untrusted>"
+            logger.info(
+                f"web_search: '{clean[:60]}' via {provider.name}, {len(results)} results за {duration_ms} ms"
+            )
+            if search_cache:
+                search_cache.set(clean, wrapped)
+            return wrapped
+
+        logger.info(f"web_search: {provider.name} вернул 0 результатов за {duration_ms} ms")
+        errors.append(f"{provider.name}: 0 results")
+
+    # Все провайдеры упали или вернули 0.
+    emit_event(
+        EventKind.SEARCH_CHAIN_EXHAUSTED.value,
+        {
+            "query": clean[:120],
+            "attempted": attempted,
+            "errors": errors,
+        },
     )
+    return (
+        "<untrusted>\n"
+        f"Не удалось найти информацию по запросу «{clean}». "
+        f"Провайдеры: {', '.join(attempted) or '—'}. "
+        f"Ошибки: {'; '.join(errors[:5])}. "
+        f"Попробуйте переформулировать запрос.\n"
+        "</untrusted>"
+    )
+
+
+__all__ = ["web_search"]

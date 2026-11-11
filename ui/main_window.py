@@ -24,6 +24,7 @@
 
 import asyncio
 import contextlib
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -318,12 +320,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_show_diff(self, payload: dict) -> None:
-        """[9.8] Открывает Monaco DiffEditor с original↔modified.
-
-        Вызывается из карточки `write_file` («🔍 Показать diff»).
-        В редактор передаётся и `file_path`, чтобы после accept/reject
-        пользователь мог сохранить — Monaco уже умеет.
-        """
+        """[9.8 + 9.1] Открывает Monaco DiffEditor с original↔modified."""
         if not payload or not hasattr(self, "editor_widget"):
             return
         original = str(payload.get("original") or "")
@@ -337,21 +334,14 @@ class MainWindow(QMainWindow):
             language=language,
             file_path=file_path or None,
         )
-        # Переключаемся на вкладку редактора.
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     @Slot(str)
     def _show_file_diff(self, path: str) -> None:
-        """[9.8.3] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
+        """[9.8.3 + 9.1] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
         if hasattr(self, "editor_widget"):
             self.editor_widget.show_git_diff_for_file(path)
-            index = self.tab_widget.indexOf(self.editor_widget)
-            if index >= 0:
-                self.tab_widget.setCurrentWidget(self.editor_widget)
+            self._switch_to_editor()
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация).
@@ -412,20 +402,22 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_center_panel(self) -> QWidget:
-        """Создает центральную панель (вкладки: Чат / Редактор)."""
-        from PySide6.QtWidgets import QTabWidget
+        """[9.1] Центральная панель: QStackedWidget (чат / редактор).
 
+        Чат — базовый экран, не вкладка. Вкладки есть только в редакторе
+        (внутри `EditorWidget.tab_bar`) и только для файлов. При закрытии
+        последней вкладки — автоматический возврат к чату.
+        """
         from ui.web_editor.editor_widget import EditorWidget
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.tabCloseRequested.connect(self._close_tab)
+        # [9.1] Стек из двух страниц. Никакого QTabWidget в MainWindow.
+        self.center_stack = QStackedWidget()
 
+        # --- Страница 0: чат (базовый экран) ---
         default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
@@ -439,19 +431,22 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_role_manager(self.role_manager)
         self.chat_panel.set_prompt_manager(self.prompt_manager)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
-        # [9.8] Diff из карточки write_file → Monaco DiffEditor.
-        # Подключаем ЗДЕСЬ: chat_panel уже создан (перенесено из _setup_ui,
-        # где обращение к атрибуту падало с AttributeError).
         self.chat_panel.diff_requested.connect(self._on_show_diff)
+        self.center_stack.addWidget(self.chat_panel)  # index 0
 
-        self.tab_widget.addTab(self.chat_panel, "💬 Чат")
-
+        # --- Страница 1: редактор (с файловыми вкладками) ---
         self.editor_widget = EditorWidget()
         self.editor_widget.set_file_reader(self._read_file)
         self.editor_widget.set_file_writer(self._write_file)
-        # 🆕 Инициализация темы Monaco из текущего конфига.
         self.editor_widget.set_theme(self.config.theme)
-        self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
+
+        # [9.1] Сигналы редактора:
+        # * tabs_changed(0) → вернуть чат; (>0) → переключиться на редактор.
+        # * back_to_chat_requested → кнопка «💬 Чат» в тулбаре редактора.
+        self.editor_widget.tabs_changed.connect(self._on_editor_tabs_changed)
+        self.editor_widget.back_to_chat_requested.connect(self._show_chat_tab)
+
+        self.center_stack.addWidget(self.editor_widget)  # index 1
 
         # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
         try:
@@ -466,8 +461,39 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Не удалось установить Ctrl+D для diff", exc_info=True)
 
-        layout.addWidget(self.tab_widget)
+        layout.addWidget(self.center_stack)
         return panel
+
+    # ------------------------------------------------------------------
+    # [9.1] Переключение страниц (чат ⇄ редактор)
+    # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _on_editor_tabs_changed(self, count: int) -> None:
+        """Реакция на изменение числа вкладок в редакторе.
+
+        * ``count == 0`` → вкладок нет, возвращаем чат (базовый экран);
+        * ``count > 0`` → открыт хотя бы один файл, переключаемся в редактор.
+
+        Раньше эта проверка была внутри `_close_tab` (защита индекса 0).
+        Теперь чат не вкладка — `_close_tab` удалён.
+        """
+        if count == 0:
+            self._switch_to_chat()
+        else:
+            self._switch_to_editor()
+
+    def _switch_to_chat(self) -> None:
+        """Показывает страницу чата (базовый экран)."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(0)
+            logger.debug("[9.1] Переключено на чат")
+
+    def _switch_to_editor(self) -> None:
+        """Показывает страницу редактора."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(1)
+            logger.debug("[9.1] Переключено на редактор")
 
     @Slot()
     def _diff_current_editor_file(self) -> None:
@@ -484,14 +510,18 @@ class MainWindow(QMainWindow):
     # 🆕 Слот: смена темы → Monaco.
     @Slot(str)
     def _on_theme_changed_for_editor(self, theme: str) -> None:
-        """Прокидывает смену темы в Monaco Editor.
-
-        Вызывается из `MainWindow.theme_changed` (испускается
-        `_toggle_theme`), когда `OlliDeskApp._on_theme_changed` уже
-        применил QSS к приложению.
+        """
+        [9.5.1] Смена темы: Monaco Editor + ChatPanel (пузыри, reasoning,
+        tool-карточки).
+        Прокидывает смену темы в Monaco Editor.
         """
         if hasattr(self, "editor_widget"):
             self.editor_widget.set_theme(theme)
+        if hasattr(self, "chat_panel") and self.chat_panel is not None:
+            try:
+                self.chat_panel.set_theme(theme)
+            except Exception:
+                logger.debug("chat_panel.set_theme упал", exc_info=True)
 
     @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):
@@ -528,28 +558,16 @@ class MainWindow(QMainWindow):
             logger.error(f"Ошибка записи файла: {e}")
             return False
 
-    def _close_tab(self, index: int):
-        """Закрывает вкладку (кроме чата)."""
-        if index == 0:  # Чат нельзя закрыть
-            return
-        self.tab_widget.removeTab(index)
-
     def open_file_in_editor(self, file_path: str, line: int = 0):
-        """Открывает файл в редакторе.
+        """Открывает файл в редакторе и переключает на страницу редактора.
 
-        Многофайловость обеспечивает сам `EditorWidget` (собственный QTabBar
-        и отдельные модели Monaco). Во внешнем `QTabWidget` окна вкладка
-        «📝 Редактор» одна — она переиспользуется.
+        [9.1] Чат больше не вкладка — `EditorWidget.open_file` сам
+        добавляет файл в свой `tab_bar`. `tabs_changed` эмитится, но мы
+        дополнительно принудительно переключаемся, чтобы реакция была
+        мгновенной (важно при первом открытии файла из дерева).
         """
         self.editor_widget.open_file(file_path, line)
-
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setTabText(index, "📝 Редактор")
-
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     def _setup_menu(self) -> None:
         """Создаёт меню-бар и подключает его сигналы (план 2.4).
@@ -580,8 +598,12 @@ class MainWindow(QMainWindow):
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
+        self.menu_bar.memory_requested.connect(self._open_memory_dialog)
+
         # [9.9] Палитра команд.
         self.menu_bar.command_palette_requested.connect(self._open_command_palette)
+
+        self.menu_bar.permissions_requested.connect(self._open_permissions)
 
         # [9.4] Профили использования.
         self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
@@ -743,7 +765,7 @@ class MainWindow(QMainWindow):
                     hint="Закрыть OlliDesk",
                     shortcut="Ctrl+Q",
                     group="File",
-                    callback=self.close,
+                    callback=self._exit_from_palette,
                 ),
             ]
         )
@@ -819,7 +841,10 @@ class MainWindow(QMainWindow):
                         label=f"Профиль: {p.icon} {p.name}",
                         hint=p.description[:80] if p.description else "",
                         group="Профиль",
-                        callback=lambda _pid=p.id, _p=p: self._apply_profile_from_palette(_p),
+                        # partial вместо lambda: mypy выводит сигнатуру Callable[[], None]
+                        # из bound-метода и одного аргумента. Lambda с default-arg
+                        # сбивает inference («Cannot infer type of lambda»).
+                        callback=partial(self._apply_profile_from_palette, p),
                     )
                 )
         except Exception:
@@ -920,6 +945,15 @@ class MainWindow(QMainWindow):
         if self._palette_dialog is None:
             self._palette_dialog = CommandPalette(self._palette_registry, self)
         self._palette_dialog.open_fresh()
+
+    def _exit_from_palette(self) -> None:
+        """Хелпер для палитры: закрывает окно (без возврата bool).
+
+        `QWidget.close()` возвращает bool (принято ли событие), а
+        `PaletteCommand.callback` ждёт `Callable[[], None]`. Оборачиваем,
+        чтобы не «тащить» bool-возврат в API палитры.
+        """
+        self.close()
 
     def _toggle_project_tree_from_palette(self) -> None:
         """Хелпер для палитры: переключает видимость дерева проекта."""
@@ -1208,19 +1242,36 @@ class MainWindow(QMainWindow):
         self.project_title_label.setText(self.project_path.name)
         self._update_window_title()
 
-        # [9.2] Восстанавливаем видимость дерева проекта.
+        # [9.2] Автопоказ структуры: если проект открывается ВПЕРВЫЕ
+        # (его нет в recent_projects) — показываем дерево всегда. Иначе
+        # уважаем сохранённое решение пользователя (F4 / кнопка «📁»).
+        project_str = str(self.project_path)
+        is_first_open = project_str not in (self.config.recent_projects or [])
         try:
             from core.config import load_config as _load_cfg
 
             _cfg = _load_cfg()
-            show_tree = bool(getattr(_cfg, "show_project_tree", False))
+            saved_visible = bool(getattr(_cfg, "show_project_tree", False))
         except Exception:
-            show_tree = False
+            saved_visible = False
+
+        # Первое открытие → показать. Повторное → как решил пользователь.
+        show_tree = True if is_first_open else saved_visible
+
         self.left_panel.setVisible(show_tree)
         if hasattr(self.chat_panel, "project_tree_btn"):
             self.chat_panel.project_tree_btn.blockSignals(True)
             self.chat_panel.project_tree_btn.setChecked(show_tree)
             self.chat_panel.project_tree_btn.blockSignals(False)
+        # Синхронизируем галочку в меню (F4).
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(show_tree)
+            action.blockSignals(False)
+        # [9.1] Плюс сразу переключаемся на чат — пользователь пришёл
+        # за вопросами, а не за прошлым редактором.
+        self._switch_to_chat()
 
         # [9.4] Применяем профиль из конфига (мог быть изменён в другом окне).
         try:
@@ -1258,6 +1309,10 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
 
+        # [9.1] При открытии проекта показываем чат: пользователь пришёл
+        # за вопросами, а не за прошлым состоянием редактора.
+        self._switch_to_chat()
+
         # Индексация: контроллер сам загрузит previous_state (план 2.4).
         self.indexing_controller.configure(
             project_path=self.project_path,
@@ -1277,6 +1332,21 @@ class MainWindow(QMainWindow):
                 self.chat_panel.set_model(self.config.last_model)
             if self.config.last_mode:
                 self.chat_panel.set_mode_by_name(self.config.last_mode)
+
+        # [9.4] Обновляем git-снимок (ветка/hash) — на случай, если
+        # проект открывается после смены ветки вручную.
+        try:
+            from state.project_settings import snapshot_git_state
+
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                project_settings.git_branch = git_state["branch"]
+                project_settings.git_hash = git_state["hash"]
+                project_settings.git_last_sync = git_state["timestamp"]
+                project_settings.save(self.project_path)
+                logger.info(f"git context: {git_state['branch']}@{git_state['hash']}")
+        except Exception:
+            logger.debug("git snapshot не сохранён", exc_info=True)
 
         # Синхронизируем чекбокс с фактическим состоянием — apply_settings
         # мог применить show_reasoning=False из project_settings.yaml.
@@ -1320,6 +1390,16 @@ class MainWindow(QMainWindow):
             logger.warning(f"@dir: путь недоступен: {path}")
             return
 
+        # [9.4] Логируем git-контекст (при @dir сессия не пересоздаётся).
+        try:
+            from state.project_settings import snapshot_git_state
+
+            git_state = snapshot_git_state(path)
+            if git_state["branch"]:
+                logger.info(f"@dir git context: {git_state['branch']}@{git_state['hash']}")
+        except Exception:
+            pass
+
         logger.info(f"@dir: прикрепляю директорию {path}")
         self.project_path = path
         self.project_label.setText(f"Проект: {path.name}")
@@ -1327,6 +1407,19 @@ class MainWindow(QMainWindow):
         self.file_tree_controller.set_project_root(path)
         self.project_title_label.setText(path.name)
         self._update_window_title()
+
+        # [9.2] @dir — пользователь только что прикрепил каталог, логично
+        # показать его структуру.
+        self.left_panel.setVisible(True)
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(True)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(True)
+            action.blockSignals(False)
 
         # Индекс хранится в .ollidesk внутри самого каталога
         self.vector_store = VectorStore(
@@ -1341,6 +1434,8 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))
         self.chat_panel.set_project_open(True)
+        # [9.1] @dir возвращает на чат — пользователь задаст вопрос по каталогу.
+        self._switch_to_chat()
         # Пересоздаём индексер для нового каталога
         self.indexer = FileIndexer(self.config, self.project_path)
 
@@ -1466,6 +1561,7 @@ class MainWindow(QMainWindow):
             tools_enabled={
                 name: policy != ToolPolicy.EXCLUDED for name, policy in self.chat_panel.tool_policies.items()
             },
+            allow_arbitrary_shell=bool(getattr(self.config, "allow_arbitrary_shell", False)),
             parent=self,
         )
         dialog.settings_applied.connect(self._on_agent_settings_applied)
@@ -1516,6 +1612,47 @@ class MainWindow(QMainWindow):
             self.rag_check.setChecked(bool(settings.get("rag_enabled", True)))
             self.rag_check.blockSignals(False)
 
+        # 0.1.1: dangerous mode для shell.
+        self.config.allow_arbitrary_shell = bool(settings.get("allow_arbitrary_shell", False))
+        # [7] MCP: включение/выключение.
+        mcp_enabled = bool(settings.get("mcp_enabled", False))
+        if self.config.mcp.enabled != mcp_enabled:
+            self.config.mcp.enabled = mcp_enabled
+            if mcp_enabled:
+                # Перезапускаем инициализацию MCP.
+                if self.chat_panel is not None:
+                    self.chat_panel._start_mcp_init()
+            else:
+                try:
+                    from tools.mcp_ops import MCPManager
+
+                    MCPManager.instance().shutdown_sync()
+                except Exception:
+                    logger.debug("MCP shutdown failed", exc_info=True)
+        # [2.11] browser_control.
+        b_mode = str(settings.get("browser_mode", "isolated"))
+        b_ack = bool(settings.get("browser_full_ack", False))
+        if b_mode == "full" and not b_ack:
+            # Защита: без ack не переключаем.
+            logger.warning("browser: full без явного подтверждения — откатываю на isolated")
+            b_mode = "isolated"
+            b_ack = False
+        self.config.browser.mode = b_mode  # type: ignore[assignment]
+        self.config.browser.full_access_acknowledged = b_ack
+        # Закрываем текущий backend — при следующем browser_* пересоздастся.
+        try:
+            import asyncio as _aio
+
+            from tools.browser_ops import shutdown_browser
+
+            _loop = _aio.new_event_loop()
+            try:
+                _loop.run_until_complete(shutdown_browser())
+            finally:
+                _loop.close()
+        except Exception:
+            logger.debug("browser shutdown на смене режима", exc_info=True)
+
         try:
             from core.config import save_config
 
@@ -1525,17 +1662,23 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Настройки агента применены", 3000)
 
+    @Slot()
     def _show_chat_tab(self) -> None:
-        """Показывает вкладку чата (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.chat_panel) < 0:
-            self.tab_widget.insertTab(0, self.chat_panel, "💬 Чат")
-        self.tab_widget.setCurrentWidget(self.chat_panel)
+        """[9.1] Возвращает на страницу чата. Вкладки файлов сохраняются."""
+        self._switch_to_chat()
 
+    @Slot()
     def _show_editor_tab(self) -> None:
-        """Показывает вкладку редактора (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.editor_widget) < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        """[9.1] Переключает на страницу редактора.
+
+        Если не открыто ни одного файла — редактор пуст, показывать
+        нечего. Сообщаем пользователю и остаёмся в чате.
+        """
+        if self.editor_widget.tab_count() == 0:
+            self.status_bar.showMessage("Редактор пуст: откройте файл из дерева проекта.", 3000)
+            self._switch_to_chat()
+            return
+        self._switch_to_editor()
 
     @Slot(bool)
     def _toggle_project_structure(self, visible: bool) -> None:
@@ -1762,10 +1905,24 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _save_project_settings(self) -> None:
-        """Сохраняет настройки проекта."""
+        """Сохраняет настройки проекта (+ git-снимок, 9.4)."""
         if not self.project_path:
             return
         settings = self.chat_panel.get_settings()
+        try:
+            from state.project_settings import snapshot_git_state
+
+            existing = ProjectSettings.load(self.project_path)
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                existing.git_branch = git_state["branch"]
+                existing.git_hash = git_state["hash"]
+                existing.git_last_sync = git_state["timestamp"]
+            settings["git_branch"] = existing.git_branch
+            settings["git_hash"] = existing.git_hash
+            settings["git_last_sync"] = existing.git_last_sync
+        except Exception:
+            logger.debug("git snapshot при save не обновлён", exc_info=True)
         ProjectSettings(**settings).save(self.project_path)
 
     # 🆕 Убран new_event_loop() — закрытие окна больше не блокируется.
@@ -1976,8 +2133,91 @@ class MainWindow(QMainWindow):
         self.chat_panel.update_model_list()
         self.chat_panel.update_models(self._available_models)
 
+    @Slot()
+    def _open_memory_dialog(self) -> None:
+        """4.3: открывает диалог просмотра/удаления памяти агента.
+
+        Если память отключена в конфиге — сообщаем и выходим; если
+        `ChatPanel` ещё не создал `MemoryService` — создаём через
+        `ChatPanel._ensure_memory_service`.
+        """
+        from core.config import load_config
+
+        try:
+            cfg = load_config()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать конфиг: {e}")
+            return
+        if not cfg.memory.enabled:
+            QMessageBox.information(
+                self,
+                "Память отключена",
+                "Включите память в настройках (⚙ → Память агента) или в config.yaml: `memory.enabled: true`.",
+            )
+            return
+        if self.chat_panel is None:
+            return
+        service = self.chat_panel._ensure_memory_service()
+        if service is None:
+            QMessageBox.warning(
+                self,
+                "Память недоступна",
+                "Не удалось инициализировать SQLite. См. лог.",
+            )
+            return
+        from ui.dialogs.memory_dialog import MemoryDialog
+
+        dlg = MemoryDialog(service, self)
+        dlg.exec()
+
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog
 
         dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
         dlg.exec()
+
+    def _open_permissions(self) -> None:
+        """[9.10] Открывает Permissions Dashboard."""
+        if self.chat_panel is None:
+            return
+        # Собираем registry, профиль, режим, session-overrides из ChatPanel.
+        try:
+            registry = self.chat_panel.registry_for_permissions()
+        except Exception:
+            logger.exception("Не удалось собрать реестр для Permissions")
+            return
+        active_profile = self.chat_panel.get_active_profile()
+        current_mode = self.chat_panel._current_mode()  # приватный, но это UI-окно
+        session_overrides = dict(self.config.session_overrides)
+        # Плюс то, что ChatPanel накопил в `_current_session_overrides()`.
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            session_overrides.update(self.chat_panel._current_session_overrides())
+
+        from ui.dialogs.permissions_dashboard import PermissionsDashboard
+
+        dlg = PermissionsDashboard(
+            registry,
+            self.config,
+            active_profile=active_profile,
+            current_mode=current_mode,
+            session_overrides=session_overrides,
+            parent=self,
+        )
+        dlg.exec()
+        # После закрытия — синхронизируем изменённые overrides.
+        try:
+            self.config.session_overrides = dict(
+                dlg._session_overrides  # noqa: SLF001
+            )
+            from core.config import save_config
+
+            save_config(self.config)
+            if self.chat_panel is not None:
+                self.chat_panel._sync_dashboard()
+        except Exception:
+            logger.debug(
+                "Не удалось сохранить session overrides после закрытия",
+                exc_info=True,
+            )

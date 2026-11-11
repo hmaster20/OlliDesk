@@ -14,9 +14,11 @@
 
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -42,7 +44,17 @@ from core.context_budget import (
     system_prompt_char_budget,
     truncate_to_chars,
 )
+from core.event_bus import emit_event
+from core.events import EventKind, args_hash
 from core.exceptions import OlliDeskError, ToolsNotSupportedError
+from core.security import SecurityPolicy
+
+if TYPE_CHECKING:
+    from agents.protocols import MemoryServiceLike
+    from core.config import AppConfig
+    from core.profiles import ProfileConfig
+    from core.security import SecurityPolicy
+    from core.services.tool_service import ToolService
 
 # Максимальное число чтений одного файла, после которого цикл считает это
 # застреванием. Дублируется с `investigation._MAX_READS_PER_FILE`, но здесь
@@ -58,6 +70,107 @@ class AgentError(OlliDeskError):
     """Общая ошибка агента."""
 
 
+class BudgetStatus(StrEnum):
+    """Статус soft budget (2.10).
+
+    * ``OK`` — бюджет не исчерпан, работаем штатно.
+    * ``WARNING`` — ≥ ``warning_ratio`` (по умолчанию 80 %). UI показывает
+      подсказку, но цикл продолжается.
+    * ``EXCEEDED`` — ≥ 100 %. В CHAT/PLAN `AgentLoop` форсирует финальный
+      синтез. В AGENT — только сигнал в UI, цикл продолжается до
+      ``finish_reason=stop`` или ``user_cancel``.
+    """
+
+    OK = "ok"
+    WARNING = "warning"
+    EXCEEDED = "exceeded"
+
+
+@dataclass
+class SoftBudget:
+    """Мягкие бюджеты цикла агента (2.10).
+
+    Заменяют жёсткий ``max_iterations`` как основной выход. Реальный выход
+    — ``finish_reason=stop`` от модели или ``user_cancel``. Бюджеты —
+    soft: они сигналят о «дорого/долго», но не останавливают цикл в AGENT.
+
+    В CHAT/PLAN ``iterations`` — это ``max_iterations`` из конфига (7/15/30),
+    exceeded в этих режимах форсирует финальный синтез (пользователь ждёт
+    ответа). В AGENT ``iterations`` — safety net (по умолчанию 100).
+
+    Attributes:
+        iterations: Потолок итераций (soft для AGENT, hard для CHAT/PLAN).
+        tokens: Потолок completion-токенов (soft везде).
+        time_s: Потолок wall-clock (soft везде).
+        warning_ratio: Доля от лимита, при которой срабатывает WARNING.
+        started_at: ``perf_counter()`` в момент ``reset()``.
+        iteration_count: Фактические итерации.
+        token_count: Фактические токены (из ``client.last_stats``).
+        warning_emitted: Флаг — не эмитим WARNING дважды.
+        exceeded_emitted: Флаг — не эмитим EXCEEDED дважды.
+    """
+
+    iterations: int = 100
+    tokens: int = 100_000
+    time_s: float = 600.0
+    warning_ratio: float = 0.8
+
+    started_at: float = field(default_factory=time.perf_counter)
+    iteration_count: int = 0
+    token_count: int = 0
+    warning_emitted: bool = False
+    exceeded_emitted: bool = False
+
+    def reset(self) -> None:
+        """Обнуляет счётчики и таймер (перед новым прогоном)."""
+        self.started_at = time.perf_counter()
+        self.iteration_count = 0
+        self.token_count = 0
+        self.warning_emitted = False
+        self.exceeded_emitted = False
+
+    def elapsed(self) -> float:
+        """Секунды с момента ``reset()``."""
+        return time.perf_counter() - self.started_at
+
+    def record(self, *, tokens: int = 0) -> None:
+        """Учитывает одну завершённую итерацию.
+
+        Args:
+            tokens: Потрачено completion-токенов на итерации (0, если
+                клиент не сообщил — эвристика по длине не нужна, точность
+                бюджета не критична).
+        """
+        self.iteration_count += 1
+        self.token_count += max(0, tokens)
+
+    def status(self) -> BudgetStatus:
+        """Текущий статус по худшей из трёх осей."""
+        ratios = (
+            self.iteration_count / max(1, self.iterations),
+            self.token_count / max(1, self.tokens),
+            self.elapsed() / max(1.0, self.time_s),
+        )
+        worst = max(ratios)
+        if worst >= 1.0:
+            return BudgetStatus.EXCEEDED
+        if worst >= self.warning_ratio:
+            return BudgetStatus.WARNING
+        return BudgetStatus.OK
+
+    def snapshot(self) -> dict[str, Any]:
+        """Снимок для UI и для ``_build_system_prompt``."""
+        return {
+            "iterations": self.iteration_count,
+            "iterations_limit": self.iterations,
+            "tokens": self.token_count,
+            "tokens_limit": self.tokens,
+            "time_s": round(self.elapsed(), 1),
+            "time_limit_s": self.time_s,
+            "status": self.status().value,
+        }
+
+
 @dataclass
 class AgentContext:
     """Контекст для запуска агента.
@@ -67,8 +180,8 @@ class AgentContext:
     `object`. `hypotheses` — конкретный `HypothesisStore` (без цикла:
     `agents.hypotheses` не импортирует `agents.agent_loop`).
 
-    Это устраняет `hasattr(...)`-проверки в `AgentLoop` и `type: ignore`
-    на местах использования — mypy теперь ловит несовместимые реализации.
+    0.1.1: добавлено ``security`` — политика безопасности, которая
+    прокидывается в инструменты через ``extra_kwargs`` (см. AgentLoop.run).
     """
 
     system_prompt: str = ""
@@ -85,7 +198,27 @@ class AgentContext:
     search_cache: SearchCacheLike | None = None
     attached_files: AttachedFilesLike | None = None
     hypotheses: HypothesisStore | None = None
+    # 0.1.1: allow_arbitrary_shell, redaction_enabled и пр.
+    security: "SecurityPolicy | None" = None
+    # 4.3: эпизодическая память. Если задана — top-K релевантных
+    # рефлексий подмешиваются в system-промпт (блок «Память»),
+    # а после успешного ответа — записывается новая рефлексия.
+    # Тип — `Any`, чтобы `agents` не импортировал `core.services`
+    # (тест-дружелюбнее; протокол не нужен — методы вызываются точечно).
+    memory_service: "MemoryServiceLike | None" = None
+    # [2.7] Активный профиль и конфиг — для `effective_policy`. Если не
+    # заданы — используется только security + decorator.
+    profile: "ProfileConfig | None" = None
+    app_config: "AppConfig | None" = None
+    # [9.4] Git-контекст: ветка, hash, последние коммиты, uncommitted diff.
+    # Собирается в `ChatPanel._do_chat/_do_agent` и подмешивается в
+    # системный промпт в режиме AGENT (coding).
+    git_context: str = ""
 
+
+if TYPE_CHECKING:
+    from agents.protocols import MemoryServiceLike
+    from core.security import SecurityPolicy
 
 # --- System prompt ---------------------------------------------------------
 
@@ -117,6 +250,16 @@ _TOOL_USE_INSTRUCTION = """
 Когда какой инструмент:
   • содержимое/структура проекта — read_file (offset/limit), list_directory,
     search_codebase
+  • ПРАВКА существующего файла — apply_patch с минимальным контекстом
+    (не write_file!). Перед apply_patch прочитай файл через read_file
+    и передай sha256 (первые 8+ hex) как expected_hash.
+  • НОВЫЙ файл или ПОЛНАЯ замена — write_file (только для этого)
+  • ПРОВЕРКА после правки — run_tests. После изменения .py/.cs/.go/.ts
+  • ПОИСК ИСПОЛЬЗОВАНИЙ — find_references. Перед удалением/переименованием
+    символа проверь, где он используется. Если LSP-сервер не установлен —
+    результат помечается «эвристика», относись к нему с осторожностью.
+    ОБЯЗАТЕЛЬНО запусти run_tests. Если тесты упали — исправь и повтори
+    (не более 3 раз). Не отчитывайся «готово», пока тесты не зелёные.
   • текущие дата и время         — get_current_datetime
   • погода в городе              — get_weather
   • курсы валют                  — get_exchange_rate
@@ -247,7 +390,13 @@ _MODE_HINTS = {
         "Текущий режим: АГЕНТ.\n"
         "Сначала изучи структуру и код проекта инструментами, опирайся на "
         "свои знания для анализа. У тебя полный доступ: чтение, запись, "
-        "git-снапшоты, поиск."
+        "git-снапшоты, поиск.\n\n"
+        "ПРОФИЛЬ РАЗРАБОТКИ: ты — coding-ассистент.\n"
+        "  • читай файлы порциями (read_file offset/limit);\n"
+        "  • правь через apply_patch (не write_file);\n"
+        "  • проверяй через run_tests; не отчитывайся «готово», пока тесты не зелёные;\n"
+        "  • ищи использования через find_references (перед удалением/переименованием);\n"
+        "  • не выдумывай имена классов и путей — только из read_file/project_map."
     ),
 }
 
@@ -285,6 +434,45 @@ def _looks_like_tool_attempt(text: str) -> bool:
     return bool(_REACT_SCAFFOLD_RE.search(text))
 
 
+def _build_memory_block(context: AgentContext) -> str:
+    """4.3: формирует блок «Память» из рефлексий MemoryService.
+
+    Логика:
+      * если ``memory_service`` не задан — пусто;
+      * если есть ``project_root`` — ищем рефлексии этого проекта;
+      * последняя user-реплика из ``messages_history`` недоступна на этом
+        этапе (в ``_build_system_prompt`` передаётся только контекст),
+        поэтому используем «сводку контекста»: project_name + первые
+        токены project_map. Этого достаточно, чтобы отсеять совсем
+        нерелевантное.
+
+    Возвращает готовый текст блока или пустую строку.
+    """
+    svc = context.memory_service
+    if svc is None:
+        return ""
+    # Собираем «запрос» из доступных полей (без прямой связи с user-текстом).
+    query_parts = [context.project_name or "", context.extra_rules or ""]
+    query = " ".join(p for p in query_parts if p).strip()
+    if not query:
+        return ""
+    try:
+        result = svc.recall(
+            query,
+            top_k=3,
+            project_path=context.project_root or None,
+        )
+    except Exception:
+        logger.debug("memory.recall упал — пропускаю блок памяти", exc_info=True)
+        return ""
+    if not result.hit or not result.reflections:
+        return ""
+    rendered = result.render_for_prompt(max_chars=1200)
+    if not rendered:
+        return ""
+    return f"Память (прошлые задачи, top-{len(result.reflections)}):\n{rendered}"
+
+
 def _project_block(context: AgentContext) -> str:
     """Собирает блок о проекте: имя и корень, от которого считаются пути."""
     lines: list[str] = []
@@ -314,7 +502,7 @@ def _fit_sections(
         return variable
 
     remaining = list(variable)
-    for key in ("rag", "map", "rules", "agents", "hypotheses"):
+    for key in ("rag", "map", "rules", "agents", "hypotheses", "memory", "git"):
         if len(_assemble_prompt(pre, remaining)) <= budget:
             break
         others = [item for item in remaining if item[0] != key]
@@ -337,6 +525,8 @@ def _build_system_prompt(
     state: InvestigationState | None = None,
     research_mode: bool = False,
     open_hypotheses: int = 0,
+    budget_snapshot: dict[str, Any] | None = None,
+    budget_status: str = "ok",
 ) -> str:
     """Собирает system-промпт из контекста, роли, протокола, фазы и гипотез.
 
@@ -355,24 +545,29 @@ def _build_system_prompt(
         pre.append(_RESEARCH_PROTOCOL)
 
     if max_iterations > 0 and iteration >= 0:
-        iter_line = f"ТЕКУЩАЯ ИТЕРАЦИЯ: {iteration + 1} из {max_iterations}."
         remaining = max_iterations - (iteration + 1)
-        if remaining <= 1:
+        iter_line = f"ТЕКУЩАЯ ИТЕРАЦИЯ: {iteration + 1}."
+        # [2.10] Вместо «N из M» — потрачено N итераций · T tok · S сек.
+        # В AGENT max_iterations — safety net, «из M» путает модель.
+        if budget_snapshot:
+            spent_tokens = int(budget_snapshot.get("tokens", 0))
+            spent_s = float(budget_snapshot.get("time_s", 0.0))
+            iter_line += f" Потрачено: {spent_tokens} tok · {spent_s:.0f} сек."
+        if budget_status == "exceeded":
+            iter_line += (
+                " ⛔ Бюджет исчерпан. Если задача НЕ решена — дай финальный "
+                "ответ с тем, что удалось, и что осталось. Если решена — "
+                "заверши сразу."
+            )
+        elif remaining <= 1:
             iter_line += (
                 " СЛЕДУЮЩИЙ ОТВЕТ ДОЛЖЕН БЫТЬ Final Answer — не вызывай инструменты, дай финальный текст."
             )
-        elif remaining <= 3:
+        elif remaining <= 3 or budget_status == "warning":
             iter_line += (
-                " ⚠️ Осталось мало итераций. Если данных достаточно — "
-                "переходи к финалу. Если нет — читай только важное."
+                " ⚠️ Мало итераций или приближаешься к бюджету. Если данных "
+                "достаточно — переходи к финалу. Если нет — читай только важное."
             )
-            # iter_line += (
-            #     " ⚠️ Осталось мало итераций. Если данных достаточно для "
-            #     "ответа — закрой открытые гипотезы через update_hypothesis "
-            #     "и переходи к финалу. Если нет — используй оставшиеся шаги "
-            #     "максимально целенаправленно: не перечитывай то, что уже "
-            #     "изучил, читай только самые важные файлы."
-            # )
         pre.append(iter_line)
 
     if research_mode and state is not None:
@@ -420,6 +615,13 @@ def _build_system_prompt(
         rendered = context.hypotheses.render_for_prompt()
         if rendered:
             variable.append(("hypotheses", f"Гипотезы исследования:\n{rendered}"))
+    # 4.3: память — top-K рефлексий, релевантных текущему запросу.
+    memory_block = _build_memory_block(context)
+    if memory_block:
+        variable.append(("memory", memory_block))
+    # 9.4: git-контекст.
+    if context.git_context:
+        variable.append(("git", f"Git-контекст:\n{context.git_context}"))
     if context.project_map:
         variable.append(("map", context.project_map))
     if context.rag_context:
@@ -493,7 +695,15 @@ def _create_tool_result_message(
 class AgentLoop:
     """Цикл ReAct агента (CHAT / PLAN / AGENT)."""
 
-    def __init__(self, client: LLMBackend, registry: ToolRegistry, model: str):
+    def __init__(
+        self,
+        client: LLMBackend,
+        registry: ToolRegistry,
+        model: str,
+        *,
+        tool_service: "ToolService | None" = None,
+        project_root: str = "",
+    ):
         """
         Args:
             client: Клиент LLM (OllamaClient, LocalLLMClient, ModelRouter)
@@ -503,21 +713,45 @@ class AgentLoop:
         self.client = client
         self.registry = registry
         self.model = model
-        # Заполняется в _finalize() при завершении research-прогона.
-        self.last_research_summary: dict[str, Any] | None = None
-        # Флаг: был ли прогон research-режимом.
-        self.was_research_mode: bool = False
+        # [2.8] Единая точка исполнения: audit + автоснапшот. Если
+        # не задан — fallback на registry.execute (старое поведение,
+        # audit пишется только для run_shell_command).
+        if tool_service is None:
+            try:
+                from core.services.tool_service import ToolService
+
+                tool_service = ToolService(registry, project_root=project_root)
+            except Exception:
+                logger.debug(
+                    "ToolService не создан, fallback на registry.execute",
+                    exc_info=True,
+                )
+                tool_service = None
+        self.tool_service = tool_service
+        self.last_finish_reason: str | None = None
+        self.last_budget_snapshot: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Вспомогательные методы
     # ------------------------------------------------------------------
 
     def _compact_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """Прореживает промпт, если он не помещается в окно модели."""
+        """Прореживает промпт, если он не помещается в окно модели.
+
+        [4.2] Передаёт ``hot_window_tokens`` — компактор не трогает
+        хвост диалога, укладывающийся в этот бюджет. Так результаты
+        недавних tool-calls не теряются, и модель не повторяет вызовы.
+        """
         num_ctx = getattr(self.client, "num_ctx", None)
         if not isinstance(num_ctx, int) or num_ctx <= 0:
             return messages
-        return compact_history(messages, num_ctx)
+        from core.context_budget import hot_window_tokens
+
+        return compact_history(
+            messages,
+            num_ctx,
+            hot_window_tokens=hot_window_tokens(num_ctx),
+        )
 
     @staticmethod
     def _tool_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:
@@ -643,12 +877,34 @@ class AgentLoop:
         research_mode: bool,
         state: InvestigationState,
         context: AgentContext,
+        *,
+        finish_reason: str | None = None,
+        soft_budget: SoftBudget | None = None,
     ) -> None:
-        """Кладёт сводку research-прогона в `last_research_summary`."""
+        """Кладёт сводку research-прогона в `last_research_summary`.
+
+        [2.10] Фиксирует причину остановки и снимок бюджета —
+        `AgentChatThread` эмитит их в Qt-сигнале ``agent_finished``.
+        [2.5] То же событие идёт в `EventBus` (``agent.finished``) —
+        видно в `LiveEventsPanel` и `StatusDashboard` без Qt-связи.
+        """
         if research_mode:
             self.last_research_summary = self._make_research_summary(state, context)
         else:
             self.last_research_summary = None
+        self.last_finish_reason = finish_reason
+        self.last_budget_snapshot = soft_budget.snapshot() if soft_budget else None
+
+        # [2.5] agent.finished — финальное событие прогона.
+        _payload: dict[str, Any] = {
+            "iterations": soft_budget.iteration_count if soft_budget else 0,
+            "elapsed_s": round(soft_budget.elapsed(), 1) if soft_budget else 0.0,
+        }
+        if finish_reason:
+            _payload["finish_reason"] = finish_reason
+        if self.last_budget_snapshot:
+            _payload["budget"] = self.last_budget_snapshot
+        emit_event(EventKind.AGENT_FINISHED.value, _payload)
 
     # ------------------------------------------------------------------
     # Финальный вызов без инструментов
@@ -741,6 +997,22 @@ class AgentLoop:
                     await on_token(part.text)
         except Exception as e:
             logger.error(f"Ошибка финального синтеза ({reason}): {e}")
+
+        # [FIX] Очистка от JSON-вызовов, если слабая модель зациклилась
+        if final_text:
+            import re
+            # Удаляем блоки ```json ... ```
+            final_text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", final_text, flags=re.DOTALL)
+            # Удаляем инлайн JSON объекты
+            final_text = re.sub(r'\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\}', '', final_text)
+            final_text = re.sub(r'\{"name":\s*"[^"]+"\}', '', final_text)
+            # Удаляем пустые блоки markdown
+            final_text = re.sub(r"```(?:json)?\s*```", "", final_text)
+            final_text = final_text.strip()
+
+            if not final_text:
+                final_text = "⚠️ Модель зациклилась на вызове инструментов и не смогла сформировать финальный ответ. Попробуйте переформулировать запрос."
+
         return final_text
 
     async def run(
@@ -757,26 +1029,44 @@ class AgentLoop:
         on_tool_result: (Callable[[str, str, bool, dict | None], Awaitable[None]] | None) = None,
         on_thought: Callable[[str], Awaitable[None]] | None = None,
         on_final_answer_started: Callable[[], Awaitable[None]] | None = None,
-        # [4.8.E] Низкоуровневые delta-колбэки и границы стрима.
-        # Ортогональны существующим on_thinking/on_thought/on_token.
         on_text_delta: Callable[[str], Awaitable[None]] | None = None,
         on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
         on_stream_start: Callable[[], Awaitable[None]] | None = None,
         on_stream_end: Callable[[], Awaitable[None]] | None = None,
+        # [2.10] Мягкие бюджеты и колбэки.
+        soft_budget: SoftBudget | None = None,
+        on_budget_warning: Callable[[dict], Awaitable[None]] | None = None,
+        on_budget_exceeded: Callable[[dict], Awaitable[None]] | None = None,
     ) -> str:
-        """Запускает ReAct-цикл."""
+        """Запускает ReAct-цикл (2.10: natural exit + soft budgets).
+
+        Выход — ``finish_reason=stop`` от модели (естественный) или
+        ``user_cancel``. Жёсткий ``max_iterations`` **не** используется
+        как основной выход:
+          * CHAT/PLAN: при ``budget.status()==EXCEEDED`` — принудительный
+            финальный синтез (пользователь ждёт ответа).
+          * AGENT: при ``budget.status()==EXCEEDED`` — только сигнал в UI,
+            цикл идёт до ``finish_reason=stop`` / ``user_cancel``.
+            ``soft_budget.iterations`` — safety net (по умолчанию 100).
+        """
         last_user = next(
             (m for m in reversed(messages_history) if m.role == "user"),
             None,
         )
         research_mode = is_research_question(last_user.content if last_user else "")
         self.was_research_mode = research_mode
-        split_thoughts = research_mode and on_thought is not None
+        # split_thoughts = research_mode and on_thought is not None
+        split_thoughts = on_thought is not None  # для всех режимо
         state = InvestigationState()
-        # Начальное наполнение: если AGENTS.md уже в контексте, считаем его
-        # прочитанным. Без этого фазовая машина будет требовать «прочитать
-        # конфиг», даже когда он уже в промпте.
         self._preseed_state_from_context(state, context)
+
+        # [2.10] Разрешаем soft_budget: либо передан снаружи, либо
+        # строим из max_iterations (CHAT/PLAN) / дефолта (AGENT).
+        if soft_budget is None:
+            soft_budget = SoftBudget()
+        if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
+            soft_budget.iterations = max_iterations
+        soft_budget.reset()
 
         hypotheses_available = context.hypotheses is not None
         if research_mode:
@@ -795,10 +1085,12 @@ class AgentLoop:
                 content=_build_system_prompt(
                     context,
                     iteration=0,
-                    max_iterations=max_iterations,
+                    max_iterations=soft_budget.iterations,
                     state=state,
                     research_mode=research_mode,
                     open_hypotheses=open_h,
+                    budget_snapshot=soft_budget.snapshot(),
+                    budget_status=soft_budget.status().value,
                 ),
             )
         ]
@@ -818,44 +1110,53 @@ class AgentLoop:
         observation_budget = 0
         client_num_ctx = getattr(self.client, "num_ctx", 0)
         if isinstance(client_num_ctx, int) and client_num_ctx > 0:
-            # Аварийный потолок на результат инструмента: 70% окна в символах.
-            # Инструменты сами отдают порциями с hint; сюда попадают лишь
-            # инструменты без собственного ограничения.
             observation_budget = int(client_num_ctx * CHARS_PER_TOKEN * 0.7)
 
         final_started_emitted = False
 
-        for iteration in range(max_iterations):
+        # [2.10] Safety net: жёсткая защита от бесконечного цикла, если
+        # модель зациклится на tool_calls и не эмитит finish_reason=stop.
+        # Это НЕ основной выход — только аварийный стоп-кран.
+        _hard_ceiling = max(soft_budget.iterations * 3, 300)
+        iteration = 0
+
+        while iteration < _hard_ceiling:
             open_h = self._count_open_hypotheses(context)
             phase_before = phase_for(
                 state,
                 open_h,
                 iteration=iteration,
-                max_iterations=max_iterations,
+                max_iterations=soft_budget.iterations,
             )
             is_synthesis_phase = phase_before == Phase.SYNTHESIS
 
+            # [2.10] В AGENT-synthesis фаза отключает tools — это
+            # естественный форс финального ответа, не «удушение».
             if is_synthesis_phase:
                 tools_to_send: list | None = None
             else:
                 tools_to_send = base_tools
 
             logger.debug(
-                f"ReAct итерация {iteration + 1}/{max_iterations}, "
+                f"ReAct итерация {iteration + 1}/{soft_budget.iterations}, "
                 f"режим={context.mode.value}, tools={len(tools_to_send or [])}, "
                 f"research={research_mode}, phase={phase_before.value}, "
                 f"open_hypotheses={open_h}, split={split_thoughts}, "
-                f"stuck={state.stuck_on_one_file}"
+                f"stuck={state.stuck_on_one_file}, "
+                f"budget={soft_budget.status().value}"
             )
 
             current_text = ""
             pending_tool_calls: list[ToolCall] = []
+            finish_reason: str | None = None
 
             if on_status:
                 if iteration == 0:
                     await on_status("🤔 Анализирую запрос…")
                 else:
-                    await on_status(f"🧠 Размышляю над результатами (шаг {iteration + 1}/{max_iterations})…")
+                    await on_status(
+                        f"🧠 Размышляю над результатами (шаг {iteration + 1}/{soft_budget.iterations})…"
+                    )
 
             if (
                 is_synthesis_phase
@@ -871,45 +1172,75 @@ class AgentLoop:
                 content=_build_system_prompt(
                     context,
                     iteration=iteration,
-                    max_iterations=max_iterations,
+                    max_iterations=soft_budget.iterations,
                     state=state,
                     research_mode=research_mode,
                     open_hypotheses=open_h,
+                    budget_snapshot=soft_budget.snapshot(),
+                    budget_status=soft_budget.status().value,
                 ),
             )
             messages = self._compact_history(messages)
 
             try:
+                emit_event(
+                    EventKind.LLM_REQUEST_SENT.value,
+                    {
+                        "model": self.model,
+                        "backend": type(self.client).__name__,
+                        "n_messages": len(messages),
+                    },
+                )
+                llm_started_at = time.perf_counter()
+                first_token_emitted = False
+
                 stream = self.client.chat(
                     model=self.model,
                     messages=messages,
                     tools=tools_to_send,
                     stream=True,
+                    op_type="tool_call" if tools_to_send else "synthesis",
                 )
 
                 async for chunk in stream:
-                    # [4.8.E] Границы стрима: до первого delta.
                     if chunk.event_type == "start":
                         if on_stream_start:
                             await on_stream_start()
                         continue
-                    # [4.8.E] Границы стрима: после последнего delta.
                     if chunk.event_type == "end":
+                        # [2.10] Запоминаем причину остановки от клиента.
+                        if chunk.finish_reason:
+                            finish_reason = chunk.finish_reason
                         if on_stream_end:
                             await on_stream_end()
                         continue
 
                     part = chunk.part
                     if isinstance(part, ReasoningPart) and part.text:
-                        # [4.8.E] Reasoning-delta — новый колбэк + on_thinking.
+                        if not first_token_emitted:
+                            first_token_emitted = True
+                            emit_event(
+                                EventKind.LLM_FIRST_TOKEN.value,
+                                {
+                                    "model": self.model,
+                                    "ttft_ms": round((time.perf_counter() - llm_started_at) * 1000, 2),
+                                },
+                            )
                         if on_reasoning_delta:
                             await on_reasoning_delta(part.text)
                         if on_thinking:
                             await on_thinking(part.text)
                     elif isinstance(part, TextPart) and part.text:
+                        if not first_token_emitted:
+                            first_token_emitted = True
+                            emit_event(
+                                EventKind.LLM_FIRST_TOKEN.value,
+                                {
+                                    "model": self.model,
+                                    "ttft_ms": round((time.perf_counter() - llm_started_at) * 1000, 2),
+                                },
+                            )
                         current_text += part.text
-                        # [4.8.E] Text-delta — новый колбэк + маршрут
-                        # (on_thought в research-фазе / on_token в финале).
                         if on_text_delta:
                             await on_text_delta(part.text)
                         if split_thoughts and not is_synthesis_phase:
@@ -919,9 +1250,121 @@ class AgentLoop:
                     elif isinstance(part, ToolCallPart) and part.calls:
                         pending_tool_calls.extend(part.calls)
 
+                # 2.5: метрики завершённой генерации.
+                if not self.client.is_cancelled:
+                    stats = getattr(self.client, "last_stats", None) or {}
+                    _done_payload: dict = {
+                        "model": self.model,
+                        "tokens": int(stats.get("tokens", 0)),
+                        "tokens_per_sec": float(stats.get("tokens_per_sec", 0.0)),
+                    }
+                    if stats.get("ttft_ms") is not None:
+                        _done_payload["ttft_ms"] = float(stats["ttft_ms"])
+                    emit_event(EventKind.LLM_GENERATION_DONE.value, _done_payload)
+
+                    # [2.10] Учитываем потраченные completion-токены.
+                    soft_budget.record(tokens=int(stats.get("tokens", 0)))
+
+                    # [2.5] Эмитим бюджетные события в EventBus.
+                    # Срабатывают один раз на переход (флаги *_emitted).
+                    _status = soft_budget.status()
+                    if _status == BudgetStatus.WARNING and not soft_budget.warning_emitted:
+                        soft_budget.warning_emitted = True
+                        _snap = soft_budget.snapshot()
+                        emit_event(EventKind.BUDGET_WARNING.value, _snap)
+                        if on_budget_warning is not None:
+                            await on_budget_warning(_snap)
+                    elif _status == BudgetStatus.EXCEEDED and not soft_budget.exceeded_emitted:
+                        soft_budget.exceeded_emitted = True
+                        _snap = soft_budget.snapshot()
+                        emit_event(EventKind.BUDGET_EXCEEDED.value, _snap)
+                        if on_budget_exceeded is not None:
+                            await on_budget_exceeded(_snap)
+                        # CHAT/PLAN: бюджет жёсткий — форсируем финал.
+                        # AGENT: только сигнал, продолжаем.
+                        if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
+                            if current_text:
+                                messages.append(ChatMessage(role="assistant", content=current_text))
+                            if (
+                                split_thoughts
+                                and on_final_answer_started is not None
+                                and not final_started_emitted
+                            ):
+                                final_started_emitted = True
+                                await on_final_answer_started()
+                            final_text = await self._final_call_no_tools(
+                                messages,
+                                context,
+                                on_token,
+                                on_thinking,
+                                on_status,
+                                reason="бюджет исчерпан",
+                                on_text_delta=on_text_delta,
+                                on_reasoning_delta=on_reasoning_delta,
+                                on_stream_start=on_stream_start,
+                                on_stream_end=on_stream_end,
+                            )
+                            self._finalize(
+                                research_mode,
+                                state,
+                                context,
+                                finish_reason="budget.exceeded",
+                                soft_budget=soft_budget,
+                            )
+                            return final_text or current_text
+
+                    # [2.10] Сигнал о бюджете — один раз на переход.
+                    status = soft_budget.status()
+                    if status == BudgetStatus.WARNING and not soft_budget.warning_emitted:
+                        soft_budget.warning_emitted = True
+                        if on_budget_warning is not None:
+                            await on_budget_warning(soft_budget.snapshot())
+                    elif status == BudgetStatus.EXCEEDED and not soft_budget.exceeded_emitted:
+                        soft_budget.exceeded_emitted = True
+                        if on_budget_exceeded is not None:
+                            await on_budget_exceeded(soft_budget.snapshot())
+                        # CHAT/PLAN: бюджет жёсткий — форсируем финал.
+                        # AGENT: только сигнал, продолжаем.
+                        if context.mode in (AgentMode.CHAT, AgentMode.PLAN):
+                            if current_text:
+                                messages.append(ChatMessage(role="assistant", content=current_text))
+                            if (
+                                split_thoughts
+                                and on_final_answer_started is not None
+                                and not final_started_emitted
+                            ):
+                                final_started_emitted = True
+                                await on_final_answer_started()
+                            final_text = await self._final_call_no_tools(
+                                messages,
+                                context,
+                                on_token,
+                                on_thinking,
+                                on_status,
+                                reason="бюджет исчерпан",
+                                on_text_delta=on_text_delta,
+                                on_reasoning_delta=on_reasoning_delta,
+                                on_stream_start=on_stream_start,
+                                on_stream_end=on_stream_end,
+                            )
+                            self._finalize(
+                                research_mode,
+                                state,
+                                context,
+                                finish_reason="budget.exceeded",
+                                soft_budget=soft_budget,
+                            )
+                            return final_text or current_text
+
                 if self.client.is_cancelled:
                     logger.info("Запрос отменён пользователем")
-                    self._finalize(research_mode, state, context)
+                    self._finalize(
+                        research_mode,
+                        state,
+                        context,
+                        finish_reason="user_cancel",
+                        soft_budget=soft_budget,
+                    )
                     return current_text or "Отменено"
 
             except ToolsNotSupportedError:
@@ -952,6 +1395,7 @@ class AgentLoop:
                 messages.append(ChatMessage(role="user", content=_TOOL_FORMAT_HINT))
                 if on_status:
                     await on_status("🔁 Формат вызова не распознан — уточняю…")
+                iteration += 1
                 continue
 
             # --- Защита от повторов ---
@@ -986,7 +1430,13 @@ class AgentLoop:
                         on_stream_start=on_stream_start,
                         on_stream_end=on_stream_end,
                     )
-                    self._finalize(research_mode, state, context)
+                    self._finalize(
+                        research_mode,
+                        state,
+                        context,
+                        finish_reason="budget.exceeded",
+                        soft_budget=soft_budget,
+                    )
                     if not final_text:
                         final_text = (
                             "Агент остановлен: повторяющиеся вызовы инструментов "
@@ -1021,8 +1471,6 @@ class AgentLoop:
                         )
                         continue
 
-                    # Жёсткая защита: если модель читает ОДИН и тот же файл
-                    # слишком много раз — блокируем вызов.
                     if tc.name == "read_file":
                         target = str(tc.arguments.get("path") or "").replace("\\", "/")
                         reads = state.reads_per_file.get(target, 0)
@@ -1048,16 +1496,61 @@ class AgentLoop:
                             state.nudges_fired.add("different_file")
                             continue
 
-                            # [9.5.7] on_tool_start ВЫЗЫВАЕТСЯ ДО ask_first:
-                    # пользователь видит карточку-запрос (⏳ pending)
-                    # одновременно с диалогом подтверждения. При отказе
-                    # карточка краснеет через on_tool_result(...).
+                    emit_event(
+                        EventKind.TOOL_STARTED.value,
+                        {"name": tc.name, "args_hash": args_hash(tc.arguments)},
+                    )
+                    tool_started_at = time.perf_counter()
+
                     if on_tool_start:
                         await on_tool_start(tc.name, tc.arguments)
 
-                    policy = self.registry.get_policy(tc.name)
+                    # [2.7] Единая точка авторизации.
+                    session_overrides = (
+                        context.app_config.session_overrides if context.app_config is not None else None
+                    )
+                    effective = self.registry.get_effective_policy(
+                        tc.name,
+                        profile=context.profile,
+                        security=context.security,
+                        config=context.app_config,
+                        session_overrides=session_overrides,
+                        current_mode=context.mode,
+                    )
 
-                    if policy == ToolPolicy.ASK_FIRST:
+                    if not effective.allowed:
+                        logger.warning(f"Инструмент {tc.name} заблокирован политикой ({effective.reason})")
+                        messages.append(
+                            _create_tool_result_message(
+                                tc.id,
+                                tc.name,
+                                (
+                                    f"⛔ Инструмент {tc.name} заблокирован "
+                                    f"политикой: {effective.reason}. "
+                                    f"Используй другой подход или смени профиль."
+                                ),
+                                is_error=True,
+                            )
+                        )
+                        if on_tool_result:
+                            await on_tool_result(
+                                tc.name,
+                                f"Заблокировано политикой ({effective.reason})",
+                                True,
+                                None,
+                            )
+                        emit_event(
+                            EventKind.TOOL_FINISHED.value,
+                            {
+                                "name": tc.name,
+                                "duration_ms": 0,
+                                "is_error": True,
+                                "error_category": "policy_blocked",
+                            },
+                        )
+                        continue
+
+                    if effective.policy == ToolPolicy.ASK_FIRST:
                         description = self.registry.get_description(tc.name)
                         approved = await on_tool_request(tc.name, description, tc.arguments)
                         if not approved:
@@ -1071,6 +1564,15 @@ class AgentLoop:
                             )
                             if on_tool_result:
                                 await on_tool_result(tc.name, "Отклонено пользователем", True, None)
+                            emit_event(
+                                EventKind.TOOL_FINISHED.value,
+                                {
+                                    "name": tc.name,
+                                    "duration_ms": round((time.perf_counter() - tool_started_at) * 1000, 2),
+                                    "is_error": True,
+                                    "error_category": "user_declined",
+                                },
+                            )
                             continue
 
                     extra: dict[str, object] = {}
@@ -1082,22 +1584,58 @@ class AgentLoop:
                         extra["search_cache"] = context.search_cache
                     if context.attached_files:
                         extra["attached_files"] = context.attached_files
-                    if context.hypotheses:
+                    if context.hypotheses is not None:
                         extra["hypotheses"] = context.hypotheses
+                    if context.security:
+                        extra["security"] = context.security
+                    # [2.7] Профиль и конфиг — для effective_policy.
+                    if context.profile is not None:
+                        extra["profile"] = context.profile
+                    if context.app_config is not None:
+                        extra["app_config"] = context.app_config
 
-                    result = await self.registry.execute(tc, **extra)
+                    if self.tool_service is not None:
+                        result = await self.tool_service.execute(
+                            tc,
+                            effective_policy=effective,
+                            extra=extra,
+                        )
+                    else:
+                        result = await self.registry.execute(tc, **extra)
                     executed_calls[call_key] = result.content
 
                     state.note_call(tc.name, tc.arguments, result.content, result.is_error)
 
                     if on_tool_result:
-                        # [9.6.1] metadata — для UI (diff write_file).
                         await on_tool_result(
                             result.name,
                             result.content,
                             result.is_error,
                             result.metadata,
                         )
+
+                    _finished_payload: dict = {
+                        "name": result.name,
+                        "duration_ms": round((time.perf_counter() - tool_started_at) * 1000, 2),
+                        "is_error": result.is_error,
+                    }
+                    if result.error_category is not None:
+                        _finished_payload["error_category"] = result.error_category.value
+                    emit_event(EventKind.TOOL_FINISHED.value, _finished_payload)
+                    if result.is_error:
+                        emit_event(
+                            EventKind.TOOL_ERROR.value,
+                            {
+                                "name": result.name,
+                                "error_category": (
+                                    result.error_category.value
+                                    if result.error_category is not None
+                                    else "unknown"
+                                ),
+                                "message": (result.content or "")[:200],
+                            },
+                        )
+
                     messages.append(
                         _create_tool_result_message(
                             tc.id,
@@ -1109,7 +1647,7 @@ class AgentLoop:
                         )
                     )
 
-                # --- Проактивный нудж: вклиниваемся между tool_calls ---
+                # --- Проактивный нудж: гипотеза ---
                 if (
                     research_mode
                     and hypotheses_available
@@ -1136,14 +1674,12 @@ class AgentLoop:
                     if on_status:
                         await on_status(NUDGE_STATUS_LABELS["hypothesis_first"])
 
+                # [2.10] Модель вызвала инструмент — это «итерация с tools»,
+                # не «natural stop». Продолжаем цикл.
+                iteration += 1
                 continue
 
-            # --- Валидация Observation (React.md 2.4) ---
-            # Если модель уже пыталась вызывать инструменты, но ВСЕ вызовы
-            # упали (attempted > 0, successful == 0), финальный ответ по
-            # несуществующим данным — галлюцинация. Вклиниваемся ОДИН раз
-            # с требованием сменить стратегию. В synthesis-фазе и на последней
-            # итерации проверка отключена — там уже не до нуджей.
+            # --- Валидация Observation ---
             if (
                 current_text
                 and not is_synthesis_phase
@@ -1162,6 +1698,7 @@ class AgentLoop:
                 if on_status:
                     await on_status("🔁 Все вызовы инструментов упали — прошу сменить стратегию…")
                 current_text = ""
+                iteration += 1
                 continue
 
             # --- Нет tool_calls: модель пытается дать финальный ответ ---
@@ -1185,12 +1722,10 @@ class AgentLoop:
                     if on_status:
                         await on_status(NUDGE_STATUS_LABELS.get(key, f"🔁 {key}"))
                     current_text = ""
+                    iteration += 1
                     continue
 
-                # Нуджи исчерпаны, но мы всё ещё НЕ в SYNTHESIS. Раньше
-                # здесь возвращался current_text — и в паспорт попадали
-                # «мысли» модели, а не финальный ответ. Теперь форсируем
-                # настоящий финальный синтез.
+                # Нуджи исчерпаны, но фаза ≠ SYNTHESIS → форсируем синтез.
                 logger.info("Нуджи исчерпаны, но фаза ≠ SYNTHESIS — принудительный финальный синтез")
                 messages.append(ChatMessage(role="assistant", content=current_text))
                 if split_thoughts and on_final_answer_started is not None and not final_started_emitted:
@@ -1208,17 +1743,61 @@ class AgentLoop:
                     on_stream_start=on_stream_start,
                     on_stream_end=on_stream_end,
                 )
-                self._finalize(research_mode, state, context)
+                self._finalize(
+                    research_mode,
+                    state,
+                    context,
+                    finish_reason="budget.exceeded",
+                    soft_budget=soft_budget,
+                )
                 return final_text or current_text
 
+            # [2.10] Естественный выход: модель дала текст без tool_calls
+            # и `finish_reason=stop` (или вообще без него — старые клиенты).
             if current_text:
                 messages.append(ChatMessage(role="assistant", content=current_text))
 
-            self._finalize(research_mode, state, context)
+            # [10.4] Verifier: проверяем финальный ответ по графу/evidence.
+            # Если есть `context.vector_store`/`context.project_map` и
+            # ответ похож на архитектурный (research/coding) — проверяем
+            # пути и символы. При провале делаем ОДНУ регенерацию, при
+            # повторном провале — отдаём ответ с явной пометкой.
+            current_text = await self._verify_and_maybe_regen(
+                final_text=current_text,
+                messages=messages,
+                context=context,
+                state=state,
+                research_mode=research_mode,
+                is_synthesis_phase=is_synthesis_phase,
+                on_token=on_token,
+                on_thinking=on_thinking,
+                on_status=on_status,
+                on_text_delta=on_text_delta,
+                on_reasoning_delta=on_reasoning_delta,
+                on_stream_start=on_stream_start,
+                on_stream_end=on_stream_end,
+                split_thoughts=split_thoughts,
+                on_final_answer_started=on_final_answer_started,
+                final_started_emitted=final_started_emitted,
+            )
+
+            self._finalize(
+                research_mode,
+                state,
+                context,
+                finish_reason=finish_reason or "stop",
+                soft_budget=soft_budget,
+            )
             return current_text
 
-        # --- Лимит итераций: финальный вызов без tools ---
-        logger.info(f"Достигнут лимит итераций ({max_iterations}), делаем финальный вызов без tools")
+        # [2.10] Аварийный стоп: `_hard_ceiling`. Сюда доходим только если
+        # модель зациклилась на tool_calls и не эмитит finish_reason=stop.
+        # Естественный выход — предыдущая ветка. Это именно fallback.
+        logger.warning(
+            f"Достигнут hard ceiling ({_hard_ceiling} итераций) — принудительный финальный синтез без tools"
+        )
+        if on_status:
+            await on_status("⛔ Достигнут предел шагов — формирую итоговый ответ…")
 
         if split_thoughts and on_final_answer_started is not None:
             await on_final_answer_started()
@@ -1230,18 +1809,245 @@ class AgentLoop:
                 on_token,
                 on_thinking,
                 on_status,
-                reason="лимит итераций",
+                reason=f"hard ceiling ({_hard_ceiling} итераций)",
                 on_text_delta=on_text_delta,
                 on_reasoning_delta=on_reasoning_delta,
                 on_stream_start=on_stream_start,
                 on_stream_end=on_stream_end,
             )
             if self.client.is_cancelled:
-                self._finalize(research_mode, state, context)
+                self._finalize(
+                    research_mode,
+                    state,
+                    context,
+                    finish_reason="user_cancel",
+                    soft_budget=soft_budget,
+                )
                 return final_text or "Отменено"
-            self._finalize(research_mode, state, context)
+            self._finalize(
+                research_mode,
+                state,
+                context,
+                finish_reason="budget.exceeded",
+                soft_budget=soft_budget,
+            )
             return final_text
         except Exception as e:
-            logger.error(f"Ошибка финального вызова после лимита итераций: {e}")
-            self._finalize(research_mode, state, context)
-            raise AgentIterationLimitError(f"Агент превысил лимит итераций ({max_iterations})") from e
+            logger.error(f"Ошибка финального вызова после hard ceiling: {e}")
+            self._finalize(
+                research_mode,
+                state,
+                context,
+                finish_reason="budget.exceeded",
+                soft_budget=soft_budget,
+            )
+            raise AgentIterationLimitError(f"Агент превысил safety net ({_hard_ceiling} итераций)") from e
+
+    # ------------------------------------------------------------------
+    # 10.4: верификация финального ответа
+    # ------------------------------------------------------------------
+
+    async def _verify_and_maybe_regen(
+        self,
+        *,
+        final_text: str,
+        messages: list[ChatMessage],
+        context: AgentContext,
+        state: InvestigationState,
+        research_mode: bool,
+        is_synthesis_phase: bool,
+        on_token: Callable[[str], Awaitable[None]],
+        on_thinking: Callable[[str], Awaitable[None]] | None,
+        on_status: Callable[[str], Awaitable[None]] | None,
+        on_text_delta: Callable[[str], Awaitable[None]] | None,
+        on_reasoning_delta: Callable[[str], Awaitable[None]] | None,
+        on_stream_start: Callable[[], Awaitable[None]] | None,
+        on_stream_end: Callable[[], Awaitable[None]] | None,
+        split_thoughts: bool,
+        on_final_answer_started: Callable[[], Awaitable[None]] | None,
+        final_started_emitted: bool,
+    ) -> str:
+        """Проверяет ответ verifier'ом и (один раз) регенерирует при провале.
+
+        [10.4] Условия запуска:
+          * есть чем проверять — `project_map` или `vector_store`;
+          * режим — PLAN или AGENT, либо research-вопрос в CHAT
+            (в обычном CHAT verifier не нужен: там диалог, а не код);
+          * ответ длиннее 80 символов (короткие реплики не проверяем);
+          * финальный вызов уже не был «forced synthesis» (там
+            регенерация бессмысленна).
+        Условия запуска (старые):
+          * ``context.vector_store`` или ``context.project_map`` заданы
+            (есть чем проверять);
+          * ответ непустой и длиннее 80 символов (короткие «привет» не
+            проверяем — это не архитектурный ответ);
+          * ``self.last_finish_reason`` пока не установлен — иначе
+            (финальный вызов, лимит) регенерация бессмысленна.
+
+        Логика:
+          1. Строим `known_paths` и `known_symbols` из `project_map`
+             (парсим пути и CamelCase-имена).
+          2. Вызываем `agents.verifier.verify(final_text, ...)`.
+          3. Если `ok` — возвращаем `final_text` без изменений.
+          4. Если провал:
+             a. ОДИН раз делаем регенерацию с `regen_hint` («убери пути
+                вне индекса / добавь [Ei]-ссылки …»).
+             b. Если второй ответ проходит — возвращаем его.
+             c. Если снова провал — добавляем в конец явную пометку
+                «⚠️ не подтверждено: …» и возвращаем.
+        """
+        # Не верифицируем, если нечего проверять.
+        if not (context.vector_store or context.project_map):
+            return final_text
+        # [10.4] CHAT без research — это диалог, а не разбор кода.
+        # Verifier тут будет ложно флагать CamelCase-слова из общей речи
+        # («DependencyInversion» в объяснении SOLID) и запускать
+        # бесполезную регенерацию.
+        if context.mode == AgentMode.CHAT and not research_mode:
+            return final_text
+        if not final_text or len(final_text) < 80:
+            return final_text
+
+        try:
+            from agents.evidence import EvidenceStore
+            from agents.verifier import verify as _verify
+            from fs.intel.graph import DependencyGraph
+        except Exception:
+            return final_text
+
+        known_paths = _extract_known_paths(context.project_map)
+        known_symbols = _extract_known_symbols(context.project_map)
+        if not known_paths and not known_symbols:
+            return final_text
+
+        evidence = EvidenceStore()  # in-memory, без БД
+        try:
+            ver = _verify(
+                final_text,
+                graph=DependencyGraph(),
+                evidence=evidence,
+                known_paths=known_paths,
+                known_symbols=known_symbols,
+                strict=False,
+            )
+        except Exception:
+            logger.debug("verifier упал — пропускаю", exc_info=True)
+            return final_text
+
+        if ver.ok:
+            return final_text
+
+        # Провал — одна регенерация.
+        logger.info(f"verifier: провал ({ver.summary()}); регенерация")
+        if on_status:
+            await on_status(f"🔄 Проверка ответа: {ver.summary()} — переформулирую…")
+
+        if split_thoughts and on_final_answer_started is not None and not final_started_emitted:
+            await on_final_answer_started()
+
+        regen_prompt = (
+            "\n\nТвой предыдущий ответ НЕ прошёл верификацию.\n"
+            f"Проблемы: {ver.summary()}\n\n"
+            "Исправь ответ и верни ТОЛЬКО новый текст (без пояснений "
+            "о правках). Требования:\n"
+            "  • Все пути — из проекта (не выдумывай).\n"
+            "  • Все имена классов/функций — из проекта.\n"
+            "  • Если сомневаешься в факте — напиши «не подтверждено».\n"
+        )
+        messages.append(ChatMessage(role="assistant", content=final_text))
+        messages.append(ChatMessage(role="user", content=regen_prompt.strip()))
+
+        try:
+            regen_text = ""
+            stream = self.client.chat(model=self.model, messages=messages, tools=None, stream=True)
+            async for chunk in stream:
+                if self.client.is_cancelled:
+                    return final_text
+                part = chunk.part
+                if isinstance(part, ReasoningPart) and part.text:
+                    if on_reasoning_delta:
+                        await on_reasoning_delta(part.text)
+                    if on_thinking:
+                        await on_thinking(part.text)
+                elif isinstance(part, TextPart) and part.text:
+                    regen_text += part.text
+                    if on_text_delta:
+                        await on_text_delta(part.text)
+                    await on_token(part.text)
+        except Exception as e:
+            logger.warning(f"verifier: регенерация упала ({e}); отдаю первый ответ")
+            return final_text
+
+        # Проверяем второй ответ.
+        try:
+            ver2 = _verify(
+                regen_text,
+                graph=DependencyGraph(),
+                evidence=evidence,
+                known_paths=known_paths,
+                known_symbols=known_symbols,
+                strict=False,
+            )
+        except Exception:
+            ver2 = ver
+
+        # Если улучшилось — берём второй ответ.
+        if ver2.ok or len(ver2.missing_paths) < len(ver.missing_paths):
+            return regen_text
+
+        # Оба плохи — возвращаем первый с явной пометкой.
+        return (
+            final_text
+            + "\n\n---\n\n⚠️ **Не подтверждено верификатором:** "
+            + "; ".join(
+                filter(
+                    None,
+                    [
+                        (f"пути вне индекса: {ver.missing_paths[:5]}" if ver.missing_paths else ""),
+                        (f"символы вне графа: {ver.unknown_symbols[:5]}" if ver.unknown_symbols else ""),
+                    ],
+                )
+            )
+            + ".\n\nПроверь эти пути/имена вручную через `search_codebase`."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10.4: хелперы для извлечения known_paths/known_symbols из project_map
+# ---------------------------------------------------------------------------
+
+
+_PATH_IN_MAP_RE = re.compile(
+    r"(?m)^\s*[\w./\\-]+\.(?:py|js|ts|tsx|jsx|cs|rb|go|tf|hcl|md|json|yaml|yml|toml)"
+)
+_CAMEL_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]{2,})\b")
+
+
+def _extract_known_paths(project_map: str) -> set[str]:
+    """Извлекает пути файлов из карты проекта.
+
+    ``project_map`` — это «Структура проекта:\\n  dir/\\n    file.py …».
+    Возвращаем только basename'ы и относительные пути — то, что
+    употребимо в ответе модели.
+    """
+    if not project_map:
+        return set()
+    paths: set[str] = set()
+    for m in _PATH_IN_MAP_RE.finditer(project_map):
+        p = m.group(0).strip().replace("\\", "/")
+        if p:
+            paths.add(p)
+            # basename тоже.
+            paths.add(p.rsplit("/", 1)[-1])
+    return paths
+
+
+def _extract_known_symbols(project_map: str) -> set[str]:
+    """Извлекает CamelCase-идентификаторы из карты проекта.
+
+    project_map для карты не содержит определений классов, но в L1-блоке
+    (если есть) — имена символов уже проставлены. Парсим их.
+    """
+    if not project_map:
+        return set()
+    return {m.group(1) for m in _CAMEL_RE.finditer(project_map)}

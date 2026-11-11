@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ProfileToolPolicyStr = Literal["auto", "ask_first", "excluded"]
 
@@ -47,6 +47,9 @@ class ProfileToolPolicies(BaseModel):
     get_git_status: ProfileToolPolicyStr = "auto"
     create_snapshot: ProfileToolPolicyStr = "ask_first"
     undo_last_snapshot: ProfileToolPolicyStr = "ask_first"
+    # [9.4] Коммит — только с подтверждением по умолчанию.
+    # В research/learning переопределяется на "excluded".
+    git_commit: ProfileToolPolicyStr = "ask_first"
     read_attached_file: ProfileToolPolicyStr = "auto"
     record_hypothesis: ProfileToolPolicyStr = "auto"
     update_hypothesis: ProfileToolPolicyStr = "auto"
@@ -55,38 +58,77 @@ class ProfileToolPolicies(BaseModel):
 
 
 class ProfileConfig(BaseModel):
-    """Один профиль использования."""
+    """Один профиль использования.
+
+    **9.3.2 + 4.1** — новые поля:
+        * ``recommended_model`` — визуальная подсказка (звёздочка) в
+          селекторах для профиля «Разработка»; на выбор не влияет.
+        * ``park_roles`` — id моделей по ролям парка. Ключи — ``Role.value``
+          (``"router"``, ``"planner"``, ``"coder"``, ``"verifier"``,
+          ``"analyst"``). Значения — ``SLMModelInfo.id``. Пустой dict →
+          автовыбор через ``agents.slm_selector.select_park``.
+        * ``freedom_level`` — уровень свободы агента (9.12, будет позже).
+    """
 
     id: str
     name: str
     icon: str = "🧩"
     description: str = ""
-    builtin: bool = False  # встроенный — нельзя удалить, можно клонировать
+    builtin: bool = False
 
-    # Режим агента по умолчанию для этого профиля.
     agent_mode: Literal["chat", "plan", "agent"] = "agent"
 
-    # RAG.
     rag_enabled: bool = True
-    # Категории RAG (code / docs). Полная фильтрация по категориям —
-    # Фаза 5; сейчас флаг работает как «включить/выключить RAG целиком».
     rag_categories: list[Literal["code", "docs"]] = Field(default_factory=lambda: ["code"])
 
-    # Промпт профиля (дополнение к роли, идёт в extra_rules).
     system_prompt: str = ""
 
-    # Показывать размышления модели.
     show_reasoning: bool = True
 
-    # Рекомендуемые лимиты итераций.
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
-    # Политики инструментов.
     tool_policies: ProfileToolPolicies = Field(default_factory=ProfileToolPolicies)
 
-    # Рекомендуемая модель (не блокирует выбор пользователя).
     recommended_model: str = ""
+
+    # 4.1: парк моделей по ролям.
+    park_roles: dict[str, str] = Field(default_factory=dict)
+
+    # 4.2: желаемое окно контекста для ролей парка.
+    # 0 — не ограничивать (используем то, что даёт `optimize` по RAM/VRAM).
+    # Для CPU-аналитика: 16384 (research) / 32768 (development) /
+    # 65536 (deep). Не «жёсткий cap», а hint: оптимизатор берёт
+    # `min(n_ctx_hint, budget_by_ram)`.
+    n_ctx_hint: int = 8192
+
+    # [10.2] Предлагать run_tests после правки кода. Влияет только на
+    # подсказку в промпте (см. `_TOOL_USE_INSTRUCTION`); сам вызов
+    # инструмента — на усмотрение модели, ASK_FIRST-подтверждение.
+    run_tests_after_edit: bool = False
+
+    # [10.6] Явные id coder-моделей (список приоритетов). Если пусто —
+    # `agents.slm_selector.select_coder` возьмёт первую с тегом "coder".
+    coder_models: list[str] = Field(default_factory=list)
+
+    # [9.12] Уровень свободы агента. Матрица политик по capabilities
+    # (`_FREEDOM_MATRIX` в `core/policy.py`). Самый сильный слой после
+    # `security` и `secrets`.
+    #
+    # safe        — shell/git/browser запрещены; net только ask_first.
+    # research    — shell/git/browser запрещены; net auto; запись ask_first.
+    # development — запись auto; shell/git/browser ask_first; net ask_first.
+    # open        — всё auto, кроме shell (ask_first) и secrets (always excluded).
+    #
+    # Уровень «open» требует явного подтверждения (см. `ui/dialogs/profile_editor_dialog.py`).
+    freedom_level: Literal["safe", "research", "development", "open"] = "development"
+
+    @field_validator("n_ctx_hint")
+    @classmethod
+    def _validate_n_ctx_hint(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"n_ctx_hint must be >= 0, got {v}")
+        return v
 
 
 _DEFAULT_PROFILES: list[dict] = [
@@ -109,13 +151,34 @@ _DEFAULT_PROFILES: list[dict] = [
         # Оптимум для кода (из _DEFAULT_SLM_MODELS). Подсвечивается ★ в
         # селекторе analyst; выбор пользователя не блокируется.
         "recommended_model": "qwen2.5-coder-7b-instruct-q6_k",
+        # 4.1: парк по ролям. Router/planner/verifier — 3B на GPU,
+        # coder — MoE-модель на CPU (или 14B, если MoE не скачана).
+        "park_roles": {
+            "router": "qwen2.5-3b-instruct-q4_k_m",
+            "planner": "qwen2.5-3b-instruct-q4_k_m",
+            "verifier": "qwen2.5-3b-instruct-q4_k_m",
+            "coder": "qwen3-coder-30b-a3b-instruct-q4_k_m",
+        },
+        "coder_models": [
+            "qwen3-coder-30b-a3b-instruct-q4_k_m",
+            "qwen2.5-coder-14b-instruct-q5_k_m",
+            "qwen2.5-coder-7b-instruct-q6_k",
+            "qwen2.5-coder-7b-instruct-q4_k_m",
+        ],
+        # 4.2: 32k — code-reading и apply_patch требуют большого окна.
+        # Оптимизатор урежет до budget_by_ram, если RAM не хватит.
+        "n_ctx_hint": 32768,
+        # [9.12] Development: запись auto, shell/git ask_first.
+        "freedom_level": "development",
         "tool_policies": {
             "write_file": "ask_first",
             "create_snapshot": "ask_first",
             "undo_last_snapshot": "ask_first",
             "web_search": "ask_first",
             "run_shell_command": "ask_first",
+            "git_commit": "ask_first",
         },
+        "run_tests_after_edit": True,
     },
     {
         "id": "research",
@@ -141,6 +204,15 @@ _DEFAULT_PROFILES: list[dict] = [
         ),
         # Большой контекст под документы: q6_k 7B — баланс качества/памяти.
         "recommended_model": "qwen2.5-7b-instruct-q6_k",
+        # Research: двухмодельный пайплайн как раньше (planner+analyst).
+        "park_roles": {
+            "planner": "qwen2.5-3b-instruct-q4_k_m",
+            "analyst": "qwen2.5-7b-instruct-q5_k_m",
+        },
+        # 4.2: 16k — хватает на hypothesis-проверки и паспорт.
+        "n_ctx_hint": 16384,
+        # [9.12] Research: только чтение; запись/инструменты ask_first.
+        "freedom_level": "research",
         "tool_policies": {
             "write_file": "excluded",
             "create_snapshot": "excluded",
@@ -150,7 +222,9 @@ _DEFAULT_PROFILES: list[dict] = [
             "record_hypothesis": "auto",
             "update_hypothesis": "auto",
             "list_hypotheses": "auto",
+            "git_commit": "excluded",
         },
+        "run_tests_after_edit": False,
     },
     {
         "id": "learning",
@@ -177,6 +251,14 @@ _DEFAULT_PROFILES: list[dict] = [
         # Рекомендация «крупная модель для обучения» (см. 9.4.1): 14B q4_k_m
         # влезает в 32 ГБ RAM, качество заметно выше 7B.
         "recommended_model": "qwen2.5-14b-instruct-q4_k_m",
+        # Learning: только analyst, никаких инструментов.
+        "park_roles": {
+            "analyst": "qwen2.5-14b-instruct-q4_k_m",
+        },
+        # 4.2: 8k — диалог без инструментов, длинная история не нужна.
+        "n_ctx_hint": 8192,
+        # [9.12] Learning: инструменты запрещены (всё excluded в tool_policies).
+        "freedom_level": "safe",
         "tool_policies": {
             "read_file": "excluded",
             "list_directory": "excluded",
@@ -190,12 +272,14 @@ _DEFAULT_PROFILES: list[dict] = [
             "get_git_status": "excluded",
             "create_snapshot": "excluded",
             "undo_last_snapshot": "excluded",
+            "git_commit": "excluded",
             "read_attached_file": "excluded",
             "record_hypothesis": "excluded",
             "update_hypothesis": "excluded",
             "list_hypotheses": "excluded",
             "run_shell_command": "excluded",
         },
+        "run_tests_after_edit": False,
     },
 ]
 

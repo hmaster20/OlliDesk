@@ -23,8 +23,10 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,8 +48,8 @@ class LspServerSpec:
 INSTALLERS: dict[str, LspServerSpec] = {
     "python": LspServerSpec(
         "python",
-        ["python", "-m", "pip", "install", "pylsp"],
-        ["pylsp"],
+        [sys.executable, "-m", "pip", "install", "pylsp"],
+        [sys.executable, "-m", "pylsp"],
         size_mb_est=15,
     ),
     "csharp": LspServerSpec(
@@ -101,6 +103,7 @@ class _LspClient:
         self._initialized = False
         self._opened_files: set[str] = set()
         self._lock = asyncio.Lock()
+        self._diagnostics_by_uri: dict[str, list[dict]] = {}
 
     async def start(self) -> None:
         """Запускает процесс и выполняет initialize/initialized."""
@@ -209,6 +212,14 @@ class _LspClient:
                     future.set_exception(RuntimeError(err.get("message", f"LSP error {err}")))
                 else:
                     future.set_result(msg.get("result"))
+            return
+        # 10.8: нотификация publishDiagnostics.
+        method = msg.get("method")
+        if method == "textDocument/publishDiagnostics":
+            params = msg.get("params") or {}
+            uri = params.get("uri")
+            if uri:
+                self._diagnostics_by_uri[uri] = params.get("diagnostics") or []
 
     async def ensure_open(self, file_path: str, language_id: str) -> None:
         """Шлёт textDocument/didOpen если файл ещё не открыт (один раз)."""
@@ -263,6 +274,45 @@ class _LspClient:
             return []
         return [r for r in result if isinstance(r, dict)]
 
+    async def diagnostics(self, file_path: str, language_id: str) -> list[dict]:
+        """Запрашивает `textDocument/publishDiagnostics` через сервер (10.8).
+
+        LSP-сервер шлёт diagnostics асинхронно (notifications). Мы:
+          1. Открываем файл (`didOpen`/`didChange`).
+          2. Ждём `publishDiagnostics` для этого URI (до таймаута).
+          3. Возвращаем список диагностик.
+
+        Упрощение: не делаем ручной запрос, а слушаем нотификации —
+        их копит `_read_loop`. См. `_diagnostics_by_uri`.
+        """
+        # Открываем файл — сервер начнёт анализ.
+        await self.ensure_open(file_path, language_id)
+        # Даём серверу время прислать diagnostics (у pylsp это быстро;
+        # для C# (roslyn-lsp) может занять 200–500 мс).
+        try:
+            await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            raise
+        uri = Path(file_path).as_uri()
+        raw = self._diagnostics_by_uri.pop(uri, [])
+        # Приводим к единому формату.
+        result: list[dict] = []
+        for d in raw:
+            rng = d.get("range", {}) or {}
+            start = rng.get("start", {}) or {}
+            result.append(
+                {
+                    "file": file_path,
+                    "line": int(start.get("line", 0)) + 1,
+                    "column": int(start.get("character", 0)) + 1,
+                    "severity": int(d.get("severity", 1)),
+                    "message": str(d.get("message", "")),
+                    "source": str(d.get("source", "")),
+                }
+            )
+        return result
+
+
     async def stop(self) -> None:
         """Graceful shutdown → SIGTERM → SIGKILL."""
         if self._initialized and self.process is not None:
@@ -283,6 +333,13 @@ class _LspClient:
         self._initialized = False
 
 
+# 10.8: глобальный синглтон (лениво). Нужен инструментам (`write_file`,
+# `apply_patch`), которые не имеют доступа к policy/cache из своего
+# контекста. В тестах подменяется.
+_default_bridge: LspBridge | None = None
+_default_lock = threading.Lock()
+
+
 class LspBridge:
     """Высокоуровневый мост: кэширует клиентов по языку, деградирует gracefully."""
 
@@ -292,6 +349,124 @@ class LspBridge:
         self.policy = policy
         self._clients: dict[str, _LspClient] = {}
         self._lock = asyncio.Lock()
+
+    @classmethod
+    def _get_default(cls) -> LspBridge | None:
+        """Возвращает глобальный синглтон (создаёт при первом вызове).
+
+        Лениво: если LSP-серверы не установлены — вернёт объект, но
+        `available()` для всех языков будет `False`, а `diagnostics()`
+        вернёт пустой список. Инструменты вызывают это в try/except;
+        отсутствие LSP не блокирует запись файла.
+        """
+        global _default_bridge
+        if _default_bridge is None:
+            with _default_lock:
+                if _default_bridge is None:
+                    try:
+                        from core.config import load_config
+                        from core.security import SecurityPolicy
+                        from core.utils import get_app_data_dir
+
+                        policy = SecurityPolicy()
+                        try:
+                            cfg = load_config()
+                            policy = SecurityPolicy(
+                                allow_lsp_download=bool(getattr(cfg, "lsp_download_enabled", True)),
+                            )
+                        except Exception:
+                            pass
+                        cache = get_app_data_dir() / "lsp_cache"
+                        _default_bridge = cls(cache, policy)
+                    except Exception:
+                        logger.debug(
+                            "LspBridge._get_default: инициализация упала",
+                            exc_info=True,
+                        )
+                        return None
+        return _default_bridge
+
+    @classmethod
+    def _set_default_for_tests(cls, bridge: LspBridge | None) -> None:
+        """Подмена синглтона (для тестов)."""
+        global _default_bridge
+        _default_bridge = bridge
+
+    # ------------------------------------------------------------------
+    # 10.8: диагностика после записи файла
+    # ------------------------------------------------------------------
+
+    async def diagnostics_async(
+        self,
+        file_path: Path | str,
+        *,
+        language: str | None = None,
+        timeout_s: float = 5.0,
+        ) -> list[dict]:
+        """Возвращает LSP-диагностику файла (10.8).
+
+        Args:
+            file_path: Путь к файлу.
+            language: Язык (``"python"``, ``"csharp"``, …). Если ``None`` —
+                автоопределение по расширению.
+            timeout_s: Таймаут на ответ сервера.
+
+        Returns:
+            Список ошибок/предупреждений (пустой, если сервера нет или
+            файл чистый). Формат: ``{file, line, column, severity, message,
+            source}``. ``severity``: 1=Error, 2=Warning, 3=Info, 4=Hint.
+        """
+        fp = Path(file_path)
+        if not fp.exists():
+            return []
+        lang = language or _language_for_path(fp)
+        if not lang or not self.available(lang):
+            return []
+        client = await self._get_client(lang, str(fp.parent))
+        if client is None:
+            return []
+        try:
+            return await asyncio.wait_for(
+                client.diagnostics(str(fp), lang),
+                timeout=timeout_s,
+            )
+        except (TimeoutError, Exception) as e:
+            logger.debug(f"LSP diagnostics {lang}: {e}")
+            return []
+
+    def diagnostics(
+        self,
+        file_path: Path | str,
+        *,
+        language: str | None = None,
+        timeout_s: float = 5.0,
+        ) -> list[dict]:
+        """Sync-обёртка `diagnostics_async` — для инструментов.
+
+        Создаёт новый event loop, если вызов идёт из sync-контекста
+        (`write_file`/`apply_patch` — sync). Внутри async-функций лучше
+        использовать `diagnostics_async`.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            # Мы внутри уже работающего event loop — нельзя run_until_complete.
+            # Это нормально для async-инструментов, но write_file/apply_patch
+            # sync; если кто-то вызовет их из async-контекста — вернём []
+            # (вызывающий должен использовать диагностику напрямую).
+            logger.debug("LspBridge.diagnostics: вызов из async-контекста — используйте diagnostics_async")
+            return []
+
+        new_loop = asyncio.new_event_loop()
+        try:
+            return new_loop.run_until_complete(
+                self.diagnostics_async(file_path, language=language, timeout_s=timeout_s)
+            )
+        finally:
+            new_loop.close()
 
     def available(self, language: str) -> bool:
         """True, если бинарь сервера уже в PATH."""
@@ -328,7 +503,10 @@ class LspBridge:
                     logger.error(f"LSP {language}: {e}")
                     return False
 
-        env = {**os.environ, "PIP_TARGET": str(self.cache / "py")}
+        # Было:
+        # env = {**os.environ, "PIP_TARGET": str(self.cache / "py")}
+        # Стало:
+        env = {**os.environ}
         try:
             subprocess.run(
                 spec.cmd_install,
@@ -344,7 +522,17 @@ class LspBridge:
 
     async def _get_client(self, language: str, project_root: str | None) -> _LspClient | None:
         if not self.available(language):
-            return None
+            # [FIX] Динамическая автоустановка LSP при первом запросе
+            if getattr(self.policy, "allow_lsp_download", False):
+                logger.info(f"LSP {language}: сервер не найден, пробую установить...")
+                import asyncio
+                # Запускаем в отдельном потоке, чтобы не блокировать event loop
+                installed = await asyncio.to_thread(self.ensure_installed, language, interactive_confirm=False)
+                if not installed:
+                    return None
+            else:
+                return None
+
         cached = self._clients.get(language)
         if cached is not None:
             return cached
@@ -407,3 +595,15 @@ class LspBridge:
             with contextlib.suppress(Exception):
                 await client.stop()
         self._clients.clear()
+
+
+def _language_for_path(path: Path) -> str | None:
+    """10.8: маппинг расширения в идентификатор LSP-языка."""
+    ext = path.suffix.lower()
+    return {
+        ".py": "python",
+        ".cs": "csharp",
+        ".rb": "ruby",
+        ".go": "go",
+        ".tf": "terraform",
+    }.get(ext)

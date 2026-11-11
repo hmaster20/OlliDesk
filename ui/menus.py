@@ -33,7 +33,7 @@ from __future__ import annotations
 from loguru import logger
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QMenuBar
+from PySide6.QtWidgets import QMenu, QMenuBar
 
 from core.config import AppConfig, save_config
 
@@ -68,6 +68,12 @@ class AppMenuBar(QMenuBar):
     profile_selected = Signal(str)  # profile_id
     profile_editor_requested = Signal()
 
+    # [9.10] Permissions Dashboard.
+    permissions_requested = Signal()
+
+    # [4.3] Память агента.
+    memory_requested = Signal()
+
     # --- Help ---
     run_wizard_requested = Signal()
     about_requested = Signal()
@@ -75,10 +81,11 @@ class AppMenuBar(QMenuBar):
     def __init__(self, config: AppConfig, parent=None) -> None:
         super().__init__(parent)
         self._config = config
-        self._recent_menu = None
+        # QMenu создаётся в _build_file_menu; здесь только объявляем тип,
+        # чтобы `_refresh_recent_menu` и `set_config` видели QMenu, а не None.
+        self._recent_menu: QMenu | None = None
         self._recent_actions: list[QAction] = []
 
-        # checkable-действия — доступны MainWindow для программной синхронизации
         self.project_structure_action: QAction | None = None
         self.confirm_web_search_action: QAction | None = None
 
@@ -214,6 +221,24 @@ class AppMenuBar(QMenuBar):
         edit_iterations = QAction("Лимит итераций агента…", self)
         edit_iterations.triggered.connect(self.edit_iterations_requested.emit)
         view_menu.addAction(edit_iterations)
+
+        # [4.3] Память агента (рефлексии/решения/настройки).
+        memory_action = QAction("Память агента…", self)
+        memory_action.setToolTip(
+            "Рефлексии после задач, архитектурные решения, настройки. "
+            "Можно просмотреть, удалить или экспортировать."
+        )
+        memory_action.triggered.connect(self.memory_requested.emit)
+        view_menu.addAction(memory_action)
+
+        # [9.10] Разрешения.
+        permissions_action = QAction("Разрешения…", self)
+        permissions_action.setToolTip(
+            "Матрица профиль × инструмент, capabilities, последние вызовы "
+            "(audit), пошаговое объяснение «почему заблокировано»."
+        )
+        permissions_action.triggered.connect(self.permissions_requested.emit)
+        view_menu.addAction(permissions_action)
 
         view_menu.addSeparator()
 
