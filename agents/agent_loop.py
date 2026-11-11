@@ -1055,8 +1055,11 @@ class AgentLoop:
         )
         research_mode = is_research_question(last_user.content if last_user else "")
         self.was_research_mode = research_mode
-        # split_thoughts = research_mode and on_thought is not None
-        split_thoughts = on_thought is not None  # для всех режимо
+        # [UI-2024] reasoning включаем во всех режимах, где передан on_thought.
+        # Раньше `split_thoughts` включался только для research-вопросов, из-за чего
+        # в Agent-режиме текст модели до tool-call уходил в финальный пузырь и
+        # обрывался при _on_tool_started. Теперь он идёт в ReasoningPanel.
+        split_thoughts = on_thought is not None
         state = InvestigationState()
         self._preseed_state_from_context(state, context)
 
