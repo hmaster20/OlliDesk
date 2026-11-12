@@ -82,7 +82,6 @@ class ResearchMixin:
         self._research_cancelled = False
         self._pending_final_answer = ""
         self._last_research_summary = None
-        self._current_thought_stream = None
         # 0.1.3b: буферы частей должны быть пусты к началу нового прогона —
         # иначе parts предыдущего ответа «прилипнут» к следующему.
         self._current_assistant_parts = []
@@ -107,7 +106,7 @@ class ResearchMixin:
 
     @Slot(str)
     def _on_thought_chunk(self, token: str) -> None:
-        """Токен мысли"""
+        """[UI-2024] Токен мысли — в ReasoningPanel внутри пузыря ассистента."""
         from agents.tool_grammar import looks_like_ascii_junk
 
         widget = self._ensure_assistant_widget()
@@ -117,7 +116,9 @@ class ResearchMixin:
         buf = panel._current_thought_buffer
         if len(buf) >= 40 and looks_like_ascii_junk(buf):
             panel._current_thought_buffer = ""
-            panel.append_nudge("⚙️ Резервный сбор данных (модель не вызвала инструмент)")
+            panel.append_nudge(
+                "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
+            )
 
         QTimer.singleShot(0, self._scroll_to_bottom)
 
@@ -160,18 +161,17 @@ class ResearchMixin:
         return bool(len(files) >= 2 or hypotheses or final_answer)
 
     def _show_research_passport(self, summary: dict) -> None:
-        """Вставляет виджет «Паспорт исследования» под финальным ответом."""
+        """[UI-2024] Встраивает паспорт в конец пузыря ассистента."""
         from ui.chat.research_passport import ChatResearchPassport
 
+        if self._last_assistant_widget is None:
+            return
         try:
             widget = ChatResearchPassport(summary)
         except Exception as e:
             logger.warning(f"Не удалось построить паспорт исследования: {e}")
             return
-        self.scroll_layout.insertWidget(
-            self.scroll_layout.count() - 1,
-            widget,
-        )
+        self._last_assistant_widget._parts_layout.addWidget(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     # ------------------------------------------------------------------
@@ -445,7 +445,6 @@ class ResearchMixin:
             self._current_assistant_content = ""
             self._current_thinking_content = ""
             self._last_assistant_widget = None
-            self._current_thought_stream = None
             self._pending_final_answer = ""
             self._last_research_summary = None
             self._research_mode_active = False

@@ -550,6 +550,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._maybe_collapse_old_messages()
         return self._last_assistant_widget
 
+    def _reasoning_panel(self) -> ReasoningPanel | None:
+        """[UI-2024] Панель рассуждений текущего пузыря ассистента."""
+        if self._last_assistant_widget is None:
+            return None
+        return self._last_assistant_widget.reasoning_panel()
+
     def _show_activity(self, text: str) -> None:
         if not text:
             return
@@ -1018,7 +1024,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not self._show_reasoning:
             return
         self._current_thinking_content += token
-        # [UI-2024] reasoning идёт в панель пузыря, а не в отдельный ReasoningWidget.
+        # [UI-2024] reasoning идёт в ReasoningPanel пузыря.
         widget = self._ensure_assistant_widget()
         widget.reasoning_panel().append_thought_token(token)
         self.scroll_area.scroll_to_bottom_if_sticky()
@@ -2412,17 +2418,28 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
 
     @Slot(str, str, bool, object)
-    def _on_tool_executed(self, name, content, is_error, metadata=None):
-        """Обновляет tool-карточку результатом (✓/✗ + preview).
-        `metadata` (dict | None) — структурированные данные от
-        инструмента. Для `write_file` запускает diff-режим карточки.
-        """
+    def _on_tool_executed(
+        self,
+        name: str,
+        content: str,
+        is_error: bool,
+        metadata: dict | None = None,
+    ):
+        """[UI-2024] Результат — в ReasoningPanel и в tool-карточку."""
+        card_was_present = self._active_tool_card is not None
+
         self._current_assistant_parts.append(
-            ToolResultPart(call_id="", name=name, content=content or "", is_error=bool(is_error))
+            ToolResultPart(
+                call_id="",
+                name=name,
+                content=content or "",
+                is_error=bool(is_error),
+            )
         )
+
         self._set_activity_state("thinking")
 
-        # [UI-2024] Результат — в reasoning-панель (компактно) и в tool-карточку.
+        # [UI-2024] Результат — в ReasoningPanel (компактно) + в tool-карточку.
         widget = self._last_assistant_widget
         if widget is not None:
             preview = (content or "").strip().replace("\n", " ")[:200]
@@ -2432,8 +2449,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._active_tool_card.set_result(content or "", is_error, metadata)
             self._active_tool_card = None
 
-        if name in ("record_hypothesis", "update_hypothesis") and not is_error:
-            self._update_hypothesis_widget(content)
+        # Гипотезы — отдельный виджет внутри пузыря (как раньше).
+        if (
+            name in ("record_hypothesis", "update_hypothesis")
+            and not is_error
+            and self._update_hypothesis_widget(content)
+        ):
+            return
+
+        if not card_was_present and not self._research_mode_active:
+            self._add_tool_message(name, content, is_error)
 
     # ------------------------------------------------------------------
     # [9.6.1] Diff-карточка write_file — слоты
@@ -2564,28 +2589,21 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
-        """Карточка tool-call создаётся ДО выполнения инструмента.
-
-        В `AgentLoop` `on_tool_start` вызывается до `ask_first` (см. патч
-        `agents/agent_loop.py`), поэтому пользователь видит карточку с ⏳
-        одновременно с диалогом подтверждения. Результат придёт в ту же
-        карточку через `_on_tool_executed` → `set_result(...)`.
-
-        В research-режиме карточка тоже создаётся (в пузыре), а не только
-        в сером трейсе — это нужно для «▸ Показать полностью» на длинных
-        observation.
-        """
+        """[UI-2024] Всё в ОДИН пузырь: reasoning-панель + tool-карточка."""
         try:
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
             args = {}
+
+        # 0.1.3b: фиксируем вызов в буфере текущего ответа.
         self._current_assistant_parts.append(ToolCallPart(calls=[ToolCall(name=name, arguments=args)]))
 
         # [UI-2024] Всё в ОДИН пузырь: reasoning-панель + tool-карточка.
         widget = self._ensure_assistant_widget()
         widget.reasoning_panel().append_action(name, args)
 
-        # Кнопки Diff/Откатить — доработаем в 1.5.
+        self._set_activity_state("tool", name)
+
         card = widget.append_tool_call(name, arguments_json)
         self._active_tool_card = card
         if card is not None:
@@ -2594,7 +2612,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             card.show_diff_requested.connect(self._on_show_tool_diff)
             card.snapshot_undo_requested.connect(self._on_undo_file_snapshot)
 
-        self._set_activity_state("tool", name)
         # [UI-2024] НЕ сбрасываем _last_assistant_widget — иначе reasoning
         # и текст обрываются и уходят в новый пузырь.
 
@@ -2612,6 +2629,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str)
     def _on_status_event(self, text: str):
+        """[UI-2024] Статус — в ReasoningPanel пузыря ассистента."""
         if not text:
             return
         widget = self._ensure_assistant_widget()
@@ -3178,6 +3196,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             # выставит `_reset_send_button` → idle.
             if self._current_thought_stream is None:
                 self._show_activity("✅ Готово")
+
+        # [UI-2024] Паспорт показываем не только в research, но и в Agent/Plan,
+        # если есть evidence (файлы/гипотезы/поиски).
+        if (
+            self._last_research_summary is not None
+            and self._last_assistant_widget is not None
+            and self._should_show_passport(self._last_research_summary)
+        ):
+            self._show_research_passport(self._last_research_summary)
 
         self._reset_send_button()
         self._current_assistant_content = ""
