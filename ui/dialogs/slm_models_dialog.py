@@ -387,7 +387,7 @@ class SLMModelsDialog(QDialog):
         def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
             active = 0 if m.id == self.config.slm.selected_model else 1
             # [UI-2025] Битые — наравне с неустановленными.
-            status = get_file_status(m.file)
+            status = self._status_for(m)
             installed = 0 if status == "installed" else 1
             return (active, installed, m.display_name.lower())
 
@@ -446,7 +446,7 @@ class SLMModelsDialog(QDialog):
             self.table.setItem(row, 5, ctx_item)
 
             # 7. Статус
-            file_status = get_file_status(m.file)
+            file_status = self._status_for(m)
             if m.id == self._downloading_model_id():
                 pct = self._download_percent.get(m.id, 0)
                 status_str = f"⏬ Скачивание ({pct}%)" if pct > 0 else "⏬ Скачивается"
@@ -463,10 +463,27 @@ class SLMModelsDialog(QDialog):
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             tip_parts: list[str] = []
             if file_status == "broken":
-                tip_parts.append(
-                    "Файл есть, но его размер < 1 МБ. Скачивание прервалось.\n"
-                    "Нажмите «⬇️ Перекачать», чтобы удалить и скачать заново."
+                # Уточняем причину: маркер .partial или размер.
+                from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+
+                stem = m.file.removesuffix(".gguf")
+                is_split = _detect_parts_from_local(m.file, get_models_dir()) > 1
+                has_partial = (
+                    _partial_path_for_split(stem, get_models_dir()).exists()
+                    if is_split
+                    else _partial_path_for_file(get_models_dir() / m.file).exists()
                 )
+                if has_partial:
+                    tip_parts.append(
+                        "⏸ Скачивание прервано (маркер .partial на диске).\n"
+                        "Нажмите «⬇️ Перекачать» — скачивание продолжится "
+                        "с места обрыва."
+                    )
+                else:
+                    tip_parts.append(
+                        "Файл есть, но размер меньше ожидаемого (обрыв скачивания).\n"
+                        "Нажмите «⬇️ Перекачать», чтобы удалить и скачать заново."
+                    )
             if getattr(m, "last_verified_at", ""):
                 tip_parts.append(f"Последняя проверка: {m.last_verified_at}")
                 v_status = getattr(m, "verification_status", "")
@@ -529,6 +546,15 @@ class SLMModelsDialog(QDialog):
 
     # ---------- helpers ----------
 
+    @staticmethod
+    def _status_for(info: SLMModelInfo) -> str:
+        """[UI-2025] Статус модели с учётом заявленного размера.
+
+        Передаёт `declared_size_mb` в `get_file_status`, чтобы недокачанный
+        файл (обрыв на 15%) считался «битым», а не «установленным».
+        """
+        return get_file_status(info.file, declared_size_mb=info.size_mb)
+
     def _current_model_info(self) -> SLMModelInfo | None:
         row = self.table.currentRow()
         if row < 0:
@@ -556,7 +582,7 @@ class SLMModelsDialog(QDialog):
             self.activate_btn.setEnabled(False)
             return
 
-        file_status = get_file_status(info.file)
+        file_status = self._status_for(info)
         active = info.id == self.config.slm.selected_model
         in_queue = any(q.id == info.id for q in self._download_queue)
         is_downloading = downloading_id == info.id
@@ -571,12 +597,28 @@ class SLMModelsDialog(QDialog):
             self.download_btn.setText("✅ Установлена")
             self.download_btn.setEnabled(False)
         elif file_status == "broken":
-            # [UI-2025] Битый файл → перекачать.
-            self.download_btn.setText("⬇️ Перекачать")
-            self.download_btn.setEnabled(True)
-            self.download_btn.setToolTip(
-                "Файл < 1 МБ — скачивание прервалось. Удалить и скачать заново."
+            # [UI-2025] Если есть маркер .partial — resume, иначе перекачка.
+            from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+
+            stem = info.file.removesuffix(".gguf")
+            is_split = _detect_parts_from_local(info.file, get_models_dir()) > 1
+            has_partial = (
+                _partial_path_for_split(stem, get_models_dir()).exists()
+                if is_split
+                else _partial_path_for_file(get_models_dir() / info.file).exists()
             )
+            if has_partial:
+                self.download_btn.setText("▶ Продолжить")
+                self.download_btn.setToolTip(
+                    "Скачивание прервано. Продолжить с места обрыва (Range-запрос)."
+                )
+            else:
+                self.download_btn.setText("⬇️ Перекачать")
+                self.download_btn.setToolTip(
+                    "Размер файла меньше ожидаемого — скачивание прервалось.\n"
+                    "Удалить и скачать заново."
+                )
+            self.download_btn.setEnabled(True)
         else:
             self.download_btn.setText("⬇️ В очередь")
             self.download_btn.setEnabled(True)
@@ -743,24 +785,44 @@ class SLMModelsDialog(QDialog):
             self._populate()
             return
 
-        # [UI-2025] Если битый файл уже на диске — предупредим и удалим.
-        file_status = get_file_status(info.file)
+                # [UI-2025] Если битый файл на диске — предложим resume, если есть
+        # маркер .partial. Если маркера нет — удалить и скачать заново.
+        file_status = self._status_for(info)
         if file_status == "broken":
-            reply = QMessageBox.question(
-                self,
-                "Перекачать битый файл?",
-                f"Файл {info.file} есть, но его размер < 1 МБ — "
-                f"скачивание прервалось.\n\n"
-                f"Удалить и скачать заново?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+
+            stem = info.file.removesuffix(".gguf")
+            is_split = _detect_parts_from_local(info.file, get_models_dir()) > 1
+            has_partial = (
+                _partial_path_for_split(stem, get_models_dir()).exists()
+                if is_split
+                else _partial_path_for_file(get_models_dir() / info.file).exists()
             )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                delete_model(info.file, repo_id=info.repo)
-                logger.info(f"Битый файл {info.file} удалён перед перекачкой")
-            except Exception:
-                logger.debug(f"Не удалось удалить битый {info.file}", exc_info=True)
+            if has_partial:
+                reply = QMessageBox.question(
+                    self,
+                    "Продолжить скачивание?",
+                    f"Файл {info.file} недокачан. Продолжить с места обрыва?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                # НЕ удаляем файл — resume через Range.
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    "Перекачать битый файл?",
+                    f"Файл {info.file} есть, но размер меньше ожидаемого.\n\n"
+                    f"Удалить и скачать заново?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                try:
+                    delete_model(info.file, repo_id=info.repo)
+                    logger.info(f"Битый файл {info.file} удалён перед перекачкой")
+                except Exception:
+                    logger.debug(f"Не удалось удалить битый {info.file}", exc_info=True)
             self._download_percent.pop(info.id, None)
 
         # Иначе добавляем в очередь
@@ -862,7 +924,7 @@ class SLMModelsDialog(QDialog):
         info = self._current_model_info()
         if not info:
             return
-        file_status = get_file_status(info.file)
+        file_status = self._status_for(info)
         if file_status == "absent":
             return
         if info.id == self.config.slm.selected_model and file_status == "installed":

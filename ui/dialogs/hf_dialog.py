@@ -380,7 +380,8 @@ class HFDialog(QDialog):
             self.files_table.setItem(i, 1, QTableWidgetItem(f.size_human))
 
             # [UI-2025] Статус: ✅ уже скачана / ⚠️ битый / ⬇️ отсутствует.
-            status = get_file_status(f.filename)
+            # Передаём размер файла — чтобы недокачанный не считался «установленным».
+            status = get_file_status(f.filename, declared_size_mb=f.size_mb)
             if status == "installed":
                 status_item = QTableWidgetItem("✅ Скачана")
                 status_item.setForeground(QColor("#98c379"))
@@ -425,7 +426,7 @@ class HFDialog(QDialog):
         f = self._current_details.gguf_files[row]
 
         # [UI-2025] Подтверждение при перекачке.
-        status = get_file_status(f.filename)
+        status = get_file_status(f.filename, declared_size_mb=f.size_mb)
         if status == "installed":
             reply = QMessageBox.question(
                 self,

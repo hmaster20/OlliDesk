@@ -18,6 +18,12 @@ DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 # Если файл < 1 МБ — скачивание прервалось или файл повреждён.
 _MIN_MODEL_SIZE_BYTES = 1024 * 1024
 
+# [UI-2025] Маркер незавершённого скачивания. Создаётся перед стримом,
+# удаляется после успешной SHA256-проверки. Если процесс убили — маркер
+# останется, и `get_file_status` вернёт «broken» (а не «installed» для
+# случайно недокачанного файла).
+_PARTIAL_SUFFIX = ".partial"
+
 # Embedding-модель общая, не участвует в выборе chat-модели.
 EMBED_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 EMBED_MODEL_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -161,6 +167,14 @@ def get_models_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+def _partial_path_for_file(target: Path) -> Path:
+    """``<filename>.partial`` — маркер для цельной модели."""
+    return target.with_name(target.name + _PARTIAL_SUFFIX)
+
+
+def _partial_path_for_split(stem: str, target_dir: Path) -> Path:
+    """``<stem>.split.partial`` — маркер для split-модели."""
+    return target_dir / f"{stem}{_PARTIAL_SUFFIX.replace('.partial', '.split.partial')}"
 
 def _resolve_model_path(filename: str, target_dir: Path | None = None) -> Path | None:
     """Путь к модели: цельный файл или первая часть разбитой.
@@ -187,26 +201,67 @@ def _resolve_model_path(filename: str, target_dir: Path | None = None) -> Path |
 def get_file_status(
     filename: str,
     target_dir: Path | None = None,
+    *,
+    declared_size_mb: int = 0,
 ) -> str:
     """Статус файла модели: ``installed`` | ``broken`` | ``absent``.
 
-    * ``installed`` — файл есть и размер ≥ 1 МБ;
-    * ``broken`` — файл есть, но < 1 МБ (обрыв скачивания, 0-байтный);
+    * ``installed`` — файл есть, размер ≥ 1 МБ и ≥ 50% от заявленного
+      (если ``declared_size_mb`` задан), маркер ``.partial`` отсутствует;
+    * ``broken`` — файл есть, но:
+        * размер < 1 МБ (обрыв в начале);
+        * размер < 50% от ``declared_size_mb`` (обрыв в середине);
+        * маркер ``.partial`` присутствует (скачивание не завершено);
     * ``absent`` — файла нет.
 
+    Args:
+        filename: Имя файла модели (для split — первой части).
+        target_dir: Каталог моделей.
+        declared_size_mb: Ожидаемый размер из ``SLMModelInfo.size_mb``.
+            ``0`` — не проверять пропорцию (только ≥ 1 МБ).
+
     Не обращается к HuggingFace — проверка чисто локальная.
-    Для split-модели размер суммируется по всем частям (см.
-    `get_local_size_mb`).
     """
     target_dir = target_dir or get_models_dir()
+
+    # 1. Маркер незавершённого скачивания.
+    # Для split-модели проверяем `<stem>.split.partial`, для цельной —
+    # `<filename>.partial`.
     path = _resolve_model_path(filename, target_dir)
     if path is None:
+        # Даже если файла нет — маркер мог остаться после kill.
+        if _detect_parts_from_local(filename, target_dir) > 1:
+            stem = filename.removesuffix(".gguf")
+            if _partial_path_for_split(stem, target_dir).exists():
+                return "broken"
+        if _partial_path_for_file(target_dir / filename).exists():
+            return "broken"
         return "absent"
+
+    # 2. Проверка маркера для существующего файла.
+    is_split = _detect_parts_from_local(filename, target_dir) > 1
+    if is_split:
+        stem = filename.removesuffix(".gguf")
+        if _partial_path_for_split(stem, target_dir).exists():
+            return "broken"
+    else:
+        if _partial_path_for_file(path).exists():
+            return "broken"
+
+    # 3. Размер.
     try:
         size_mb = get_local_size_mb(filename, target_dir)
     except Exception:
         return "absent"
-    return "broken" if size_mb < 1 else "installed"
+
+    if size_mb < 1:
+        return "broken"
+
+    if declared_size_mb > 0 and size_mb < declared_size_mb * 0.5:
+        # Меньше половины заявленного — явный обрыв.
+        return "broken"
+
+    return "installed"
 
 def is_model_installed(
     filename: str,
@@ -531,15 +586,16 @@ def download_model_with_progress(
     Отличия от `download_model`:
       * отдаёт реальный процент через `progress_cb`;
       * resume: если файл частично скачан — докачивает через `Range`;
-      * для split-моделей эмитит прогресс по каждой части отдельно.
+      * для split-моделей эмитит прогресс по каждой части;
+      * создаёт маркер ``.partial`` перед стримом и удаляет его **только**
+        после успешной SHA256-проверки. Если процесс убили — маркер
+        останется, и `get_file_status` вернёт ``broken``.
 
     Args:
         repo_id: HF-репозиторий.
         filename: Имя файла (первой части для split).
         target_dir: Каталог моделей.
-        progress_cb: (percent 0-100, message). Для split-моделей percent
-            «сбрасывается» на каждой части — UI показывает общий прогресс
-            по частям (например, `часть 1/3 — 67%`).
+        progress_cb: (percent 0-100, message).
         verify_sha256: None → из конфига; True/False — явно.
 
     Returns:
@@ -557,42 +613,76 @@ def download_model_with_progress(
             verify_sha256 = True
 
     parts = get_model_parts(repo_id, filename)
+    stem = filename.removesuffix(".gguf")
 
     if parts > 1:
-        # Split: качаем по частям с прогрессом.
-        stem = filename.removesuffix(".gguf")
+        # Split-модель.
+        split_marker = _partial_path_for_split(stem, target_dir)
+        split_marker.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            split_marker.write_text("downloading", encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Не удалось создать маркер {split_marker}: {e}")
+
         first: Path | None = None
-        for i in range(1, parts + 1):
-            part_name = _split_part_name(stem, i, parts)
-            url = _hf_file_url(repo_id, part_name)
-            part_path = target_dir / part_name
+        try:
+            for i in range(1, parts + 1):
+                part_name = _split_part_name(stem, i, parts)
+                url = _hf_file_url(repo_id, part_name)
+                part_path = target_dir / part_name
 
-            def _part_cb(pct: int, msg: str, _i: int = i, _n: int = parts, _name: str = part_name) -> None:
-                if progress_cb is not None:
-                    progress_cb(pct, f"часть {_i}/{_n} ({_name}) — {msg}")
+                def _part_cb(
+                    pct: int,
+                    msg: str,
+                    _i: int = i,
+                    _n: int = parts,
+                    _name: str = part_name,
+                ) -> None:
+                    if progress_cb is not None:
+                        progress_cb(pct, f"часть {_i}/{_n} ({_name}) — {msg}")
 
-            _download_one_file(url, part_path, progress_cb=_part_cb)
-            try:
-                if part_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
-                    raise ValueError(
-                        f"Часть {part_name} слишком мала — скачивание прервалось"
-                    )
-            except OSError as e:
-                raise ValueError(f"Не удалось прочитать {part_name}: {e}") from e
-            if i == 1:
-                first = part_path
+                _download_one_file(url, part_path, progress_cb=_part_cb)
+                try:
+                    if part_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
+                        raise ValueError(
+                            f"Часть {part_name} слишком мала — скачивание прервалось"
+                        )
+                except OSError as e:
+                    raise ValueError(f"Не удалось прочитать {part_name}: {e}") from e
+                if i == 1:
+                    first = part_path
 
-        assert first is not None
-        logger.info(f"Split-модель готова: {first.name} (+ ещё {parts - 1} частей)")
-        return first
+            assert first is not None
+            logger.info(f"Split-модель готова: {first.name} (+ ещё {parts - 1} частей)")
+            # Удаляем маркер только после успеха.
+            with contextlib.suppress(OSError):
+                split_marker.unlink()
+            return first
+        except Exception:
+            # При ошибке маркер оставляем — `get_file_status` вернёт «broken».
+            raise
 
     # Цельный файл.
     url = _hf_file_url(repo_id, filename)
     target = target_dir / filename
-    _download_one_file(url, target, progress_cb=progress_cb)
+    file_marker = _partial_path_for_file(target)
+    file_marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        file_marker.write_text("downloading", encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Не удалось создать маркер {file_marker}: {e}")
 
-    # Финальная проверка целостности.
-    _verify_model_file(target, repo_id, filename, verify_sha256=verify_sha256)
+    try:
+        _download_one_file(url, target, progress_cb=progress_cb)
+        # Финальная проверка целостности. При ошибке маркер НЕ удаляем —
+        # `get_file_status` вернёт «broken», пользователь перекачает.
+        _verify_model_file(target, repo_id, filename, verify_sha256=verify_sha256)
+    except Exception:
+        raise
+
+    # Успех — убираем маркер.
+    with contextlib.suppress(OSError):
+        file_marker.unlink()
     logger.info(f"Модель сохранена: {target}")
     return target
 
@@ -688,22 +778,33 @@ def download_model(
 
     from huggingface_hub import hf_hub_download
 
-    logger.info(f"Скачивание {filename} из {repo_id}...")
-    downloaded = hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        local_dir=str(target_dir),
-    )
-    downloaded_path = Path(downloaded)
+    # [UI-2025] Маркер .partial — как в download_model_with_progress.
+    file_marker = _partial_path_for_file(target_path)
+    try:
+        file_marker.parent.mkdir(parents=True, exist_ok=True)
+        file_marker.write_text("downloading", encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Не удалось создать маркер {file_marker}: {e}")
 
-    # [UI-2025] Проверка целостности после скачивания.
-    _verify_model_file(
-        downloaded_path,
-        repo_id,
-        filename,
-        verify_sha256=verify_sha256,
-    )
+    try:
+        logger.info(f"Скачивание {filename} из {repo_id}...")
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(target_dir),
+        )
+        downloaded_path = Path(downloaded)
+        _verify_model_file(
+            downloaded_path,
+            repo_id,
+            filename,
+            verify_sha256=verify_sha256,
+        )
+    except Exception:
+        raise
 
+    with contextlib.suppress(OSError):
+        file_marker.unlink()
     logger.info(f"Модель сохранена: {downloaded_path}")
     return downloaded_path
 
