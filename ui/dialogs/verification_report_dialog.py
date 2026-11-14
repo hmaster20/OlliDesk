@@ -113,8 +113,7 @@ class VerificationReportDialog(QDialog):
             )
             hint.setWordWrap(True)
             hint.setStyleSheet(
-                "color: #e5c07b; background: rgba(229,192,123,0.1);"
-                " padding: 6px 10px; border-radius: 4px;"
+                "color: #e5c07b; background: rgba(229,192,123,0.1); padding: 6px 10px; border-radius: 4px;"
             )
             layout.addWidget(hint)
 
@@ -148,8 +147,7 @@ class VerificationReportDialog(QDialog):
         self.redownload_btn = QPushButton(f"📥 Перекачать битые ({len(redownload)})")
         self.redownload_btn.setEnabled(bool(redownload))
         self.redownload_btn.setToolTip(
-            "Удалить битые файлы (размер < 1 МБ или SHA256 не совпал) "
-            "и поставить их в очередь скачивания."
+            "Удалить битые файлы (размер < 1 МБ или SHA256 не совпал) и поставить их в очередь скачивания."
         )
         self.redownload_btn.clicked.connect(self._on_redownload)
         buttons_row.addWidget(self.redownload_btn)

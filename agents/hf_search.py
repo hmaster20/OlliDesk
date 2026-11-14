@@ -224,7 +224,9 @@ async def search_models(
 
     if models:
         logger.info(f"hf_search: '{query}' → {len(models)} моделей за {duration_ms} ms")
-        emit_event_safe("hf.search.found", {"query": query, "n_results": len(models), "duration_ms": duration_ms})
+        emit_event_safe(
+            "hf.search.found", {"query": query, "n_results": len(models), "duration_ms": duration_ms}
+        )
     else:
         logger.warning(f"hf_search: по запросу '{query}' ничего не найдено")
         emit_event_safe("hf.search.empty", {"query": query, "duration_ms": duration_ms})

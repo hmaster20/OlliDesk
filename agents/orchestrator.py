@@ -171,7 +171,11 @@ class Orchestrator:
 
                 # Передаем on_token и в регенерацию
                 prose2 = await self._gen(
-                    analyst, Role.ANALYST, OpType.REGEN, synth_prompt + "\n\nИСПРАВЬ: " + fix, on_token=on_token
+                    analyst,
+                    Role.ANALYST,
+                    OpType.REGEN,
+                    synth_prompt + "\n\nИСПРАВЬ: " + fix,
+                    on_token=on_token,
                 )
                 answer2 = self._merge(prose2, diagram)
                 ver2 = verify(
@@ -372,12 +376,13 @@ class Orchestrator:
         # [FIX] Принудительно читаем все файлы из корня проекта,
         # чтобы 7B не думала, что проект состоит из одного app.py
         import os
+
         root = Path(intel.root)
         for f in os.listdir(root):
             fp = root / f
             if fp.is_file() and f.endswith((".py", ".md", ".txt")):
                 if f in (intel.entry_points or []):
-                    continue # уже прочитано
+                    continue  # уже прочитано
                 ex = self._read_excerpt(fp, lines=(1, 60))
                 evidence.put(
                     EvidenceItem(
@@ -449,7 +454,7 @@ class Orchestrator:
         role: Role,
         op: OpType,
         prompt: str,
-        on_token: Callable[[str], Awaitable[None]] | None = None, # <-- ДОБАВИТЬ
+        on_token: Callable[[str], Awaitable[None]] | None = None,  # <-- ДОБАВИТЬ
     ) -> str:
         ctx = self.pool.runtime_ctx(role)
         bp = plan_budget(
@@ -471,6 +476,7 @@ class Orchestrator:
 
         # [FIX] Используем stream=True для стриминга в UI
         from agents.ollama_client import ChatMessage
+
         messages = [ChatMessage(role="user", content=trimmed)]
 
         res_parts: list[str] = []

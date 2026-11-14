@@ -323,6 +323,7 @@ def _mermaid(
 
     return "\n".join(lines)
 
+
 def _mid(nid: str) -> str:
     import hashlib
 

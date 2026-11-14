@@ -387,10 +387,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "n_ctx": 32768,
         "tags": ["chat", "reasoning"],
         "is_thinking": True,
-        "description": (
-            "14B Qwen 3 — только CPU на T1200, ~1–2 tok/s. "
-            "Reasoning заметно глубже 8B."
-        ),
+        "description": ("14B Qwen 3 — только CPU на T1200, ~1–2 tok/s. Reasoning заметно глубже 8B."),
         "recommended_profile": "research",
     },
     {

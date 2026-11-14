@@ -393,8 +393,7 @@ class HFDialog(QDialog):
                 status_item = QTableWidgetItem("⚠️ Битый")
                 status_item.setForeground(QColor("#e5c07b"))
                 status_item.setToolTip(
-                    "Файл есть, но размер < 1 МБ. Скачивание прервалось. "
-                    "Перекачайте, чтобы восстановить."
+                    "Файл есть, но размер < 1 МБ. Скачивание прервалось. Перекачайте, чтобы восстановить."
                 )
             else:
                 status_item = QTableWidgetItem("⬇️ Нет")
@@ -441,9 +440,7 @@ class HFDialog(QDialog):
             reply = QMessageBox.question(
                 self,
                 "Битый файл",
-                f"Файл {f.filename} есть, но размер < 1 МБ — "
-                f"вероятно, скачивание прервалось.\n\n"
-                f"Перекачать?",
+                f"Файл {f.filename} есть, но размер < 1 МБ — вероятно, скачивание прервалось.\n\nПерекачать?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -469,7 +466,9 @@ class HFDialog(QDialog):
         if row < 0 or row >= len(self._current_details.gguf_files):
             row = 0
         f = self._current_details.gguf_files[row]
-        tags = detect_tags(self._current_details.tags, self._current_details.pipeline_tag, self._current_details.repo_id)
+        tags = detect_tags(
+            self._current_details.tags, self._current_details.pipeline_tag, self._current_details.repo_id
+        )
         payload = {
             "repo_id": self._current_details.repo_id,
             "filename": f.filename,

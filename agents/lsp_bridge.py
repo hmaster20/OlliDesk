@@ -312,7 +312,6 @@ class _LspClient:
             )
         return result
 
-
     async def stop(self) -> None:
         """Graceful shutdown → SIGTERM → SIGKILL."""
         if self._initialized and self.process is not None:
@@ -402,7 +401,7 @@ class LspBridge:
         *,
         language: str | None = None,
         timeout_s: float = 5.0,
-        ) -> list[dict]:
+    ) -> list[dict]:
         """Возвращает LSP-диагностику файла (10.8).
 
         Args:
@@ -440,7 +439,7 @@ class LspBridge:
         *,
         language: str | None = None,
         timeout_s: float = 5.0,
-        ) -> list[dict]:
+    ) -> list[dict]:
         """Sync-обёртка `diagnostics_async` — для инструментов.
 
         Создаёт новый event loop, если вызов идёт из sync-контекста
@@ -526,8 +525,11 @@ class LspBridge:
             if getattr(self.policy, "allow_lsp_download", False):
                 logger.info(f"LSP {language}: сервер не найден, пробую установить...")
                 import asyncio
+
                 # Запускаем в отдельном потоке, чтобы не блокировать event loop
-                installed = await asyncio.to_thread(self.ensure_installed, language, interactive_confirm=False)
+                installed = await asyncio.to_thread(
+                    self.ensure_installed, language, interactive_confirm=False
+                )
                 if not installed:
                     return None
             else:

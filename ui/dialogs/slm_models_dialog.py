@@ -66,6 +66,7 @@ def _register_download(thread: QThread) -> None:
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """Кастомный элемент таблицы для правильной числовой сортировки."""
+
     def __init__(self, text: str, sort_value: Any):
         super().__init__(text)
         self.sort_value = sort_value
@@ -98,15 +99,14 @@ class _DownloadThread(QThread):
 
     def run(self):
         try:
+
             def cb(pct: int, msg: str) -> None:
                 # Логируем в консоль (виден в терминале).
                 logger.info(f"Download {self.info.id}: {pct}% — {msg}")
                 self.progress_percent.emit(self.info.id, pct)
                 self.progress_message.emit(self.info.id, msg)
 
-            self.progress_message.emit(
-                self.info.id, f"Скачивание {self.info.file}…"
-            )
+            self.progress_message.emit(self.info.id, f"Скачивание {self.info.file}…")
             from agents.download_slm import download_model_with_progress
 
             download_model_with_progress(
@@ -120,6 +120,7 @@ class _DownloadThread(QThread):
             logger.exception(f"Ошибка скачивания {self.info.id}")
             self.error.emit(self.info.id, str(e))
             self.sig_finished.emit(self.info.id, False)
+
 
 class _VerifyAllThread(QThread):
     """Фоновая проверка всех моделей (Этап 3.1).
@@ -181,18 +182,21 @@ class _VerifyAllThread(QThread):
                     # Быстрая проверка: размер прошёл, SHA не считали.
                     status = "size_ok"
 
-                rows.append(VerificationRow(
-                    model=m,
-                    status=status,
-                    size_mb=size_mb,
-                    expected_sha=expected_sha,
-                    actual_sha=actual_sha,
-                    error=error,
-                ))
+                rows.append(
+                    VerificationRow(
+                        model=m,
+                        status=status,
+                        size_mb=size_mb,
+                        expected_sha=expected_sha,
+                        actual_sha=actual_sha,
+                        error=error,
+                    )
+                )
             self.finished.emit(rows)
         except Exception as e:
             logger.exception("_VerifyAllThread failed")
             self.error.emit(str(e))
+
 
 class SLMModelsDialog(QDialog):
     """Диалог выбора и управления локальными SLM-моделями.
@@ -267,7 +271,17 @@ class SLMModelsDialog(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
-            ["Модель", "Издатель", "Параметры", "Квант", "Размер предв.", "Контекст", "Статус", "Активна", "На диске"]
+            [
+                "Модель",
+                "Издатель",
+                "Параметры",
+                "Квант",
+                "Размер предв.",
+                "Контекст",
+                "Статус",
+                "Активна",
+                "На диске",
+            ]
         )
         # [UI-2025] Все столбцы — регулируемые мышкой (Interactive).
         # Последний растягивается при расширении окна.
@@ -356,9 +370,7 @@ class SLMModelsDialog(QDialog):
         btn_layout.addStretch()
 
         self.fit_btn = QPushButton("↔ Авто-ширина")
-        self.fit_btn.setToolTip(
-            "Подогнать ширину всех столбцов под содержимое (потом можно двигать мышкой)."
-        )
+        self.fit_btn.setToolTip("Подогнать ширину всех столбцов под содержимое (потом можно двигать мышкой).")
         self.fit_btn.clicked.connect(self._on_fit_columns)
         btn_layout.addWidget(self.fit_btn)
 
@@ -375,6 +387,7 @@ class SLMModelsDialog(QDialog):
         for col, max_w in ((0, 380), (1, 260)):
             if self.table.columnWidth(col) > max_w:
                 self.table.setColumnWidth(col, max_w)
+
     def _populate(self):
         """Заполняет таблицу с учетом статусов скачивания и очереди."""
         self.table.setSortingEnabled(False)
@@ -525,7 +538,9 @@ class SLMModelsDialog(QDialog):
         # Embed-модель
         embed_file = self.config.slm.embed_model_file
         embed_installed = is_model_installed(embed_file)
-        self.embed_label.setText(f"📎 {embed_file} — {'✅ установлена' if embed_installed else '⬇️ не скачана'}")
+        self.embed_label.setText(
+            f"📎 {embed_file} — {'✅ установлена' if embed_installed else '⬇️ не скачана'}"
+        )
 
         self._update_buttons()
 
@@ -615,14 +630,11 @@ class SLMModelsDialog(QDialog):
             )
             if has_partial:
                 self.download_btn.setText("▶ Продолжить")
-                self.download_btn.setToolTip(
-                    "Скачивание прервано. Продолжить с места обрыва (Range-запрос)."
-                )
+                self.download_btn.setToolTip("Скачивание прервано. Продолжить с места обрыва (Range-запрос).")
             else:
                 self.download_btn.setText("⬇️ Перекачать")
                 self.download_btn.setToolTip(
-                    "Размер файла меньше ожидаемого — скачивание прервалось.\n"
-                    "Удалить и скачать заново."
+                    "Размер файла меньше ожидаемого — скачивание прервалось.\nУдалить и скачать заново."
                 )
             self.download_btn.setEnabled(True)
         else:
@@ -632,30 +644,22 @@ class SLMModelsDialog(QDialog):
 
         # [UI-2025] Битые тоже можно удалить (чтобы почистить).
         self.delete_btn.setEnabled(
-            (file_status in ("installed", "broken"))
-            and not active
-            and not is_downloading
-            and not in_queue
+            (file_status in ("installed", "broken")) and not active and not is_downloading and not in_queue
         )
         self.activate_btn.setEnabled(file_status == "installed" and not active)
 
     def _on_verify_all_clicked(self) -> None:
         """Спрашивает режим и запускает проверку."""
         if self._verify_thread is not None and self._verify_thread.isRunning():
-            QMessageBox.information(
-                self, "Проверка идёт", "Проверка уже выполняется — дождитесь завершения."
-            )
+            QMessageBox.information(self, "Проверка идёт", "Проверка уже выполняется — дождитесь завершения.")
             return
 
         # Модели для проверки: только те, что есть на диске (installed/broken).
         candidates = [
-            m for m in self.config.slm.get_chat_models()
-            if get_file_status(m.file) in ("installed", "broken")
+            m for m in self.config.slm.get_chat_models() if get_file_status(m.file) in ("installed", "broken")
         ]
         if not candidates:
-            QMessageBox.information(
-                self, "Нечего проверять", "Нет скачанных моделей для проверки."
-            )
+            QMessageBox.information(self, "Нечего проверять", "Нет скачанных моделей для проверки.")
             return
 
         # Меню выбора режима.
@@ -792,7 +796,7 @@ class SLMModelsDialog(QDialog):
             self._populate()
             return
 
-                # [UI-2025] Если битый файл на диске — предложим resume, если есть
+            # [UI-2025] Если битый файл на диске — предложим resume, если есть
         # маркер .partial. Если маркера нет — удалить и скачать заново.
         file_status = self._status_for(info)
         if file_status == "broken":
@@ -823,8 +827,7 @@ class SLMModelsDialog(QDialog):
                 reply = QMessageBox.question(
                     self,
                     "Перекачать битый файл?",
-                    f"Файл {info.file} есть, но размер меньше ожидаемого.\n\n"
-                    f"Удалить и скачать заново?",
+                    f"Файл {info.file} есть, но размер меньше ожидаемого.\n\nУдалить и скачать заново?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
@@ -1011,7 +1014,9 @@ class SLMModelsDialog(QDialog):
         if not repo_id or not filename:
             return
 
-        base_id = re.sub(r"[^a-z0-9._-]+", "-", filename.removesuffix(".gguf").lower()).strip("-") or "custom-model"
+        base_id = (
+            re.sub(r"[^a-z0-9._-]+", "-", filename.removesuffix(".gguf").lower()).strip("-") or "custom-model"
+        )
         model_id = base_id
         suffix = 2
         while self.config.slm.get_model_by_id(model_id) is not None:
@@ -1024,9 +1029,13 @@ class SLMModelsDialog(QDialog):
         is_thinking = "thinking" in tags or "reasoning" in tags
 
         info = SLMModelInfo(
-            id=model_id, repo=repo_id, file=filename,
+            id=model_id,
+            repo=repo_id,
+            file=filename,
             display_name=str(payload.get("display_name") or filename.removesuffix(".gguf")),
-            size_mb=int(payload.get("size_mb") or 0), kind="chat", n_ctx=0,
+            size_mb=int(payload.get("size_mb") or 0),
+            kind="chat",
+            n_ctx=0,
             tags=tags,
             description=str(payload.get("description") or "")[:500],
             is_thinking=is_thinking,
@@ -1055,10 +1064,15 @@ class SLMModelsDialog(QDialog):
             return
 
         # 1. Проверяем, есть ли уже в каталоге.
-        existing = next((m for m in self.config.slm.available_models if m.repo == repo_id and m.file == filename), None)
+        existing = next(
+            (m for m in self.config.slm.available_models if m.repo == repo_id and m.file == filename), None
+        )
         if existing is None:
             self._on_hf_add_to_catalog(payload)
-            existing = next((m for m in self.config.slm.available_models if m.repo == repo_id and m.file == filename), None)
+            existing = next(
+                (m for m in self.config.slm.available_models if m.repo == repo_id and m.file == filename),
+                None,
+            )
 
         if existing is None:
             return
@@ -1085,20 +1099,27 @@ class SLMModelsDialog(QDialog):
         с get_model_paths.
         """
         repo, ok = QInputDialog.getText(self, "Своя модель", "HF-репозиторий:")
-        if not ok or not repo.strip(): return
+        if not ok or not repo.strip():
+            return
         file, ok = QInputDialog.getText(self, "Своя модель", "Имя файла (.gguf):")
-        if not ok or not file.strip() or not file.lower().endswith(".gguf"): return
+        if not ok or not file.strip() or not file.lower().endswith(".gguf"):
+            return
         display_name, ok = QInputDialog.getText(self, "Своя модель", "Имя:", text=file.removesuffix(".gguf"))
-        if not ok or not display_name.strip(): return
+        if not ok or not display_name.strip():
+            return
 
-        base_id = re.sub(r"[^a-z0-9._-]+", "-", file.removesuffix(".gguf").lower()).strip("-") or "custom-model"
+        base_id = (
+            re.sub(r"[^a-z0-9._-]+", "-", file.removesuffix(".gguf").lower()).strip("-") or "custom-model"
+        )
         model_id = base_id
         suffix = 2
         while self.config.slm.get_model_by_id(model_id) is not None:
             model_id = f"{base_id}-{suffix}"
             suffix += 1
 
-        new_info = SLMModelInfo(id=model_id, repo=repo.strip(), file=file.strip(), display_name=display_name.strip(), kind="chat")
+        new_info = SLMModelInfo(
+            id=model_id, repo=repo.strip(), file=file.strip(), display_name=display_name.strip(), kind="chat"
+        )
         self.config.slm.available_models.append(new_info)
         save_config(self.config)
         save_slm_models(self.config.slm.available_models)

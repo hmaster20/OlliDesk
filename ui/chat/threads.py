@@ -307,12 +307,14 @@ class AgentChatThread(QThread):
             # [2.10] Финальный сигнал с причиной остановки.
             _iterations = _budget.iteration_count if _budget is not None else 0
             _elapsed = round(_budget.elapsed(), 1) if _budget is not None else 0.0
-            self.agent_finished.emit({
-                "finish_reason": loop.last_finish_reason,
-                "budget": loop.last_budget_snapshot,
-                "iterations": _iterations,
-                "elapsed_s": _elapsed,
-            })
+            self.agent_finished.emit(
+                {
+                    "finish_reason": loop.last_finish_reason,
+                    "budget": loop.last_budget_snapshot,
+                    "iterations": _iterations,
+                    "elapsed_s": _elapsed,
+                }
+            )
             return result, loop
 
         try:
@@ -402,7 +404,7 @@ class AgentChatThread(QThread):
             on_event=_on_event,
             quality_mode=False,
             time_budget_s=ORCHESTRATOR_TIME_BUDGET_S,
-            on_token=_on_token, # <-- ПЕРЕДАЕМ СЮДА
+            on_token=_on_token,  # <-- ПЕРЕДАЕМ СЮДА
         )
 
         # ВАЖНО: Теперь мы НЕ делаем self.chunk_received.emit(result.answer),
@@ -872,7 +874,9 @@ class _ModelPoolLoadThread(QThread):
 
                         # [FIX] Если упал Planner или Router — пробуем загрузить базовую 3B
                         if role in (Role.PLANNER, Role.ROUTER):
-                            self.progress.emit(f"⚠️ Ошибка {role.value}. Пробую fallback: qwen2.5-3b-instruct-q4_k_m")
+                            self.progress.emit(
+                                f"⚠️ Ошибка {role.value}. Пробую fallback: qwen2.5-3b-instruct-q4_k_m"
+                            )
                             from agents.download_slm import get_model_path
                             from agents.slm_optimizer import optimize
 

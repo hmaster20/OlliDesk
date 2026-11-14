@@ -992,6 +992,7 @@ class AgentLoop:
         # [FIX] Очистка от JSON-вызовов, если слабая модель зациклилась
         if final_text:
             import re
+
             # Удаляем блоки ```json ... ```
             final_text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", final_text, flags=re.DOTALL)
             # Удаляем инлайн JSON объекты

@@ -321,7 +321,8 @@ def select_park(
         # ради чего мы весь этот этап и делали.
         thinking_pool = sorted(
             [
-                f for f in fits
+                f
+                for f in fits
                 if "reasoning" in f.info.tags
                 and 2 <= f.info.tier <= 3
                 and f.fits_ram

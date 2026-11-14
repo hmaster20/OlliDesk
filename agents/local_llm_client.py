@@ -65,6 +65,7 @@ _FORMAT_INSTRUCTION = (
     "блоках ```язык. Не используй LaTeX ($$, \\( \\)) и HTML-теги."
 )
 
+
 class _ThinkParser:
     """Потоковый парсер `<think>...</think>` для thinking-моделей.
 
@@ -118,7 +119,7 @@ class _ThinkParser:
                     break
                 if idx > 0:
                     out.append(("text", self._buf[:idx]))
-                self._buf = self._buf[idx + len(self.OPEN):]
+                self._buf = self._buf[idx + len(self.OPEN) :]
                 self._in_think = True
             else:
                 idx = self._buf.find(self.CLOSE)
@@ -134,7 +135,7 @@ class _ThinkParser:
                     break
                 if idx > 0:
                     out.append(("think", self._buf[:idx]))
-                self._buf = self._buf[idx + len(self.CLOSE):]
+                self._buf = self._buf[idx + len(self.CLOSE) :]
                 self._in_think = False
         return out
 
@@ -146,6 +147,7 @@ class _ThinkParser:
         rest = self._buf
         self._buf = ""
         return [(kind, rest)]
+
 
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
@@ -289,7 +291,7 @@ class LocalLLMClient:
         stream: bool = True,
         op_type: str | None = None,
         **kwargs: Any,
-        ) -> AsyncIterator[ChatChunk]:
+    ) -> AsyncIterator[ChatChunk]:
         """Генерирует ответ через llama.cpp с построчным стримингом."""
         self.reset_cancel()
 
@@ -378,25 +380,31 @@ class LocalLLMClient:
                                     continue
                                 if kind == "think":
                                     reasoning_parts.append(piece)
-                                    _safe_put(ChatChunk(
-                                        part=ReasoningPart(text=piece),
-                                        event_type="delta",
-                                        done=False,
-                                    ))
+                                    _safe_put(
+                                        ChatChunk(
+                                            part=ReasoningPart(text=piece),
+                                            event_type="delta",
+                                            done=False,
+                                        )
+                                    )
                                 else:
                                     full_text_parts.append(piece)
-                                    _safe_put(ChatChunk(
-                                        part=TextPart(text=piece),
-                                        event_type="delta",
-                                        done=False,
-                                    ))
+                                    _safe_put(
+                                        ChatChunk(
+                                            part=TextPart(text=piece),
+                                            event_type="delta",
+                                            done=False,
+                                        )
+                                    )
                         else:
                             full_text_parts.append(raw)
-                            _safe_put(ChatChunk(
-                                part=TextPart(text=raw),
-                                event_type="delta",
-                                done=False,
-                            ))
+                            _safe_put(
+                                ChatChunk(
+                                    part=TextPart(text=raw),
+                                    event_type="delta",
+                                    done=False,
+                                )
+                            )
 
                     # [UI-2025] Хвост парсера — если модель не закрыла <think>
                     # (обрезалась по max_tokens) или не закончила слово.
@@ -406,18 +414,22 @@ class LocalLLMClient:
                                 continue
                             if kind == "think":
                                 reasoning_parts.append(piece)
-                                _safe_put(ChatChunk(
-                                    part=ReasoningPart(text=piece),
-                                    event_type="delta",
-                                    done=False,
-                                ))
+                                _safe_put(
+                                    ChatChunk(
+                                        part=ReasoningPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    )
+                                )
                             else:
                                 full_text_parts.append(piece)
-                                _safe_put(ChatChunk(
-                                    part=TextPart(text=piece),
-                                    event_type="delta",
-                                    done=False,
-                                ))
+                                _safe_put(
+                                    ChatChunk(
+                                        part=TextPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    )
+                                )
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 # [4.2] Метрики prefix caching.

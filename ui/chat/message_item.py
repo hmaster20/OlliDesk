@@ -1786,6 +1786,7 @@ class ChatMessageItem(QWidget):
             QApplication.clipboard().setText("\n\n".join(parts))
             logger.debug(f"Скопировано в буфер: {sum(len(p) for p in parts)} символов")
 
+
 # ============================================================================
 # ChatDiagramItem: диаграмма компонентов (ASCII + опциональный Mermaid)
 # ============================================================================

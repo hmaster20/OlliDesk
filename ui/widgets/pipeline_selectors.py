@@ -113,6 +113,7 @@ class PipelineSelectors(QWidget):
     def update_from_pool(self, pool) -> None:
         """Синхронизирует селекторы с реально загруженными моделями в ModelPool."""
         from agents.model_pool import Role
+
         try:
             p_spec = pool.spec(Role.PLANNER)
             a_spec = pool.spec(Role.ANALYST)
@@ -407,20 +408,27 @@ class PipelineSelectors(QWidget):
         # [FIX] Защита от выбора недокачанной/битой модели
         if model_id:
             from agents.download_slm import get_model_path, is_model_installed
+
             info = self._config.slm.get_model_by_id(model_id)
             if info and not is_model_installed(info.file):
-                QMessageBox.warning(self, "Модель не скачана",
+                QMessageBox.warning(
+                    self,
+                    "Модель не скачана",
                     f"Модель {info.display_name} не найдена или повреждена.\n"
-                    f"Скачайте её через меню «...» или выберите другую.")
+                    f"Скачайте её через меню «...» или выберите другую.",
+                )
                 self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
                 return
             # Проверка размера (если файл < 1 МБ, он точно битый)
             if info:
                 path = get_model_path(info.file)
                 if path and path.exists() and path.stat().st_size < 1024 * 1024:
-                    QMessageBox.warning(self, "Файл поврежден",
+                    QMessageBox.warning(
+                        self,
+                        "Файл поврежден",
                         f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
-                        f"Удалите его и скачайте заново.")
+                        f"Удалите его и скачайте заново.",
+                    )
                     self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
                     return
 
@@ -437,6 +445,7 @@ class PipelineSelectors(QWidget):
             from pathlib import Path
 
             from state.project_settings import ProjectSettings
+
             s = ProjectSettings.load(Path(self._project_path))
             s.planner_model_id = model_id
             s.save(Path(self._project_path))
@@ -453,19 +462,26 @@ class PipelineSelectors(QWidget):
         # [FIX] Защита от выбора недокачанной/битой модели
         if model_id:
             from agents.download_slm import get_model_path, is_model_installed
+
             info = self._config.slm.get_model_by_id(model_id)
             if info and not is_model_installed(info.file):
-                QMessageBox.warning(self, "Модель не скачана",
+                QMessageBox.warning(
+                    self,
+                    "Модель не скачана",
                     f"Модель {info.display_name} не найдена или повреждена.\n"
-                    f"Скачайте её через меню «...» или выберите другую.")
+                    f"Скачайте её через меню «...» или выберите другую.",
+                )
                 self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
                 return
             if info:
                 path = get_model_path(info.file)
                 if path and path.exists() and path.stat().st_size < 1024 * 1024:
-                    QMessageBox.warning(self, "Файл поврежден",
+                    QMessageBox.warning(
+                        self,
+                        "Файл поврежден",
                         f"Файл {info.file} слишком мал. Вероятно, скачивание прервалось.\n"
-                        f"Удалите его и скачайте заново.")
+                        f"Удалите его и скачайте заново.",
+                    )
                     self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
                     return
 
@@ -482,6 +498,7 @@ class PipelineSelectors(QWidget):
             from pathlib import Path
 
             from state.project_settings import ProjectSettings
+
             s = ProjectSettings.load(Path(self._project_path))
             s.analyst_model_id = model_id
             s.save(Path(self._project_path))

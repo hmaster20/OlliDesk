@@ -116,9 +116,7 @@ class ResearchMixin:
         buf = panel._current_thought_buffer
         if len(buf) >= 40 and looks_like_ascii_junk(buf):
             panel._current_thought_buffer = ""
-            panel.append_nudge(
-                "⚙️ Резервный сбор данных (модель не вызвала инструмент)"
-            )
+            panel.append_nudge("⚙️ Резервный сбор данных (модель не вызвала инструмент)")
 
         QTimer.singleShot(0, self._scroll_to_bottom)
 
@@ -457,6 +455,7 @@ class ResearchMixin:
                 spec = self._model_pool.spec(role)
                 # Ищем размер модели в ID (например, qwen2.5-14b-instruct-q4_k_m -> 14B)
                 import re
+
                 match = re.search(r'(\d+(?:\.\d+)?[bBmM])', spec.model_id)
                 size = f" {match.group(1).upper()}" if match else ""
                 role_ru = "Planner" if role == Role.PLANNER else "Analyst"
@@ -477,7 +476,9 @@ class ResearchMixin:
             task = data.get("task", "?")
             files = data.get("files", 0)
             deep = data.get("deep", False)
-            self.status_label.setText(f"📋 {planner_name}: План [{task}], файлов={files}" + (" (deep)" if deep else ""))
+            self.status_label.setText(
+                f"📋 {planner_name}: План [{task}], файлов={files}" + (" (deep)" if deep else "")
+            )
         elif kind == "coverage":
             val = float(data.get("value", 0.0))
             self.status_label.setText(f"📊 Покрытие: {val:.0%}")

@@ -1437,7 +1437,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
                 if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
                     self.input_edit.setStyleSheet(...)
-                    event.acceptProposedAction()   # ← теперь тип известен
+                    event.acceptProposedAction()  # ← теперь тип известен
                     return True
 
             elif event.type() == QEvent.Type.Drop:
@@ -2500,7 +2500,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         target = Path(path)
         if is_new_file and target.exists():
             reply = QMessageBox.question(
-                self, "Откат создания файла",
+                self,
+                "Откат создания файла",
                 f"Удалить созданный агентом файл?\n\n{path}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
@@ -2519,6 +2520,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if snapshot_id:
             try:
                 from tools.git_ops import restore_snapshot
+
                 restored = restore_snapshot(snapshot_id)
                 self.status_label.setText(f"↩ Восстановлено из снапшота: {len(restored)} файл(ов)")
                 logger.info(f"revert write_file: snapshot {snapshot_id} → {restored}")
@@ -2529,7 +2531,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 # продолжаем — fallback ниже
 
         reply = QMessageBox.question(
-            self, "Откат изменений",
+            self,
+            "Откат изменений",
             f"Восстановить предыдущее содержимое?\n\n{path}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -4622,6 +4625,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._last_assistant_widget is None:
             return
         from ui.chat.research_passport import ChatResearchPassport
+
         try:
             widget = ChatResearchPassport(summary)
         except Exception as e:

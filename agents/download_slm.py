@@ -168,6 +168,7 @@ def get_models_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+
 def _partial_path_for_file(target: Path) -> Path:
     """``<filename>.partial`` — маркер для цельной модели."""
     return target.with_name(target.name + _PARTIAL_SUFFIX)
@@ -176,6 +177,7 @@ def _partial_path_for_file(target: Path) -> Path:
 def _partial_path_for_split(stem: str, target_dir: Path) -> Path:
     """``<stem>.split.partial`` — маркер для split-модели."""
     return target_dir / f"{stem}{_PARTIAL_SUFFIX.replace('.partial', '.split.partial')}"
+
 
 def _resolve_model_path(filename: str, target_dir: Path | None = None) -> Path | None:
     """Путь к модели: цельный файл или первая часть разбитой.
@@ -198,6 +200,7 @@ def _resolve_model_path(filename: str, target_dir: Path | None = None) -> Path |
     if merged.exists():
         return merged
     return None
+
 
 def get_file_status(
     filename: str,
@@ -264,6 +267,7 @@ def get_file_status(
 
     return "installed"
 
+
 def is_model_installed(
     filename: str,
     target_dir: Path | None = None,
@@ -276,6 +280,8 @@ def is_model_installed(
     их не выберет, а UI покажет «⚠️ Битый файл».
     """
     return get_file_status(filename, target_dir) == "installed"
+
+
 def get_model_path(
     filename: str,
     repo_id: str | None = None,  # оставлен для совместимости
@@ -356,6 +362,7 @@ def _download_split_model(
     logger.info(f"Разбитая модель готова: {first_part.name} (+ ещё {parts - 1} частей в той же папке)")
     return first_part
 
+
 def compute_sha256(path: Path) -> str:
     """Считает SHA256 файла. Используется и при скачивании, и при проверке.
 
@@ -408,6 +415,8 @@ def fetch_expected_sha256(repo_id: str, filename: str) -> str | None:
         logger.warning(f"Не удалось получить SHA256 для {repo_id}/{filename}: {e}")
         return None
     return None
+
+
 def _verify_model_file(
     path: Path,
     repo_id: str,
@@ -464,6 +473,7 @@ def _verify_model_file(
         )
     logger.info(f"SHA256 для {filename}: OK")
 
+
 ProgressCb = Callable[[int, str], None]
 """Callback прогресса: (percent 0-100, message)."""
 
@@ -517,9 +527,7 @@ def _download_one_file(
         return
     if total > 0 and downloaded > total:
         # Битый хвост больше заявленного — перекачиваем целиком.
-        logger.warning(
-            f"{target.name}: размер {downloaded} > Content-Length {total} — перекачиваю"
-        )
+        logger.warning(f"{target.name}: размер {downloaded} > Content-Length {total} — перекачиваю")
         downloaded = 0
         with contextlib.suppress(OSError):
             target.unlink()
@@ -539,16 +547,11 @@ def _download_one_file(
                 progress_cb(100, "уже скачана")
             return
         if r.status_code not in (200, 206):
-            raise RuntimeError(
-                f"HTTP {r.status_code} при скачивании {target.name} "
-                f"(ожидалось 200/206)"
-            )
+            raise RuntimeError(f"HTTP {r.status_code} при скачивании {target.name} (ожидалось 200/206)")
 
         # Сервер мог проигнорировать Range (200 вместо 206) — начинаем заново.
         if downloaded > 0 and r.status_code == 200:
-            logger.warning(
-                f"{target.name}: сервер вернул 200 вместо 206 — начинаю заново"
-            )
+            logger.warning(f"{target.name}: сервер вернул 200 вместо 206 — начинаю заново")
             downloaded = 0
             mode = "wb"
 
@@ -645,9 +648,7 @@ def download_model_with_progress(
                 _download_one_file(url, part_path, progress_cb=_part_cb)
                 try:
                     if part_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
-                        raise ValueError(
-                            f"Часть {part_name} слишком мала — скачивание прервалось"
-                        )
+                        raise ValueError(f"Часть {part_name} слишком мала — скачивание прервалось")
                 except OSError as e:
                     raise ValueError(f"Не удалось прочитать {part_name}: {e}") from e
                 if i == 1:
@@ -686,6 +687,7 @@ def download_model_with_progress(
         file_marker.unlink()
     logger.info(f"Модель сохранена: {target}")
     return target
+
 
 def download_model(
     repo_id: str,
@@ -734,9 +736,7 @@ def download_model(
             # [UI-2025] Битый файл (< 1 МБ) — удаляем и перекачиваем.
             try:
                 if first.stat().st_size < _MIN_MODEL_SIZE_BYTES:
-                    logger.warning(
-                        f"Битый файл {first.name} (< 1 МБ) — удаляю и перекачиваю"
-                    )
+                    logger.warning(f"Битый файл {first.name} (< 1 МБ) — удаляю и перекачиваю")
                     first.unlink()
                 else:
                     logger.info(f"Разбитая модель уже скачана: {first}")
@@ -748,10 +748,7 @@ def download_model(
 
         stale = target_dir / filename
         if stale.exists():
-            logger.info(
-                f"Удаляю устаревший объединённый файл: {stale.name} "
-                f"(будет заменён split-частями)"
-            )
+            logger.info(f"Удаляю устаревший объединённый файл: {stale.name} (будет заменён split-частями)")
             with contextlib.suppress(OSError):
                 stale.unlink()
 
@@ -763,9 +760,7 @@ def download_model(
         # [UI-2025] Битый файл — удаляем и перекачиваем.
         try:
             if target_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
-                logger.warning(
-                    f"Битый файл {target_path.name} (< 1 МБ) — удаляю и перекачиваю"
-                )
+                logger.warning(f"Битый файл {target_path.name} (< 1 МБ) — удаляю и перекачиваю")
                 target_path.unlink()
             else:
                 logger.info(f"Модель уже скачана: {target_path}")
@@ -808,6 +803,7 @@ def download_model(
         file_marker.unlink()
     logger.info(f"Модель сохранена: {downloaded_path}")
     return downloaded_path
+
 
 # ---------------------------------------------------------------------------
 # Удаление

@@ -42,6 +42,7 @@ from ui.chat.threads import (
 if TYPE_CHECKING:
     from core.services.model_service import ModelService
 
+
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
 
@@ -230,7 +231,10 @@ class BackendsMixin:
             return f"🌐 Ollama · {self.get_current_model()}"
         if backend == BackendType.LOCAL_SLM:
             # Показываем, какие модели реально загружены в пайплайн
-            if getattr(self, "_orchestrator", None) is not None and getattr(self, "_model_pool", None) is not None:
+            if (
+                getattr(self, "_orchestrator", None) is not None
+                and getattr(self, "_model_pool", None) is not None
+            ):
                 try:
                     p = self._model_pool.spec(Role.PLANNER).model_id.split(".gguf")[0][:15]
                     a = self._model_pool.spec(Role.ANALYST).model_id.split(".gguf")[0][:15]
@@ -361,6 +365,7 @@ class BackendsMixin:
         selected_info = None
         try:
             from core.config import load_config as _load_cfg
+
             _cfg = _load_cfg()
             selected_info = _cfg.slm.get_selected_info()
         except Exception:
