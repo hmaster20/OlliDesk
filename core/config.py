@@ -118,6 +118,12 @@ class SLMModelInfo(BaseModel):
     moe: bool = False
     active_params_b: float = 0.0
 
+    # [UI-2025] Результаты проверки целостности (Этап 3.1).
+    # Обновляются кнопкой «🔍 Проверить все модели» и после скачивания.
+    last_verified_at: str = ""  # ISO timestamp
+    # "" | "ok" | "size_ok" | "broken" | "sha_mismatch"
+    verification_status: str = ""
+
     # [UI-2025] True — модель умеет режим размышлений (<think>...</think>).
     # Используется: (1) LocalLLMClient для парсинга reasoning из стрима;
     # (2) UI-иконка 🧠 в списках моделей. Не путать с тегом "reasoning"
@@ -631,6 +637,11 @@ class SLMConfig(BaseModel):
     max_tokens: int = 1024
     temperature: float = 0.7
     target_n_ctx: int = 8192
+
+    # [UI-2025] Сверять SHA256 после скачивания модели.
+    # По умолчанию True — защита от обрыва. Отключайте, если HF недоступен
+    # или файл большой и не хочется ждать лишние 15–30 сек.
+    verify_sha256_on_download: bool = True
 
     # --- Embedding-модель (одна, отдельно) ---
     embed_model_repo: str = "nomic-ai/nomic-embed-text-v1.5-GGUF"

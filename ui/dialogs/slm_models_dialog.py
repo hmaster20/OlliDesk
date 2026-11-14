@@ -23,11 +23,19 @@ from PySide6.QtWidgets import (
 )
 
 from agents.download_slm import (
+    compute_sha256,
     delete_model,
     download_model,
+    fetch_expected_sha256,
     get_file_status,
+    get_local_size_mb,
     get_models_dir,
     is_model_installed,
+    _resolve_model_path,
+)
+from ui.dialogs.verification_report_dialog import (
+    VerificationReportDialog,
+    VerificationRow,
 )
 from core.config import AppConfig, SLMModelInfo, save_config
 from core.slm_models_io import save_slm_models
@@ -84,13 +92,86 @@ class _DownloadThread(QThread):
     def run(self):
         try:
             self.progress.emit(self.info.id, f"Скачивание {self.info.file}...")
-            download_model(self.info.repo, self.info.file)
+            # [UI-2025] verify_sha256=None → берётся из config.slm.verify_sha256_on_download.
+            download_model(self.info.repo, self.info.file, verify_sha256=None)
             self.sig_finished.emit(self.info.id, True)
         except Exception as e:
             logger.exception(f"Ошибка скачивания {self.info.id}")
             self.error.emit(self.info.id, str(e))
             self.sig_finished.emit(self.info.id, False)
 
+class _VerifyAllThread(QThread):
+    """Фоновая проверка всех моделей (Этап 3.1).
+
+    Режимы:
+      * ``verify_sha256=False`` — быстрая (только размер). 8 моделей = <1 сек.
+      * ``verify_sha256=True`` — полная (SHA256 по каждой). 8 моделей =
+        1–3 минуты в зависимости от размера.
+
+    Эмитит ``progress(current, total, model_id)`` и ``finished(list[VerificationRow])``.
+    """
+
+    progress = Signal(int, int, str)
+    finished = Signal(list)  # list[VerificationRow]
+    error = Signal(str)
+
+    def __init__(self, models: list[SLMModelInfo], *, verify_sha256: bool):
+        super().__init__()
+        self._models = list(models)
+        self._verify_sha256 = verify_sha256
+
+    def run(self) -> None:
+        try:
+            rows: list[VerificationRow] = []
+            total = len(self._models)
+            for i, m in enumerate(self._models):
+                self.progress.emit(i + 1, total, m.id)
+
+                status = get_file_status(m.file)
+                size_mb = 0
+                try:
+                    size_mb = get_local_size_mb(m.file)
+                except Exception:
+                    size_mb = 0
+
+                expected_sha = ""
+                actual_sha = ""
+                error = ""
+
+                if status == "installed" and self._verify_sha256:
+                    path = get_model_path(m.file)
+                    if path is not None:
+                        try:
+                            actual_sha = compute_sha256(path)
+                        except OSError as e:
+                            error = f"read: {e}"
+                            status = "ok" if m.verification_status == "ok" else "size_ok"
+                        else:
+                            exp = fetch_expected_sha256(m.repo, m.file)
+                            if exp:
+                                expected_sha = exp
+                                if actual_sha != exp:
+                                    status = "sha_mismatch"
+                                else:
+                                    status = "ok"
+                            else:
+                                status = "size_ok"
+                elif status == "installed":
+                    # Быстрая проверка: размер прошёл, SHA не считали.
+                    status = "size_ok"
+
+                rows.append(VerificationRow(
+                    model=m,
+                    status=status,
+                    size_mb=size_mb,
+                    expected_sha=expected_sha,
+                    actual_sha=actual_sha,
+                    error=error,
+                ))
+            self.finished.emit(rows)
+        except Exception as e:
+            logger.exception("_VerifyAllThread failed")
+            self.error.emit(str(e))
 
 class SLMModelsDialog(QDialog):
     """Диалог выбора и управления локальными SLM-моделями.
@@ -120,6 +201,7 @@ class SLMModelsDialog(QDialog):
         self.config = config
         self._changed = False
         self._download_thread: _DownloadThread | None = None
+        self._verify_thread: _VerifyAllThread | None = None
 
         # Очередь скачивания
         self._download_queue: list[SLMModelInfo] = []
@@ -233,6 +315,16 @@ class SLMModelsDialog(QDialog):
         self.hf_search_btn.clicked.connect(self._open_hf_dialog)
         btn_layout.addWidget(self.hf_search_btn)
 
+        # [UI-2025] Проверка всех моделей (Этап 3.1).
+        self.verify_all_btn = QPushButton("🔍 Проверить все модели")
+        self.verify_all_btn.setToolTip(
+            "Проверить целостность всех моделей в каталоге.\n"
+            "Быстрая — только размер (мгновенно).\n"
+            "Полная — сверить SHA256 с HuggingFace (1–3 минуты на 8 моделей)."
+        )
+        self.verify_all_btn.clicked.connect(self._on_verify_all_clicked)
+        btn_layout.addWidget(self.verify_all_btn)
+
         btn_layout.addStretch()
 
         self.close_btn = QPushButton("Закрыть")
@@ -313,11 +405,23 @@ class SLMModelsDialog(QDialog):
 
             status_item = QTableWidgetItem(status_str)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            tip_parts: list[str] = []
             if file_status == "broken":
-                status_item.setToolTip(
+                tip_parts.append(
                     "Файл есть, но его размер < 1 МБ. Скачивание прервалось.\n"
                     "Нажмите «⬇️ Перекачать», чтобы удалить и скачать заново."
                 )
+            if getattr(m, "last_verified_at", ""):
+                tip_parts.append(f"Последняя проверка: {m.last_verified_at}")
+                v_status = getattr(m, "verification_status", "")
+                if v_status == "ok":
+                    tip_parts.append("Результат: ✅ OK (размер + SHA256)")
+                elif v_status == "size_ok":
+                    tip_parts.append("Результат: ✅ OK (только размер)")
+                elif v_status == "sha_mismatch":
+                    tip_parts.append("Результат: ❌ SHA256 не совпал — перекачайте")
+            if tip_parts:
+                status_item.setToolTip("\n".join(tip_parts))
             self.table.setItem(row, 6, status_item)
 
             # 8. Активна
@@ -421,6 +525,146 @@ class SLMModelsDialog(QDialog):
             and not in_queue
         )
         self.activate_btn.setEnabled(file_status == "installed" and not active)
+
+    def _on_verify_all_clicked(self) -> None:
+        """Спрашивает режим и запускает проверку."""
+        if self._verify_thread is not None and self._verify_thread.isRunning():
+            QMessageBox.information(
+                self, "Проверка идёт", "Проверка уже выполняется — дождитесь завершения."
+            )
+            return
+
+        # Модели для проверки: только те, что есть на диске (installed/broken).
+        candidates = [
+            m for m in self.config.slm.get_chat_models()
+            if get_file_status(m.file) in ("installed", "broken")
+        ]
+        if not candidates:
+            QMessageBox.information(
+                self, "Нечего проверять", "Нет скачанных моделей для проверки."
+            )
+            return
+
+        # Меню выбора режима.
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        act_fast = menu.addAction("⚡ Быстрая (только размер)")
+        act_full = menu.addAction("🛡 Полная (размер + SHA256)")
+
+        chosen = menu.exec(self.verify_all_btn.mapToGlobal(self.verify_all_btn.rect().bottomLeft()))
+        if chosen is None:
+            return
+        verify_sha256 = chosen is act_full
+
+        if verify_sha256:
+            total_mb = sum(get_local_size_mb(m.file) for m in candidates)
+            reply = QMessageBox.question(
+                self,
+                "Полная проверка",
+                f"Будет считаться SHA256 для {len(candidates)} моделей "
+                f"(суммарно ~{total_mb} МБ).\n\n"
+                f"Это может занять 1–3 минуты. Продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Запуск.
+        self.verify_all_btn.setEnabled(False)
+        self.verify_all_btn.setText("⏳ Проверка…")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(candidates))
+        self.progress_bar.setValue(0)
+
+        self._verify_thread = _VerifyAllThread(candidates, verify_sha256=verify_sha256)
+        self._verify_thread.progress.connect(self._on_verify_progress)
+        self._verify_thread.finished.connect(self._on_verify_finished)
+        self._verify_thread.error.connect(self._on_verify_error)
+        self._verify_thread.start()
+
+    @Slot(int, int, str)
+    def _on_verify_progress(self, current: int, total: int, model_id: str) -> None:
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+        self.status_label.setText(f"🔍 Проверка {current}/{total}: {model_id}…")
+
+    @Slot(list)
+    def _on_verify_finished(self, rows: list[VerificationRow]) -> None:
+        """Обновляет модели (last_verified_at, verification_status) и показывает отчёт."""
+        from datetime import datetime
+        from core.slm_models_io import save_slm_models
+
+        now = datetime.now().isoformat(timespec="seconds")
+        by_id = {m.id: m for m in self.config.slm.available_models}
+
+        for r in rows:
+            info = by_id.get(r.model.id)
+            if info is None:
+                continue
+            info.last_verified_at = now
+            if r.status == "ok":
+                info.verification_status = "ok"
+            elif r.status == "size_ok":
+                info.verification_status = "size_ok"
+            elif r.status == "sha_mismatch":
+                info.verification_status = "sha_mismatch"
+            elif r.status == "broken":
+                info.verification_status = "broken"
+
+        try:
+            save_slm_models(self.config.slm.available_models)
+        except Exception:
+            logger.debug("Не удалось сохранить last_verified_at", exc_info=True)
+
+        self.progress_bar.setVisible(False)
+        self.verify_all_btn.setEnabled(True)
+        self.verify_all_btn.setText("🔍 Проверить все модели")
+        self.status_label.setText("")
+        self._populate()  # обновить tooltip-ы
+
+        dlg = VerificationReportDialog(
+            rows,
+            sha_was_checked=bool(rows and rows[0].actual_sha),
+            parent=self,
+        )
+        dlg.redownload_requested.connect(self._on_verify_redownload)
+        dlg.delete_broken_requested.connect(self._on_verify_delete_broken)
+        dlg.exec()
+
+        self._verify_thread = None
+
+    @Slot(str)
+    def _on_verify_error(self, error: str) -> None:
+        self.progress_bar.setVisible(False)
+        self.verify_all_btn.setEnabled(True)
+        self.verify_all_btn.setText("🔍 Проверить все модели")
+        self.status_label.setText("")
+        QMessageBox.warning(self, "Ошибка проверки", error)
+        self._verify_thread = None
+
+    @Slot(object)
+    def _on_verify_redownload(self, models: list) -> None:
+        """Из отчёта: удалить битые файлы и поставить в очередь скачивания."""
+        for m in models:
+            try:
+                delete_model(m.file, repo_id=m.repo)
+            except Exception:
+                logger.debug(f"Не удалось удалить {m.file}", exc_info=True)
+            if not any(q.id == m.id for q in self._download_queue):
+                self._download_queue.append(m)
+        self._process_queue()
+        self._populate()
+
+    @Slot(object)
+    def _on_verify_delete_broken(self, filenames: list) -> None:
+        """Из отчёта: удалить битые файлы без перекачки."""
+        for fname in filenames:
+            try:
+                delete_model(fname)
+            except Exception:
+                logger.debug(f"Не удалось удалить {fname}", exc_info=True)
+        self._populate()
 
     def _on_download_clicked(self):
         info = self._current_model_info()

@@ -300,11 +300,58 @@ def _download_split_model(
     logger.info(f"Разбитая модель готова: {first_part.name} (+ ещё {parts - 1} частей в той же папке)")
     return first_part
 
+def compute_sha256(path: Path) -> str:
+    """Считает SHA256 файла. Используется и при скачивании, и при проверке.
 
-# ---------------------------------------------------------------------------
-# Публичная функция скачивания
-# ---------------------------------------------------------------------------
+    Args:
+        path: Путь к файлу.
 
+    Returns:
+        Hex-строка SHA256 (64 символа).
+
+    Raises:
+        OSError: Если файл не читается.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def fetch_expected_sha256(repo_id: str, filename: str) -> str | None:
+    """Возвращает ожидаемый SHA256 файла из HF API (``siblings[].lfs.sha256``).
+    Args:
+        repo_id: HF-репозиторий.
+        filename: Имя файла.
+    Returns:
+        Hex-строка SHA256 или ``None``, если HF недоступен / файл не LFS /
+        SHA256 в карточке нет.
+    Note:
+        ``HfApi.model_info`` синхронный и может блокировать. Вызывающий
+        код должен обернуть в ``asyncio.to_thread`` или вызвать из фонового
+        потока.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        info = api.model_info(repo_id=repo_id, files_metadata=True)
+        for sib in getattr(info, "siblings", None) or []:
+            if getattr(sib, "rfilename", "") != filename:
+                continue
+            lfs = getattr(sib, "lfs", None)
+            if isinstance(lfs, dict):
+                return lfs.get("sha256")  # type: ignore[return-value]
+            if lfs is not None:
+                return getattr(lfs, "sha256", None)  # type: ignore[return-value]
+            return None
+    except Exception as e:
+        logger.warning(f"Не удалось получить SHA256 для {repo_id}/{filename}: {e}")
+        return None
+    return None
 def _verify_model_file(
     path: Path,
     repo_id: str,
@@ -319,10 +366,6 @@ def _verify_model_file(
 
     Опционально (``verify_sha256=True``):
       * SHA256 совпадает с ``siblings[].lfs.sha256`` из HF API.
-
-    SHA256 для 7B-модели (~4.7 ГБ) — это 15–30 секунд чтения с диска,
-    поэтому по умолчанию выключено. Для «подозрительных» моделей или
-    в CI — включить.
 
     Raises:
         ValueError: файл битый (размер или SHA256).
@@ -344,42 +387,17 @@ def _verify_model_file(
     if not verify_sha256:
         return
 
-    # Получаем ожидаемый SHA256 из HF API (только для LFS-файлов).
-    expected_sha: str | None = None
-    try:
-        from huggingface_hub import HfApi
-
-        api = HfApi()
-        info = api.model_info(repo_id=repo_id, files_metadata=True)
-        for sib in getattr(info, "siblings", None) or []:
-            if getattr(sib, "rfilename", "") != filename:
-                continue
-            lfs = getattr(sib, "lfs", None)
-            if isinstance(lfs, dict):
-                expected_sha = lfs.get("sha256")
-            elif lfs is not None:
-                expected_sha = getattr(lfs, "sha256", None)
-            break
-    except Exception as e:
-        logger.warning(f"Не удалось получить SHA256 для {repo_id}/{filename}: {e}")
-        return
-
+    expected_sha = fetch_expected_sha256(repo_id, filename)
     if not expected_sha:
         logger.debug(f"SHA256 для {filename} не найден в HF — пропускаю сверку")
         return
 
-    import hashlib
-
-    h = hashlib.sha256()
     try:
-        with open(path, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                h.update(block)
+        actual = compute_sha256(path)
     except OSError as e:
         logger.warning(f"SHA256 для {filename}: не удалось прочитать файл: {e}")
         return
 
-    actual = h.hexdigest()
     if actual != expected_sha:
         with contextlib.suppress(OSError):
             path.unlink()
@@ -395,7 +413,7 @@ def download_model(
     filename: str,
     target_dir: Path | None = None,
     *,
-    verify_sha256: bool = False,
+    verify_sha256: bool | None = None,
 ) -> Path:
     """Скачивает модель из Hugging Face.
 
@@ -410,13 +428,22 @@ def download_model(
         repo_id: HF-репозиторий.
         filename: Имя файла (первой части для split-модели).
         target_dir: Каталог моделей (по умолчанию ~/.ollidesk/models).
-        verify_sha256: ``True`` — сверить SHA256 с HF (медленно, но
-            надёжно). По умолчанию проверяется только размер.
+        verify_sha256: ``None`` — взять из ``AppConfig.slm.verify_sha256_on_download``;
+            ``True`` — сверять SHA256; ``False`` — только размер.
 
     Raises:
         ValueError: файл битый (размер или SHA256).
     """
     target_dir = target_dir or get_models_dir()
+    # [UI-2025] verify_sha256=None — берём из конфига (по умолчанию True).
+    if verify_sha256 is None:
+        try:
+            from core.config import load_config
+
+            verify_sha256 = bool(load_config().slm.verify_sha256_on_download)
+        except Exception:
+            verify_sha256 = True  # безопасный default
+
     target_dir.mkdir(parents=True, exist_ok=True)
 
     parts = get_model_parts(repo_id, filename)
