@@ -280,8 +280,30 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "n_ctx": 32768,
     },
     # =====================================================================
-    # THINKING-МОДЕЛИ (эталон размышлений + быстрый Qwen 3)
+    # THINKING-МОДЕЛИ (эталон размышлений + быстрый Qwen 3 (<think>...</think>))
     # =====================================================================
+    # Реалистично для T1200 (4 ГБ VRAM) и 128 ГБ RAM:
+    #   • 4B / 7-8B   — 4B в VRAM, 7-8B частично/CPU, 5–15 tok/s
+    #   • 14B         — только CPU, 2–3 tok/s
+    #   • 30–32B MoE  — только CPU, 3–5 tok/s (активных мало)
+    #   • 32B Dense   — только CPU, 0.5–1 tok/s (долго)
+    # Для быстрых итераций reasoning-флоу — 4B / 7B.
+    # Для «глубокого разбора» — 14B / 32B (CPU).
+    {
+        "id": "deepseek-r1-distill-qwen-1.5b-q4_k_m",
+        "repo": "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
+        "file": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        "display_name": "DeepSeek-R1 Distill Qwen 1.5B q4_k_m · mini reasoning",
+        "size_mb": 1120,
+        "tier": 0,
+        "n_ctx": 16384,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "Мини-reasoning для быстрых тестов и машин без GPU. "
+            "Reasoning есть, но качество ниже 7B. ~30 tok/s на CPU."
+        ),
+    },
     {
         "id": "deepseek-r1-distill-qwen-7b-q4_k_m",
         "repo": "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
@@ -316,6 +338,7 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         ),
         "recommended_profile": "research",
     },
+    # --- Qwen 3 (гибридный reasoning) ---
     {
         "id": "qwen3-4b-instruct-q4_k_m",
         "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
@@ -331,6 +354,74 @@ _DEFAULT_SLM_MODELS: list[dict] = [
             "частично (~5 tok/s). Формат <think>...</think> как у DeepSeek. "
             "Хорош для быстрых итераций."
         ),
+    },
+    {
+        "id": "qwen3-8b-instruct-q4_k_m",
+        "repo": "unsloth/Qwen3-8B-Instruct-2507-GGUF",
+        "file": "Qwen3-8B-Instruct-2507-Q4_K_M.gguf",
+        "display_name": "Qwen 3 8B Instruct q4_k_m · баланс",
+        "size_mb": 5000,
+        "tier": 2,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "8B с reasoning — как DeepSeek-7B, но от Qwen. Чуть лучше "
+            "следует инструкциям, чуть хуже «думает вслух». "
+            "На 4 ГБ VRAM — CPU, ~2–4 tok/s."
+        ),
+    },
+    {
+        "id": "qwen3-14b-instruct-q4_k_m",
+        "repo": "unsloth/Qwen3-14B-Instruct-2507-GGUF",
+        "file": "Qwen3-14B-Instruct-2507-Q4_K_M.gguf",
+        "display_name": "Qwen 3 14B Instruct q4_k_m",
+        "size_mb": 9000,
+        "tier": 3,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "14B Qwen 3 — только CPU на T1200, ~1–2 tok/s. "
+            "Reasoning заметно глубже 8B."
+        ),
+        "recommended_profile": "research",
+    },
+    {
+        "id": "qwen3-30b-a3b-instruct-q4_k_m",
+        "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+        "file": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+        "display_name": "Qwen 3 30B-A3B (MoE) q4_k_m · reasoning в MoE",
+        "size_mb": 18500,
+        "tier": 4,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning", "moE"],
+        "moe": True,
+        "active_params_b": 3.3,
+        "is_thinking": True,
+        "description": (
+            "MoE-модель: 30B весов, ~3.3B активных на токен. Reasoning "
+            "уровня 14B–30B, скорость на CPU как у 7B (~3–5 tok/s). "
+            "Лучший компромисс для T1200, если RAM ≥ 32 ГБ."
+        ),
+        "recommended_profile": "research",
+    },
+    {
+        "id": "qwq-32b-q4_k_m",
+        "repo": "bartowski/QwQ-32B-GGUF",
+        "file": "QwQ-32B-Q4_K_M.gguf",
+        "display_name": "QwQ 32B q4_k_m · топ reasoning",
+        "size_mb": 19500,
+        "tier": 4,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "Специализированная reasoning-модель Qwen. Максимальное "
+            "качество рассуждений среди открытых. На CPU — 0.5–1 tok/s, "
+            "только для «подумать часок». Не для интерактива."
+        ),
+        "recommended_profile": "research",
     },
     # =====================================================================
     # TIER 3 — крупные (14B): 10–12 ГБ VRAM / 32 ГБ RAM

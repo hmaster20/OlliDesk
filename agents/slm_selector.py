@@ -316,9 +316,31 @@ def select_park(
 
     # Analyst — как в select_pair (для research-флоу).
     if Role.ANALYST not in result:
-        # 1. Пробуем найти по тегу
+        # [UI-2025] Приоритет 1: thinking-модели с тегом "reasoning",
+        # tier 2..3, влезающие в RAM. Они дают видимый reasoning в панели,
+        # ради чего мы весь этот этап и делали.
+        thinking_pool = sorted(
+            [
+                f for f in fits
+                if "reasoning" in f.info.tags
+                and 2 <= f.info.tier <= 3
+                and f.fits_ram
+                and f.info.kind == "chat"
+            ],
+            key=lambda f: (f.info.tier, f.score),
+            reverse=True,
+        )
+        if thinking_pool:
+            result[Role.ANALYST] = thinking_pool[0].info
+            logger.info(
+                f"select_park: analyst = thinking-модель "
+                f"{thinking_pool[0].info.id} (tier={thinking_pool[0].info.tier})"
+            )
+
+    if Role.ANALYST not in result:
+        # Приоритет 2: обычный тег "analyst".
         picked = _pick("analyst", prefer_gpu=False, min_tier=2, max_tier=2)
-        # 2. Фолбэк: просто tier 2 chat-модель, влезающая в RAM (как в select_pair)
+        # Приоритет 3: просто tier 2 chat-модель, влезающая в RAM.
         if not picked:
             analyst_pool = sorted(
                 [f for f in fits if f.info.tier == 2 and f.fits_ram and f.info.kind == "chat"],

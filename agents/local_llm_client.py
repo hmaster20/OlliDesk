@@ -293,7 +293,7 @@ class LocalLLMClient:
         """Генерирует ответ через llama.cpp с построчным стримингом."""
         self.reset_cancel()
 
-        chat_messages = self._prepare_messages(messages, tools)
+        chat_messages = self._prepare_messages(messages, tools, op_type=op_type)
 
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
@@ -676,12 +676,29 @@ class LocalLLMClient:
 
     # --- Конвертация сообщений ---
 
-    def _prepare_messages(self, messages: list[ChatMessage], tools: list[Any] | None) -> list[dict[str, Any]]:
+    def _prepare_messages(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Any] | None,
+        op_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         chat_messages = self._convert_messages(messages)
         if tools:
             chat_messages = self._prepend_system(chat_messages, self._build_tool_instruction(tools))
         chat_messages = self._prepend_system(chat_messages, _FORMAT_INSTRUCTION)
-        return self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
+        chat_messages = self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
+
+        # [UI-2025] Qwen 3 — гибридная: reasoning включается/выключается
+        # суффиксом в user-сообщении. Для tool_call / classify reasoning
+        # вреден (замедляет, ломает JSON) — ставим /no_think.
+        if self.is_thinking and op_type in ("tool_call", "classify", "plan"):
+            for msg in reversed(chat_messages):
+                if msg.get("role") == "user":
+                    content = str(msg.get("content") or "")
+                    if "/no_think" not in content and "/think" not in content:
+                        msg["content"] = content + "\n\n/no_think"
+                    break
+        return chat_messages
 
     @staticmethod
     def _prepend_system(chat_messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
