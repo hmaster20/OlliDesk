@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from agents.download_slm import (
     delete_model,
     download_model,
+    get_file_status,
     get_models_dir,
     is_model_installed,
 )
@@ -249,7 +250,9 @@ class SLMModelsDialog(QDialog):
 
         def _sort_key(m: SLMModelInfo) -> tuple[int, int, str]:
             active = 0 if m.id == self.config.slm.selected_model else 1
-            installed = 0 if is_model_installed(m.file) else 1
+            # [UI-2025] Битые — наравне с неустановленными.
+            status = get_file_status(m.file)
+            installed = 0 if status == "installed" else 1
             return (active, installed, m.display_name.lower())
 
         chat_models = sorted(self.config.slm.get_chat_models(), key=_sort_key)
@@ -296,18 +299,25 @@ class SLMModelsDialog(QDialog):
             self.table.setItem(row, 5, ctx_item)
 
             # 7. Статус
-            installed = is_model_installed(m.file)
+            file_status = get_file_status(m.file)
             if m.id == self._downloading_model_id():
                 status_str = "⏬ Скачивается"
             elif any(q.id == m.id for q in self._download_queue):
                 status_str = "⏳ В очереди"
-            elif installed:
+            elif file_status == "installed":
                 status_str = "✅ Установлена"
+            elif file_status == "broken":
+                status_str = "⚠️ Битый файл"
             else:
                 status_str = "⬇️ Не скачана"
 
             status_item = QTableWidgetItem(status_str)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if file_status == "broken":
+                status_item.setToolTip(
+                    "Файл есть, но его размер < 1 МБ. Скачивание прервалось.\n"
+                    "Нажмите «⬇️ Перекачать», чтобы удалить и скачать заново."
+                )
             self.table.setItem(row, 6, status_item)
 
             # 8. Активна
@@ -367,18 +377,7 @@ class SLMModelsDialog(QDialog):
         return thread.info.id
 
     def _update_buttons(self):
-        """Обновляет состояние кнопок по выделенной модели и статусу скачиваний.
-
-        Скачивание блокирует только те действия, которые реально конфликтуют
-        с записью файла:
-
-        * «Скачать» — запрещено всегда, пока идёт любое скачивание
-          (одновременные загрузки перетирают ``self._download_thread``);
-        * «Удалить» — запрещено для модели, которая сейчас качается
-          (нельзя удалять файл в процессе записи);
-        * «Активировать» — не зависит от скачивания других моделей, потому
-          что переключение активной модели не трогает файлы на диске.
-        """
+        """Обновляет состояние кнопок по выделенной модели и статусу скачиваний."""
         info = self._current_model_info()
         downloading_id = self._downloading_model_id()
 
@@ -388,7 +387,7 @@ class SLMModelsDialog(QDialog):
             self.activate_btn.setEnabled(False)
             return
 
-        installed = is_model_installed(info.file, repo_id=info.repo)
+        file_status = get_file_status(info.file)
         active = info.id == self.config.slm.selected_model
         in_queue = any(q.id == info.id for q in self._download_queue)
         is_downloading = downloading_id == info.id
@@ -399,17 +398,29 @@ class SLMModelsDialog(QDialog):
         elif in_queue:
             self.download_btn.setText("❌ Убрать из очереди")
             self.download_btn.setEnabled(True)
-        elif installed:
+        elif file_status == "installed":
             self.download_btn.setText("✅ Установлена")
             self.download_btn.setEnabled(False)
+        elif file_status == "broken":
+            # [UI-2025] Битый файл → перекачать.
+            self.download_btn.setText("⬇️ Перекачать")
+            self.download_btn.setEnabled(True)
+            self.download_btn.setToolTip(
+                "Файл < 1 МБ — скачивание прервалось. Удалить и скачать заново."
+            )
         else:
             self.download_btn.setText("⬇️ В очередь")
             self.download_btn.setEnabled(True)
+            self.download_btn.setToolTip("")
 
-        self.delete_btn.setEnabled(installed and not active and not is_downloading and not in_queue)
-        self.activate_btn.setEnabled(installed and not active)
-
-    # ---------- Actions ----------
+        # [UI-2025] Битые тоже можно удалить (чтобы почистить).
+        self.delete_btn.setEnabled(
+            (file_status in ("installed", "broken"))
+            and not active
+            and not is_downloading
+            and not in_queue
+        )
+        self.activate_btn.setEnabled(file_status == "installed" and not active)
 
     def _on_download_clicked(self):
         info = self._current_model_info()
@@ -422,6 +433,25 @@ class SLMModelsDialog(QDialog):
             self._update_queue_status()
             self._populate()
             return
+
+        # [UI-2025] Если битый файл уже на диске — предупредим и удалим.
+        file_status = get_file_status(info.file)
+        if file_status == "broken":
+            reply = QMessageBox.question(
+                self,
+                "Перекачать битый файл?",
+                f"Файл {info.file} есть, но его размер < 1 МБ — "
+                f"скачивание прервалось.\n\n"
+                f"Удалить и скачать заново?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                delete_model(info.file, repo_id=info.repo)
+                logger.info(f"Битый файл {info.file} удалён перед перекачкой")
+            except Exception:
+                logger.debug(f"Не удалось удалить битый {info.file}", exc_info=True)
 
         # Иначе добавляем в очередь
         self._download_queue.append(info)
@@ -490,17 +520,23 @@ class SLMModelsDialog(QDialog):
         self._process_queue()
         self._populate()
 
-    # Остальные методы (удаление, активация и т.д.)
     def _delete_selected(self):
         info = self._current_model_info()
-        if not info or not is_model_installed(info.file, repo_id=info.repo):
+        if not info:
             return
-        if info.id == self.config.slm.selected_model:
+        file_status = get_file_status(info.file)
+        if file_status == "absent":
+            return
+        if info.id == self.config.slm.selected_model and file_status == "installed":
             QMessageBox.warning(self, "Активная модель", "Нельзя удалить активную модель.")
             return
 
-        reply = QMessageBox.question(self, "Удаление", f"Удалить {info.display_name}?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            "Удаление",
+            f"Удалить {info.display_name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
         if reply == QMessageBox.StandardButton.Yes:
             delete_model(info.file, repo_id=info.repo)
             self._populate()

@@ -14,6 +14,10 @@ from loguru import logger
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 
+# [UI-2025] Порог «битого» файла: реальные GGUF-модели весят сотни МБ.
+# Если файл < 1 МБ — скачивание прервалось или файл повреждён.
+_MIN_MODEL_SIZE_BYTES = 1024 * 1024
+
 # Embedding-модель общая, не участвует в выборе chat-модели.
 EMBED_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 EMBED_MODEL_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -180,21 +184,42 @@ def _resolve_model_path(filename: str, target_dir: Path | None = None) -> Path |
         return merged
     return None
 
+def get_file_status(
+    filename: str,
+    target_dir: Path | None = None,
+) -> str:
+    """Статус файла модели: ``installed`` | ``broken`` | ``absent``.
+
+    * ``installed`` — файл есть и размер ≥ 1 МБ;
+    * ``broken`` — файл есть, но < 1 МБ (обрыв скачивания, 0-байтный);
+    * ``absent`` — файла нет.
+
+    Не обращается к HuggingFace — проверка чисто локальная.
+    Для split-модели размер суммируется по всем частям (см.
+    `get_local_size_mb`).
+    """
+    target_dir = target_dir or get_models_dir()
+    path = _resolve_model_path(filename, target_dir)
+    if path is None:
+        return "absent"
+    try:
+        size_mb = get_local_size_mb(filename, target_dir)
+    except Exception:
+        return "absent"
+    return "broken" if size_mb < 1 else "installed"
 
 def is_model_installed(
     filename: str,
     target_dir: Path | None = None,
     repo_id: str | None = None,  # оставлен для совместимости, не используется
 ) -> bool:
-    """Проверяет, скачана ли модель (единым файлом или частями).
+    """True, если модель скачана И НЕ битая (размер ≥ 1 МБ).
 
-    ВАЖНО: не обращается к HuggingFace. Проверка чисто локальная —
-    наличие <filename> ИЛИ любой из частей <stem>-*-of-*.gguf.
+    ВАЖНО: не обращается к HuggingFace. Проверка чисто локальная.
+    Битые файлы (0 байт, обрыв) возвращают False — автовыбор моделей
+    их не выберет, а UI покажет «⚠️ Битый файл».
     """
-    target_dir = target_dir or get_models_dir()
-    return _resolve_model_path(filename, target_dir) is not None
-
-
+    return get_file_status(filename, target_dir) == "installed"
 def get_model_path(
     filename: str,
     repo_id: str | None = None,  # оставлен для совместимости
@@ -258,6 +283,15 @@ def _download_split_model(
         part_path = target_dir / name
         if not part_path.exists():
             raise FileNotFoundError(f"Часть модели не найдена после скачивания: {name}")
+        try:
+            part_size = part_path.stat().st_size
+        except OSError as e:
+            raise ValueError(f"Не удалось прочитать {name}: {e}") from e
+        if part_size < _MIN_MODEL_SIZE_BYTES:
+            raise ValueError(
+                f"Часть {name} слишком мала ({part_size} байт < "
+                f"{_MIN_MODEL_SIZE_BYTES}). Скачивание прервалось."
+            )
         if i == 1:
             first_part = part_path
         logger.info(f"  ✓ Часть {i}/{parts}: {name}")
@@ -271,16 +305,116 @@ def _download_split_model(
 # Публичная функция скачивания
 # ---------------------------------------------------------------------------
 
+def _verify_model_file(
+    path: Path,
+    repo_id: str,
+    filename: str,
+    *,
+    verify_sha256: bool = False,
+) -> None:
+    """Проверяет, что скачанный файл — целый.
+
+    Всегда:
+      * размер ≥ ``_MIN_MODEL_SIZE_BYTES`` (ловит 0-байтные и обрывы).
+
+    Опционально (``verify_sha256=True``):
+      * SHA256 совпадает с ``siblings[].lfs.sha256`` из HF API.
+
+    SHA256 для 7B-модели (~4.7 ГБ) — это 15–30 секунд чтения с диска,
+    поэтому по умолчанию выключено. Для «подозрительных» моделей или
+    в CI — включить.
+
+    Raises:
+        ValueError: файл битый (размер или SHA256).
+    """
+    if not path.exists():
+        raise ValueError(f"Файл не найден после скачивания: {path}")
+
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise ValueError(f"Не удалось прочитать {path.name}: {e}") from e
+
+    if size < _MIN_MODEL_SIZE_BYTES:
+        raise ValueError(
+            f"Файл {path.name} слишком мал ({size} байт < {_MIN_MODEL_SIZE_BYTES}). "
+            f"Скачивание прервалось — удалите файл и повторите."
+        )
+
+    if not verify_sha256:
+        return
+
+    # Получаем ожидаемый SHA256 из HF API (только для LFS-файлов).
+    expected_sha: str | None = None
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        info = api.model_info(repo_id=repo_id, files_metadata=True)
+        for sib in getattr(info, "siblings", None) or []:
+            if getattr(sib, "rfilename", "") != filename:
+                continue
+            lfs = getattr(sib, "lfs", None)
+            if isinstance(lfs, dict):
+                expected_sha = lfs.get("sha256")
+            elif lfs is not None:
+                expected_sha = getattr(lfs, "sha256", None)
+            break
+    except Exception as e:
+        logger.warning(f"Не удалось получить SHA256 для {repo_id}/{filename}: {e}")
+        return
+
+    if not expected_sha:
+        logger.debug(f"SHA256 для {filename} не найден в HF — пропускаю сверку")
+        return
+
+    import hashlib
+
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+    except OSError as e:
+        logger.warning(f"SHA256 для {filename}: не удалось прочитать файл: {e}")
+        return
+
+    actual = h.hexdigest()
+    if actual != expected_sha:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise ValueError(
+            f"SHA256 mismatch для {filename}: "
+            f"ожидалось {expected_sha[:12]}…, получено {actual[:12]}…. "
+            f"Файл удалён — повторите скачивание."
+        )
+    logger.info(f"SHA256 для {filename}: OK")
 
 def download_model(
     repo_id: str,
     filename: str,
     target_dir: Path | None = None,
+    *,
+    verify_sha256: bool = False,
 ) -> Path:
     """Скачивает модель из Hugging Face.
 
+    Если локально уже есть файл-«битый» (размер < 1 МБ) — удаляет и
+    качает заново. После скачивания проверяет размер (всегда) и
+    SHA256 (если ``verify_sha256=True``).
+
     Для разбитых моделей возвращает путь к ПЕРВОЙ части; остальные
     llama.cpp подтянет сам.
+
+    Args:
+        repo_id: HF-репозиторий.
+        filename: Имя файла (первой части для split-модели).
+        target_dir: Каталог моделей (по умолчанию ~/.ollidesk/models).
+        verify_sha256: ``True`` — сверить SHA256 с HF (медленно, но
+            надёжно). По умолчанию проверяется только размер.
+
+    Raises:
+        ValueError: файл битый (размер или SHA256).
     """
     target_dir = target_dir or get_models_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -291,24 +425,51 @@ def download_model(
         stem = filename.removesuffix(".gguf")
         first = target_dir / _split_part_name(stem, 1, parts)
         if first.exists():
-            logger.info(f"Разбитая модель уже скачана: {first}")
-            return first
+            # [UI-2025] Битый файл (< 1 МБ) — удаляем и перекачиваем.
+            try:
+                if first.stat().st_size < _MIN_MODEL_SIZE_BYTES:
+                    logger.warning(
+                        f"Битый файл {first.name} (< 1 МБ) — удаляю и перекачиваю"
+                    )
+                    first.unlink()
+                else:
+                    logger.info(f"Разбитая модель уже скачана: {first}")
+                    return first
+            except OSError as e:
+                logger.warning(f"Не удалось проверить {first}: {e} — перекачиваю")
+                with contextlib.suppress(OSError):
+                    first.unlink()
 
         stale = target_dir / filename
         if stale.exists():
-            logger.info(f"Удаляю устаревший объединённый файл: {stale.name} (будет заменён split-частями)")
-            try:
+            logger.info(
+                f"Удаляю устаревший объединённый файл: {stale.name} "
+                f"(будет заменён split-частями)"
+            )
+            with contextlib.suppress(OSError):
                 stale.unlink()
-            except OSError as e:
-                logger.warning(f"Не удалось удалить {stale}: {e}")
 
         return _download_split_model(repo_id, filename, parts, target_dir)
 
     # Цельный файл
     target_path = target_dir / filename
     if target_path.exists():
-        logger.info(f"Модель уже скачана: {target_path}")
-        return target_path
+        # [UI-2025] Битый файл — удаляем и перекачиваем.
+        try:
+            if target_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
+                logger.warning(
+                    f"Битый файл {target_path.name} (< 1 МБ) — удаляю и перекачиваю"
+                )
+                target_path.unlink()
+            else:
+                logger.info(f"Модель уже скачана: {target_path}")
+                if verify_sha256:
+                    _verify_model_file(target_path, repo_id, filename, verify_sha256=True)
+                return target_path
+        except OSError as e:
+            logger.warning(f"Не удалось проверить {target_path}: {e} — перекачиваю")
+            with contextlib.suppress(OSError):
+                target_path.unlink()
 
     from huggingface_hub import hf_hub_download
 
@@ -318,9 +479,18 @@ def download_model(
         filename=filename,
         local_dir=str(target_dir),
     )
-    logger.info(f"Модель сохранена: {downloaded}")
-    return Path(downloaded)
+    downloaded_path = Path(downloaded)
 
+    # [UI-2025] Проверка целостности после скачивания.
+    _verify_model_file(
+        downloaded_path,
+        repo_id,
+        filename,
+        verify_sha256=verify_sha256,
+    )
+
+    logger.info(f"Модель сохранена: {downloaded_path}")
+    return downloaded_path
 
 # ---------------------------------------------------------------------------
 # Удаление

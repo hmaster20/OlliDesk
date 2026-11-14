@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QVBoxLayout,
     QWidget,
+    QColor,
+    QDesktopServices,
 )
 
 from agents.hf_search import (
@@ -45,7 +47,7 @@ from agents.hf_search import (
     model_info,
     search_models,
 )
-
+from agents.download_slm import get_file_status
 
 # ---------------------------------------------------------------------------
 # Фоновые потоки
@@ -210,10 +212,11 @@ class HFDialog(QDialog):
         right_layout.addWidget(files_label)
 
         self.files_table = QTableWidget()
-        self.files_table.setColumnCount(2)
-        self.files_table.setHorizontalHeaderLabels(["Файл", "Размер"])
+        self.files_table.setColumnCount(3)
+        self.files_table.setHorizontalHeaderLabels(["Файл", "Размер", "Статус"])
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.files_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -356,6 +359,29 @@ class HFDialog(QDialog):
             self.files_table.setItem(i, 0, QTableWidgetItem(f.filename))
             self.files_table.setItem(i, 1, QTableWidgetItem(f.size_human))
 
+            # [UI-2025] Статус: ✅ уже скачана / ⚠️ битый / ⬇️ отсутствует.
+            status = get_file_status(f.filename)
+            if status == "installed":
+                status_item = QTableWidgetItem("✅ Скачана")
+                status_item.setForeground(QColor("#98c379"))
+                status_item.setToolTip(
+                    f"Модель уже на диске (~/.ollidesk/models/{f.filename}). "
+                    f"Можно перекачать — кнопка спросит подтверждение."
+                )
+            elif status == "broken":
+                status_item = QTableWidgetItem("⚠️ Битый")
+                status_item.setForeground(QColor("#e5c07b"))
+                status_item.setToolTip(
+                    "Файл есть, но размер < 1 МБ. Скачивание прервалось. "
+                    "Перекачайте, чтобы восстановить."
+                )
+            else:
+                status_item = QTableWidgetItem("⬇️ Нет")
+                status_item.setForeground(QColor("#888888"))
+                status_item.setToolTip("Файл ещё не скачан.")
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.files_table.setItem(i, 2, status_item)
+
         if details.gguf_files:
             self.files_table.selectRow(0)
             self.download_btn.setEnabled(True)
@@ -377,8 +403,41 @@ class HFDialog(QDialog):
         if row < 0 or row >= len(self._current_details.gguf_files):
             return
         f = self._current_details.gguf_files[row]
-        tags = detect_tags(self._current_details.tags, self._current_details.pipeline_tag, self._current_details.repo_id)
-        payload = {"repo_id": self._current_details.repo_id, "filename": f.filename, "tags": tags}
+
+        # [UI-2025] Подтверждение при перекачке.
+        status = get_file_status(f.filename)
+        if status == "installed":
+            reply = QMessageBox.question(
+                self,
+                "Модель уже скачана",
+                f"Файл {f.filename} уже есть на диске ({f.size_human}).\n\n"
+                f"Перекачать? (Старый файл будет перезаписан.)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        elif status == "broken":
+            reply = QMessageBox.question(
+                self,
+                "Битый файл",
+                f"Файл {f.filename} есть, но размер < 1 МБ — "
+                f"вероятно, скачивание прервалось.\n\n"
+                f"Перекачать?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        tags = detect_tags(
+            self._current_details.tags,
+            self._current_details.pipeline_tag,
+            self._current_details.repo_id,
+        )
+        payload = {
+            "repo_id": self._current_details.repo_id,
+            "filename": f.filename,
+            "tags": tags,
+        }
         self.download_requested.emit(payload)
 
     @Slot()
