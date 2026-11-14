@@ -1642,10 +1642,6 @@ class ChatMessageItem(QWidget):
         self._parts_layout = parts_layout
         bubble_layout.addWidget(self._parts_container)
 
-        if is_assistant:
-            self._thought_stream = ChatThoughtStream(parent=self._parts_container)
-            self._parts_layout.addWidget(self._thought_stream)
-
         if is_user or is_assistant:
             copy_row = QHBoxLayout()
             copy_row.setContentsMargins(0, 4, 0, 0)

@@ -2903,7 +2903,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 ChatMessageItem,
                 ChatActivityItem,
                 ChatSourcesItem,
-                ChatThoughtStream,
                 ChatResearchPassport,
                 ChatDiagramItem,
                 ChatHypothesisItem,

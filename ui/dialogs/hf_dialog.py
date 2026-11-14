@@ -20,7 +20,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QColor,
     QComboBox,
-    QDesktopServices,
     QDialog,
     QHBoxLayout,
     QHeaderView,

@@ -122,19 +122,8 @@ def _redact_filter(record: dict) -> bool:
     return True
 
 
-def _event_bus_sink(record: dict) -> None:
-    """Зеркалит loguru-record в EventBus (2.5).
-
-    Фильтр по уровню — на уровне sink'а (`level="INFO"` в `logger.add`),
-    но проверка дублируется для документации и на случай, если sink
-    подключат через `logger.add(_event_bus_sink)` без явного `level=`.
-
-    Внутри — только то, что нужно UI: level, message, source, timestamp.
-    Никаких `record["extra"]` — они не для UI. Секреты уже вырезаны
-    `_redact_filter` (0.1.2), повторная редокция не нужна.
-
-    Любая ошибка глушится: sink не должен валить логирование.
-    """
+def _event_bus_sink(message: Any) -> None:
+    """Зеркалит loguru-record в EventBus (2.5)."""
     try:
         record = message.record
         level_no = record["level"].no
@@ -152,8 +141,6 @@ def _event_bus_sink(record: dict) -> None:
         EventBus.instance().emit(EventKind.LOG.value, payload)
     except Exception:
         logger.debug("EventBus-sink упал", exc_info=True)
-
-
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
 

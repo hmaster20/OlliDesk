@@ -430,13 +430,15 @@ class LocalLLMClient:
                                         done=False,
                                     )
                                 )
-                gen_ms = (time.perf_counter() - gen_started) * 1000
+                                gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 # [4.2] Метрики prefix caching.
                 try:
                     total_kv_after = int(self.llm.n_tokens)
                 except Exception:
                     total_kv_after = 0
+
+                full_text = "".join(full_text_parts)
 
                 if reasoning_parts:
                     logger.debug(
@@ -449,7 +451,6 @@ class LocalLLMClient:
                     _safe_put(ChatChunk(done=True, event_type="end"))
                     return
 
-                full_text = "".join(full_text_parts)
                 tokens = self._count_tokens(full_text)
                 ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
 

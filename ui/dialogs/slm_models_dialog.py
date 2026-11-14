@@ -28,6 +28,7 @@ from agents.download_slm import (
     fetch_expected_sha256,
     get_file_status,
     get_local_size_mb,
+    get_model_path,
     get_models_dir,
     is_model_installed,
 )
@@ -672,7 +673,13 @@ class SLMModelsDialog(QDialog):
         chosen = menu.exec(self.verify_all_btn.mapToGlobal(self.verify_all_btn.rect().bottomLeft()))
         if chosen is None:
             return
-        verify_sha256 = chosen is act_full
+        # Разные действия → разные режимы; при неожиданном выборе — выходим.
+        if chosen is act_fast:
+            verify_sha256 = False
+        elif chosen is act_full:
+            verify_sha256 = True
+        else:
+            return
 
         if verify_sha256:
             total_mb = sum(get_local_size_mb(m.file) for m in candidates)

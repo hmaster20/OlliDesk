@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QLabel
 
 from agents.download_slm import get_model_paths
 from agents.local_llm_client import LocalLLMClient
+from agents.model_pool import Role
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import OllamaClient
 from core.event_bus import emit_event

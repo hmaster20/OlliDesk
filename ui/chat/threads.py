@@ -565,7 +565,7 @@ class _SLMLoadThread(QThread):
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
         self.params: OptimizedParams | None = params
-        self.is_thinking = is_thinkings
+        self.is_thinking = is_thinking
 
     def run(self):
         try:
