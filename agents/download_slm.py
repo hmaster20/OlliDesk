@@ -9,8 +9,8 @@
 import contextlib
 import re
 from pathlib import Path
-
 from loguru import logger
+from collections.abc import Callable
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 
@@ -407,6 +407,194 @@ def _verify_model_file(
             f"Файл удалён — повторите скачивание."
         )
     logger.info(f"SHA256 для {filename}: OK")
+
+ProgressCb = Callable[[int, str], None]
+"""Callback прогресса: (percent 0-100, message)."""
+
+
+def _hf_file_url(repo_id: str, filename: str) -> str:
+    """Прямой URL файла на HF (`https://huggingface.co/<repo>/resolve/main/<file>`)."""
+    from huggingface_hub import hf_hub_url
+
+    return hf_hub_url(repo_id=repo_id, filename=filename)
+
+
+def _download_one_file(
+    url: str,
+    target: Path,
+    *,
+    progress_cb: ProgressCb | None = None,
+    timeout_s: float = 300.0,
+) -> None:
+    """Скачивает один файл с resume и прогрессом.
+
+    Логика:
+      1. HEAD-запрос получает `Content-Length` (итоговый размер).
+      2. Если `target` уже существует и меньше — докачиваем через
+         `Range: bytes=<size>-`. Это resume после обрыва.
+      3. Если `target.size == Content-Length` — файл уже скачан.
+      4. Стрим: читаем чанки по 1 МБ, дозаписываем в файл, эмитим percent.
+
+    Args:
+        url: Прямой URL.
+        target: Куда сохранять.
+        progress_cb: (percent, message) — вызывается после каждого чанка.
+        timeout_s: Таймаут на один сетевой вызов.
+
+    Raises:
+        RuntimeError: если сервер вернул не-200/206.
+    """
+    import requests
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. HEAD — Content-Length.
+    head = requests.head(url, allow_redirects=True, timeout=timeout_s)
+    head.raise_for_status()
+    total = int(head.headers.get("Content-Length", 0))
+
+    # 2. Resume: есть уже часть?
+    downloaded = target.stat().st_size if target.exists() else 0
+    if total > 0 and downloaded == total:
+        if progress_cb:
+            progress_cb(100, "уже скачана")
+        return
+    if total > 0 and downloaded > total:
+        # Битый хвост больше заявленного — перекачиваем целиком.
+        logger.warning(
+            f"{target.name}: размер {downloaded} > Content-Length {total} — перекачиваю"
+        )
+        downloaded = 0
+        with contextlib.suppress(OSError):
+            target.unlink()
+
+    headers: dict[str, str] = {}
+    if downloaded > 0:
+        headers["Range"] = f"bytes={downloaded}-"
+        logger.info(f"{target.name}: resume с {downloaded} / {total} байт")
+    else:
+        logger.info(f"{target.name}: старт скачивания, {total} байт")
+
+    mode = "ab" if downloaded > 0 else "wb"
+    with requests.get(url, headers=headers, stream=True, timeout=timeout_s) as r:
+        if r.status_code == 416 and downloaded > 0:
+            # Range вне файла — значит всё скачано.
+            if progress_cb:
+                progress_cb(100, "уже скачана")
+            return
+        if r.status_code not in (200, 206):
+            raise RuntimeError(
+                f"HTTP {r.status_code} при скачивании {target.name} "
+                f"(ожидалось 200/206)"
+            )
+
+        # Сервер мог проигнорировать Range (200 вместо 206) — начинаем заново.
+        if downloaded > 0 and r.status_code == 200:
+            logger.warning(
+                f"{target.name}: сервер вернул 200 вместо 206 — начинаю заново"
+            )
+            downloaded = 0
+            mode = "wb"
+
+        chunk_size = 1 << 20  # 1 МБ
+        last_pct = -1
+        with open(target, mode) as f:
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_cb and total > 0:
+                    pct = min(100, int(100 * downloaded / total))
+                    if pct != last_pct:
+                        last_pct = pct
+                        progress_cb(
+                            pct,
+                            f"{downloaded // (1 << 20)} / {total // (1 << 20)} МБ",
+                        )
+
+    if progress_cb and total > 0:
+        # Финальный 100% (если по чанкам не дотянули из-за округления).
+        progress_cb(100, "готово")
+
+
+def download_model_with_progress(
+    repo_id: str,
+    filename: str,
+    target_dir: Path | None = None,
+    *,
+    progress_cb: ProgressCb | None = None,
+    verify_sha256: bool | None = None,
+) -> Path:
+    """Скачивает модель с прогрессом, resume и финальной проверкой.
+
+    Отличия от `download_model`:
+      * отдаёт реальный процент через `progress_cb`;
+      * resume: если файл частично скачан — докачивает через `Range`;
+      * для split-моделей эмитит прогресс по каждой части отдельно.
+
+    Args:
+        repo_id: HF-репозиторий.
+        filename: Имя файла (первой части для split).
+        target_dir: Каталог моделей.
+        progress_cb: (percent 0-100, message). Для split-моделей percent
+            «сбрасывается» на каждой части — UI показывает общий прогресс
+            по частям (например, `часть 1/3 — 67%`).
+        verify_sha256: None → из конфига; True/False — явно.
+
+    Returns:
+        Путь к первой части / единственному файлу.
+    """
+    target_dir = target_dir or get_models_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if verify_sha256 is None:
+        try:
+            from core.config import load_config
+
+            verify_sha256 = bool(load_config().slm.verify_sha256_on_download)
+        except Exception:
+            verify_sha256 = True
+
+    parts = get_model_parts(repo_id, filename)
+
+    if parts > 1:
+        # Split: качаем по частям с прогрессом.
+        stem = filename.removesuffix(".gguf")
+        first: Path | None = None
+        for i in range(1, parts + 1):
+            part_name = _split_part_name(stem, i, parts)
+            url = _hf_file_url(repo_id, part_name)
+            part_path = target_dir / part_name
+
+            def _part_cb(pct: int, msg: str, _i: int = i, _n: int = parts, _name: str = part_name) -> None:
+                if progress_cb is not None:
+                    progress_cb(pct, f"часть {_i}/{_n} ({_name}) — {msg}")
+
+            _download_one_file(url, part_path, progress_cb=_part_cb)
+            try:
+                if part_path.stat().st_size < _MIN_MODEL_SIZE_BYTES:
+                    raise ValueError(
+                        f"Часть {part_name} слишком мала — скачивание прервалось"
+                    )
+            except OSError as e:
+                raise ValueError(f"Не удалось прочитать {part_name}: {e}") from e
+            if i == 1:
+                first = part_path
+
+        assert first is not None
+        logger.info(f"Split-модель готова: {first.name} (+ ещё {parts - 1} частей)")
+        return first
+
+    # Цельный файл.
+    url = _hf_file_url(repo_id, filename)
+    target = target_dir / filename
+    _download_one_file(url, target, progress_cb=progress_cb)
+
+    # Финальная проверка целостности.
+    _verify_model_file(target, repo_id, filename, verify_sha256=verify_sha256)
+    logger.info(f"Модель сохранена: {target}")
+    return target
 
 def download_model(
     repo_id: str,

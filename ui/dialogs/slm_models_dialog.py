@@ -79,21 +79,44 @@ class NumericTableWidgetItem(QTableWidgetItem):
 
 
 class _DownloadThread(QThread):
-    """Скачивает одну модель в фоне."""
+    """Скачивание модели с прогрессом и resume (Этап 3.4).
 
-    sig_finished = Signal(str, bool)  # model_id, success
-    progress = Signal(str, str)  # model_id, message
-    error = Signal(str, str)  # model_id, error
+    Signals:
+        progress_percent(model_id, pct) — 0..100 после каждого чанка.
+        progress_message(model_id, msg) — текст для статус-строки.
+        sig_finished(model_id, ok).
+        error(model_id, error).
+    """
+
+    progress_percent = Signal(str, int)
+    progress_message = Signal(str, str)
+    sig_finished = Signal(str, bool)
+    error = Signal(str, str)
 
     def __init__(self, info: SLMModelInfo):
         super().__init__()
         self.info = info
+        self._last_pct: int = -1
 
     def run(self):
         try:
-            self.progress.emit(self.info.id, f"Скачивание {self.info.file}...")
-            # [UI-2025] verify_sha256=None → берётся из config.slm.verify_sha256_on_download.
-            download_model(self.info.repo, self.info.file, verify_sha256=None)
+            def cb(pct: int, msg: str) -> None:
+                # Логируем в консоль (виден в терминале).
+                logger.info(f"Download {self.info.id}: {pct}% — {msg}")
+                self.progress_percent.emit(self.info.id, pct)
+                self.progress_message.emit(self.info.id, msg)
+
+            self.progress_message.emit(
+                self.info.id, f"Скачивание {self.info.file}…"
+            )
+            from agents.download_slm import download_model_with_progress
+
+            download_model_with_progress(
+                self.info.repo,
+                self.info.file,
+                progress_cb=cb,
+                verify_sha256=None,
+            )
             self.sig_finished.emit(self.info.id, True)
         except Exception as e:
             logger.exception(f"Ошибка скачивания {self.info.id}")
@@ -201,6 +224,7 @@ class SLMModelsDialog(QDialog):
         self.config = config
         self._changed = False
         self._download_thread: _DownloadThread | None = None
+        self._download_percent: dict[str, int] = {}  # model_id → последний %
         self._verify_thread: _VerifyAllThread | None = None
 
         # Очередь скачивания
@@ -247,7 +271,13 @@ class SLMModelsDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Модель", "Издатель", "Параметры", "Квант", "Размер предв.", "Контекст", "Статус", "Активна", "На диске"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # [UI-2025] Все столбцы — регулируемые мышкой (Interactive).
+        # Последний растягивается при расширении окна.
+        header = self.table.horizontalHeader()
+        for col in range(self.table.columnCount()):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        self.table.setWordWrap(False)
 
         # Включаем сортировку
         self.table.setSortingEnabled(True)
@@ -327,12 +357,26 @@ class SLMModelsDialog(QDialog):
 
         btn_layout.addStretch()
 
+        self.fit_btn = QPushButton("↔ Авто-ширина")
+        self.fit_btn.setToolTip(
+            "Подогнать ширину всех столбцов под содержимое (потом можно двигать мышкой)."
+        )
+        self.fit_btn.clicked.connect(self._on_fit_columns)
+        btn_layout.addWidget(self.fit_btn)
+
         self.close_btn = QPushButton("Закрыть")
         self.close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.close_btn)
 
         layout.addLayout(btn_layout)
 
+    @Slot()
+    def _on_fit_columns(self) -> None:
+        """Подгоняет ширины столбцов по содержимому."""
+        self.table.resizeColumnsToContents()
+        for col, max_w in ((0, 380), (1, 260)):
+            if self.table.columnWidth(col) > max_w:
+                self.table.setColumnWidth(col, max_w)
     def _populate(self):
         """Заполняет таблицу с учетом статусов скачивания и очереди."""
         self.table.setSortingEnabled(False)
@@ -369,10 +413,21 @@ class SLMModelsDialog(QDialog):
             pub_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 1, pub_item)
 
-            # 3. Параметры
-            params_match = re.search(r"(\d+(?:\.\d+)?[bBmM])", m.id + " " + m.file)
-            params = params_match.group(1).upper() if params_match else "?"
-            self.table.setItem(row, 2, QTableWidgetItem(params))
+            # 3. Параметры — числовая сортировка (1.5B, 3B, 7B, 14B, 30B, 32B, 70B).
+            # Раньше был строковый QTableWidgetItem, из-за чего 14B < 30B < 32B < 3B < 70B < 7B.
+            params_match = re.search(r"(\d+(?:\.\d+)?)[bB]", m.id + " " + m.file)
+            if params_match:
+                try:
+                    params_val = float(params_match.group(1))
+                except ValueError:
+                    params_val = 0.0
+                params_text = f"{params_val:g}B"  # 1.5 → "1.5B", 7.0 → "7B"
+            else:
+                params_val = 0.0
+                params_text = "?"
+            params_item = NumericTableWidgetItem(params_text, params_val)
+            params_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 2, params_item)
 
             # 4. Квантование
             quant_match = re.search(r"(q\d+(?:_[a-z0-9]+)*|f16|f32)", m.file.lower())
@@ -393,7 +448,8 @@ class SLMModelsDialog(QDialog):
             # 7. Статус
             file_status = get_file_status(m.file)
             if m.id == self._downloading_model_id():
-                status_str = "⏬ Скачивается"
+                pct = self._download_percent.get(m.id, 0)
+                status_str = f"⏬ Скачивание ({pct}%)" if pct > 0 else "⏬ Скачивается"
             elif any(q.id == m.id for q in self._download_queue):
                 status_str = "⏳ В очереди"
             elif file_status == "installed":
@@ -437,6 +493,15 @@ class SLMModelsDialog(QDialog):
 
         # Включаем сортировку обратно
         self.table.setSortingEnabled(True)
+
+        # [UI-2025] Подгоняем ширины по содержимому. Пользователь потом
+        # может двигать мышкой (Interactive).
+        self.table.resizeColumnsToContents()
+        # Ограничиваем «Модель» (длинные имена) и «Файл» — чтобы не занимали
+        # половину окна.
+        for col, max_w in ((0, 380), (1, 260)):
+            if self.table.columnWidth(col) > max_w:
+                self.table.setColumnWidth(col, max_w)
 
         # Embed-модель
         embed_file = self.config.slm.embed_model_file
@@ -696,6 +761,7 @@ class SLMModelsDialog(QDialog):
                 logger.info(f"Битый файл {info.file} удалён перед перекачкой")
             except Exception:
                 logger.debug(f"Не удалось удалить битый {info.file}", exc_info=True)
+            self._download_percent.pop(info.id, None)
 
         # Иначе добавляем в очередь
         self._download_queue.append(info)
@@ -716,7 +782,8 @@ class SLMModelsDialog(QDialog):
         self.progress_bar.setVisible(True)
 
         thread = _DownloadThread(info)
-        thread.progress.connect(self._on_download_progress)
+        thread.progress_percent.connect(self._on_download_percent)
+        thread.progress_message.connect(self._on_download_progress)
         thread.sig_finished.connect(self._on_download_finished)
         thread.error.connect(self._on_download_error)
 
@@ -743,6 +810,29 @@ class SLMModelsDialog(QDialog):
         else:
             self.status_label.setText("")
 
+    @Slot(str, int)
+    def _on_download_percent(self, model_id: str, pct: int) -> None:
+        """[UI-2025] Прогресс скачивания — в строку статуса с зелёной заливкой."""
+        self._download_percent[model_id] = pct
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            if name_item is None:
+                continue
+            if name_item.data(Qt.ItemDataRole.UserRole) != model_id:
+                continue
+            status_item = self.table.item(row, 6)
+            if status_item is None:
+                continue
+            status_item.setText(f"⏬ Скачивание ({pct}%)")
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # [UI-2025] Зелёная заливка по проценту: чем ближе к 100%,
+            # тем плотнее фон.
+            from PySide6.QtGui import QBrush, QColor
+
+            alpha = int(180 * pct / 100)
+            status_item.setBackground(QBrush(QColor(80, 180, 80, alpha)))
+            break
+
     def _on_download_progress(self, _model_id: str, message: str) -> None:
         # hf_hub_download не отдает гранулярный прогресс легко,
         # поэтому показываем статус в лейбле
@@ -750,17 +840,21 @@ class SLMModelsDialog(QDialog):
 
     def _on_download_finished(self, model_id: str, success: bool):
         self._download_thread = None
-
+        self._download_percent.pop(model_id, None)
         if success:
-            logger.info(f"Модель {model_id} успешно скачана.")
-
-        # Запускаем следующий из очереди
+            logger.info(f"Модель {model_id} успешно скачана (SHA256 OK).")
         self._process_queue()
         self._populate()
 
     def _on_download_error(self, model_id: str, error: str):
         self._download_thread = None
-        QMessageBox.warning(self, "Ошибка скачивания", f"Не удалось скачать {model_id}:\n{error}")
+        self._download_percent.pop(model_id, None)
+        QMessageBox.warning(
+            self,
+            "Ошибка скачивания",
+            f"Не удалось скачать {model_id}:\n\n{error}\n\n"
+            f"При следующей попытке скачивание продолжится с места обрыва.",
+        )
         self._process_queue()
         self._populate()
 
@@ -828,7 +922,8 @@ class SLMModelsDialog(QDialog):
         """
         from ui.dialogs.hf_dialog import HFDialog
 
-        dlg = HFDialog(self)
+        # dlg = HFDialog(self)
+        dlg = HFDialog(self, known_models=self.config.slm.available_models)
         dlg.download_requested.connect(self._on_hf_download)
         dlg.add_to_catalog_requested.connect(self._on_hf_add_to_catalog)
         dlg.exec()

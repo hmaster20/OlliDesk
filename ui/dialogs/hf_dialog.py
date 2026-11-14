@@ -47,7 +47,7 @@ from agents.hf_search import (
     model_info,
     search_models,
 )
-from agents.download_slm import get_file_status
+from agents.download_slm import get_file_status, is_model_installed
 
 # ---------------------------------------------------------------------------
 # Фоновые потоки
@@ -121,13 +121,20 @@ class HFDialog(QDialog):
     # Эмитится, когда пользователь нажал «Добавить в каталог».
     add_to_catalog_requested = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        known_models: list | None = None,
+    ) -> None:
         super().__init__(parent)
         self._current_details: HFModelDetails | None = None
         self._search_thread: _SearchThread | None = None
         self._info_thread: _InfoThread | None = None
         self._all_models: list[HFModel] = []
-
+        # [UI-2025] Локальный каталог: чтобы показывать ✅ у репозиториев,
+        # из которых уже что-то скачано.
+        self._known_models = list(known_models or [])
         self.setWindowTitle("Поиск моделей на HuggingFace")
         self.setMinimumSize(1100, 700)
 
@@ -315,7 +322,20 @@ class HFDialog(QDialog):
             tags_str = detect_tags(m.tags, m.pipeline_tag, m.repo_id)
             tag_badge = f" [{'/'.join(tags_str)}]" if tags_str else ""
             icon = "🧠 " if "thinking" in tags_str else ""
-            item = QListWidgetItem(f"{icon}{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}")
+            # [UI-2025] ✅ если из этого repo уже что-то скачано.
+            installed_marker = ""
+            for info in self._known_models:
+                if info.repo == m.repo_id and is_model_installed(info.file):
+                    installed_marker = "✅ "
+                    break
+            item = QListWidgetItem(
+                f"{installed_marker}{icon}{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}"
+            )
+            if installed_marker:
+                item.setToolTip(
+                    "В этом репозитории есть модели, которые уже скачаны локально.\n"
+                    "Нажмите на репозиторий, чтобы увидеть, какие именно."
+                )
             item.setData(Qt.ItemDataRole.UserRole, m.repo_id)
             self.results_list.addItem(item)
 
