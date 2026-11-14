@@ -358,18 +358,15 @@ def select_park(
 
 
 def select_pair_park(hw: HardwareProfile | None = None) -> dict[Role, SLMModelInfo]:
-    """Fallback: только planner+analyst (совместимость с 4.7).
-
-    Используется, если профиль не задаёт ``park_roles`` и мы хотим
-    сохранить текущее двухмодельное поведение research-флоу. По сути
-    оборачивает :func:`select_pair`.
-    """
+    """Fallback: только planner+analyst (совместимость с 4.7)."""
     pair = select_pair(hw)
     result: dict[Role, SLMModelInfo] = {}
-    if pair.get("planner"):
-        result[Role.PLANNER] = pair["planner"]
-    if pair.get("analyst"):
-        result[Role.ANALYST] = pair["analyst"]
+    planner = pair.get("planner")
+    if planner is not None:
+        result[Role.PLANNER] = planner
+    analyst = pair.get("analyst")
+    if analyst is not None:
+        result[Role.ANALYST] = analyst
     return result
 
 

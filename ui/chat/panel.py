@@ -1436,8 +1436,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             if event.type() == QEvent.Type.DragEnter:
                 mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
                 if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
-                    self.input_edit.setStyleSheet(...)
-                    event.acceptProposedAction()  # ← теперь тип известен
+                    self.input_edit.setStyleSheet(
+                        "font-size: 14px; padding: 8px;"
+                        " border: 1px solid #ccc; border-radius: 4px;"
+                    )
+                    event.acceptProposedAction()
                     return True
 
             elif event.type() == QEvent.Type.Drop:
@@ -1447,18 +1450,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                             self._attach_local_file(url.toLocalFile())
                     event.acceptProposedAction()
                     return True
-            elif event.type() == QEvent.Type.Drop:
-                mime = getattr(event, "mimeData", lambda: None)()
-                if mime is not None and mime.hasUrls():
-                    urls = mime.urls()
-                    self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
-                    )
-                    for url in urls:
-                        if url.isLocalFile():
-                            self._attach_local_file(url.toLocalFile())
-                    event.acceptProposedAction()
-                    return True
+            # (второй обработчик Drop удалён — он дублировал первый и не сужал тип)
             elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
                 if event.key() == Qt.Key.Key_Escape:
                     if self._command_completer is not None:

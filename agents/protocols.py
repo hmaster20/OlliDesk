@@ -25,12 +25,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Literal, Protocols
 
 # ---------------------------------------------------------------------------
 # RAG: VectorStoreLike
 # ---------------------------------------------------------------------------
-
 
 class ChunkLike(Protocol):
     """Минимальный контракт чанка результата поиска.
@@ -121,16 +120,20 @@ class AttachedFilesLike(Protocol):
 # 4.3: память
 # ---------------------------------------------------------------------------
 
-
 class ReflectionLike(Protocol):
-    """Минимальный контракт рефлексии (совпадает с `Reflection`)."""
+    """Минимальный контракт рефлексии (совпадает с `Reflection`).
+
+    ВАЖНО: `task_type` и `outcome` объявлены через `Literal`, чтобы точно
+    совпадать с `Reflection` из `core.services.memory_service`. Attributes
+    в Protocol инвариантны — `Literal[...] != str` для mypy.
+    """
 
     id: int | None
     created_at: str
     project_path: str
-    task_type: str
+    task_type: Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
     summary: str
-    outcome: str
+    outcome: Literal["success", "partial", "failure"]
     tags: list[str]
 
 
@@ -144,8 +147,6 @@ class RecallResultLike(Protocol):
 
 
 class MemoryServiceLike(Protocol):
-    """Минимальный контракт `MemoryService` для `AgentContext`."""
-
     def recall(
         self,
         query: str,
@@ -155,4 +156,7 @@ class MemoryServiceLike(Protocol):
         max_age_days: int = 90,
     ) -> RecallResultLike: ...
 
-    def remember(self, reflection: ReflectionLike) -> int: ...
+    # AgentLoop вызывает только `recall`. `remember` оставлен для
+    # структурной совместимости с MemoryService, но с широким аргументом —
+    # иначе MemoryService (принимающий Reflection) не подходит под Protocol.
+    def remember(self, reflection: Any) -> int: ...

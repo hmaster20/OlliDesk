@@ -302,13 +302,16 @@ async def _try_lsp_references(
     if not language:
         return []
     try:
-        return await bridge.references(
+        refs = await bridge.references(
             language,
             str(file_path),
             line,
             0,
             project_root=str(file_path.parent),
         )
+        if not isinstance(refs, list):
+            return []
+        return [r for r in refs if isinstance(r, dict)]
     except Exception as e:
         logger.debug(f"LSP references упал: {e}")
         return []

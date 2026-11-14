@@ -552,7 +552,11 @@ def load_snapshot_meta(snapshot_id: str) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            logger.warning(f"Snapshot {snapshot_id}: meta.json — не словарь")
+            return None
+        return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Snapshot {snapshot_id}: meta.json не читается ({e})")
         return None

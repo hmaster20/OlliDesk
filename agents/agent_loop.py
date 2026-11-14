@@ -872,9 +872,16 @@ class AgentLoop:
             "hypotheses": hypotheses_data,
         }
 
-    def _finalize(self, research_mode, state, context, *, finish_reason=None, soft_budget=None):
+    def _finalize(
+        self,
+        research_mode: bool,
+        state: InvestigationState,
+        context: AgentContext,
+        *,
+        finish_reason: str | None = None,
+        soft_budget: "SoftBudget | None" = None,
+    ) -> None:
         """Кладёт сводку research-прогона в `last_research_summary`.
-
         [2.10] Фиксирует причину остановки и снимок бюджета —
         `AgentChatThread` эмитит их в Qt-сигнале ``agent_finished``.
         [2.5] То же событие идёт в `EventBus` (``agent.finished``) —

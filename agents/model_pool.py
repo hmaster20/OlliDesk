@@ -15,7 +15,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, ToolSchema
 
 from loguru import logger
 
@@ -81,11 +86,25 @@ DEFAULT_SPECS: dict[Role, RoleSpec] = {
     ),
 }
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, ToolSchema
+
 
 class ClientLike(Protocol):
     """Минимальный контракт клиента (LocalLLMClient/OllamaClient)."""
 
     n_ctx: int
+
+    def chat(
+        self,
+        model: str,
+        messages: "list[ChatMessage]",
+        tools: "list[ToolSchema] | None" = None,
+        options: "ChatOptions | None" = None,
+        stream: bool = True,
+        op_type: str | None = None,
+    ) -> "AsyncIterator[ChatChunk]": ...
 
     async def generate(
         self,
@@ -98,10 +117,6 @@ class ClientLike(Protocol):
         stream: bool = False,
     ) -> Any: ...
     def count_tokens(self, text: str) -> int: ...
-    # Сигнатура совпадает с LocalLLMClient.embed(self, model, texts):
-    # Orchestrator сам embed не вызывает (работает через vector_store),
-    # но Protocol должен структурно совпадать с factory(), иначе mypy
-    # отвергает передачу LocalLLMClient в add_role().
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]: ...
 
 
@@ -193,8 +208,8 @@ class ModelPool:
             return
         # Все роли на одном файле — «одна запись» для LRU.
         file_roles: dict[str, list[Role]] = {}
-        for role, file_key in self._file_by_role.items():
-            file_roles.setdefault(file_key, []).append(role)
+        for role, fk in self._file_by_role.items():
+            file_roles.setdefault(fk, []).append(role)
 
         # Самая старая по _last_used роль.
         candidates = sorted(self._last_used.items(), key=lambda kv: kv[1])
@@ -202,7 +217,6 @@ class ModelPool:
             file_key = self._file_by_role.get(role)
             if file_key is None:
                 continue
-            # Удаляем запись `file_key`, только если больше нет ролей на него.
             roles_on_file = [r for r in file_roles.get(file_key, []) if r in self._clients]
             if len(roles_on_file) > 1:
                 # Оставляем клиент, удаляем только эту роль.

@@ -110,6 +110,26 @@ class PipelineSelectors(QWidget):
     def set_project_path(self, path: str) -> None:
         self._project_path = path
 
+    def set_planner(self, model_id: str) -> None:
+        """Программно выставляет planner по id, без эмита сигнала."""
+        idx = self.planner_combo.findData(model_id)
+        if idx >= 0 and idx != self.planner_combo.currentIndex():
+            self._updating = True
+            try:
+                self.planner_combo.setCurrentIndex(idx)
+            finally:
+                self._updating = False
+
+    def set_analyst(self, model_id: str) -> None:
+        """Программно выставляет analyst по id, без эмита сигнала."""
+        idx = self.analyst_combo.findData(model_id)
+        if idx >= 0 and idx != self.analyst_combo.currentIndex():
+            self._updating = True
+            try:
+                self.analyst_combo.setCurrentIndex(idx)
+            finally:
+                self._updating = False
+
     def update_from_pool(self, pool) -> None:
         """Синхронизирует селекторы с реально загруженными моделями в ModelPool."""
         from agents.model_pool import Role

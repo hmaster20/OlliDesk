@@ -210,7 +210,7 @@ class MCPManager:
             logger.info(f"MCPManager: зарегистрировано {count} MCP-инструментов")
         return count
 
-    def _make_callable(self, server_name: str, tool_name: str):
+    def _make_callable(self, server_name: str, tool_name: str) -> Any:
         """Создаёт async-callable для `ToolRegistry.register_spec`."""
 
         async def _call(**kwargs: Any) -> str:
@@ -273,7 +273,7 @@ class MCPManager:
             loop.close()
 
 
-def contextlib_suppress():
+def contextlib_suppress() -> Any:
     """Псевдо-contextmanager без импорта (для читаемости выше)."""
     import contextlib
 

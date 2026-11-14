@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from loguru import logger
-
+from collections.abc import Iterator
 from core.event_bus import emit_event
 from core.events import EventKind
 from core.utils import get_app_data_dir
@@ -247,7 +247,7 @@ class MemoryService:
     # ------------------------------------------------------------------
 
     @contextmanager
-    def _tx(self):
+    def _tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock, self._conn:
             yield self._conn
 
@@ -319,7 +319,7 @@ class MemoryService:
         """Удаляет рефлексию по id. ``False``, если такой не было."""
         with self._tx() as conn:
             cur = conn.execute("DELETE FROM reflections WHERE id = ?", (reflection_id,))
-            removed = cur.rowcount > 0
+            removed = int(cur.rowcount) > 0
         if removed:
             logger.info(f"Memory: forget id={reflection_id}")
         return removed

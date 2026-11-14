@@ -16,9 +16,8 @@ import asyncio
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QColor,
     QComboBox,
     QDialog,
     QHBoxLayout,

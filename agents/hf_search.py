@@ -130,7 +130,7 @@ def _hf_token() -> str | None:
     return env_token or None
 
 
-def _get_api():
+def _get_api() -> Any:
     """Ленивый `HfApi` с токеном."""
     try:
         from huggingface_hub import HfApi

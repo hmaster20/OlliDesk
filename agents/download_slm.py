@@ -407,9 +407,9 @@ def fetch_expected_sha256(repo_id: str, filename: str) -> str | None:
                 continue
             lfs = getattr(sib, "lfs", None)
             if isinstance(lfs, dict):
-                return lfs.get("sha256")  # type: ignore[return-value]
+                return lfs.get("sha256")
             if lfs is not None:
-                return getattr(lfs, "sha256", None)  # type: ignore[return-value]
+                return getattr(lfs, "sha256", None)
             return None
     except Exception as e:
         logger.warning(f"Не удалось получить SHA256 для {repo_id}/{filename}: {e}")

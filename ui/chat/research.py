@@ -66,10 +66,11 @@ class ResearchMixin:
     session_store: Any
     scroll_layout: Any
 
-    # --- NEW: методы ChatPanel, которые вызывает ResearchMixin ---
     _scroll_to_bottom: Callable[[], None]
     _sync_dashboard: Callable[[], None]
     _reset_send_button: Callable[[], None]
+    _ensure_assistant_widget: Callable[[], "ChatMessageItem"]
+    _add_message: Callable[..., Any]
     pipeline_status_changed: Any  # Signal(str)
 
     # ------------------------------------------------------------------
@@ -425,7 +426,7 @@ class ResearchMixin:
                 if result.patches:
                     applied_ok = sum(1 for p in result.patches if p.get("status") == "ok")
                     summary += f" · патчей: {applied_ok}/{len(result.patches)}"
-                self._add_message("system", summary)  # type: ignore[attr-defined]
+                self._add_message("system", summary)
 
                 # Патчи с ошибками — отдельным блоком.
                 failed_patches = [p for p in result.patches if p.get("status") == "error"]
@@ -433,7 +434,7 @@ class ResearchMixin:
                     lines = ["⚠️ Не применены патчи:"]
                     for p in failed_patches:
                         lines.append(f"  • {p.get('path', '?')}: {p.get('error', '')}")
-                    self._add_message("system", "\n".join(lines))  # type: ignore[attr-defined]
+                    self._add_message("system", "\n".join(lines))
 
             QTimer.singleShot(0, self._scroll_to_bottom)
         except Exception:

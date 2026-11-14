@@ -354,7 +354,7 @@ def _row_to_item(row: sqlite3.Row) -> InboxItem:
         mode=str(row["mode"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
-        state=row["state"],  # type: ignore[arg-type]
+        state=row["state"],
         result_json=str(row["result_json"] or ""),
         error=str(row["error"]),
     )

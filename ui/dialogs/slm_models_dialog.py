@@ -74,8 +74,9 @@ class NumericTableWidgetItem(QTableWidgetItem):
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         if isinstance(other, NumericTableWidgetItem):
-            return self.sort_value < other.sort_value
-        return super().__lt__(other)
+            return bool(self.sort_value < other.sort_value)
+        # QTableWidgetItem.__lt__ есть в рантайме, но не в стабах mypy.
+        return bool(super().__lt__(other))  # type: ignore[misc]
 
 
 class _DownloadThread(QThread):

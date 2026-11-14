@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from typing import Final
 
 from loguru import logger
@@ -110,7 +111,7 @@ class QtEventBus(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._unsubscribe = subscribe(None, self._on_event)
+        self._unsubscribe: Callable[[], None] | None = subscribe(None, self._on_event)
 
     @Slot(str, dict)
     def _on_event(self, kind: str, payload: dict) -> None:
@@ -137,9 +138,9 @@ class LiveEventsPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._expanded = False
-        self._count = 0
-        self._important_only = False
+        self._expanded: bool = False
+        self._count: int = 0
+        self._important_only: bool = False
         self._domain_filter: str = "all"
         self._last_kind: str = ""
         self._last_payload: dict = {}
@@ -296,12 +297,11 @@ class LiveEventsPanel(QWidget):
 
     @Slot(bool)
     def _on_important_toggled(self, _checked: bool) -> None:
-        self._important_only = self._important_check.isChecked()
+        self._important_only = bool(self._important_check.isChecked())
 
     @Slot(int)
     def _on_domain_changed(self, _index: int) -> None:
-        """2.5: смена фильтра домена — обновляет текущий вид."""
-        self._domain_filter = self._domain_combo.currentData() or "all"
+        self._domain_filter = str(self._domain_combo.currentData() or "all")
 
     def _render_line(self, kind: str, payload: dict) -> None:
         text, color = self._format_line(kind, payload)

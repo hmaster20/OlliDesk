@@ -136,6 +136,8 @@ def tool_git_commit(
     normalized_files: list[str] | None = None
     if files:
         resolver = SandboxedPathResolver(project_root)
+        if resolver.root is None:
+            return "Ошибка: некорректный project_root."
         normalized_files = []
         for f in files:
             resolved = resolver.resolve(f, allow_sensitive=False)

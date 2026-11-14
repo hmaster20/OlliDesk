@@ -23,6 +23,7 @@ class LLMBackend(Protocol):
         tools: list[ToolSchema] | None = None,
         options: ChatOptions | None = None,
         stream: bool = True,
+        op_type: str | None = None,
     ) -> AsyncIterator[ChatChunk]:
         """Стриминг ответа через клиента LLM.
 

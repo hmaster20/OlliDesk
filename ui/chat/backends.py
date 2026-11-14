@@ -41,6 +41,8 @@ from ui.chat.threads import (
 )
 
 if TYPE_CHECKING:
+    from agents.model_pool import ModelPool
+    from agents.orchestrator import Orchestrator
     from core.services.model_service import ModelService
 
 

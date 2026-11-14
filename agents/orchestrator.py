@@ -1323,13 +1323,15 @@ class Orchestrator:
         Автодетект фреймворка: ищем маркеры в проекте.
         """
         try:
-            from tools.test_ops import _run_tests_sync
+            from typing import cast
+
+            from tools.test_ops import Framework, _run_tests_sync
 
             framework = self._detect_test_framework(project_root)
             if framework is None:
                 return None
             return _run_tests_sync(
-                framework=framework,
+                framework=cast(Framework, framework),
                 target=None,
                 cwd=project_root,
                 timeout_s=180,

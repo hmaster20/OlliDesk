@@ -355,9 +355,12 @@ class ExtensionBrowser(BrowserBackend):
             await ws.send(payload)
             raw = await asyncio.wait_for(ws.recv(), timeout=DEFAULT_ACTION_TIMEOUT)
             try:
-                return json.loads(raw)
+                data = json.loads(raw)
             except json.JSONDecodeError as e:
                 raise BrowserError(f"extension: битый ответ: {e}") from e
+            if not isinstance(data, dict):
+                raise BrowserError(f"extension: ожидался dict, получено {type(data).__name__}")
+            return data
 
     async def open(self, url: str) -> PageSnapshot:
         resp = await self._send("open", {"url": url})
