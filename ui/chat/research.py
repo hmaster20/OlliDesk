@@ -69,7 +69,7 @@ class ResearchMixin:
     _scroll_to_bottom: Callable[[], None]
     _sync_dashboard: Callable[[], None]
     _reset_send_button: Callable[[], None]
-    _ensure_assistant_widget: Callable[[], "ChatMessageItem"]
+    _ensure_assistant_widget: Callable[[], ChatMessageItem]
     _add_message: Callable[..., Any]
     pipeline_status_changed: Any  # Signal(str)
 

@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal, Protocols
+from typing import Literal, Protocol
 
 # ---------------------------------------------------------------------------
 # RAG: VectorStoreLike
@@ -155,8 +155,3 @@ class MemoryServiceLike(Protocol):
         project_path: str | None = None,
         max_age_days: int = 90,
     ) -> RecallResultLike: ...
-
-    # AgentLoop вызывает только `recall`. `remember` оставлен для
-    # структурной совместимости с MemoryService, но с широким аргументом —
-    # иначе MemoryService (принимающий Reflection) не подходит под Protocol.
-    def remember(self, reflection: Any) -> int: ...

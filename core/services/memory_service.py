@@ -32,17 +32,21 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
-from collections.abc import Iterator
+
 from core.event_bus import emit_event
 from core.events import EventKind
 from core.utils import get_app_data_dir
+
+if TYPE_CHECKING:
+    pass
 
 # Максимальные размеры текстовых полей (защита от «мусора»).
 MAX_SUMMARY_CHARS = 4000

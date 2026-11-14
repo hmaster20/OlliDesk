@@ -4605,12 +4605,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.debug("MCP для permissions не зарегистрирован", exc_info=True)
         return registry
 
-    def _reasoning_panel(self) -> ReasoningPanel | None:
-        """Панель рассуждений текущего пузыря ассистента (если он есть)."""
-        if self._last_assistant_widget is None:
-            return None
-        return self._last_assistant_widget.reasoning_panel()
-
     def _show_research_passport(self, summary: dict) -> None:
         """Встраивает ChatResearchPassport в конец пузыря ассистента."""
         if self._last_assistant_widget is None:

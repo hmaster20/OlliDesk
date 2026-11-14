@@ -88,6 +88,7 @@ DEFAULT_SPECS: dict[Role, RoleSpec] = {
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
     from agents.ollama_client import ChatChunk, ChatMessage, ChatOptions, ToolSchema
 
 
@@ -99,12 +100,12 @@ class ClientLike(Protocol):
     def chat(
         self,
         model: str,
-        messages: "list[ChatMessage]",
-        tools: "list[ToolSchema] | None" = None,
-        options: "ChatOptions | None" = None,
+        messages: list[ChatMessage],
+        tools: list[ToolSchema] | None = None,
+        options: ChatOptions | None = None,
         stream: bool = True,
         op_type: str | None = None,
-    ) -> "AsyncIterator[ChatChunk]": ...
+    ) -> AsyncIterator[ChatChunk]: ...
 
     async def generate(
         self,

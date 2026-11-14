@@ -48,10 +48,6 @@ if TYPE_CHECKING:
 
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
-
-    # ------------------------------------------------------------------
-    # Поля, предоставляемые ChatPanel (class-level для mypy).
-    # ------------------------------------------------------------------
     _router: ModelRouter
     _ollama_client: OllamaClient
     _slm_client: LocalLLMClient | None
@@ -63,12 +59,12 @@ class BackendsMixin:
     _slm_load_thread: _SLMLoadThread | None
     _slm_download_thread: _SLMDownloadThread | None
     _ollama_check_thread: _OllamaCheckThread | None
-
+    _orchestrator: Orchestrator | None
+    _model_pool: ModelPool | None
     status_label: QLabel
     backend_status_changed: Any  # Signal(str)
-
-    # --- NEW: методы ChatPanel, которые вызывает BackendsMixin ---
     _update_model_selector_visibility: Callable[[], None]
+    get_current_model: Callable[[], str]
 
     # ------------------------------------------------------------------
     # Публичный API: перезагрузка SLM
