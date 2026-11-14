@@ -25,20 +25,18 @@ from PySide6.QtWidgets import (
 from agents.download_slm import (
     compute_sha256,
     delete_model,
-    download_model,
     fetch_expected_sha256,
     get_file_status,
     get_local_size_mb,
     get_models_dir,
     is_model_installed,
-    _resolve_model_path,
 )
+from core.config import AppConfig, SLMModelInfo, save_config
+from core.slm_models_io import save_slm_models
 from ui.dialogs.verification_report_dialog import (
     VerificationReportDialog,
     VerificationRow,
 )
-from core.config import AppConfig, SLMModelInfo, save_config
-from core.slm_models_io import save_slm_models
 
 # Модульный реестр активных скачиваний: держит сильные ссылки на QThread
 # до завершения, чтобы GC не уничтожил объект во время работы.
@@ -464,7 +462,11 @@ class SLMModelsDialog(QDialog):
             tip_parts: list[str] = []
             if file_status == "broken":
                 # Уточняем причину: маркер .partial или размер.
-                from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+                from agents.download_slm import (
+                    _detect_parts_from_local,
+                    _partial_path_for_file,
+                    _partial_path_for_split,
+                )
 
                 stem = m.file.removesuffix(".gguf")
                 is_split = _detect_parts_from_local(m.file, get_models_dir()) > 1
@@ -598,7 +600,11 @@ class SLMModelsDialog(QDialog):
             self.download_btn.setEnabled(False)
         elif file_status == "broken":
             # [UI-2025] Если есть маркер .partial — resume, иначе перекачка.
-            from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+            from agents.download_slm import (
+                _detect_parts_from_local,
+                _partial_path_for_file,
+                _partial_path_for_split,
+            )
 
             stem = info.file.removesuffix(".gguf")
             is_split = _detect_parts_from_local(info.file, get_models_dir()) > 1
@@ -700,6 +706,7 @@ class SLMModelsDialog(QDialog):
     def _on_verify_finished(self, rows: list[VerificationRow]) -> None:
         """Обновляет модели (last_verified_at, verification_status) и показывает отчёт."""
         from datetime import datetime
+
         from core.slm_models_io import save_slm_models
 
         now = datetime.now().isoformat(timespec="seconds")
@@ -789,7 +796,11 @@ class SLMModelsDialog(QDialog):
         # маркер .partial. Если маркера нет — удалить и скачать заново.
         file_status = self._status_for(info)
         if file_status == "broken":
-            from agents.download_slm import _detect_parts_from_local, _partial_path_for_file, _partial_path_for_split
+            from agents.download_slm import (
+                _detect_parts_from_local,
+                _partial_path_for_file,
+                _partial_path_for_split,
+            )
 
             stem = info.file.removesuffix(".gguf")
             is_split = _detect_parts_from_local(info.file, get_models_dir()) > 1

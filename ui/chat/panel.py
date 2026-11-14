@@ -86,9 +86,9 @@ from ui.chat.message_item import (
     ChatMessageItem,
     ChatSourcesItem,
 )
+from ui.chat.reasoning_panel import ReasoningPanel
 from ui.chat.research import ResearchMixin
 from ui.chat.research_passport import ChatResearchPassport
-from ui.chat.reasoning_panel import ReasoningPanel
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,

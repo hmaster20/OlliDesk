@@ -20,14 +20,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,

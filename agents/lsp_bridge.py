@@ -23,9 +23,9 @@ import asyncio
 import contextlib
 import json
 import os
-import sys
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path

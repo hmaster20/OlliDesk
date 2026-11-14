@@ -40,8 +40,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import ColorTokens, get_colors
 from ui.chat.reasoning_panel import ReasoningPanel
+from ui.theme import ColorTokens, get_colors
 
 
 def _theme_colors(dark: bool) -> ColorTokens:

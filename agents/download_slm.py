@@ -8,9 +8,10 @@
 
 import contextlib
 import re
-from pathlib import Path
-from loguru import logger
 from collections.abc import Callable
+from pathlib import Path
+
+from loguru import logger
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 

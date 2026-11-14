@@ -18,7 +18,9 @@ from loguru import logger
 from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QColor,
     QComboBox,
+    QDesktopServices,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -35,10 +37,9 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QVBoxLayout,
     QWidget,
-    QColor,
-    QDesktopServices,
 )
 
+from agents.download_slm import get_file_status, is_model_installed
 from agents.hf_search import (
     HFModel,
     HFModelDetails,
@@ -47,7 +48,6 @@ from agents.hf_search import (
     model_info,
     search_models,
 )
-from agents.download_slm import get_file_status, is_model_installed
 
 # ---------------------------------------------------------------------------
 # Фоновые потоки

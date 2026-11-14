@@ -406,7 +406,7 @@ class PipelineSelectors(QWidget):
 
         # [FIX] Защита от выбора недокачанной/битой модели
         if model_id:
-            from agents.download_slm import is_model_installed, get_model_path
+            from agents.download_slm import get_model_path, is_model_installed
             info = self._config.slm.get_model_by_id(model_id)
             if info and not is_model_installed(info.file):
                 QMessageBox.warning(self, "Модель не скачана",
@@ -435,6 +435,7 @@ class PipelineSelectors(QWidget):
 
         if self._project_path:
             from pathlib import Path
+
             from state.project_settings import ProjectSettings
             s = ProjectSettings.load(Path(self._project_path))
             s.planner_model_id = model_id
@@ -451,7 +452,7 @@ class PipelineSelectors(QWidget):
 
         # [FIX] Защита от выбора недокачанной/битой модели
         if model_id:
-            from agents.download_slm import is_model_installed, get_model_path
+            from agents.download_slm import get_model_path, is_model_installed
             info = self._config.slm.get_model_by_id(model_id)
             if info and not is_model_installed(info.file):
                 QMessageBox.warning(self, "Модель не скачана",
@@ -479,6 +480,7 @@ class PipelineSelectors(QWidget):
 
         if self._project_path:
             from pathlib import Path
+
             from state.project_settings import ProjectSettings
             s = ProjectSettings.load(Path(self._project_path))
             s.analyst_model_id = model_id

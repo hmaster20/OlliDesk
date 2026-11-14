@@ -15,7 +15,7 @@ import asyncio
 import json
 import subprocess
 import time
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
