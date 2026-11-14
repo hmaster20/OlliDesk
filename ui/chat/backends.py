@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
+
     _router: ModelRouter
     _ollama_client: OllamaClient
     _slm_client: LocalLLMClient | None

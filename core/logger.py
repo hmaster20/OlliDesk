@@ -141,6 +141,8 @@ def _event_bus_sink(message: Any) -> None:
         EventBus.instance().emit(EventKind.LOG.value, payload)
     except Exception:
         logger.debug("EventBus-sink упал", exc_info=True)
+
+
 def setup_logger(log_dir: Path, level: str = "INFO") -> None:
     """Настраивает loguru с ротацией 10MB, хранение 7 дней.
 

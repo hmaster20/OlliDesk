@@ -1437,8 +1437,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
                 if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
                     self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px;"
-                        " border: 1px solid #ccc; border-radius: 4px;"
+                        "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
                     )
                     event.acceptProposedAction()
                     return True
