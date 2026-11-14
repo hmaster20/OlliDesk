@@ -319,7 +319,6 @@ def detect_tags(
     repo_id: str = "",
 ) -> list[str]:
     """Эвристика тегов модели по cardData.tags + pipeline_tag + repo_id.
-
     Args:
         tags: Теги из карточки HF (``cardData.tags`` или
             ``model_info.tags``).
@@ -337,6 +336,10 @@ def detect_tags(
         out.append("coder")
     if any(k in combined for k in ("reasoning", "r1", "-think", "qwq")):
         out.append("reasoning")
+    if any(k in combined for k in ("r1", "qwq", "qwen3", "-think", "thinking")):
+        if "reasoning" not in out:
+            out.append("reasoning")
+        out.append("thinking")
     if any(k in combined for k in ("moe", "a3b", "a2b", "a22b")):
         out.append("moE")
     if any(k in combined for k in ("embed", "bge", "nomic-embed", "e5-", "gte-")):

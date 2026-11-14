@@ -357,6 +357,16 @@ class BackendsMixin:
             },
         )
 
+        # [UI-2025] is_thinking — из выбранной модели (для парсера <think>).
+        selected_info = None
+        try:
+            from core.config import load_config as _load_cfg
+            _cfg = _load_cfg()
+            selected_info = _cfg.slm.get_selected_info()
+        except Exception:
+            pass
+        is_thinking = bool(selected_info.is_thinking) if selected_info else False
+
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
             embed_path,
@@ -366,6 +376,7 @@ class BackendsMixin:
             n_gpu_layers=n_gpu_layers,
             max_tokens=max_tokens,
             params=params,
+            is_thinking=is_thinking,
         )
         self._slm_load_thread.finished.connect(
             lambda client, gen=generation: self._on_slm_loaded(client, gen)

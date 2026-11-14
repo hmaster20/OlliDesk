@@ -552,6 +552,7 @@ class _SLMLoadThread(QThread):
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
         params: OptimizedParams | None = None,
+        is_thinking: bool = False,
     ):
         super().__init__()
         self.chat_path = chat_path
@@ -562,6 +563,7 @@ class _SLMLoadThread(QThread):
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
         self.params: OptimizedParams | None = params
+        self.is_thinking = is_thinkings
 
     def run(self):
         try:
@@ -574,6 +576,7 @@ class _SLMLoadThread(QThread):
                 n_gpu_layers=self.n_gpu_layers,
                 max_tokens=self.max_tokens,
                 params=self.params,
+                is_thinking=self.is_thinking,
             )
             self.finished.emit(client)
         except Exception as e:
@@ -830,7 +833,23 @@ class _ModelPoolLoadThread(QThread):
                     ),
                     notes=base.notes,
                 )
-                return LocalLLMClient(model_path=path, params=params, max_tokens=1024)
+
+                # [UI-2025] is_thinking берём из info (SLMModelInfo) — для роли
+                # есть spec.model_id, а в cfg.slm.available_models лежит сам info.
+                info = None
+                if cfg is not None:
+                    info = next(
+                        (i for i in cfg.slm.available_models if i.id == spec.model_id),
+                        None,
+                    )
+                is_thinking = bool(info.is_thinking) if info else False
+
+                return LocalLLMClient(
+                    model_path=path,
+                    params=params,
+                    max_tokens=1024,
+                    is_thinking=is_thinking,
+                )
 
             # 4.1: max_loaded=3 — router+planner (GPU) + coder (CPU).
             pool = ModelPool(max_loaded=3)

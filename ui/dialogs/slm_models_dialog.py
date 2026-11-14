@@ -257,9 +257,15 @@ class SLMModelsDialog(QDialog):
         for row, m in enumerate(chat_models):
             self.table.insertRow(row)
 
-            # 1. Имя
-            name_item = QTableWidgetItem(m.display_name)
+            # 1. Имя (+ 🧠 для thinking-моделей)
+            name_prefix = "🧠 " if getattr(m, "is_thinking", False) else ""
+            name_item = QTableWidgetItem(f"{name_prefix}{m.display_name}")
             name_item.setData(Qt.ItemDataRole.UserRole, m.id)
+            if getattr(m, "is_thinking", False):
+                name_item.setToolTip(
+                    "🧠 Модель с режимом размышлений (<think>...</think>). "
+                    "Reasoning идёт в отдельную панель внутри пузыря."
+                )
             self.table.setItem(row, 0, name_item)
 
             # 2. Издатель (парсим из repo)
@@ -564,12 +570,18 @@ class SLMModelsDialog(QDialog):
             model_id = f"{base_id}-{suffix}"
             suffix += 1
 
+        tags = list(payload.get("tags") or ["chat"])
+        # [UI-2025] Thinking-модель, если в тегах есть "thinking" или "reasoning"
+        # (detect_tags проставляет их для R1 / QwQ / Qwen 3).
+        is_thinking = "thinking" in tags or "reasoning" in tags
+
         info = SLMModelInfo(
             id=model_id, repo=repo_id, file=filename,
             display_name=str(payload.get("display_name") or filename.removesuffix(".gguf")),
             size_mb=int(payload.get("size_mb") or 0), kind="chat", n_ctx=0,
-            tags=list(payload.get("tags") or ["chat"]),
+            tags=tags,
             description=str(payload.get("description") or "")[:500],
+            is_thinking=is_thinking,
         )
         self.config.slm.available_models.append(info)
         save_config(self.config)

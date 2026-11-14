@@ -24,6 +24,7 @@ from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import (
     ChatChunk,
     ChatMessage,
+    ReasoningPart,
     TextPart,
     ToolCall,
     ToolCallPart,
@@ -64,6 +65,87 @@ _FORMAT_INSTRUCTION = (
     "блоках ```язык. Не используй LaTeX ($$, \\( \\)) и HTML-теги."
 )
 
+class _ThinkParser:
+    """Потоковый парсер `<think>...</think>` для thinking-моделей.
+
+    DeepSeek-R1-Distill и Qwen 3 отдают reasoning в блоках `<think>...</think>`
+    внутри `delta.content`. Этот парсер:
+      * режет поток на (kind="think", text) и (kind="text", text);
+      * корректно обрабатывает случай, когда тег приходит по частям
+        (`<` → `think` → `>` в разных токенах);
+      * в конце генерации `flush()` отдаёт хвост буфера — если модель
+        не закрыла `<think>` (обрезалась по max_tokens), reasoning
+        всё равно сохранится.
+
+    Не thread-safe — используется в одном потоке `_generate`.
+    """
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buf: str = ""
+        self._in_think: bool = False
+
+    @classmethod
+    def _partial_prefix_len(cls, text: str, marker: str) -> int:
+        """Сколько последних символов `text` — префикс `marker` (0..len(marker)-1)."""
+        max_k = min(len(marker) - 1, len(text))
+        for k in range(max_k, 0, -1):
+            if marker.startswith(text[-k:]):
+                return k
+        return 0
+
+    def feed(self, token: str) -> list[tuple[str, str]]:
+        """Принимает токен, возвращает список (kind, text) — kind ∈ {think, text}."""
+        if not token:
+            return []
+        self._buf += token
+        out: list[tuple[str, str]] = []
+
+        while self._buf:
+            if not self._in_think:
+                idx = self._buf.find(self.OPEN)
+                if idx == -1:
+                    keep = self._partial_prefix_len(self._buf, self.OPEN)
+                    if keep:
+                        if len(self._buf) > keep:
+                            out.append(("text", self._buf[:-keep]))
+                        self._buf = self._buf[-keep:]
+                    else:
+                        out.append(("text", self._buf))
+                        self._buf = ""
+                    break
+                if idx > 0:
+                    out.append(("text", self._buf[:idx]))
+                self._buf = self._buf[idx + len(self.OPEN):]
+                self._in_think = True
+            else:
+                idx = self._buf.find(self.CLOSE)
+                if idx == -1:
+                    keep = self._partial_prefix_len(self._buf, self.CLOSE)
+                    if keep:
+                        if len(self._buf) > keep:
+                            out.append(("think", self._buf[:-keep]))
+                        self._buf = self._buf[-keep:]
+                    else:
+                        out.append(("think", self._buf))
+                        self._buf = ""
+                    break
+                if idx > 0:
+                    out.append(("think", self._buf[:idx]))
+                self._buf = self._buf[idx + len(self.CLOSE):]
+                self._in_think = False
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        """Отдаёт остаток буфера в конце генерации."""
+        if not self._buf:
+            return []
+        kind = "think" if self._in_think else "text"
+        rest = self._buf
+        self._buf = ""
+        return [(kind, rest)]
 
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
@@ -86,6 +168,7 @@ class LocalLLMClient:
         max_tokens: int = 1024,
         verbose: bool = False,
         params: "OptimizedParams | None" = None,
+        is_thinking: bool = False,
     ):
         from llama_cpp import Llama
 
@@ -118,6 +201,10 @@ class LocalLLMClient:
         self.n_threads = n_threads if n_threads > 0 else detect_optimal_threads()
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
+
+        # [UI-2025] thinking-модели (DeepSeek-R1-Distill / Qwen 3) отдают
+        # reasoning в `<think>...</think>`. Для них включаем потоковый парсер.
+        self.is_thinking = is_thinking
 
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -249,6 +336,10 @@ class LocalLLMClient:
             except Exception:
                 cache_reads_before = 0
 
+            # [UI-2025] Для thinking-моделей — потоковый парсер `<think>`.
+            think_parser = _ThinkParser() if self.is_thinking else None
+            reasoning_parts: list[str] = []
+
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
@@ -271,24 +362,62 @@ class LocalLLMClient:
                         if finish:
                             finish_reason = str(finish)
                         delta = choice.get("delta") or {}
-                        content = str(delta.get("content") or "")
-                        if not content:
+                        raw = str(delta.get("content") or "")
+                        if not raw:
                             continue
 
-                        # [FIX] Заменяем маркеры пробелов SentencePiece и BPE на обычный пробел.
-                        # Больше НИКАКИХ isalnum() хаков, которые ломают слова.
-                        content = content.replace("▁", " ").replace("Ġ", " ")
+                        # Заменяем маркеры пробелов SentencePiece / BPE.
+                        raw = raw.replace("▁", " ").replace("Ġ", " ")
 
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
-                        full_text_parts.append(content)
-                        _safe_put(
-                            ChatChunk(
-                                part=TextPart(text=content),
+
+                        if think_parser is not None:
+                            for kind, piece in think_parser.feed(raw):
+                                if not piece:
+                                    continue
+                                if kind == "think":
+                                    reasoning_parts.append(piece)
+                                    _safe_put(ChatChunk(
+                                        part=ReasoningPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    ))
+                                else:
+                                    full_text_parts.append(piece)
+                                    _safe_put(ChatChunk(
+                                        part=TextPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    ))
+                        else:
+                            full_text_parts.append(raw)
+                            _safe_put(ChatChunk(
+                                part=TextPart(text=raw),
                                 event_type="delta",
                                 done=False,
-                            )
-                        )
+                            ))
+
+                    # [UI-2025] Хвост парсера — если модель не закрыла <think>
+                    # (обрезалась по max_tokens) или не закончила слово.
+                    if think_parser is not None and not cancelled:
+                        for kind, piece in think_parser.flush():
+                            if not piece:
+                                continue
+                            if kind == "think":
+                                reasoning_parts.append(piece)
+                                _safe_put(ChatChunk(
+                                    part=ReasoningPart(text=piece),
+                                    event_type="delta",
+                                    done=False,
+                                ))
+                            else:
+                                full_text_parts.append(piece)
+                                _safe_put(ChatChunk(
+                                    part=TextPart(text=piece),
+                                    event_type="delta",
+                                    done=False,
+                                ))
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 # [4.2] Метрики prefix caching.
@@ -297,6 +426,11 @@ class LocalLLMClient:
                 except Exception:
                     total_kv_after = 0
 
+                if reasoning_parts:
+                    logger.debug(
+                        f"SLM: reasoning {sum(len(p) for p in reasoning_parts)} симв., "
+                        f"ответ {len(full_text)} симв."
+                    )
                 if cancelled:
                     self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")

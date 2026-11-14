@@ -311,7 +311,8 @@ class HFDialog(QDialog):
         for m in sorted_models:
             tags_str = detect_tags(m.tags, m.pipeline_tag, m.repo_id)
             tag_badge = f" [{'/'.join(tags_str)}]" if tags_str else ""
-            item = QListWidgetItem(f"{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}")
+            icon = "🧠 " if "thinking" in tags_str else ""
+            item = QListWidgetItem(f"{icon}{m.repo_id}{tag_badge}  ⬇ {m.downloads}  ♥ {m.likes}")
             item.setData(Qt.ItemDataRole.UserRole, m.repo_id)
             self.results_list.addItem(item)
 

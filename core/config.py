@@ -118,6 +118,12 @@ class SLMModelInfo(BaseModel):
     moe: bool = False
     active_params_b: float = 0.0
 
+    # [UI-2025] True — модель умеет режим размышлений (<think>...</think>).
+    # Используется: (1) LocalLLMClient для парсинга reasoning из стрима;
+    # (2) UI-иконка 🧠 в списках моделей. Не путать с тегом "reasoning"
+    # (он про способности, а не про формат вывода).
+    is_thinking: bool = False
+
     @field_validator("tier")
     @classmethod
     def _validate_tier(cls, v: int) -> int:
@@ -272,6 +278,59 @@ _DEFAULT_SLM_MODELS: list[dict] = [
         "size_mb": 5400,
         "tier": 2,
         "n_ctx": 32768,
+    },
+    # =====================================================================
+    # THINKING-МОДЕЛИ (эталон размышлений + быстрый Qwen 3)
+    # =====================================================================
+    {
+        "id": "deepseek-r1-distill-qwen-7b-q4_k_m",
+        "repo": "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+        "file": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+        "display_name": "DeepSeek-R1 Distill Qwen 7B q4_k_m · эталон reasoning",
+        "size_mb": 4680,
+        "tier": 2,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "Qwen 2.5 7B, дообученная DeepSeek на цепочках рассуждений. "
+            "Пишет <think>...</think> перед ответом, проверяет себя, "
+            "объясняет логику. На CPU (ваш T1200) — ~2–3 tok/s. "
+            "Эталон для проверки reasoning-флоу."
+        ),
+        "recommended_profile": "research",
+    },
+    {
+        "id": "deepseek-r1-distill-qwen-14b-q4_k_m",
+        "repo": "unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF",
+        "file": "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+        "display_name": "DeepSeek-R1 Distill Qwen 14B q4_k_m",
+        "size_mb": 9000,
+        "tier": 3,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "Более крупная reasoning-модель. На 4 ГБ VRAM — только CPU, "
+            "~1–2 tok/s. Качество рассуждений заметно выше 7B."
+        ),
+        "recommended_profile": "research",
+    },
+    {
+        "id": "qwen3-4b-instruct-q4_k_m",
+        "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "display_name": "Qwen 3 4B Instruct q4_k_m · быстрый reasoning",
+        "size_mb": 2700,
+        "tier": 1,
+        "n_ctx": 32768,
+        "tags": ["chat", "reasoning"],
+        "is_thinking": True,
+        "description": (
+            "Qwen 3 с гибридным режимом размышлений. 4B — влезает в VRAM "
+            "частично (~5 tok/s). Формат <think>...</think> как у DeepSeek. "
+            "Хорош для быстрых итераций."
+        ),
     },
     # =====================================================================
     # TIER 3 — крупные (14B): 10–12 ГБ VRAM / 32 ГБ RAM
