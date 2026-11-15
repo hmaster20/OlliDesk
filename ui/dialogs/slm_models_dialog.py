@@ -603,11 +603,14 @@ class SLMModelsDialog(QDialog):
 
     @Slot()
     def _on_change_models_dir(self) -> None:
-        """Смена каталога моделей с опциональным переносом существующих."""
+        """Смена каталога моделей с выгрузкой/загрузкой и опциональным переносом."""
+        import gc
         import shutil
+        import time
+
+        from PySide6.QtWidgets import QApplication, QFileDialog
 
         from agents.download_slm import get_models_dir, reset_models_dir_cache
-        from PySide6.QtWidgets import QFileDialog
 
         current = get_models_dir()
 
@@ -624,7 +627,7 @@ class SLMModelsDialog(QDialog):
         if new_dir == current.resolve():
             return  # не изменилось
 
-        # --- Защита от вложенности (иначе move уйдёт в рекурсию / потеряет файлы) ---
+        # --- Защита от вложенности ---
         try:
             new_dir.relative_to(current.resolve())
             QMessageBox.warning(
@@ -656,7 +659,7 @@ class SLMModelsDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать текущую папку:\n{e}")
             return
 
-        # --- Проверяем, что в новой папке нет .gguf (иначе merge — рискованно) ---
+        # --- Проверяем, что в новой папке нет .gguf ---
         try:
             new_dir.mkdir(parents=True, exist_ok=True)
             existing_models = [
@@ -666,8 +669,13 @@ class SLMModelsDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", f"Не удалось создать/проверить новую папку:\n{e}")
             return
 
+        main_win = self.parent()
+        chat_panel = getattr(main_win, "chat_panel", None)
+        was_slm = False
+        was_pool = False
+        loaded_models = []
+
         if existing_models:
-            # Конфликт: в новой папке уже лежат модели.
             QMessageBox.warning(
                 self,
                 "В новой папке уже есть модели",
@@ -693,17 +701,27 @@ class SLMModelsDialog(QDialog):
                 )
                 return
 
+            # --- Проверка загруженных моделей ---
+            if chat_panel:
+                if getattr(chat_panel, "_slm_client", None) is not None:
+                    loaded_models.append(getattr(chat_panel, "_slm_model_name", "Локальная SLM"))
+                if getattr(chat_panel, "_model_pool", None) is not None:
+                    loaded_models.append("Двухмодельный пайплайн")
+
+            msg = f"В текущей папке: {len(current_files)} файл(ов), ~{total_size / (1024**3):.1f} ГБ.\n\n"
+            if loaded_models:
+                msg += "⚠️ ВНИМАНИЕ: Сейчас в памяти загружены модели:\n"
+                msg += "\n".join(f"  • {m}" for m in loaded_models) + "\n"
+                msg += "Они будут выгружены перед переносом и загружены обратно после.\n\n"
+            msg += "Перенести их в новую папку?\n\n"
+            msg += "• Да — переместить (файлы в старой папке будут удалены).\n"
+            msg += "• Нет — только изменить путь; старые файлы останутся на месте.\n"
+            msg += "• Отмена — ничего не менять."
+
             reply = QMessageBox.question(
                 self,
-                "Перенести модели?",
-                f"В текущей папке: {len(current_files)} файл(ов), "
-                f"~{total_size / (1024**3):.1f} ГБ.\n\n"
-                f"Перенести их в новую папку?\n\n"
-                f"• Да — переместить (файлы в старой папке будут удалены).\n"
-                f"• Нет — только изменить путь; старые файлы останутся на месте.\n"
-                f"• Отмена — ничего не менять.\n\n"
-                f"⚠️ Если в основном окне загружена SLM-модель, перенос\n"
-                f"может не удаться (файл заблокирован).",
+                "Перенос моделей",
+                msg,
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel,
@@ -714,6 +732,28 @@ class SLMModelsDialog(QDialog):
         else:
             should_move = False
 
+        # --- Выгрузка (если переносим и есть загруженные) ---
+        if should_move and loaded_models and chat_panel:
+            was_slm = getattr(chat_panel, "_slm_client", None) is not None
+            was_pool = getattr(chat_panel, "_model_pool", None) is not None
+
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setVisible(True)
+            self.status_label.setText("⏳ Выгрузка моделей из памяти...")
+            QApplication.processEvents()
+
+            if was_pool and hasattr(chat_panel, "reset_pipeline"):
+                chat_panel.reset_pipeline()
+
+            if was_slm:
+                chat_panel._router.set_local_slm(None)
+                chat_panel._router.set_slm_available(False)
+                chat_panel._slm_client = None
+                chat_panel._slm_model_name = ""
+
+            gc.collect()
+            time.sleep(0.5)  # Даём ОС закрыть файловые дескрипторы (Windows)
+
         # --- Сохраняем путь в config ---
         try:
             from core.config import load_config, save_config
@@ -723,12 +763,16 @@ class SLMModelsDialog(QDialog):
             save_config(cfg)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
+            if should_move and loaded_models and chat_panel:
+                self._reload_models_after_move(chat_panel, was_slm, was_pool)
             return
 
         reset_models_dir_cache()
 
-        # --- Перенос (если запрошен) ---
+        # --- Перенос ---
         if should_move and current_files:
+            self.status_label.setText("⏳ Перенос файлов...")
+            QApplication.processEvents()
             moved, errors = self._move_models(current, new_dir)
             if errors:
                 QMessageBox.warning(
@@ -741,10 +785,36 @@ class SLMModelsDialog(QDialog):
             else:
                 self.status_label.setText(f"✅ Перенесено {moved} моделей в {new_dir}")
 
+        # --- Загрузка обратно ---
+        if should_move and loaded_models and chat_panel:
+            self._reload_models_after_move(chat_panel, was_slm, was_pool)
+
         # --- Обновляем UI ---
+        self.progress_bar.setVisible(False)
         self._update_models_dir_label()
         self._populate()
         self._changed = True
+
+    def _reload_models_after_move(self, chat_panel, was_slm: bool, was_pool: bool) -> None:
+        """Восстанавливает ранее загруженные модели после переноса."""
+        import time
+        from PySide6.QtWidgets import QApplication
+
+        if chat_panel is None:
+            return
+
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(True)
+        self.status_label.setText("⏳ Загрузка моделей обратно...")
+        QApplication.processEvents()
+
+        if was_slm and hasattr(chat_panel, "reload_slm"):
+            chat_panel.reload_slm()
+        elif was_pool and hasattr(chat_panel, "_ensure_orchestrator"):
+            chat_panel._ensure_orchestrator()
+
+        # Небольшая пауза, чтобы UI не выглядел «застывшим» перед закрытием диалога.
+        time.sleep(0.1)
 
     def _move_models(self, src: Path, dst: Path) -> tuple[int, list[str]]:
         """Переносит все файлы из src в dst с QProgressDialog.
