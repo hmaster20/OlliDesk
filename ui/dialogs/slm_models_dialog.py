@@ -317,7 +317,9 @@ class SLMModelsDialog(QDialog):
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
@@ -859,11 +861,18 @@ class SLMModelsDialog(QDialog):
             return
         if not self._download_queue:
             self.progress_bar.setVisible(False)
+            self.progress_bar.setValue(0)          # ← НОВОЕ
             self._update_queue_status()
             return
 
         info = self._download_queue.pop(0)
+
+        # ↓↓↓ НОВОЕ: сброс перед новой моделью ↓↓↓
         self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        # ↑↑↑
 
         thread = _DownloadThread(info)
         thread.progress_percent.connect(self._on_download_percent)
@@ -871,9 +880,6 @@ class SLMModelsDialog(QDialog):
         thread.sig_finished.connect(self._on_download_finished)
         thread.error.connect(self._on_download_error)
 
-        # Модульный реестр держит сильную ссылку до завершения потока —
-        # защита от "QThread: Destroyed while thread is still running",
-        # если диалог будет закрыт раньше окончания скачивания.
         _register_download(thread)
 
         self._download_thread = thread
@@ -896,8 +902,18 @@ class SLMModelsDialog(QDialog):
 
     @Slot(str, int)
     def _on_download_percent(self, model_id: str, pct: int) -> None:
-        """[UI-2025] Прогресс скачивания — в строку статуса с зелёной заливкой."""
+        """[UI-2025] Прогресс скачивания — в прогресс-бар И в строку статуса."""
         self._download_percent[model_id] = pct
+
+        # ↓↓↓ НОВОЕ: реальный прогресс в прогресс-бар (а не marquee) ↓↓↓
+        if self.progress_bar.maximum() != 100:
+            self.progress_bar.setRange(0, 100)   # защита: после verify мог быть другой диапазон
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(max(0, min(100, int(pct))))
+        # ↑↑↑
+
+        # Старое: зелёная заливка в ячейке «Статус» таблицы.
+        from PySide6.QtGui import QBrush, QColor
         for row in range(self.table.rowCount()):
             name_item = self.table.item(row, 0)
             if name_item is None:
@@ -909,10 +925,6 @@ class SLMModelsDialog(QDialog):
                 continue
             status_item.setText(f"⏬ Скачивание ({pct}%)")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            # [UI-2025] Зелёная заливка по проценту: чем ближе к 100%,
-            # тем плотнее фон.
-            from PySide6.QtGui import QBrush, QColor
-
             alpha = int(180 * pct / 100)
             status_item.setBackground(QBrush(QColor(80, 180, 80, alpha)))
             break
