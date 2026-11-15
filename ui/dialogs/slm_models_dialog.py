@@ -274,12 +274,9 @@ class SLMModelsDialog(QDialog):
         models_dir_row = QHBoxLayout()
         self._models_dir_label = QLabel("📁 …")
         self._models_dir_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
-        self._models_dir_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self._models_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._models_dir_label.setToolTip(
-            "Каталог, из которого загружаются GGUF-модели. "
-            "Можно изменить (например, на другой диск)."
+            "Каталог, из которого загружаются GGUF-модели. Можно изменить (например, на другой диск)."
         )
         models_dir_row.addWidget(self._models_dir_label, stretch=1)
 
@@ -595,9 +592,7 @@ class SLMModelsDialog(QDialog):
 
         if count:
             size_gb = size_mb / 1024
-            self._models_dir_label.setText(
-                f"📁 Папка моделей: {d}  ({size_gb:.1f} ГБ, файлов: {count})"
-            )
+            self._models_dir_label.setText(f"📁 Папка моделей: {d}  ({size_gb:.1f} ГБ, файлов: {count})")
         else:
             self._models_dir_label.setText(f"📁 Папка моделей: {d}  (пусто)")
 
@@ -633,8 +628,7 @@ class SLMModelsDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Ошибка",
-                f"Новая папка не может быть внутри текущей:\n"
-                f"текущая: {current}\nновая:   {new_dir}",
+                f"Новая папка не может быть внутри текущей:\nтекущая: {current}\nновая:   {new_dir}",
             )
             return
         except ValueError:
@@ -644,8 +638,7 @@ class SLMModelsDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Ошибка",
-                f"Новая папка не может содержать текущую:\n"
-                f"текущая: {current}\nновая:   {new_dir}",
+                f"Новая папка не может содержать текущую:\nтекущая: {current}\nновая:   {new_dir}",
             )
             return
         except ValueError:
@@ -662,9 +655,7 @@ class SLMModelsDialog(QDialog):
         # --- Проверяем, что в новой папке нет .gguf ---
         try:
             new_dir.mkdir(parents=True, exist_ok=True)
-            existing_models = [
-                f for f in new_dir.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
-            ]
+            existing_models = [f for f in new_dir.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"]
         except OSError as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось создать/проверить новую папку:\n{e}")
             return
@@ -798,6 +789,7 @@ class SLMModelsDialog(QDialog):
     def _reload_models_after_move(self, chat_panel, was_slm: bool, was_pool: bool) -> None:
         """Восстанавливает ранее загруженные модели после переноса."""
         import time
+
         from PySide6.QtWidgets import QApplication
 
         if chat_panel is None:
@@ -1185,7 +1177,7 @@ class SLMModelsDialog(QDialog):
             return
         if not self._download_queue:
             self.progress_bar.setVisible(False)
-            self.progress_bar.setValue(0)          # ← НОВОЕ
+            self.progress_bar.setValue(0)  # ← НОВОЕ
             self._update_queue_status()
             return
 
@@ -1231,13 +1223,14 @@ class SLMModelsDialog(QDialog):
 
         # ↓↓↓ НОВОЕ: реальный прогресс в прогресс-бар (а не marquee) ↓↓↓
         if self.progress_bar.maximum() != 100:
-            self.progress_bar.setRange(0, 100)   # защита: после verify мог быть другой диапазон
+            self.progress_bar.setRange(0, 100)  # защита: после verify мог быть другой диапазон
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(max(0, min(100, int(pct))))
         # ↑↑↑
 
         # Старое: зелёная заливка в ячейке «Статус» таблицы.
         from PySide6.QtGui import QBrush, QColor
+
         for row in range(self.table.rowCount()):
             name_item = self.table.item(row, 0)
             if name_item is None:

@@ -16,7 +16,6 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
-from datetime import datetime
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 
@@ -186,8 +185,7 @@ def get_models_dir() -> Path:
             _models_dir_cache.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logger.warning(
-                f"Каталог моделей {_models_dir_cache} недоступен ({e}); "
-                f"откатываюсь на {DEFAULT_MODELS_DIR}"
+                f"Каталог моделей {_models_dir_cache} недоступен ({e}); откатываюсь на {DEFAULT_MODELS_DIR}"
             )
             _models_dir_cache = DEFAULT_MODELS_DIR
             _models_dir_cache.mkdir(parents=True, exist_ok=True)
@@ -209,10 +207,7 @@ def get_models_dir() -> Path:
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        logger.warning(
-            f"Не удалось создать каталог моделей {d} ({e}); "
-            f"использую {DEFAULT_MODELS_DIR}"
-        )
+        logger.warning(f"Не удалось создать каталог моделей {d} ({e}); использую {DEFAULT_MODELS_DIR}")
         d = DEFAULT_MODELS_DIR
         d.mkdir(parents=True, exist_ok=True)
 
@@ -220,14 +215,17 @@ def get_models_dir() -> Path:
     _models_dir_cache = d
     return d
 
+
 def reset_models_dir_cache() -> None:
     """Сбрасывает кэш — вызывать после смены `config.slm.models_dir`."""
     global _models_dir_cache
     _models_dir_cache = None
 
+
 def _partial_meta_path(target: Path) -> Path:
     """``<filename>.partial.meta`` — sidecar с sha256 скачанного префикса."""
     return target.with_name(target.name + ".partial.meta")
+
 
 def _load_partial_meta(target: Path) -> tuple[int, str]:
     """Возвращает ``(bytes_written, sha256_of_prefix)`` или ``(0, "")``."""
@@ -244,24 +242,26 @@ def _load_partial_meta(target: Path) -> tuple[int, str]:
         pass
     return 0, ""
 
+
 def _save_partial_meta(target: Path, n_bytes: int, sha256_hex: str) -> None:
     """Сохраняет снимок прогресса. Ошибки — debug, не валим загрузку."""
     p = _partial_meta_path(target)
     try:
         p.write_text(
-            json.dumps({
-                "bytes": int(n_bytes),
-                "sha256": sha256_hex,
-                "updated_at": datetime.now().isoformat(timespec="seconds"),
-            }),
+            json.dumps(
+                {
+                    "bytes": int(n_bytes),
+                    "sha256": sha256_hex,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            ),
             encoding="utf-8",
         )
     except OSError as e:
         logger.debug(f"_save_partial_meta {p}: {e}")
 
-def _prime_hasher_from_prefix(
-    path: Path, n_bytes: int
-) -> tuple[str, "hashlib._Hash | None"]:
+
+def _prime_hasher_from_prefix(path: Path, n_bytes: int) -> tuple[str, "hashlib._Hash | None"]:
     """Пересчитывает SHA256 первых n_bytes файла и возвращает (hex, hasher).
 
     ``hasher`` — уже «прогретый» на n_bytes, чтобы не перечитывать файл
@@ -282,11 +282,13 @@ def _prime_hasher_from_prefix(
         return "", None
     return h.hexdigest(), h
 
+
 def _reset_partial(target: Path) -> None:
     """Удаляет файл + sidecar (для «с нуля»)."""
     for p in (target, _partial_meta_path(target)):
         with contextlib.suppress(OSError):
             p.unlink()
+
 
 def _partial_path_for_file(target: Path) -> Path:
     """``<filename>.partial`` — маркер для цельной модели."""
@@ -662,8 +664,7 @@ def _download_one_file(
             # У нас есть «эталонная точка»: (saved_bytes, saved_hash).
             if actual_size > saved_bytes:
                 logger.info(
-                    f"{target.name}: обрезаю хвост {actual_size} → {saved_bytes} байт "
-                    f"(по .partial.meta)"
+                    f"{target.name}: обрезаю хвост {actual_size} → {saved_bytes} байт (по .partial.meta)"
                 )
                 try:
                     with open(target, "r+b") as f:
@@ -681,10 +682,7 @@ def _download_one_file(
                 actual_hash, primed = _prime_hasher_from_prefix(target, saved_bytes)
                 if actual_hash and actual_hash == saved_hash:
                     downloaded = saved_bytes
-                    logger.info(
-                        f"{target.name}: resume с {downloaded} / {total} байт "
-                        f"(prefix SHA256 OK)"
-                    )
+                    logger.info(f"{target.name}: resume с {downloaded} / {total} байт (prefix SHA256 OK)")
                 else:
                     logger.warning(
                         f"{target.name}: prefix SHA256 mismatch "
@@ -792,6 +790,7 @@ def _download_one_file(
 
     if progress_cb and total > 0:
         progress_cb(100, "готово")
+
 
 def download_model_with_progress(
     repo_id: str,
