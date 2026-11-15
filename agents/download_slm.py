@@ -7,11 +7,16 @@
 """
 
 import contextlib
+import hashlib
+import json
+import os
 import re
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
+from datetime import datetime
 
 DEFAULT_MODELS_DIR = Path.home() / ".ollidesk" / "models"
 
@@ -215,12 +220,73 @@ def get_models_dir() -> Path:
     _models_dir_cache = d
     return d
 
-
 def reset_models_dir_cache() -> None:
     """Сбрасывает кэш — вызывать после смены `config.slm.models_dir`."""
     global _models_dir_cache
     _models_dir_cache = None
 
+def _partial_meta_path(target: Path) -> Path:
+    """``<filename>.partial.meta`` — sidecar с sha256 скачанного префикса."""
+    return target.with_name(target.name + ".partial.meta")
+
+def _load_partial_meta(target: Path) -> tuple[int, str]:
+    """Возвращает ``(bytes_written, sha256_of_prefix)`` или ``(0, "")``."""
+    p = _partial_meta_path(target)
+    if not p.exists():
+        return 0, ""
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        n = int(data.get("bytes", 0))
+        h = str(data.get("sha256", "")).strip()
+        if n > 0 and len(h) == 64:
+            return n, h
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return 0, ""
+
+def _save_partial_meta(target: Path, n_bytes: int, sha256_hex: str) -> None:
+    """Сохраняет снимок прогресса. Ошибки — debug, не валим загрузку."""
+    p = _partial_meta_path(target)
+    try:
+        p.write_text(
+            json.dumps({
+                "bytes": int(n_bytes),
+                "sha256": sha256_hex,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.debug(f"_save_partial_meta {p}: {e}")
+
+def _prime_hasher_from_prefix(
+    path: Path, n_bytes: int
+) -> tuple[str, "hashlib._Hash | None"]:
+    """Пересчитывает SHA256 первых n_bytes файла и возвращает (hex, hasher).
+
+    ``hasher`` — уже «прогретый» на n_bytes, чтобы не перечитывать файл
+    повторно при возобновлении. ``("", None)`` — файл короче n_bytes
+    или не читается.
+    """
+    h = hashlib.sha256()
+    remaining = n_bytes
+    try:
+        with open(path, "rb") as f:
+            while remaining > 0:
+                block = f.read(min(1 << 20, remaining))
+                if not block:
+                    return "", None
+                h.update(block)
+                remaining -= len(block)
+    except OSError:
+        return "", None
+    return h.hexdigest(), h
+
+def _reset_partial(target: Path) -> None:
+    """Удаляет файл + sidecar (для «с нуля»)."""
+    for p in (target, _partial_meta_path(target)):
+        with contextlib.suppress(OSError):
+            p.unlink()
 
 def _partial_path_for_file(target: Path) -> Path:
     """``<filename>.partial`` — маркер для цельной модели."""
@@ -507,7 +573,11 @@ def _verify_model_file(
 
     expected_sha = fetch_expected_sha256(repo_id, filename)
     if not expected_sha:
-        logger.debug(f"SHA256 для {filename} не найден в HF — пропускаю сверку")
+        logger.warning(
+            f"SHA256 для {filename} не найден в HF — пропускаю сверку. "
+            f"Файл проверен только на размер. Если сомневаетесь — "
+            f"запустите «Проверить все модели → Полная» позже."
+        )
         return
 
     try:
@@ -519,6 +589,8 @@ def _verify_model_file(
     if actual != expected_sha:
         with contextlib.suppress(OSError):
             path.unlink()
+        with contextlib.suppress(OSError):
+            _partial_meta_path(path).unlink()
         raise ValueError(
             f"SHA256 mismatch для {filename}: "
             f"ожидалось {expected_sha[:12]}…, получено {actual[:12]}…. "
@@ -573,18 +645,87 @@ def _download_one_file(
     total = int(head.headers.get("Content-Length", 0))
 
     # 2. Resume: есть уже часть?
-    downloaded = target.stat().st_size if target.exists() else 0
-    if total > 0 and downloaded == total:
-        if progress_cb:
-            progress_cb(100, "уже скачана")
-        return
-    if total > 0 and downloaded > total:
-        # Битый хвост больше заявленного — перекачиваем целиком.
-        logger.warning(f"{target.name}: размер {downloaded} > Content-Length {total} — перекачиваю")
-        downloaded = 0
-        with contextlib.suppress(OSError):
-            target.unlink()
+    downloaded = 0
+    saved_bytes, saved_hash = _load_partial_meta(target)
 
+    if target.exists():
+        actual_size = target.stat().st_size
+
+        if total > 0 and actual_size == total and saved_bytes == 0:
+            # Файл уже полный, sidecar нет (старый формат/старая версия).
+            # Проверять нечем — пропускаем, _verify_model_file отсеет.
+            if progress_cb:
+                progress_cb(100, "уже скачана")
+            return
+
+        if saved_bytes > 0:
+            # У нас есть «эталонная точка»: (saved_bytes, saved_hash).
+            if actual_size > saved_bytes:
+                logger.info(
+                    f"{target.name}: обрезаю хвост {actual_size} → {saved_bytes} байт "
+                    f"(по .partial.meta)"
+                )
+                try:
+                    with open(target, "r+b") as f:
+                        f.truncate(saved_bytes)
+                    actual_size = saved_bytes
+                except OSError as e:
+                    logger.warning(f"{target.name}: не удалось обрезать ({e}) — с нуля")
+                    _reset_partial(target)
+                    saved_bytes = 0
+                    actual_size = 0
+
+            if actual_size == saved_bytes and saved_bytes > 0:
+                if progress_cb:
+                    progress_cb(0, "проверка целостности префикса…")
+                actual_hash, primed = _prime_hasher_from_prefix(target, saved_bytes)
+                if actual_hash and actual_hash == saved_hash:
+                    downloaded = saved_bytes
+                    logger.info(
+                        f"{target.name}: resume с {downloaded} / {total} байт "
+                        f"(prefix SHA256 OK)"
+                    )
+                else:
+                    logger.warning(
+                        f"{target.name}: prefix SHA256 mismatch "
+                        f"(saved={saved_hash[:12]}… actual={actual_hash[:12] or '—'}). "
+                        f"Файл повреждён при прерывании — качаю с нуля."
+                    )
+                    _reset_partial(target)
+                    saved_bytes = 0
+                    downloaded = 0
+            else:
+                # actual_size < saved_bytes: байты «спасённого» префикса потеряны.
+                logger.warning(
+                    f"{target.name}: файл короче сохранённого префикса "
+                    f"({actual_size} < {saved_bytes}) — качаю с нуля"
+                )
+                _reset_partial(target)
+                downloaded = 0
+        else:
+            # Файл есть, sidecar нет. Целостность непроверяема.
+            # Не рискуем: удаляем и качаем заново. Иначе можно получить
+            # «правильный размер, неверный SHA», который поймает только
+            # финальный _verify_model_file.
+            logger.warning(
+                f"{target.name}: есть partial-файл ({actual_size} байт), но нет "
+                f".partial.meta — целостность непроверяема, качаю с нуля."
+            )
+            _reset_partial(target)
+
+    if total > 0 and downloaded > total:
+        logger.warning(f"{target.name}: размер {downloaded} > Content-Length {total} — качаю с нуля")
+        _reset_partial(target)
+        downloaded = 0
+
+    # --- Hasher: прогреваем префиксом (без повторного чтения) ---
+    if downloaded > 0:
+        _, primed = _prime_hasher_from_prefix(target, downloaded)
+        hasher = primed if primed is not None else hashlib.sha256()
+    else:
+        hasher = hashlib.sha256()
+
+    # --- HTTP ---
     headers: dict[str, str] = {}
     if downloaded > 0:
         headers["Range"] = f"bytes={downloaded}-"
@@ -593,42 +734,64 @@ def _download_one_file(
         logger.info(f"{target.name}: старт скачивания, {total} байт")
 
     mode = "ab" if downloaded > 0 else "wb"
+
     with requests.get(url, headers=headers, stream=True, timeout=timeout_s) as r:
         if r.status_code == 416 and downloaded > 0:
-            # Range вне файла — значит всё скачано.
             if progress_cb:
                 progress_cb(100, "уже скачана")
             return
         if r.status_code not in (200, 206):
             raise RuntimeError(f"HTTP {r.status_code} при скачивании {target.name} (ожидалось 200/206)")
 
-        # Сервер мог проигнорировать Range (200 вместо 206) — начинаем заново.
         if downloaded > 0 and r.status_code == 200:
             logger.warning(f"{target.name}: сервер вернул 200 вместо 206 — начинаю заново")
+            _reset_partial(target)
             downloaded = 0
+            hasher = hashlib.sha256()
             mode = "wb"
 
-        chunk_size = 1 << 20  # 1 МБ
+        chunk_size = 1 << 20
+        save_every = 32 << 20  # 32 МБ — компромисс между I/O и точностью
+        last_saved_bytes = downloaded
         last_pct = -1
+
         with open(target, mode) as f:
             for chunk in r.iter_content(chunk_size=chunk_size):
                 if not chunk:
                     continue
                 f.write(chunk)
+                hasher.update(chunk)
                 downloaded += len(chunk)
+
+                if downloaded - last_saved_bytes >= save_every:
+                    # fsync: гарантируем, что sidecar не «опережает» диск.
+                    # Если fsync не удался — пропускаем сохранение и
+                    # попробуем в следующий раз (потеряем ≤ 32 МБ).
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                        on_disk = os.fstat(f.fileno()).st_size
+                        if on_disk == downloaded:
+                            _save_partial_meta(target, downloaded, hasher.hexdigest())
+                            last_saved_bytes = downloaded
+                    except OSError as e:
+                        logger.debug(f"{target.name}: fsync/sidecar skip: {e}")
+
                 if progress_cb and total > 0:
                     pct = min(100, int(100 * downloaded / total))
                     if pct != last_pct:
                         last_pct = pct
-                        progress_cb(
-                            pct,
-                            f"{downloaded // (1 << 20)} / {total // (1 << 20)} МБ",
-                        )
+                        progress_cb(pct, f"{downloaded // (1 << 20)} / {total // (1 << 20)} МБ")
+
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+                _save_partial_meta(target, downloaded, hasher.hexdigest())
+            except OSError:
+                pass
 
     if progress_cb and total > 0:
-        # Финальный 100% (если по чанкам не дотянули из-за округления).
         progress_cb(100, "готово")
-
 
 def download_model_with_progress(
     repo_id: str,
@@ -743,9 +906,11 @@ def download_model_with_progress(
     except Exception:
         raise
 
-    # Успех — убираем маркер.
+    # Успех — убираем маркер и sidecar.
     with contextlib.suppress(OSError):
         file_marker.unlink()
+    with contextlib.suppress(OSError):
+        _partial_meta_path(target).unlink()
     logger.info(f"Модель сохранена: {target}")
     return target
 
