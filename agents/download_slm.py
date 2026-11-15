@@ -161,12 +161,65 @@ def is_model_split(repo_id: str, filename: str) -> bool:
 # Пути и базовые утилиты
 # ---------------------------------------------------------------------------
 
+# Кэш разрешённого пути. Первый вызов читает config.slm.models_dir,
+# дальше переиспользует — get_models_dir() вызывается очень часто
+# (get_model_path, get_local_size_mb, is_model_installed, …).
+_models_dir_cache: Path | None = None
+
 
 def get_models_dir() -> Path:
-    """Каталог моделей (~/.ollidesk/models), создаёт при необходимости."""
-    d = DEFAULT_MODELS_DIR
-    d.mkdir(parents=True, exist_ok=True)
+    """Каталог моделей: `config.slm.models_dir` или ~/.ollidesk/models.
+
+    Кэшируется на процесс. Сброс — `reset_models_dir_cache()` после
+    смены пути в UI. Если custom-путь недоступен (отключён диск,
+    нет прав) — fallback на DEFAULT_MODELS_DIR с warning в логе.
+    """
+    global _models_dir_cache
+
+    if _models_dir_cache is not None:
+        try:
+            _models_dir_cache.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                f"Каталог моделей {_models_dir_cache} недоступен ({e}); "
+                f"откатываюсь на {DEFAULT_MODELS_DIR}"
+            )
+            _models_dir_cache = DEFAULT_MODELS_DIR
+            _models_dir_cache.mkdir(parents=True, exist_ok=True)
+        return _models_dir_cache
+
+    d: Path | None = None
+    try:
+        from core.config import load_config
+
+        cfg_dir = load_config().slm.models_dir
+        if cfg_dir:
+            d = Path(cfg_dir).expanduser()
+    except Exception as e:
+        logger.debug(f"get_models_dir: не удалось прочитать конфиг: {e}")
+
+    if d is None:
+        d = DEFAULT_MODELS_DIR
+
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(
+            f"Не удалось создать каталог моделей {d} ({e}); "
+            f"использую {DEFAULT_MODELS_DIR}"
+        )
+        d = DEFAULT_MODELS_DIR
+        d.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Каталог моделей: {d}")
+    _models_dir_cache = d
     return d
+
+
+def reset_models_dir_cache() -> None:
+    """Сбрасывает кэш — вызывать после смены `config.slm.models_dir`."""
+    global _models_dir_cache
+    _models_dir_cache = None
 
 
 def _partial_path_for_file(target: Path) -> Path:
@@ -643,7 +696,15 @@ def download_model_with_progress(
                     _name: str = part_name,
                 ) -> None:
                     if progress_cb is not None:
-                        progress_cb(pct, f"часть {_i}/{_n} ({_name}) — {msg}")
+                        # Нормализуем процент: общий прогресс через ВСЕ части.
+                        # часть 1/3, pct=50  → ((0)+0.5)/3*100 =  16%
+                        # часть 2/3, pct=100 → ((1)+1.0)/3*100 =  66%
+                        # часть 3/3, pct=100 → ((2)+1.0)/3*100 = 100%
+                        overall = int(((_i - 1) + pct / 100.0) * 100 / _n)
+                        progress_cb(
+                            max(0, min(100, overall)),
+                            f"часть {_i}/{_n} ({_name}) — {msg}",
+                        )
 
                 _download_one_file(url, part_path, progress_cb=_part_cb)
                 try:

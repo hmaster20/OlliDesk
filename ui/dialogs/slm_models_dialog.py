@@ -269,6 +269,28 @@ class SLMModelsDialog(QDialog):
         info_row.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 8px 0;")
         layout.addWidget(info_row)
 
+        # ===== НОВОЕ: текущая папка моделей + кнопка смены =====
+        models_dir_row = QHBoxLayout()
+        self._models_dir_label = QLabel("📁 …")
+        self._models_dir_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
+        self._models_dir_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._models_dir_label.setToolTip(
+            "Каталог, из которого загружаются GGUF-модели. "
+            "Можно изменить (например, на другой диск)."
+        )
+        models_dir_row.addWidget(self._models_dir_label, stretch=1)
+
+        self._change_dir_btn = QPushButton("📁 Папка моделей…")
+        self._change_dir_btn.setToolTip(
+            "Указать другой каталог для хранения моделей.\n"
+            "Можно перенести уже скачанные модели (без перекачки)."
+        )
+        self._change_dir_btn.clicked.connect(self._on_change_models_dir)
+        models_dir_row.addWidget(self._change_dir_btn)
+        layout.addLayout(models_dir_row)
+
         # --- Таблица всех chat-моделей ---
         self.table = QTableWidget()
         self.table.setColumnCount(9)
@@ -547,6 +569,237 @@ class SLMModelsDialog(QDialog):
         )
 
         self._update_buttons()
+        self._update_models_dir_label()
+
+    def _update_models_dir_label(self) -> None:
+        """Показывает текущий каталог моделей и его размер в МБ."""
+        from agents.download_slm import get_models_dir
+
+        try:
+            d = get_models_dir()
+        except Exception as e:
+            self._models_dir_label.setText(f"📁 Папка моделей: ошибка ({e})")
+            return
+
+        size_mb = 0
+        count = 0
+        try:
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in (".gguf", ".partial"):
+                    with contextlib.suppress(OSError):
+                        size_mb += f.stat().st_size // (1024 * 1024)
+                        count += 1
+        except OSError:
+            pass
+
+        if count:
+            size_gb = size_mb / 1024
+            self._models_dir_label.setText(
+                f"📁 Папка моделей: {d}  ({size_gb:.1f} ГБ, файлов: {count})"
+            )
+        else:
+            self._models_dir_label.setText(f"📁 Папка моделей: {d}  (пусто)")
+
+    @Slot()
+    def _on_change_models_dir(self) -> None:
+        """Смена каталога моделей с опциональным переносом существующих."""
+        import shutil
+
+        from agents.download_slm import get_models_dir, reset_models_dir_cache
+        from PySide6.QtWidgets import QFileDialog
+
+        current = get_models_dir()
+
+        new_dir_str = QFileDialog.getExistingDirectory(
+            self,
+            "Новая папка для моделей",
+            str(current.parent),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not new_dir_str:
+            return
+
+        new_dir = Path(new_dir_str).resolve()
+        if new_dir == current.resolve():
+            return  # не изменилось
+
+        # --- Защита от вложенности (иначе move уйдёт в рекурсию / потеряет файлы) ---
+        try:
+            new_dir.relative_to(current.resolve())
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                f"Новая папка не может быть внутри текущей:\n"
+                f"текущая: {current}\nновая:   {new_dir}",
+            )
+            return
+        except ValueError:
+            pass
+        try:
+            current.resolve().relative_to(new_dir)
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                f"Новая папка не может содержать текущую:\n"
+                f"текущая: {current}\nновая:   {new_dir}",
+            )
+            return
+        except ValueError:
+            pass
+
+        # --- Считаем объём текущей папки ---
+        try:
+            current_files = [f for f in current.iterdir() if f.is_file()]
+            total_size = sum(f.stat().st_size for f in current_files)
+        except OSError as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать текущую папку:\n{e}")
+            return
+
+        # --- Проверяем, что в новой папке нет .gguf (иначе merge — рискованно) ---
+        try:
+            new_dir.mkdir(parents=True, exist_ok=True)
+            existing_models = [
+                f for f in new_dir.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
+            ]
+        except OSError as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось создать/проверить новую папку:\n{e}")
+            return
+
+        if existing_models:
+            # Конфликт: в новой папке уже лежат модели.
+            QMessageBox.warning(
+                self,
+                "В новой папке уже есть модели",
+                f"В выбранной папке уже лежит {len(existing_models)} .gguf-файл(ов).\n\n"
+                f"Автоматический перенос отключён, чтобы не перезаписать их.\n\n"
+                f"Что произойдёт: config.slm.models_dir будет указывать на новую папку.\n"
+                f"Старые модели останутся в старой папке — их можно удалить вручную.",
+            )
+            should_move = False
+        elif current_files:
+            # --- Проверка свободного места ---
+            try:
+                free = shutil.disk_usage(new_dir).free
+            except OSError:
+                free = 0
+            if free < total_size:
+                QMessageBox.critical(
+                    self,
+                    "Недостаточно места",
+                    f"В целевой папке свободно {free / (1024**3):.1f} ГБ, "
+                    f"а перенести нужно {total_size / (1024**3):.1f} ГБ.\n\n"
+                    f"Освободите место или выберите другую папку.",
+                )
+                return
+
+            reply = QMessageBox.question(
+                self,
+                "Перенести модели?",
+                f"В текущей папке: {len(current_files)} файл(ов), "
+                f"~{total_size / (1024**3):.1f} ГБ.\n\n"
+                f"Перенести их в новую папку?\n\n"
+                f"• Да — переместить (файлы в старой папке будут удалены).\n"
+                f"• Нет — только изменить путь; старые файлы останутся на месте.\n"
+                f"• Отмена — ничего не менять.\n\n"
+                f"⚠️ Если в основном окне загружена SLM-модель, перенос\n"
+                f"может не удаться (файл заблокирован).",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            should_move = reply == QMessageBox.StandardButton.Yes
+        else:
+            should_move = False
+
+        # --- Сохраняем путь в config ---
+        try:
+            from core.config import load_config, save_config
+
+            cfg = load_config()
+            cfg.slm.models_dir = str(new_dir)
+            save_config(cfg)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
+            return
+
+        reset_models_dir_cache()
+
+        # --- Перенос (если запрошен) ---
+        if should_move and current_files:
+            moved, errors = self._move_models(current, new_dir)
+            if errors:
+                QMessageBox.warning(
+                    self,
+                    "Перенос завершён с ошибками",
+                    f"Перенесено {moved} из {len(current_files)} файлов.\n\n"
+                    + "\n".join(errors[:5])
+                    + (f"\n… и ещё {len(errors) - 5}." if len(errors) > 5 else ""),
+                )
+            else:
+                self.status_label.setText(f"✅ Перенесено {moved} моделей в {new_dir}")
+
+        # --- Обновляем UI ---
+        self._update_models_dir_label()
+        self._populate()
+        self._changed = True
+
+    def _move_models(self, src: Path, dst: Path) -> tuple[int, list[str]]:
+        """Переносит все файлы из src в dst с QProgressDialog.
+
+        Returns:
+            (moved_count, errors). Ошибки — строки для отображения пользователю.
+        """
+        import shutil
+
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+
+        try:
+            files = [f for f in src.iterdir() if f.is_file()]
+        except OSError as e:
+            return 0, [f"чтение {src}: {e}"]
+
+        if not files:
+            return 0, []
+
+        progress = QProgressDialog("Перенос моделей…", "Отмена", 0, len(files), self)
+        progress.setWindowTitle("Перенос моделей")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        moved = 0
+        errors: list[str] = []
+        cancelled = False
+
+        for i, f in enumerate(files, 1):
+            if progress.wasCanceled():
+                cancelled = True
+                break
+            progress.setLabelText(f"Перенос {i}/{len(files)}: {f.name}")
+            progress.setValue(i - 1)
+            # processEvents — чтобы кнопка «Отмена» реагировала (QProgressDialog
+            # не имеет своего event loop, а shutil.move блокирует поток).
+            QApplication.processEvents()
+
+            try:
+                target = dst / f.name
+                if target.exists():
+                    errors.append(f"{f.name}: уже существует в целевой папке")
+                    continue
+                shutil.move(str(f), str(target))
+                moved += 1
+            except Exception as e:
+                errors.append(f"{f.name}: {e}")
+
+        progress.setValue(len(files))
+        progress.close()
+
+        if cancelled:
+            errors.append("перенос отменён пользователем")
+
+        return moved, errors
 
     def _real_size_str(self, filename: str) -> str:
         """Реальный размер на диске. Не ходит в HF."""

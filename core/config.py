@@ -590,6 +590,10 @@ class SLMConfig(BaseModel):
 
     enabled: bool = True
 
+    # Каталог для GGUF-моделей. Пусто → ~/.ollidesk/models.
+    # `~` раскрывается через Path.expanduser().
+    models_dir: str = ""
+
     # Активная chat-модель (id из available_models, kind="chat").
     # При auto_select_model=True значение перезаписывается автоматически.
     selected_model: str = "qwen2.5-3b-instruct-q4_k_m"
