@@ -56,6 +56,10 @@ _BODY_MAX_HEIGHT = 200
 # Длина превью «последнего события» в свёрнутом заголовке.
 _PREVIEW_CHARS = 90
 
+# Сколько «сырых» событий храним для перерисовки при смене фильтра.
+# Ограничение — чтобы при долгой сессии память не росла бесконечно.
+_MAX_STORED_EVENTS = 2000
+
 # Цвета по уровню/виду (в стиле «серого лога»).
 _C_OK = "#98c379"
 _C_WARN = "#e5c07b"
@@ -152,7 +156,7 @@ class LiveEventsPanel(QWidget):
         self._last_kind: str = ""
         self._last_payload: dict = {}
         self._max_severity: str = "INFO"
-
+        self._events: list[tuple[str, dict]] = []
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -254,26 +258,40 @@ class LiveEventsPanel(QWidget):
 
         self._refresh_header()
 
-    # ------------------------------------------------------------------
-    # Публичный API
-    # ------------------------------------------------------------------
-
     @Slot(str, dict)
     def append_event(self, kind: str, payload: dict) -> None:
         """Принимает событие из `QtEventBus.event_emitted` (GUI-поток)."""
-        # 1) Сначала фильтр — не пропущенные события не должны менять состояние панели.
-        if self._domain_filter != "all":
-            domain = kind.split(".", 1)[0]
-            if domain != self._domain_filter:
-                return
-        if self._important_only and not self._is_important(kind, payload):
+        # 1) Всегда сохраняем «сырое» событие — пригодится при смене
+        #    фильтра (Вариант B). FIFO-усечение держит память под контролем.
+        self._events.append((kind, payload))
+        if len(self._events) > _MAX_STORED_EVENTS:
+            del self._events[: len(self._events) - _MAX_STORED_EVENTS]
+
+        # 2) Не пропущенные фильтром события не меняют состояние панели.
+        if not self._passes_filter(kind, payload):
             return
 
-        # 2) Только теперь — обновление last/severity/preview.
+        # 3) Только видимое событие становится «последним» и влияет
+        #    на цвет шапки — иначе превью показывало бы отфильтрованное.
         self._last_kind = kind
         self._last_payload = payload
         self.latest_event.emit(kind, payload)
+        self._update_severity(kind, payload)
 
+        self._count += 1
+        self._render_line(kind, payload)
+        self._refresh_header()
+
+    def _passes_filter(self, kind: str, payload: dict) -> bool:
+        """Проходит ли событие текущий фильтр (домен + важность)."""
+        if self._domain_filter != "all":
+            domain = kind.split(".", 1)[0]
+            if domain != self._domain_filter:
+                return False
+        return not (self._important_only and not self._is_important(kind, payload))
+
+    def _update_severity(self, kind: str, payload: dict) -> None:
+        """Повышает `_max_severity` по уровню/виду события (только вверх)."""
         if kind == EventKind.LOG.value:
             lvl = str(payload.get("level", "INFO")).upper()
             if lvl in ("ERROR", "CRITICAL"):
@@ -283,15 +301,11 @@ class LiveEventsPanel(QWidget):
         elif kind in (EventKind.TOOL_ERROR.value, EventKind.SLM_FAILED.value):
             self._max_severity = "ERROR"
 
-        # 3) Рендер.
-        self._count += 1
-        self._render_line(kind, payload)
-        self._refresh_header()
-
     @Slot()
     def clear(self) -> None:
-        """Полная очистка ленты."""
+        """Полная очистка ленты (тело + сохранённые события)."""
         self._body.clear()
+        self._events.clear()
         self._count = 0
         self._last_kind = ""
         self._last_payload = {}
@@ -326,12 +340,51 @@ class LiveEventsPanel(QWidget):
     @Slot(bool)
     def _on_important_toggled(self, _checked: bool) -> None:
         self._important_only = bool(self._important_check.isChecked())
+        self._rebuild()
 
     @Slot(int)
     def _on_domain_changed(self, _index: int) -> None:
         self._domain_filter = str(self._domain_combo.currentData() or "all")
+        self._rebuild()
 
-    def _render_line(self, kind: str, payload: dict) -> None:
+    def _rebuild(self) -> None:
+        """Перерисовывает тело ленты из сохранённых событий по текущему фильтру.
+
+        Вызывается из `_on_important_toggled` / `_on_domain_changed`.
+        Сбрасывает счётчик и «последнее событие» в состояние, соответствующее
+        новой выборке (чтобы шапка и превью не врали).
+        """
+        self._body.clear()
+        self._count = 0
+        self._max_severity = "INFO"
+        self._last_kind = ""
+        self._last_payload = {}
+
+        # Сначала строим выборку — один проход по `_events`.
+        visible = [(k, p) for k, p in self._events if self._passes_filter(k, p)]
+
+        # Пересчитываем severity и last только по видимым событиям.
+        for kind, payload in visible:
+            self._update_severity(kind, payload)
+        if visible:
+            self._last_kind, self._last_payload = visible[-1]
+            self.latest_event.emit(self._last_kind, self._last_payload)
+
+        # Батч-рендер: отключаем перерисовку виджета на время вставки,
+        # чтобы не мигало и не тормозило при 1000+ событий.
+        self._body.setUpdatesEnabled(False)
+        try:
+            for kind, payload in visible:
+                self._render_line(kind, payload, scroll=False)
+        finally:
+            self._body.setUpdatesEnabled(True)
+
+        self._count = len(visible)
+        self._refresh_header()
+        if self._expanded:
+            QTimer.singleShot(0, self._scroll_to_end)
+
+    def _render_line(self, kind: str, payload: dict, *, scroll: bool = True) -> None:
         text, color = self._format_line(kind, payload)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         ts = str(payload.get("timestamp", ""))
@@ -344,7 +397,8 @@ class LiveEventsPanel(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self._body.setTextCursor(cursor)
         self._body.insertPlainText("\n")
-        if self._expanded:
+        # В батч-режиме (rebuild) скроллим один раз в конце, а не после каждой строки.
+        if scroll and self._expanded:
             QTimer.singleShot(0, self._scroll_to_end)
 
     @staticmethod

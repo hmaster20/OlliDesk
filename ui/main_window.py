@@ -600,7 +600,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
         self.menu_bar.memory_requested.connect(self._open_memory_dialog)
 
-        self.menu_bar.toggle_status_pill_requested.connect(self._on_toggle_status_pill)
+        self.menu_bar.toggle_status_pill_requested.connect(self._on_pill_visibility_changed)
 
         # Палитра команд.
         self.menu_bar.command_palette_requested.connect(self._open_command_palette)
@@ -675,7 +675,7 @@ class MainWindow(QMainWindow):
             self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
-        """ Статус-бар с единой приборной панелью."""
+        """Статус-бар с единой приборной панелью."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -724,7 +724,7 @@ class MainWindow(QMainWindow):
             logger.debug("Не удалось установить Ctrl+Shift+P на окно", exc_info=True)
 
     def _register_palette_commands(self) -> None:
-        """ Регистрирует команды палитры.
+        """Регистрирует команды палитры.
 
         Каждая команда — `PaletteCommand` с callback на существующий слот.
         Профили и бэкенд добавляются динамически (зависят от конфига).
@@ -1861,10 +1861,16 @@ class MainWindow(QMainWindow):
 
         self.config.hidden_status_pills = hidden
         from core.config import save_config
+
         save_config(self.config)
 
     @Slot(str, bool)
     def _on_pill_visibility_changed(self, pill_id: str, visible: bool) -> None:
+        """Централизованно обрабатывает скрытие/отображение плиток.
+
+        Вызывается как из контекстного меню StatusDashboard, так и из
+        верхнего меню View → Элементы статус-бара.
+        """
         hidden = list(self.config.hidden_status_pills)
         if visible and pill_id in hidden:
             hidden.remove(pill_id)
@@ -1873,11 +1879,14 @@ class MainWindow(QMainWindow):
 
         self.config.hidden_status_pills = hidden
         from core.config import save_config
+
         save_config(self.config)
 
+        # Применяем к панели
         self.dashboard.apply_visibility_settings(hidden)
+        # Синхронизируем чекбоксы в меню
+        self.menu_bar.update_status_pills_menu(hidden)
 
-        self.dashboard.apply_visibility_settings(hidden)
     def _toggle_theme(self) -> None:
         """Переключает между тёмной и светлой темой."""
         new_theme = "dark" if self.config.theme == "light" else "light"

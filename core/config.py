@@ -16,7 +16,6 @@ from core.profiles import (
     get_profile_by_id,
 )
 
-
 class ModelRole(StrEnum):
     """Роль модели в системе."""
 
@@ -129,9 +128,6 @@ class SLMModelInfo(BaseModel):
     # (2) UI-иконка 🧠 в списках моделей. Не путать с тегом "reasoning"
     # (он про способности, а не про формат вывода).
     is_thinking: bool = False
-
-    # Список идентификаторов скрытых индикаторов статус-бара
-    hidden_status_pills: list[str] = Field(default_factory=list)
 
     @field_validator("tier")
     @classmethod
@@ -959,13 +955,18 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "soft_budget_iterations",
         "memory",
         "session_overrides",
-        "mcp",
-        "browser",
-        "search",
-        "hf_token",
+        "mcp", "browser", "search", "hf_token",
+        "hidden_status_pills",
+        "show_project_tree",
+        "show_pipeline_selectors",
     }
 )
 
+VALID_STATUS_PILLS: frozenset[str] = frozenset({
+    "activity", "backend", "pipeline", "perf", "rag", "tools",
+    "budget", "coder", "net", "git_branch", "memory", "mcp",
+    "freedom", "inbox",
+})
 
 class MemoryConfig(BaseModel):
     """4.3: эпизодическая память."""
@@ -1225,13 +1226,13 @@ class AppConfig(BaseModel):
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
-    # Скрытые индикаторы статус-бара (пользователь настраивает через правый клик)
-    # По умолчанию скрываем редкие, чтобы не засорять экран
     hidden_status_pills: list[str] = Field(
-        default_factory=lambda: ["browser", "search", "memory", "mcp", "freedom", "inbox"]
+        # «browser» и «search» объединены в «net» (см. status_dashboard.py);
+        # default должен содержать ТОЛЬКО реальные ключи из StatusDashboard._pills.
+        default_factory=lambda: ["memory", "mcp", "freedom", "inbox"]
     )
 
-    # Мягкие бюджеты цикла агента.Бюджеты сигналят о «дорого/долго».
+    # Мягкие бюджеты цикла агента. Бюджеты сигналят о «дорого/долго».
     # `soft_budget_iterations` — safety net для AGENT; для CHAT/PLAN
     # переопределяется `chat_max_iterations`/`agent_max_iterations`.
     soft_budget_time_s: int = 600
@@ -1349,18 +1350,34 @@ class ConfigLoader:
         return config
 
     def _migrate_config(self, config: dict[str, Any]) -> None:
-        """Приводит устаревший конфиг к текущей схеме (in-place).
-
-        Схема ``v1`` содержала урезанный список ``index_extensions`` без C#,
-        Java, Go и прочих языков. Если в конфиге остался ровно старый набор по
-        умолчанию, заменяем его на новый — но пользовательский список не трогаем.
-        """
+        """Приводит устаревший конфиг к текущей схеме (in-place)."""
         if config.get("schema_version") == CURRENT_SCHEMA_VERSION:
+            # Точечные фиксы даже для v2 — если в конфиге остались старые ID.
+            self._normalize_hidden_status_pills(config)
             return
         extensions = config.get("index_extensions")
         if extensions is None or set(extensions) == set(LEGACY_INDEX_EXTENSIONS):
             config["index_extensions"] = list(DEFAULT_INDEX_EXTENSIONS)
         config["schema_version"] = CURRENT_SCHEMA_VERSION
+        self._normalize_hidden_status_pills(config)
+
+    def _normalize_hidden_status_pills(self, config: dict[str, Any]) -> None:
+        """Заменяет устаревшие ID плиток и отбрасывает неизвестные."""
+        LEGACY_TO_PILL = {
+            "browser": "net",
+            "search": "net",
+            "tok_per_sec": "perf",
+            "cache": "perf",
+        }
+        pills = config.get("hidden_status_pills")
+        if not isinstance(pills, list):
+            return
+        migrated: list[str] = []
+        for p in pills:
+            target = LEGACY_TO_PILL.get(p, p)
+            if target in VALID_PILLS and target not in migrated:
+                migrated.append(target)
+        config["hidden_status_pills"] = migrated
 
     def _load_yaml(self, path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -1430,7 +1447,6 @@ def _detect_project_path() -> Path | None:
         return cwd
     return None
 
-
 def load_config(project_path: Path | None = None) -> AppConfig:
     if project_path is None:
         project_path = _detect_project_path()
@@ -1439,8 +1455,6 @@ def load_config(project_path: Path | None = None) -> AppConfig:
 
 def save_config(config: AppConfig, project_path: Path | None = None) -> None:
     config_loader.save_config(config, project_path)
-    logger.info(f"Сохранение конфига: last_model={config.last_model}, last_mode={config.last_mode}")
-
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
     for model in config.models:

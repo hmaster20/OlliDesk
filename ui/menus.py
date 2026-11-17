@@ -31,6 +31,7 @@ from loguru import logger
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QMenu, QMenuBar
+
 from core.config import AppConfig, save_config
 
 
@@ -73,11 +74,11 @@ class AppMenuBar(QMenuBar):
     def __init__(self, config: AppConfig, parent=None) -> None:
         super().__init__(parent)
         self._config = config
-        # QMenu создаётся в _build_file_menu; здесь только объявляем тип,
-        # чтобы `_refresh_recent_menu` и `set_config` видели QMenu, а не None.
         self._recent_menu: QMenu | None = None
         self._recent_actions: list[QAction] = []
-
+        self._status_actions: dict[str, QAction] = {}      # ← добавить
+        self._profiles_menu: QMenu | None = None           # ← добавить (есть в _refresh_profiles_menu)
+        self._profile_actions: list[QAction] = []          # ← добавить
         self.project_structure_action: QAction | None = None
         self.confirm_web_search_action: QAction | None = None
 
@@ -210,34 +211,11 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        status_menu = view_menu.addMenu("Элементы статус-бара")
-        pills_info = [
-            ("activity", "Активность (idle/thinking)"),
-            ("backend", "Бэкенд (SLM/Ollama)"),
-            ("pipeline", "Пайплайн (P/A)"),
-            ("tok_per_sec", "Скорость (tok/s)"),
-            ("rag", "RAG-индекс"),
-            ("budget", "Бюджет (итерации)"),
-            ("coder", "Coder-модель"),
-            ("git_branch", "Git-ветка"),
-        ]
-        # Для остальных (cache, browser, search, mem, mcp, freedom, inbox)
-        # можно сделать по аналогии или скрыть по умолчанию.
-
-        for p_id, p_label in pills_info:
-            act = QAction(p_label, self)
-            act.setCheckable(True)
-            act.setChecked(p_id not in self._config.hidden_status_pills)
-            act.triggered.connect(lambda checked, pid=p_id: self.toggle_status_pill_requested.emit(pid, checked))
-            status_menu.addAction(act)
-
-        view_menu.addSeparator()
-
         edit_iterations = QAction("Лимит итераций агента…", self)
         edit_iterations.triggered.connect(self.edit_iterations_requested.emit)
         view_menu.addAction(edit_iterations)
 
-        # [4.3] Память агента (рефлексии/решения/настройки).
+        # Память агента (рефлексии/решения/настройки).
         memory_action = QAction("Память агента…", self)
         memory_action.setToolTip(
             "Рефлексии после задач, архитектурные решения, настройки. "
@@ -246,7 +224,7 @@ class AppMenuBar(QMenuBar):
         memory_action.triggered.connect(self.memory_requested.emit)
         view_menu.addAction(memory_action)
 
-        # [9.10] Разрешения.
+        # Разрешения.
         permissions_action = QAction("Разрешения…", self)
         permissions_action.setToolTip(
             "Матрица профиль × инструмент, capabilities, последние вызовы "
@@ -257,11 +235,52 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        # [9.9] Палитра команд (Ctrl+Shift+P).
-        palette_action = QAction("Палитра команд…", self)
-        palette_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
-        palette_action.triggered.connect(self.command_palette_requested.emit)
-        view_menu.addAction(palette_action)
+        # Элементы статус-бара
+        self.status_menu = view_menu.addMenu("Элементы статус-бара")
+
+        groups = {
+            "Основное": ["activity", "backend", "pipeline", "freedom"],
+            "Модели и производительность": ["perf", "coder", "rag", "tools", "budget"],
+            "Сеть и среда": ["net", "git_branch", "mcp", "memory", "inbox"],
+        }
+        labels = {
+            "activity": "Активность",
+            "backend": "Бэкенд LLM",
+            "pipeline": "Пайплайн",
+            "freedom": "Уровень свободы",
+            "perf": "Скорость (tok/s)",
+            "coder": "Coder-модель",
+            "rag": "RAG-индекс",
+            "tools": "Инструменты",
+            "budget": "Бюджет",
+            "net": "Сеть (браузер/поиск)",
+            "git_branch": "Git-ветка",
+            "mcp": "MCP-серверы",
+            "memory": "Память",
+            "inbox": "Очередь запросов",
+        }
+
+        self._status_actions = {}
+        for g_name, keys in groups.items():
+            self.status_menu.addSection(g_name)
+            for k in keys:
+                act = QAction(labels.get(k, k), self)
+                act.setCheckable(True)
+                act.setChecked(k not in self._config.hidden_status_pills)
+                act.triggered.connect(
+                    lambda checked, pid=k: self.toggle_status_pill_requested.emit(pid, checked)
+                )
+                self.status_menu.addAction(act)
+                self._status_actions[k] = act
+
+    def update_status_pills_menu(self, hidden_pills: list[str]) -> None:
+        """Синхронизирует галочки в меню с реальным состоянием."""
+        self._config.hidden_status_pills = hidden_pills
+        if hasattr(self, "_status_actions"):
+            for k, act in self._status_actions.items():
+                act.blockSignals(True)
+                act.setChecked(k not in hidden_pills)
+                act.blockSignals(False)
 
     def _build_help_menu(self) -> None:
         help_menu = self.addMenu("&Справка")
@@ -281,21 +300,15 @@ class AppMenuBar(QMenuBar):
     # ------------------------------------------------------------------
 
     def set_config(self, config: AppConfig) -> None:
-        """Обновляет ссылку на конфиг после его перезагрузки в MainWindow.
-
-        `MainWindow._run_wizard` и `_open_settings` делают
-        `self.config = load_config(...)` — создают новый объект. Без этого
-        метода `AppMenuBar` держал бы старую ссылку и сохранял бы
-        `confirm.web_search` в устаревший конфиг.
-        """
         self._config = config
         if self.confirm_web_search_action is not None:
             self.confirm_web_search_action.blockSignals(True)
             self.confirm_web_search_action.setChecked(self._read_confirm_web_search())
             self.confirm_web_search_action.blockSignals(False)
         self._refresh_recent_menu()
-        # [9.4] Пересобираем подменю профилей (могли измениться).
         self._refresh_profiles_menu()
+        # Синхронизируем галочки меню «Элементы статус-бара» с новым конфигом.
+        self.update_status_pills_menu(config.hidden_status_pills)
 
     # ------------------------------------------------------------------
     # Recent Projects
@@ -354,10 +367,10 @@ class AppMenuBar(QMenuBar):
         self._profiles_menu.clear()
         self._profile_actions.clear()
 
-        try:
-            from core.profiles import get_profile_by_id as _get_by_id
-        except Exception:
-            _get_by_id = None  # type: ignore[assignment]
+        # try:
+        #     from core.profiles import get_profile_by_id as _get_by_id
+        # except Exception:
+        #     _get_by_id = None  # type: ignore[assignment]
 
         active_id = getattr(self._config, "active_profile", "development")
         profiles = list(getattr(self._config, "profiles", []) or [])
