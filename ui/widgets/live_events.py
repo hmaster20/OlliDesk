@@ -93,6 +93,13 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("media", "media"),
 )
 
+class _ClickableLabel(QLabel):
+    clicked = Signal()
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
 
 class QtEventBus(QObject):
     """QObject-мост из `EventBus` (plain-Python) в Qt-сигнал.
@@ -144,6 +151,7 @@ class LiveEventsPanel(QWidget):
         self._domain_filter: str = "all"
         self._last_kind: str = ""
         self._last_payload: dict = {}
+        self._max_severity: str = "INFO"
 
         self._build_ui()
 
@@ -174,14 +182,15 @@ class LiveEventsPanel(QWidget):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
 
-        self._header_label = QLabel()
+        self._header_label = _ClickableLabel()
         self._header_label.setTextFormat(Qt.TextFormat.RichText)
         self._header_label.setStyleSheet("font-size: 11px;")
+        self._header_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header_label.setToolTip(
             "Живая лента системных событий (RAG-поиск, вызовы инструментов, "
             "статусы LLM и ошибки). Кликните, чтобы развернуть или свернуть."
         )
-        self._header_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header_label.clicked.connect(self._toggle_body)
         header.addWidget(self._header_label, stretch=1)
 
         self._domain_combo = QComboBox()
@@ -256,7 +265,17 @@ class LiveEventsPanel(QWidget):
         self._last_payload = payload
         self.latest_event.emit(kind, payload)
 
-        # 2.5: фильтр по домену (первый сегмент kind до точки).
+        # Обновляем максимальную важность для окраски шапки
+        if kind == EventKind.LOG.value:
+            lvl = str(payload.get("level", "INFO")).upper()
+            if lvl in ("ERROR", "CRITICAL"):
+                self._max_severity = "ERROR"
+            elif lvl == "WARNING" and self._max_severity != "ERROR":
+                self._max_severity = "WARNING"
+        elif kind in (EventKind.TOOL_ERROR.value, EventKind.SLM_FAILED.value):
+            self._max_severity = "ERROR"
+
+        # фильтр по домену (первый сегмент kind до точки).
         if self._domain_filter != "all":
             domain = kind.split(".", 1)[0]
             if domain != self._domain_filter:
@@ -273,6 +292,7 @@ class LiveEventsPanel(QWidget):
         """Полная очистка ленты."""
         self._body.clear()
         self._count = 0
+        self._max_severity = "INFO"
         self._refresh_header()
 
     @property
@@ -542,9 +562,15 @@ class LiveEventsPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _refresh_header(self) -> None:
-        parts = ['<span style="color:#888; font-weight:600;">📡 События</span>']
+        color = "#888"
+        if self._max_severity == "ERROR":
+            color = "#e06c75"
+        elif self._max_severity == "WARNING":
+            color = "#e5c07b"
+
+        parts = [f'<span style="color:{color}; font-weight:600;">📡 События</span>']
         if self._count:
-            parts.append(f'<span style="color:#7a7a8a;">· {self._count}</span>')
+            parts.append(f'<span style="color:{color};">· {self._count}</span>')
 
         preview = self._latest_preview()
         if preview:
@@ -566,6 +592,8 @@ class LiveEventsPanel(QWidget):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
+        if self._expanded:
+            self._max_severity = "INFO" # Сбрасываем при прочтении
         self._refresh_header()
         if self._expanded:
             QTimer.singleShot(0, self._scroll_to_end)

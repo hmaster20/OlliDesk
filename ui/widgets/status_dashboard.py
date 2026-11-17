@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget, QMenu
 
 # Цвета семантических индикаторов (в стиле «приборной панели»).
 _C_OK = "#98c379"
@@ -40,48 +40,49 @@ class _PillLabel(QLabel):
     clicked = Signal()
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        self.setStyleSheet(
-            "QLabel {"
-            " background-color: rgba(80, 80, 80, 0.4);"
-            " color: #bbbbbb;"
-            " border-radius: 10px;"
-            " padding: 2px 8px;"
-            " font-size: 11px;"
-            "}"
-            "QLabel:hover {"
-            " background-color: rgba(212, 163, 115, 0.25);"
-            " color: #d4a373;"
-            "}"
-        )
-        # Собираем все плитки в словарь для управления видимостью
+        # [Объединяем производительность]
+        self.perf = _PillLabel("perf")
+        self.perf.setToolTip("Производительность: tok/s и prefix caching")
+        layout.addWidget(self.perf)
+
+        self.rag = _PillLabel("RAG")
+        self.rag.setToolTip("Индекс RAG: количество чанков / статус")
+        layout.addWidget(self.rag)
+
+        # ... tools, budget, coder ...
+
+        # [Объединяем сетевые возможности]
+        self.net = _PillLabel("net")
+        self.net.setToolTip("Сетевые возможности: браузер и поиск")
+        layout.addWidget(self.net)
+
+        # ... git_branch, memory, mcp, freedom, inbox ...
+
+        # Словарь для управления видимостью
         self._pills = {
             "activity": self.activity,
             "backend": self.backend,
             "pipeline": self.pipeline,
-            "tok_per_sec": self.tok_per_sec,
+            "perf": self.perf,
             "rag": self.rag,
             "tools": self.tools,
             "budget": self.budget,
-            "cache": self.cache,
             "coder": self.coder,
-            "browser": self.browser,
-            "search": self.search,
+            "net": self.net,
             "git_branch": self.git_branch,
             "memory": self.memory,
             "mcp": self.mcp,
             "freedom": self.freedom,
             "inbox": self.inbox,
         }
-        self._current_color: str = _C_OFF
-        self._current_text: str = ""
-        self._pulse_active: bool = False
-        self._pulse_on: bool = False
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(500)
-        self._pulse_timer.timeout.connect(self._on_pulse_tick)
+
+        # Включаем контекстное меню на пустой области
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+        # Инициализация начальных значений (заменяем старые set_tok_per_sec и т.д.)
+        self.set_perf(0.0, 0, 0)
+        self.set_net("isolated", False, "", False)
 
     def set_state(self, text: str, color: str, tooltip: str = "") -> None:
         """Обновляет текст и цвет индикатора (цвет — как маркер)."""
@@ -133,6 +134,7 @@ class StatusDashboard(QWidget):
 
     backend_toggle_requested = Signal()
     slm_models_requested = Signal()
+    pill_visibility_changed = Signal(str, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -142,76 +144,60 @@ class StatusDashboard(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Индикатор активности (2.5): пульсирует пока идёт работа,
-        # tooltip — последнее событие из EventBus.
         self.activity = _PillLabel("💤 idle")
         self.activity.setToolTip("Активность: ожидание")
         layout.addWidget(self.activity)
 
-        # Бэкенд: SLM / Ollama / Резерв.
         self.backend = _PillLabel("backend")
         self.backend.setToolTip("Активный LLM-бэкенд")
         self.backend.clicked.connect(self.backend_toggle_requested.emit)
         layout.addWidget(self.backend)
 
-        # Пайплайн: planner + analyst.
         self.pipeline = _PillLabel("pipeline")
         self.pipeline.setToolTip("Двухмодельный пайплайн (planner + analyst)")
         self.pipeline.clicked.connect(self.slm_models_requested.emit)
         layout.addWidget(self.pipeline)
 
-        # tok/s.
         self.tok_per_sec = _PillLabel("tok/s")
         self.tok_per_sec.setToolTip("Скорость генерации (обновляется после каждого ответа)")
         layout.addWidget(self.tok_per_sec)
 
-        # RAG.
         self.rag = _PillLabel("RAG")
         self.rag.setToolTip("Индекс RAG: количество чанков / статус")
         layout.addWidget(self.rag)
 
-        # Tools.
         self.tools = _PillLabel("tools")
         self.tools.setToolTip("Активность инструментов текущего запроса")
         layout.addWidget(self.tools)
 
-        # [2.10] Бюджет + причина остановки.
         self.budget = _PillLabel("budget")
         self.budget.setToolTip("Мягкий бюджет агента (итерации · токены · время)")
         layout.addWidget(self.budget)
 
-        # [4.2] Prefix caching: сколько токенов переиспользуется из KV.
         self.cache = _PillLabel("cache")
         self.cache.setToolTip("Prefix caching: reads/writes в KV-кэше")
         layout.addWidget(self.cache)
 
-        # Начальное состояние.
         self.set_backend("slm", "SLM", "—")
         self.set_pipeline("💤", "не активирован")
-        self.set_tok_per_sec(0.0)
         self.set_rag(0, "не проиндексирован")
         self.set_tools_active(False)
-        # [10.6] Coder-модель для coding-задач.
         self.coder = _PillLabel("coder")
         self.coder.setToolTip("Coder-модель (выбирается профилем)")
         layout.addWidget(self.coder)
 
-        # [2.11] Режим браузера.
         self.browser = _PillLabel("browser")
         self.browser.setToolTip("Режим browser_control: isolated / extension / full / off")
         layout.addWidget(self.browser)
 
-        # [2.13] Провайдер поиска.
         self.search = _PillLabel("search")
         self.search.setToolTip("Цепочка поиска: первый доступный провайдер")
         layout.addWidget(self.search)
 
-        # [9.4] Git-ветка проекта.
         self.git_branch = _PillLabel("git")
         self.git_branch.setToolTip("Текущая git-ветка и hash")
         layout.addWidget(self.git_branch)
 
-        # [4.3] Эпизодическая память.
         self.memory = _PillLabel("mem")
         self.memory.setToolTip("Память: рефлексии по завершённым задачам")
         layout.addWidget(self.memory)
@@ -221,34 +207,21 @@ class StatusDashboard(QWidget):
         self.mcp.setToolTip("MCP: подключённые серверы")
         layout.addWidget(self.mcp)
 
-        # [9.12] Свобода активного профиля.
         self.freedom = _PillLabel("profile")
         self.freedom.setToolTip("freedom_level активного профиля")
         layout.addWidget(self.freedom)
 
-        # [2.12] Индикатор inbox (pending запросы).
         self.inbox = _PillLabel("inbox")
         self.inbox.setToolTip("Durable inbox: запросы в очереди")
         layout.addWidget(self.inbox)
 
         self.set_budget(None)
-        self.set_cache(0, 0)
         self.set_coder("⚡", "coder", "—")
-        self.set_browser("isolated", available=False)
-        self.set_search("", available=False)
         self.set_git_branch("", "")  # [9.4]
         self.set_memory(0, [])  # [4.3]
         self.set_mcp(0, [])  # [7]
         self.set_freedom("development")  # [9.12]
         self.set_inbox(0)
-
-    # ------------------------------------------------------------------
-    # Публичный API (вызывается из MainWindow/ChatPanel)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # 2.5: активность + последнее событие
-    # ------------------------------------------------------------------
 
     _ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
         "idle": ("💤 idle", _C_OFF),
@@ -259,9 +232,81 @@ class StatusDashboard(QWidget):
         "cancelled": ("⏹ стоп", _C_OFF),
     }
 
-    # ------------------------------------------------------------------
-    # [10.6] Coder-модель
-    # ------------------------------------------------------------------
+    def set_perf(self, tps: float, cache_reads: int, cache_writes: int) -> None:
+        """Обновляет объединенную плитку производительности."""
+        tps_str = f"{tps:.1f} t/s" if tps > 0 else "— t/s"
+        cache_str = ""
+        if cache_reads > 0 or cache_writes > 0:
+            total = max(1, cache_reads + cache_writes)
+            hit_pct = int(100 * cache_reads / total)
+            cache_str = f" (cache {hit_pct}%)"
+            tooltip = f"Скорость: {tps_str}\nPrefix caching: {cache_reads} reads / {cache_writes} writes ({hit_pct}% hit rate)"
+        else:
+            tooltip = f"Скорость: {tps_str}\nPrefix caching не активен"
+
+        color = _C_OK if tps > 0 else _C_OFF
+        self.perf.set_state(f"⚡ {tps_str}{cache_str}", color, tooltip)
+
+    def set_net(self, browser_mode: str, browser_avail: bool, provider: str, search_avail: bool) -> None:
+        """Обновляет объединенную сетевую плитку (browser + search)."""
+        parts = []
+        tooltips = []
+
+        # Браузер
+        if browser_avail:
+            b_icon = {"isolated": "🔒", "extension": "🔗", "full": "⚠️"}.get(browser_mode, "🌐")
+            parts.append(f"{b_icon}{browser_mode}")
+            tooltips.append(f"Браузер: {browser_mode} (доступен)")
+        else:
+            tooltips.append("Браузер: отключен (нет зависимостей)")
+
+        # Поиск
+        if search_avail and provider:
+            parts.append(f"🔍{provider}")
+            tooltips.append(f"Поиск: {provider}")
+        else:
+            tooltips.append("Поиск: не настроен")
+
+        text = " | ".join(parts) if parts else "— net"
+        color = _C_OK if (browser_avail or search_avail) else _C_OFF
+        self.net.set_state(text, color, "\n".join(tooltips))
+
+    @Slot(object)
+    def _show_context_menu(self, pos) -> None:
+        """Показывает меню скрытия/отображения плиток."""
+        menu = QMenu(self)
+
+        # Группируем для красоты
+        groups = {
+            "Основное": ["activity", "backend", "pipeline", "freedom"],
+            "Модели и производительность": ["perf", "coder", "rag", "tools", "budget", "cache"],
+            "Сеть и среда": ["net", "git_branch", "mcp", "memory", "inbox"],
+        }
+
+        labels = {
+            "activity": "Активность", "backend": "Бэкенд LLM", "pipeline": "Пайплайн",
+            "freedom": "Уровень свободы", "perf": "Скорость (tok/s)",
+            "coder": "Coder-модель", "rag": "RAG-индекс", "tools": "Инструменты",
+            "budget": "Бюджет", "net": "Сеть (браузер/поиск)", "git_branch": "Git-ветка",
+            "mcp": "MCP-серверы", "memory": "Память", "inbox": "Очередь запросов"
+        }
+
+        for g_name, keys in groups.items():
+            menu.addSection(g_name)
+            for k in keys:
+                if k not in self._pills:
+                    continue
+                act = menu.addAction(labels.get(k, k))
+                act.setCheckable(True)
+                act.setChecked(self._pills[k].isVisible())
+                # По клику эмитим сигнал наверх (в MainWindow), чтобы он сохранил конфиг
+                act.triggered.connect(lambda checked, p=k: self.pill_visibility_changed.emit(p, checked))
+
+        menu.exec(self.mapToGlobal(pos))
+
+    def apply_visibility_settings(self, hidden_pills: list[str]) -> None:
+        for name, pill in self._pills.items():
+            pill.setVisible(name not in hidden_pills)
 
     def set_coder(self, icon: str, label: str, model_name: str) -> None:
         """Показывает coder-модель.
@@ -295,7 +340,6 @@ class StatusDashboard(QWidget):
         if isinstance(msg, str) and msg:
             text += f": {msg[:120]}"
         else:
-            # Показываем ключевые поля payload (без private-ключей).
             for key in ("query", "name", "model_id", "model", "error"):
                 if payload.get(key):
                     text += f": {str(payload[key])[:120]}"
@@ -320,12 +364,6 @@ class StatusDashboard(QWidget):
     def set_pipeline_loading(self, message: str) -> None:
         self.pipeline.set_state(f"⏳ {message}", _C_WARN, message)
 
-    def set_tok_per_sec(self, value: float) -> None:
-        if value <= 0:
-            self.tok_per_sec.set_state("— tok/s", _C_OFF, "Скорость ещё не измерена")
-        else:
-            self.tok_per_sec.set_state(f"{value:.1f} tok/s", _C_OK, f"Скорость генерации: {value:.1f} tok/s")
-
     def set_rag(self, chunks: int, status: str) -> None:
         if chunks > 0:
             color = _C_OK
@@ -344,13 +382,8 @@ class StatusDashboard(QWidget):
         else:
             self.tools.set_state("🔧 tools", _C_OFF, "Инструменты не используются")
 
-    # ------------------------------------------------------------------
-    # [2.10] Бюджет агента и причина остановки
-    # ------------------------------------------------------------------
-
     def set_budget(self, snapshot: dict | None) -> None:
         """Обновляет индикатор бюджета.
-
         Args:
             snapshot: ``SoftBudget.snapshot()`` или ``None`` (сброс).
                 Ключи: ``iterations``, ``iterations_limit``, ``tokens``,
@@ -395,39 +428,6 @@ class StatusDashboard(QWidget):
         text, color = labels.get(reason, (reason, _C_OFF))
         self.budget.set_state(text, color, f"finish_reason={reason}")
 
-    # ------------------------------------------------------------------
-    # [4.2] Prefix caching
-    # ------------------------------------------------------------------
-
-    def set_cache(self, reads: int, writes: int) -> None:
-        """Показывает статистику prefix caching последнего ответа.
-
-        Args:
-            reads: Сколько токенов промпта уже было в KV (переиспользовано).
-            writes: Сколько токенов промпта обработано заново.
-
-        Note:
-            llama.cpp переиспользует KV по общему префиксу; значения —
-            эвристика (``self.llm.n_tokens`` до/после вызова). Для Ollama
-            всегда ``0/0`` — поле не заполняется.
-        """
-        if reads == 0 and writes == 0:
-            self.cache.set_state("— cache", _C_OFF, "Prefix caching не активен")
-            return
-        total = max(1, reads + writes)
-        hit_pct = int(100 * reads / total)
-        icon = "⚡" if hit_pct >= 50 else "—"
-        text = f"{icon} cache {reads}/{writes}"
-        tooltip = (
-            f"Prefix caching: {reads} reads / {writes} writes\n"
-            f"Hit rate: {hit_pct}% (уже в KV / обработано заново)"
-        )
-        self.cache.set_state(text, _C_OK if hit_pct >= 50 else _C_WARN, tooltip)
-
-    # ------------------------------------------------------------------
-    # [4.3] Эпизодическая память
-    # ------------------------------------------------------------------
-
     def set_memory(self, count: int, recent: list[str] | None = None) -> None:
         """Показывает количество рефлексий в памяти.
 
@@ -444,13 +444,8 @@ class StatusDashboard(QWidget):
             tooltip += "\n\nПоследние:\n" + "\n".join(f"  • {r[:80]}" for r in recent[:3])
         self.memory.set_state(text, _C_INFO, tooltip)
 
-    # ------------------------------------------------------------------
-    # [7] MCP
-    # ------------------------------------------------------------------
-
     def set_mcp(self, connected: int, servers: list[str] | None = None) -> None:
         """Показывает количество подключённых MCP-серверов.
-
         Args:
             connected: Сколько серверов ответили на ``initialize``.
             servers: Имена серверов (для tooltip).
@@ -466,13 +461,8 @@ class StatusDashboard(QWidget):
                 tooltip += f"\n  … ещё {len(servers) - 5}"
         self.mcp.set_state(text, _C_OK, tooltip)
 
-    # ------------------------------------------------------------------
-    # [9.12] freedom_level
-    # ------------------------------------------------------------------
-
     def set_freedom(self, level: str) -> None:
         """Показывает freedom_level активного профиля.
-
         Args:
             level: ``"safe"`` | ``"research"`` | ``"development"`` | ``"open"``.
         """
@@ -513,66 +503,6 @@ class StatusDashboard(QWidget):
         """Совместимость с текущим `tool_status_label.setText(...)`."""
         self.tools.set_state(label, _C_OK if "актив" in label.lower() else _C_WARN, label)
 
-    # ------------------------------------------------------------------
-    # [2.11] Режим браузера
-    # ------------------------------------------------------------------
-
-    def set_browser(self, mode: str, *, available: bool = True) -> None:
-        """Показывает режим браузера.
-
-        Args:
-            mode: ``isolated`` | ``extension`` | ``full``.
-            available: ``False`` — playwright/websockets не установлены.
-        """
-        if not available:
-            self.browser.set_state("— browser", _C_OFF, "playwright/websockets не установлены")
-            return
-        color = {
-            "isolated": _C_OK,
-            "extension": _C_INFO,
-            "full": _C_ERR,  # красный — максимальный доступ
-        }.get(mode, _C_OFF)
-        icon = {
-            "isolated": "🔒",
-            "extension": "🔗",
-            "full": "⚠️",
-        }.get(mode, "•")
-        text = f"{icon} browser: {mode}"
-        tooltip = {
-            "isolated": "Изолированный профиль Chromium. Без доступа к вашим кукам/логинам.",
-            "extension": "Через расширение. Только вкладки, которые вы разрешили.",
-            "full": "CDP к копии реального профиля. Все ваши сессии доступны.",
-        }.get(mode, "")
-        self.browser.set_state(text, color, tooltip)
-
-    # ------------------------------------------------------------------
-    # [2.13] Провайдер поиска
-    # ------------------------------------------------------------------
-
-    def set_search(self, provider: str, *, available: bool = True) -> None:
-        """Показывает провайдера, который отработает первым.
-
-        Args:
-            provider: ``"searxng"`` / ``"openserp"`` / ``"yandex"`` /
-                ``"ollama"`` / ``"ddg"``.
-            available: ``False`` — ни один не настроен.
-        """
-        if not available or not provider:
-            self.search.set_state("— search", _C_OFF, "Ни один провайдер не настроен")
-            return
-        color = _C_OK if provider in ("searxng", "openserp") else _C_WARN
-        text = f"🔍 search: {provider}"
-        tooltip = (
-            f"Первый в цепочке: {provider}\n"
-            f"Если упадёт — перейдёт к следующему.\n"
-            f"Настроить: config.yaml → search.providers"
-        )
-        self.search.set_state(text, color, tooltip)
-
-    # ------------------------------------------------------------------
-    # [2.12] Durable inbox
-    # ------------------------------------------------------------------
-
     def set_inbox(self, pending: int) -> None:
         """Показывает счётчик pending-запросов.
 
@@ -590,10 +520,6 @@ class StatusDashboard(QWidget):
             f"переходит в «pending» при старте."
         )
         self.inbox.set_state(text, color, tooltip)
-
-    # ------------------------------------------------------------------
-    # [9.4] Git-ветка
-    # ------------------------------------------------------------------
 
     def set_git_branch(self, branch: str, commit_hash: str) -> None:
         """Показывает текущую git-ветку и hash.

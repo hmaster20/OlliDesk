@@ -699,6 +699,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel.set_dashboard(self.dashboard)
 
+        self.dashboard.pill_visibility_changed.connect(self._on_pill_visibility_changed)
         self.dashboard.apply_visibility_settings(self.config.hidden_status_pills)
 
     # ------------------------------------------------------------------
@@ -1861,6 +1862,20 @@ class MainWindow(QMainWindow):
         self.config.hidden_status_pills = hidden
         from core.config import save_config
         save_config(self.config)
+
+    @Slot(str, bool)
+    def _on_pill_visibility_changed(self, pill_id: str, visible: bool) -> None:
+        hidden = list(self.config.hidden_status_pills)
+        if visible and pill_id in hidden:
+            hidden.remove(pill_id)
+        elif not visible and pill_id not in hidden:
+            hidden.append(pill_id)
+
+        self.config.hidden_status_pills = hidden
+        from core.config import save_config
+        save_config(self.config)
+
+        self.dashboard.apply_visibility_settings(hidden)
 
         self.dashboard.apply_visibility_settings(hidden)
     def _toggle_theme(self) -> None:

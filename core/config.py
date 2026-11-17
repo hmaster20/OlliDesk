@@ -1225,9 +1225,13 @@ class AppConfig(BaseModel):
     agent_max_iterations: int = 30
     chat_max_iterations: int = 7
 
-    # [2.10] Мягкие бюджеты цикла агента. Жёсткий `max_iterations`
-    # больше не основной выход — `AgentLoop` идёт до `finish_reason=stop`
-    # или `user_cancel`, а бюджеты сигналят о «дорого/долго».
+    # Скрытые индикаторы статус-бара (пользователь настраивает через правый клик)
+    # По умолчанию скрываем редкие, чтобы не засорять экран
+    hidden_status_pills: list[str] = Field(
+        default_factory=lambda: ["browser", "search", "memory", "mcp", "freedom", "inbox"]
+    )
+
+    # Мягкие бюджеты цикла агента.Бюджеты сигналят о «дорого/долго».
     # `soft_budget_iterations` — safety net для AGENT; для CHAT/PLAN
     # переопределяется `chat_max_iterations`/`agent_max_iterations`.
     soft_budget_time_s: int = 600
