@@ -1,9 +1,6 @@
-"""Меню главного окна OlliDesk (план 2.4).
+"""Меню главного окна.
 
 Почему отдельный файл:
-  * `MainWindow._setup_menu` занимал ~180 строк и держал все обработчики
-    в `MainWindow` — это раздувало класс и мешало разделению окна на
-    контроллеры (2.4).
   * Меню — самостоятельная единица UI с собственным жизненным циклом
     (создаётся один раз, состояние checkable-пунктов синхронизируется
     с конфигом). Ему не нужны ни `chat_panel`, ни `vector_store`, ни
@@ -34,7 +31,6 @@ from loguru import logger
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QMenu, QMenuBar
-
 from core.config import AppConfig, save_config
 
 
@@ -57,21 +53,17 @@ class AppMenuBar(QMenuBar):
     manage_models_requested = Signal()
     slm_models_requested = Signal()
     preload_pipeline_requested = Signal()
-    # [4.7.B] Замер производительности (TTFT, tok/s, время загрузки).
+    toggle_status_pill_requested = Signal(str, bool)
+
     benchmark_requested = Signal()
     edit_prompts_requested = Signal()
     manage_sessions_requested = Signal()
     edit_iterations_requested = Signal()
-    # [9.9] Палитра команд (Ctrl+Shift+P).
+    # Палитра команд (Ctrl+Shift+P).
     command_palette_requested = Signal()
-    # [9.4] Профили использования.
     profile_selected = Signal(str)  # profile_id
     profile_editor_requested = Signal()
-
-    # [9.10] Permissions Dashboard.
     permissions_requested = Signal()
-
-    # [4.3] Память агента.
     memory_requested = Signal()
 
     # --- Help ---
@@ -173,7 +165,7 @@ class AppMenuBar(QMenuBar):
         slm_models.triggered.connect(self.slm_models_requested.emit)
         view_menu.addAction(slm_models)
 
-        # [4.7.B] Замер производительности.
+        # Замер производительности.
         benchmark_action = QAction("Замер производительности…", self)
         benchmark_action.setToolTip(
             "Прогнать выбранные модели на стандартных/своих промптах, "
@@ -206,7 +198,7 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        # [9.4] Подменю «Профили»: встроенные + пользовательские (checkable),
+        # Подменю «Профили»: встроенные + пользовательские (checkable),
         # плюс «Редактор профилей…».
         self._profiles_menu = view_menu.addMenu("Профили")
         self._profile_actions: list[QAction] = []
@@ -215,6 +207,29 @@ class AppMenuBar(QMenuBar):
         edit_profiles = QAction("Редактор профилей…", self)
         edit_profiles.triggered.connect(self.profile_editor_requested.emit)
         view_menu.addAction(edit_profiles)
+
+        view_menu.addSeparator()
+
+        status_menu = view_menu.addMenu("Элементы статус-бара")
+        pills_info = [
+            ("activity", "Активность (idle/thinking)"),
+            ("backend", "Бэкенд (SLM/Ollama)"),
+            ("pipeline", "Пайплайн (P/A)"),
+            ("tok_per_sec", "Скорость (tok/s)"),
+            ("rag", "RAG-индекс"),
+            ("budget", "Бюджет (итерации)"),
+            ("coder", "Coder-модель"),
+            ("git_branch", "Git-ветка"),
+        ]
+        # Для остальных (cache, browser, search, mem, mcp, freedom, inbox)
+        # можно сделать по аналогии или скрыть по умолчанию.
+
+        for p_id, p_label in pills_info:
+            act = QAction(p_label, self)
+            act.setCheckable(True)
+            act.setChecked(p_id not in self._config.hidden_status_pills)
+            act.triggered.connect(lambda checked, pid=p_id: self.toggle_status_pill_requested.emit(pid, checked))
+            status_menu.addAction(act)
 
         view_menu.addSeparator()
 

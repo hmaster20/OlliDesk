@@ -177,6 +177,11 @@ class LiveEventsPanel(QWidget):
         self._header_label = QLabel()
         self._header_label.setTextFormat(Qt.TextFormat.RichText)
         self._header_label.setStyleSheet("font-size: 11px;")
+        self._header_label.setToolTip(
+            "Живая лента системных событий (RAG-поиск, вызовы инструментов, "
+            "статусы LLM и ошибки). Кликните, чтобы развернуть или свернуть."
+        )
+        self._header_label.setCursor(Qt.CursorShape.PointingHandCursor)
         header.addWidget(self._header_label, stretch=1)
 
         self._domain_combo = QComboBox()
@@ -569,5 +574,11 @@ class LiveEventsPanel(QWidget):
         sb = self._body.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def mousePressEvent(self, event) -> None:
+        """Разворачивает/сворачивает панель при клике на шапку."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._header_label.geometry().contains(event.pos()):
+                self._toggle_body()
+        super().mousePressEvent(event)
 
 __all__ = ["LiveEventsPanel", "QtEventBus"]

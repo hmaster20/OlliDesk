@@ -593,19 +593,20 @@ class MainWindow(QMainWindow):
         self.menu_bar.manage_models_requested.connect(self._open_model_manager)
         self.menu_bar.slm_models_requested.connect(self._open_slm_manager)
         self.menu_bar.preload_pipeline_requested.connect(self._preload_two_model_pipeline)
-        # [4.7.B] Замер производительности.
+        # Замер производительности.
         self.menu_bar.benchmark_requested.connect(self._open_benchmark)
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
         self.menu_bar.memory_requested.connect(self._open_memory_dialog)
 
-        # [9.9] Палитра команд.
-        self.menu_bar.command_palette_requested.connect(self._open_command_palette)
+        self.menu_bar.toggle_status_pill_requested.connect(self._on_toggle_status_pill)
 
+        # Палитра команд.
+        self.menu_bar.command_palette_requested.connect(self._open_command_palette)
         self.menu_bar.permissions_requested.connect(self._open_permissions)
 
-        # [9.4] Профили использования.
+        # Профили использования.
         self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
         self.menu_bar.profile_editor_requested.connect(self._open_profile_editor)
 
@@ -674,12 +675,7 @@ class MainWindow(QMainWindow):
             self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
-        """[9.7] Статус-бар с единой приборной панелью.
-
-        Убраны отдельные `ollama_status_label` / `backend_status_label`
-        (заменены на StatusDashboard). `project_label` остаётся —
-        путь к проекту нужен, но не дублирует бэкенд-инфо.
-        """
+        """ Статус-бар с единой приборной панелью."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -703,12 +699,14 @@ class MainWindow(QMainWindow):
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel.set_dashboard(self.dashboard)
 
+        self.dashboard.apply_visibility_settings(self.config.hidden_status_pills)
+
     # ------------------------------------------------------------------
-    # [9.9] Палитра команд
+    # Палитра команд
     # ------------------------------------------------------------------
 
     def _install_global_shortcuts(self) -> None:
-        """[9.9] Ctrl+Shift+P — глобальный shortcut на всё окно.
+        """Ctrl+Shift+P — глобальный shortcut на всё окно.
 
         Меню `View → Палитра команд…` уже имеет такой же shortcut —
         при фокусе в меню QAction сработает. Глобальный QShortcut нужен,
@@ -725,7 +723,7 @@ class MainWindow(QMainWindow):
             logger.debug("Не удалось установить Ctrl+Shift+P на окно", exc_info=True)
 
     def _register_palette_commands(self) -> None:
-        """[9.9] Регистрирует команды палитры.
+        """ Регистрирует команды палитры.
 
         Каждая команда — `PaletteCommand` с callback на существующий слот.
         Профили и бэкенд добавляются динамически (зависят от конфига).
@@ -1849,6 +1847,22 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Ошибка перезагрузки конфига: {e}")
 
+    @Slot(str, bool)
+    def _on_toggle_status_pill(self, pill_id: str, visible: bool) -> None:
+        if not hasattr(self, "dashboard"):
+            return
+
+        hidden = list(self.config.hidden_status_pills)
+        if visible and pill_id in hidden:
+            hidden.remove(pill_id)
+        elif not visible and pill_id not in hidden:
+            hidden.append(pill_id)
+
+        self.config.hidden_status_pills = hidden
+        from core.config import save_config
+        save_config(self.config)
+
+        self.dashboard.apply_visibility_settings(hidden)
     def _toggle_theme(self) -> None:
         """Переключает между тёмной и светлой темой."""
         new_theme = "dark" if self.config.theme == "light" else "light"

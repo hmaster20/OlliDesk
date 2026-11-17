@@ -56,6 +56,25 @@ class _PillLabel(QLabel):
             " color: #d4a373;"
             "}"
         )
+        # Собираем все плитки в словарь для управления видимостью
+        self._pills = {
+            "activity": self.activity,
+            "backend": self.backend,
+            "pipeline": self.pipeline,
+            "tok_per_sec": self.tok_per_sec,
+            "rag": self.rag,
+            "tools": self.tools,
+            "budget": self.budget,
+            "cache": self.cache,
+            "coder": self.coder,
+            "browser": self.browser,
+            "search": self.search,
+            "git_branch": self.git_branch,
+            "memory": self.memory,
+            "mcp": self.mcp,
+            "freedom": self.freedom,
+            "inbox": self.inbox,
+        }
         self._current_color: str = _C_OFF
         self._current_text: str = ""
         self._pulse_active: bool = False
@@ -74,6 +93,11 @@ class _PillLabel(QLabel):
         """Только tooltip (текст/цвет не трогаются)."""
         if tooltip:
             self.setToolTip(tooltip)
+
+    def apply_visibility_settings(self, hidden_pills: list[str]) -> None:
+        """Скрывает/показывает плитки на основе конфига."""
+        for name, pill in self._pills.items():
+            pill.setVisible(name not in hidden_pills)
 
     def set_pulse(self, active: bool) -> None:
         """Включает/выключает мигание точки."""

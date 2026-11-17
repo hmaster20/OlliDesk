@@ -130,6 +130,9 @@ class SLMModelInfo(BaseModel):
     # (он про способности, а не про формат вывода).
     is_thinking: bool = False
 
+    # Список идентификаторов скрытых индикаторов статус-бара
+    hidden_status_pills: list[str] = Field(default_factory=list)
+
     @field_validator("tier")
     @classmethod
     def _validate_tier(cls, v: int) -> int:
