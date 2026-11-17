@@ -129,11 +129,40 @@ docstring-code-format = true # Автоматически форматирова
 
 [tool.ruff.lint.pep8-naming]
 ignore-names = [
+    # --- существующие ---
     "eventFilter",
-    "keyPressEvent",
     "initStyleOption",
+    # --- события клавиатуры ---
+    "keyPressEvent",
+    "keyReleaseEvent",
+    # --- события окна ---
     "closeEvent",
     "resizeEvent",
+    "showEvent",
+    "hideEvent",
+    "moveEvent",
+    # --- события мыши (требуется для _PillLabel и _ClickableLabel) ---
+    "mousePressEvent",
+    "mouseReleaseEvent",
+    "mouseMoveEvent",
+    "mouseDoubleClickEvent",
+    "wheelEvent",
+    "enterEvent",
+    "leaveEvent",
+    # --- отрисовка ---
+    "paintEvent",
+    # --- фокус и контекст ---
+    "focusInEvent",
+    "focusOutEvent",
+    "contextMenuEvent",
+    # --- drag & drop ---
+    "dragEnterEvent",
+    "dragMoveEvent",
+    "dragLeaveEvent",
+    "dropEvent",
+    # --- размеры ---
+    "sizeHint",
+    "minimumSizeHint",
 ]
 
 # Форматирование и импорты - только ruff (Black-совместимый режим).
