@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QColor
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -552,9 +552,7 @@ class SLMModelsDialog(QDialog):
             roles_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if roles:
                 roles_item.setForeground(QColor("#98c379"))  # зелёный акцент
-                roles_item.setToolTip(
-                    "Назначено на роли:\n" + "\n".join(f"• {r}" for r in roles)
-                )
+                roles_item.setToolTip("Назначено на роли:\n" + "\n".join(f"• {r}" for r in roles))
             self.table.setItem(row, 7, roles_item)
 
             # 9. На диске
@@ -1114,6 +1112,7 @@ class SLMModelsDialog(QDialog):
 
         self._populate()
         self._update_buttons()
+
     def _on_verify_all_clicked(self) -> None:
         """Спрашивает режим и запускает проверку."""
         if self._verify_thread is not None and self._verify_thread.isRunning():
@@ -1127,7 +1126,6 @@ class SLMModelsDialog(QDialog):
         if not candidates:
             QMessageBox.information(self, "Нечего проверять", "Нет скачанных моделей для проверки.")
             return
-
 
         menu = QMenu(self)
         act_fast = menu.addAction("⚡ Быстрая (только размер)")

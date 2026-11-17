@@ -1,4 +1,4 @@
-"""«Живая» лента событий под чатом (2.5 / 9.5.3).
+"""«Живая» лента событий под чатом.
 
 `QtEventBus` — QObject-мост из `core.event_bus.EventBus` (plain-Python)
 в Qt-сигнал. Подписка на EventBus идёт в GUI-потоке (ChatPanel),
@@ -44,7 +44,7 @@ _IMPORTANT_KINDS: Final[frozenset[str]] = frozenset(
     {
         EventKind.TOOL_ERROR.value,
         EventKind.SLM_FAILED.value,
-        # 2.5 + 2.10: бюджет и завершение прогона — всегда видны.
+        # бюджет и завершение прогона — всегда видны.
         EventKind.BUDGET_EXCEEDED.value,
         EventKind.AGENT_FINISHED.value,
     }
@@ -261,11 +261,19 @@ class LiveEventsPanel(QWidget):
     @Slot(str, dict)
     def append_event(self, kind: str, payload: dict) -> None:
         """Принимает событие из `QtEventBus.event_emitted` (GUI-поток)."""
+        # 1) Сначала фильтр — не пропущенные события не должны менять состояние панели.
+        if self._domain_filter != "all":
+            domain = kind.split(".", 1)[0]
+            if domain != self._domain_filter:
+                return
+        if self._important_only and not self._is_important(kind, payload):
+            return
+
+        # 2) Только теперь — обновление last/severity/preview.
         self._last_kind = kind
         self._last_payload = payload
         self.latest_event.emit(kind, payload)
 
-        # Обновляем максимальную важность для окраски шапки
         if kind == EventKind.LOG.value:
             lvl = str(payload.get("level", "INFO")).upper()
             if lvl in ("ERROR", "CRITICAL"):
@@ -275,14 +283,7 @@ class LiveEventsPanel(QWidget):
         elif kind in (EventKind.TOOL_ERROR.value, EventKind.SLM_FAILED.value):
             self._max_severity = "ERROR"
 
-        # фильтр по домену (первый сегмент kind до точки).
-        if self._domain_filter != "all":
-            domain = kind.split(".", 1)[0]
-            if domain != self._domain_filter:
-                return
-        if self._important_only and not self._is_important(kind, payload):
-            return
-
+        # 3) Рендер.
         self._count += 1
         self._render_line(kind, payload)
         self._refresh_header()
@@ -292,6 +293,8 @@ class LiveEventsPanel(QWidget):
         """Полная очистка ленты."""
         self._body.clear()
         self._count = 0
+        self._last_kind = ""
+        self._last_payload = {}
         self._max_severity = "INFO"
         self._refresh_header()
 
@@ -593,7 +596,7 @@ class LiveEventsPanel(QWidget):
         self._body.setVisible(self._expanded)
         self._toggle_btn.setText("▲ Свернуть" if self._expanded else "▼ Развернуть")
         if self._expanded:
-            self._max_severity = "INFO" # Сбрасываем при прочтении
+            self._max_severity = "INFO"  # Сбрасываем при прочтении
         self._refresh_header()
         if self._expanded:
             QTimer.singleShot(0, self._scroll_to_end)
@@ -602,11 +605,5 @@ class LiveEventsPanel(QWidget):
         sb = self._body.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def mousePressEvent(self, event) -> None:
-        """Разворачивает/сворачивает панель при клике на шапку."""
-        if event.button() == Qt.MouseButton.LeftButton:
-            if self._header_label.geometry().contains(event.pos()):
-                self._toggle_body()
-        super().mousePressEvent(event)
 
 __all__ = ["LiveEventsPanel", "QtEventBus"]
