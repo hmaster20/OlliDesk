@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -255,8 +257,7 @@ class SLMModelsDialog(QDialog):
             "работают без Ollama. Двухмодельный пайплайн использует "
             "<b>planner</b> (GPU, 1.5B/3B) для classify/plan/critique "
             "и <b>analyst</b> (CPU, 7B/14B) для синтеза ответа.<br>"
-            "Список сортируется по клику на заголовки столбцов.<br>"
-            "Можно скачивать несколько моделей — они встанут в очередь.<br>"
+            "Можно скачивать несколько моделей — они встанут в очередь. "
             "Скачивание продолжается в фоне даже после закрытия окна."
         )
         info.setWordWrap(True)
@@ -267,13 +268,12 @@ class SLMModelsDialog(QDialog):
             "Пайплайн (planner + analyst) настраивается в верхней панели чата — селекторы «P:» и «A:»."
         )
         info_row.setWordWrap(True)
-        info_row.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 8px 0;")
+        info_row.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0 8px 0;")
         layout.addWidget(info_row)
 
-        # ===== НОВОЕ: текущая папка моделей + кнопка смены =====
         models_dir_row = QHBoxLayout()
         self._models_dir_label = QLabel("📁 …")
-        self._models_dir_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
+        self._models_dir_label.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
         self._models_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._models_dir_label.setToolTip(
             "Каталог, из которого загружаются GGUF-модели. Можно изменить (например, на другой диск)."
@@ -301,7 +301,7 @@ class SLMModelsDialog(QDialog):
                 "Размер предв.",
                 "Контекст",
                 "Статус",
-                "Активна",
+                "Роли",
                 "На диске",
             ]
         )
@@ -318,6 +318,8 @@ class SLMModelsDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.doubleClicked.connect(self._activate_selected)
         layout.addWidget(self.table, stretch=1)
@@ -536,11 +538,24 @@ class SLMModelsDialog(QDialog):
                 status_item.setToolTip("\n".join(tip_parts))
             self.table.setItem(row, 6, status_item)
 
-            # 8. Активна
-            active = m.id == self.config.slm.selected_model
-            active_item = QTableWidgetItem("● Да" if active else "○ Нет")
-            active_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 7, active_item)
+            # 8. Роли (Chat / Planner / Analyst)
+            roles = []
+            if m.id == self.config.slm.selected_model:
+                roles.append("Chat")
+            if m.id == self.config.slm.planner_model_id:
+                roles.append("Planner")
+            if m.id == self.config.slm.analyst_model_id:
+                roles.append("Analyst")
+
+            roles_text = " · ".join(roles) if roles else "—"
+            roles_item = QTableWidgetItem(roles_text)
+            roles_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if roles:
+                roles_item.setForeground(QColor("#98c379"))  # зелёный акцент
+                roles_item.setToolTip(
+                    "Назначено на роли:\n" + "\n".join(f"• {r}" for r in roles)
+                )
+            self.table.setItem(row, 7, roles_item)
 
             # 9. На диске
             real_size_item = QTableWidgetItem(self._real_size_str(m.file))
@@ -786,6 +801,14 @@ class SLMModelsDialog(QDialog):
         self._populate()
         self._changed = True
 
+        # Если мы выгружали и загружали обратно — показываем итоговый статус
+        if should_move and loaded_models and chat_panel:
+            self.status_label.setText("✅ Каталог обновлён. Модели загружаются в фоне.")
+            # Очищаем статус через 5 секунд, чтобы не висел вечно
+            QTimer.singleShot(5000, self.status_label.clear)
+        else:
+            self.status_label.setText("✅ Каталог моделей успешно обновлён.")
+
     def _reload_models_after_move(self, chat_panel, was_slm: bool, was_pool: bool) -> None:
         """Восстанавливает ранее загруженные модели после переноса."""
         import time
@@ -968,6 +991,129 @@ class SLMModelsDialog(QDialog):
         )
         self.activate_btn.setEnabled(file_status == "installed" and not active)
 
+    @Slot(object)
+    @Slot(object)
+    def _on_table_context_menu(self, pos) -> None:
+        """Показывает меню назначения ролей, скачивания и удаления."""
+        item = self.table.itemAt(pos)
+        if item is None:
+            return
+
+        row = item.row()
+        name_item = self.table.item(row, 0)
+        if name_item is None:
+            return
+        model_id = name_item.data(Qt.ItemDataRole.UserRole)
+        info = self.config.slm.get_model_by_id(model_id)
+        if info is None:
+            return
+
+        # Выделяем строку, чтобы кнопки внизу работали с этой моделью
+        self.table.selectRow(row)
+
+        file_status = self._status_for(info)
+        is_installed = file_status == "installed"
+
+        menu = QMenu(self)
+
+        # Заголовок
+        title_action = menu.addAction(f"⚙️ {info.display_name}")
+        title_action.setEnabled(False)
+        menu.addSeparator()
+
+        # --- Роли ---
+        act_chat = menu.addAction("💬 Основная чат-модель (Chat)")
+        act_chat.setCheckable(True)
+        act_chat.setChecked(self.config.slm.selected_model == model_id)
+        act_chat.setEnabled(is_installed and info.kind == "chat")
+        act_chat.triggered.connect(lambda _checked=False: self._set_role_chat(model_id))
+
+        act_planner = menu.addAction("📋 Planner (GPU, classify/plan)")
+        act_planner.setCheckable(True)
+        act_planner.setChecked(self.config.slm.planner_model_id == model_id)
+        act_planner.setEnabled(is_installed)
+        act_planner.triggered.connect(lambda _checked=False: self._set_role_planner(model_id))
+
+        act_analyst = menu.addAction("🔬 Analyst (CPU, synthesis/regen)")
+        act_analyst.setCheckable(True)
+        act_analyst.setChecked(self.config.slm.analyst_model_id == model_id)
+        act_analyst.setEnabled(is_installed)
+        act_analyst.triggered.connect(lambda _checked=False: self._set_role_analyst(model_id))
+
+        menu.addSeparator()
+
+        # --- Действия с файлом ---
+        # Скачивание (всегда доступно, если не в очереди)
+        act_download = menu.addAction("⬇️ Скачать / Перекачать файл")
+        in_queue = any(q.id == info.id for q in self._download_queue)
+        is_downloading = self._downloading_model_id() == model_id
+        act_download.setEnabled(not in_queue and not is_downloading)
+        act_download.triggered.connect(self._on_download_clicked)
+
+        # Удаление (только если файл есть на диске)
+        act_delete = menu.addAction("🗑 Удалить файл с диска")
+        act_delete.setEnabled(file_status in ("installed", "broken") and not is_downloading)
+        act_delete.triggered.connect(self._delete_selected)
+
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _set_role_chat(self, model_id: str) -> None:
+        """Назначает основную чат-модель."""
+        if self.config.slm.selected_model == model_id:
+            return
+        self.config.slm.selected_model = model_id
+        self.config.slm.auto_select_model = False
+        self.auto_select_check.setChecked(False)
+        self._save_roles_and_refresh()
+
+    def _set_role_planner(self, model_id: str) -> None:
+        """Включает/выключает роль Planner."""
+        if self.config.slm.planner_model_id == model_id:
+            self.config.slm.planner_model_id = ""
+        else:
+            if self.config.slm.analyst_model_id == model_id:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Эта модель уже назначена как Analyst.\n"
+                    "Planner и Analyst не могут быть одной моделью "
+                    "(они будут конкурировать за память).",
+                )
+                return
+            self.config.slm.planner_model_id = model_id
+        self._save_roles_and_refresh()
+
+    def _set_role_analyst(self, model_id: str) -> None:
+        """Включает/выключает роль Analyst."""
+        if self.config.slm.analyst_model_id == model_id:
+            self.config.slm.analyst_model_id = ""
+        else:
+            if self.config.slm.planner_model_id == model_id:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Эта модель уже назначена как Planner.\n"
+                    "Planner и Analyst не могут быть одной моделью "
+                    "(они будут конкурировать за память).",
+                )
+                return
+            self.config.slm.analyst_model_id = model_id
+        self._save_roles_and_refresh()
+
+    def _save_roles_and_refresh(self) -> None:
+        """Сохраняет изменения ролей в конфиг и перерисовывает таблицу."""
+        try:
+            from core.config import save_config
+            from core.slm_models_io import save_slm_models
+
+            save_config(self.config)
+            save_slm_models(self.config.slm.available_models)
+            self._changed = True
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить конфиг: {e}")
+
+        self._populate()
+        self._update_buttons()
     def _on_verify_all_clicked(self) -> None:
         """Спрашивает режим и запускает проверку."""
         if self._verify_thread is not None and self._verify_thread.isRunning():
@@ -982,8 +1128,6 @@ class SLMModelsDialog(QDialog):
             QMessageBox.information(self, "Нечего проверять", "Нет скачанных моделей для проверки.")
             return
 
-        # Меню выбора режима.
-        from PySide6.QtWidgets import QMenu
 
         menu = QMenu(self)
         act_fast = menu.addAction("⚡ Быстрая (только размер)")
@@ -1228,9 +1372,6 @@ class SLMModelsDialog(QDialog):
         self.progress_bar.setValue(max(0, min(100, int(pct))))
         # ↑↑↑
 
-        # Старое: зелёная заливка в ячейке «Статус» таблицы.
-        from PySide6.QtGui import QBrush, QColor
-
         for row in range(self.table.rowCount()):
             name_item = self.table.item(row, 0)
             if name_item is None:
@@ -1242,6 +1383,7 @@ class SLMModelsDialog(QDialog):
                 continue
             status_item.setText(f"⏬ Скачивание ({pct}%)")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_item.setForeground(QBrush(QColor("#61afef")))
             alpha = int(180 * pct / 100)
             status_item.setBackground(QBrush(QColor(80, 180, 80, alpha)))
             break
@@ -1278,19 +1420,39 @@ class SLMModelsDialog(QDialog):
         file_status = self._status_for(info)
         if file_status == "absent":
             return
-        if info.id == self.config.slm.selected_model and file_status == "installed":
-            QMessageBox.warning(self, "Активная модель", "Нельзя удалить активную модель.")
+
+        # Проверяем, не назначена ли модель на роли
+        active_roles = []
+        if info.id == self.config.slm.selected_model:
+            active_roles.append("Chat")
+        if info.id == self.config.slm.planner_model_id:
+            active_roles.append("Planner")
+        if info.id == self.config.slm.analyst_model_id:
+            active_roles.append("Analyst")
+
+        if active_roles and file_status == "installed":
+            QMessageBox.warning(
+                self,
+                "Модель назначена на роли",
+                f"Нельзя удалить файл, пока модель назначена на роли: {', '.join(active_roles)}.\n\n"
+                "Сначала снимите назначение (правый клик по строке → снимите галочки), "
+                "или назначьте другую модель.",
+            )
             return
 
         reply = QMessageBox.question(
             self,
             "Удаление",
-            f"Удалить {info.display_name}?",
+            f"Удалить файл модели {info.display_name}?\n\n"
+            f"Файл будет удалён с диска. При необходимости его можно будет скачать заново.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             delete_model(info.file, repo_id=info.repo)
+            self.status_label.setText(f"🗑 Модель {info.display_name} удалена с диска.")
+            QTimer.singleShot(3000, self.status_label.clear)
             self._populate()
+            self._changed = True
 
     def _on_auto_select_toggled(self, checked: bool) -> None:
         """Сохраняет решение пользователя по автовыбору модели.
@@ -1316,14 +1478,8 @@ class SLMModelsDialog(QDialog):
             return
 
         if info.id != self.config.slm.selected_model:
-            self.config.slm.selected_model = info.id
-            self.config.slm.auto_select_model = False
-            self.auto_select_check.setChecked(False)
-            save_config(self.config)
-            save_slm_models(self.config.slm.available_models)
-            self._changed = True
+            self._set_role_chat(info.id)
             self.status_label.setText(f"✅ Активная модель: {info.display_name}")
-            self._populate()
 
     @Slot()
     def _open_hf_dialog(self) -> None:
