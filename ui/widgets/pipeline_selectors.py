@@ -454,9 +454,13 @@ class PipelineSelectors(QWidget):
 
         analyst_id = self.analyst_combo.currentData() or ""
         if model_id and analyst_id and model_id == analyst_id:
-            self._warn_same_model()
-            self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
-            return
+            # self._warn_same_model()
+            # self._revert_combo(self.planner_combo, self._config.slm.planner_model_id)
+            # return
+            logger.info(
+                f"Pipeline: planner и analyst — одна модель ({model_id}); "
+                f"ModelPool загрузит её один раз на обе роли"
+            )
 
         self._config.slm.planner_model_id = model_id
         save_config(self._config)
@@ -507,11 +511,20 @@ class PipelineSelectors(QWidget):
 
         planner_id = self.planner_combo.currentData() or ""
         if model_id and planner_id and model_id == planner_id:
-            self._warn_same_model()
-            self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
-            return
+            # self._warn_same_model()
+            # self._revert_combo(self.analyst_combo, self._config.slm.analyst_model_id)
+            # return
+            logger.info(
+                f"Pipeline: planner и analyst — одна модель ({model_id}); "
+                f"ModelPool загрузит её один раз на обе роли"
+            )
 
         self._config.slm.analyst_model_id = model_id
+        # Единый источник правды: analyst — «основная» модель.
+        # AgentLoop и fallback должны работать на ней же, а не на
+        # независимом slm.selected_model.
+        if model_id:
+            self._config.slm.selected_model = model_id
         save_config(self._config)
 
         if self._project_path:

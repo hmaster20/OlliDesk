@@ -1805,7 +1805,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._web_thread = WebSearchThread(
             router=self._router,
-            model=self.get_current_model(),
+            model=self.active_model_name(),
             query=query,
             messages_history=list(self._messages),
             search_cache=getattr(self, "search_cache", None),
@@ -2032,7 +2032,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             git_context=self._build_git_context(),
         )
 
-        client = self._router.active_client
+        client, model_name = self._client_and_model(AgentMode.CHAT)
         if client is None:
             self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
             self._reset_send_button()
@@ -2046,7 +2046,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # [2.8] ToolService на этот запрос.
         from core.services.tool_service import ToolService
 
-        model_name = self.get_current_model()
+        # model_name = self.get_current_model()
         self._agent_thread = AgentChatThread(
             client=client,
             registry=registry,
@@ -2089,7 +2089,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """
         self._reset_research_state()
 
-        client = self._router.active_client
+        client, model_name = self._client_and_model(mode)
         if client is None:
             self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
             self._reset_send_button()
@@ -3580,7 +3580,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         dialog = ExportChatDialog(
             messages=list(self._messages),
             title="OlliDesk — чат",
-            model=self.get_current_model(),
+            model=self.active_model_name(),
             mode=self._current_mode().value,
             profile=profile_name,
             project=self._project_name(),
@@ -3977,12 +3977,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str)
     def _on_analyst_changed(self, model_id: str) -> None:
-        """Пользователь сменил analyst — пересоздаём пайплайн."""
-        logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reset_pipeline")
-        self.reset_pipeline()
+        """Смена analyst = смена основной модели: перезагружаем всё."""
+        logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reload_slm")
+        # reload_slm сам делает reset_pipeline + _detect_and_load_slm
+        # (skip_auto_select=True) + _ensure_orchestrator.
+        self.reload_slm()
         self._update_pipeline_status()
-        if self.project_root:
-            QTimer.singleShot(100, self._ensure_orchestrator)
 
     # ------------------------------------------------------------------
     # [9.4] Профили использования
@@ -4639,3 +4639,30 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         self._last_assistant_widget._parts_layout.addWidget(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _role_for_mode(self, mode: AgentMode) -> Role:
+        """Какая роль пула обслуживает режим."""
+        return Role.PLANNER if mode == AgentMode.CHAT else Role.ANALYST
+
+    def active_model_name(self) -> str:
+        """Имя модели АКТИВНОГО бэкенда (для логов, событий, экспорта)."""
+        backend = self._router.active_backend
+        if backend == BackendType.LOCAL_SLM:
+            return self._slm_model_id or self._slm_model_name or "local-slm"
+        if backend == BackendType.OLLAMA:
+            return self.get_current_model()
+        return "rule-based"
+
+    def _client_and_model(self, mode: AgentMode) -> tuple[Any, str]:
+        """Клиент и имя модели, которые реально обслужат запрос.
+
+        Единый владелец моделей — ModelPool. Отдельный `_slm_client`
+        остаётся только fallback'ом, пока пул не поднят.
+        """
+        if self._router.active_backend == BackendType.LOCAL_SLM and self._model_pool is not None:
+            role = self._role_for_mode(mode)
+            try:
+                return self._model_pool.client(role), self._model_pool.spec(role).model_id
+            except RuntimeError:
+                logger.debug(f"Роль {role.value} не загружена — fallback на _slm_client")
+        return self._router.active_client, self.active_model_name()

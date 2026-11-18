@@ -327,6 +327,7 @@ class LocalLLMClient:
             finish_reason = "stop"
             prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
             gen_started = time.perf_counter()
+            gen_ms = 0.0
             first_token_at: float | None = None
 
             # [4.2] Prefix caching: сколько токенов уже в KV до вызова.
@@ -430,7 +431,10 @@ class LocalLLMClient:
                                         done=False,
                                     )
                                 )
-                                gen_ms = (time.perf_counter() - gen_started) * 1000
+
+                # Время генерации считаем ВСЕГДА: после выхода из блокировки,
+                # независимо от thinking-режима, отмены и наличия хвоста парсера.
+                gen_ms = (time.perf_counter() - gen_started) * 1000
 
                 # [4.2] Метрики prefix caching.
                 try:
@@ -602,7 +606,15 @@ class LocalLLMClient:
         cache_reads: int = 0,
         cache_writes: int = 0,
     ) -> dict[str, Any]:
-        seconds = gen_ms / 1000
+        # seconds = gen_ms / 1000
+        seconds = max(gen_ms / 1000.0, 1e-6)
+        logger.info(
+            f"SLM: {tokens} ток. за {seconds:.1f} с ({tokens / seconds:.1f} ток/с)"
+            + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
+            + f", промпт ~{prompt_chars} симв., "
+            f"cache: {cache_reads} reads / {cache_writes} writes"
+        )
+
         return {
             "prompt_chars": prompt_chars,
             "tokens": tokens,

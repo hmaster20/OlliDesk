@@ -97,6 +97,12 @@ class ClientLike(Protocol):
 
     n_ctx: int
 
+    def cancel_request(self) -> None: ...
+    def reset_cancel(self) -> None: ...
+
+    @property
+    def is_cancelled(self) -> bool: ...
+
     def chat(
         self,
         model: str,
@@ -281,7 +287,8 @@ class ModelPool:
         return Role.ANALYST
 
     async def aclose(self) -> None:
-        for c in self._clients.values():
+        # Каждый уникальный файл закрываем ОДИН раз.
+        for c in self._clients_by_file.values():
             close = getattr(c, "aclose", None) or getattr(c, "close", None)
             if close:
                 res = close()
@@ -289,3 +296,6 @@ class ModelPool:
                     await res
         self._clients.clear()
         self._clients_by_file.clear()
+        self._specs.clear()
+        self._file_by_role.clear()
+        self._last_used.clear()
