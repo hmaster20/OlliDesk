@@ -140,13 +140,26 @@ class ReflectionLike(Protocol):
 
 
 class RecallResultLike(Protocol):
-    """Минимальный контракт результата recall."""
+    """Минимальный контракт результата recall.
 
-    reflections: Sequence[ReflectionLike]
-    hit: bool
+    AgentLoop использует только три вещи (см. `_build_memory_block`):
+      * ``result.hit``;
+      * ``bool(result.reflections)`` и ``len(result.reflections)``;
+      * ``result.render_for_prompt(max_chars=...)``.
 
-    def render_for_prompt(self, max_chars: int = 1200) -> str: ...
+    Атрибуты объявлены как read-only property: такой протокол принимают
+    и обычные поля pydantic/dataclass, и вычисляемые свойства. Тип
+    элемента ``reflections`` не важен — ``object`` снимает требование
+    точного совпадения с вложенным ``ReflectionLike``.
+    """
 
+    @property
+    def hit(self) -> bool: ...
+
+    @property
+    def reflections(self) -> Sequence[object]: ...
+
+    def render_for_prompt(self, *, max_chars: int = 1200) -> str: ...
 
 class MemoryServiceLike(Protocol):
     def recall(

@@ -230,14 +230,11 @@ class BackendsMixin:
         if backend == BackendType.OLLAMA:
             return f"🌐 Ollama · {self.get_current_model()}"
         if backend == BackendType.LOCAL_SLM:
-            # Показываем, какие модели реально загружены в пайплайн
-            if (
-                getattr(self, "_orchestrator", None) is not None
-                and getattr(self, "_model_pool", None) is not None
-            ):
+            pool = self._model_pool
+            if self._orchestrator is not None and pool is not None:
                 try:
-                    p = self._model_pool.spec(Role.PLANNER).model_id.split(".gguf")[0][:15]
-                    a = self._model_pool.spec(Role.ANALYST).model_id.split(".gguf")[0][:15]
+                    p = pool.spec(Role.PLANNER).model_id.split(".gguf")[0][:15]
+                    a = pool.spec(Role.ANALYST).model_id.split(".gguf")[0][:15]
                     return f"🖥 SLM · P:{p} A:{a}"
                 except Exception:
                     pass

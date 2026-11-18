@@ -13,7 +13,10 @@ from core.services.memory_service import (
 
 os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+TaskType = Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
+Outcome = Literal["success", "partial", "failure"]
 
 from loguru import logger
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal, Slot
@@ -2703,7 +2706,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _build_reflection(
         self,
         *,
-        outcome: str,
+        outcome: Outcome,
         summary_hint: str = "",
     ) -> Reflection | None:
         """Формирует Reflection для записи в память.
@@ -2722,11 +2725,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         Возвращает ``None``, если нет смысла писать (пустой summary).
         """
         mode = self._current_mode()
-        task_type = {
+        # Аннотация нужна ИМЕННО на словаре: без неё mypy выводит
+        # dict[AgentMode, str], и .get() отдаёт str вместо Literal.
+        task_type_by_mode: dict[AgentMode, TaskType] = {
             AgentMode.AGENT: "code",
             AgentMode.PLAN: "research",
             AgentMode.CHAT: "chat",
-        }.get(mode, "other")
+        }
+        task_type: TaskType = task_type_by_mode.get(mode, "other")
 
         # Summary — из summary_hint или последнего user-сообщения.
         summary = (summary_hint or "").strip()
@@ -2739,6 +2745,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 summary = (last_user.content or "").strip()
         if not summary:
             return None
+
         # Ограничиваем длину и убираем переносы строк.
         summary = " ".join(summary.split())[:500]
 
@@ -2760,7 +2767,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _remember_if_needed(
         self,
         *,
-        outcome: str,
+        outcome: Outcome,
         summary_hint: str = "",
     ) -> None:
         """Записывает рефлексию, если включён ``auto_remember``.
@@ -2778,12 +2785,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 return
         except Exception:
             return
+
         svc = self._ensure_memory_service()
         if svc is None:
             return
+
         reflection = self._build_reflection(outcome=outcome, summary_hint=summary_hint)
         if reflection is None:
             return
+
         try:
             svc.remember(reflection)
             # [9.8] Обновляем индикатор сразу — иначе счётчик
@@ -2799,11 +2809,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         + закрытие inbox-записи (2.12)."""
         reason = payload.get("finish_reason")
         budget = payload.get("budget")
+
         if self._dashboard is not None:
             if budget:
                 self._dashboard.set_budget(budget)
             if reason:
                 self._dashboard.set_finish_reason(reason)
+
         logger.info(
             f"Agent finished: reason={reason!r}, "
             f"iterations={payload.get('iterations')}, "
@@ -2823,11 +2835,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         # [4.3] Автоматическая рефлексия при успешном/частичном завершении.
         if reason in (None, "stop", "length", "budget.exceeded"):
-            outcome = {
+            outcome_by_reason: dict[str, Outcome] = {
                 "stop": "success",
                 "length": "partial",
                 "budget.exceeded": "partial",
-            }.get(str(reason or "stop"), "success")
+            }
+            outcome: Outcome = outcome_by_reason.get(str(reason or "stop"), "success")
             self._remember_if_needed(
                 outcome=outcome,
                 summary_hint=self._current_assistant_text[:300],
@@ -4241,13 +4254,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             pass
 
         # [2.12] Durable inbox.
-        try:
-            from state.inbox import DurableInbox
-            inbox = DurableInbox.instance()
-            pending = inbox.count_pending()
-            self._dashboard.set_inbox(pending)
-        except Exception:
-            logger.debug("Не удалось обновить inbox-индикатор", exc_info=True)
+        self._sync_inbox_indicator()
+        # try:
+        #     from state.inbox import DurableInbox
+        #     inbox = DurableInbox.instance()
+        #     pending = inbox.count_pending()
+        #     self._dashboard.set_inbox(pending)
+        # except Exception:
+        #     logger.debug("Не удалось обновить inbox-индикатор", exc_info=True)
 
         s_prov, s_avail = "", False
         try:

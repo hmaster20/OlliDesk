@@ -61,6 +61,7 @@ class RuleBasedFallback:
         tools: list | None = None,
         options: ChatOptions | None = None,
         stream: bool = True,
+        op_type: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Обрабатывает запрос через правила."""

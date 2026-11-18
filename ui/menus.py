@@ -199,10 +199,7 @@ class AppMenuBar(QMenuBar):
 
         view_menu.addSeparator()
 
-        # Подменю «Профили»: встроенные + пользовательские (checkable),
-        # плюс «Редактор профилей…».
         self._profiles_menu = view_menu.addMenu("Профили")
-        self._profile_actions: list[QAction] = []
         self._refresh_profiles_menu()
 
         edit_profiles = QAction("Редактор профилей…", self)

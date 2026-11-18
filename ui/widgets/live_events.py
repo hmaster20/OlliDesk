@@ -588,8 +588,7 @@ class LiveEventsPanel(QWidget):
             name = payload.get("server_name", "?")
             tool = payload.get("tool_name", "?")
             dur = payload.get("duration_ms", 0)
-            ok = not payload.get("is_error", False)
-            mark = "✓" if ok else "✗"
+            mark = "✗" if payload.get("is_error", False) else "✓"
             return f"🔌 {name}/{tool} {mark} ({dur} ms)", _C_OTHER
         if kind == EventKind.MCP_ERROR.value:
             name = payload.get("server_name", "?")
