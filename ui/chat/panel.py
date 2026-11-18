@@ -369,8 +369,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._active_tool_card: ToolCallCard | None = None
         # Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
-        # Предупреждение о несовпадении API дашборда — один раз за сессию.
-        self._perf_pill_warned: bool = False
 
         # QCompleter для `@`-команд.
         self._command_completer: CommandCompleter | None = None
@@ -2853,7 +2851,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
-        """[4.8.E + 4.2] Конец стрима: tok/s и prefix cache в плитке `perf`."""
+        """Конец стрима: tok/s и prefix cache в плитке `perf`.
+
+        Сигнатура подтверждена:
+        `set_perf(tps: float, cache_reads: int, cache_writes: int) -> None`.
+        """
         logger.trace("stream_finished")
         if self._dashboard is None:
             return
@@ -2864,39 +2866,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             writes = int(stats.get("cache_writes", 0) or 0)
         except (TypeError, ValueError):
             return
-        self._update_perf_pill(tps, reads, writes)
-
-    def _update_perf_pill(self, tps: float, reads: int, writes: int) -> None:
-        """Обновляет плитку `perf` (tok/s + prefix cache).
-
-        Плитки `tok_per_sec` и `cache` объединены в `perf`, старых сеттеров
-        больше нет. Подбираем сигнатуру `set_perf`; отсутствие метода —
-        warning один раз, а не падение Qt-слота.
-        """
-        dash = self._dashboard
-        if dash is None:
-            return
-        setter = getattr(dash, "set_perf", None)
-        if not callable(setter):
-            if not self._perf_pill_warned:
-                self._perf_pill_warned = True
-                logger.warning("StatusDashboard.set_perf отсутствует — плитка perf не обновляется")
-            return
-        for args, kwargs in (
-            ((tps, reads, writes), {}),
-            ((tps,), {"cache_reads": reads, "cache_writes": writes}),
-            ((tps,), {}),
-        ):
-            try:
-                setter(*args, **kwargs)
-                return
-            except TypeError:
-                continue
-        if not self._perf_pill_warned:
-            self._perf_pill_warned = True
-            logger.warning(
-                f"set_perf: не подошла ни одна сигнатура (tps={tps}, cache={reads}/{writes})"
-            )
+        self._dashboard.set_perf(tps, reads, writes)
 
     def _is_message_widget(self, widget: QWidget | None) -> bool:
         """True, если виджет — «сообщение» (можно сворачивать в placeholder).
