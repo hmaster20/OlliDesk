@@ -4158,7 +4158,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                     )
 
     def _sync_dashboard(self) -> None:
-        """Синхронизирует бэкенд/pipeline/tok/s с приборной панелью."""
+        """Синхронизирует backend/pipeline/coder/net/git/memory/mcp/freedom с приборной панелью."""
         if self._dashboard is None:
             return
         # Бэкенд.
@@ -4202,7 +4202,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
 
-        # [10.6] Индикатор coder-модели.
+        # [10.6] Coder
         try:
             from agents.slm_selector import select_coder
             from core.config import load_config as _load_cfg
@@ -4224,29 +4224,44 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
 
-        # [2.11] Режим браузера.
+        # [2.11 + 2.13] Сеть (браузер + поиск)
+        b_mode, b_avail = "isolated", False
         try:
-            from agents.browser_client import (
-                is_playwright_available,
-            )
-            from core.config import load_config as _load_cfg_browser
-
-            _cfg_b = _load_cfg_browser()
+            from agents.browser_client import is_playwright_available
+            cfg_b = load_config()
             mode = _cfg_b.browser.mode
-            # Для extension нужен websockets; для isolated/full — playwright.
             if mode == "extension":
                 try:
                     import websockets  # noqa: F401
-
                     available = True
                 except ImportError:
                     available = False
             else:
                 available = is_playwright_available()
-            self._dashboard.set_browser(mode, available=available)
         except Exception:
-            logger.debug("Не удалось обновить browser-индикатор", exc_info=True)
-        # [2.13] Провайдер поиска (первый доступный в цепочке).
+            pass
+
+        # [2.12] Durable inbox.
+        try:
+            from state.inbox import DurableInbox
+            inbox = DurableInbox.instance()
+            pending = inbox.count_pending()
+            self._dashboard.set_inbox(pending)
+        except Exception:
+            logger.debug("Не удалось обновить inbox-индикатор", exc_info=True)
+
+        s_prov, s_avail = "", False
+        try:
+            from agents.search_providers import build_chain
+
+            cfg_s = load_config()
+            chain = build_chain(cfg_s.search)
+            s_prov = chain[0].name if chain else ""
+            s_avail = bool(chain)
+        except Exception:
+            pass
+
+        self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
         try:
             from agents.search_providers import build_chain
             from core.config import load_config as _load_cfg_search
@@ -4255,7 +4270,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             chain = build_chain(_cfg_s.search)
             provider = chain[0].name if chain else ""
             available = bool(chain)
-            self._dashboard.set_search(provider, available=available)
+            self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
         except Exception:
             logger.debug("Не удалось обновить search-индикатор", exc_info=True)
         # [9.4] Git-ветка.
