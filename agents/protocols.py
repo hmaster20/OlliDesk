@@ -161,6 +161,7 @@ class RecallResultLike(Protocol):
 
     def render_for_prompt(self, *, max_chars: int = 1200) -> str: ...
 
+
 class MemoryServiceLike(Protocol):
     def recall(
         self,

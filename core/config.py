@@ -956,18 +956,34 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
         "soft_budget_iterations",
         "memory",
         "session_overrides",
-        "mcp", "browser", "search", "hf_token",
+        "mcp",
+        "browser",
+        "search",
+        "hf_token",
         "hidden_status_pills",
         "show_project_tree",
         "show_pipeline_selectors",
     }
 )
 
-VALID_STATUS_PILLS: frozenset[str] = frozenset({
-    "activity", "backend", "pipeline", "perf", "rag", "tools",
-    "budget", "coder", "net", "git_branch", "memory", "mcp",
-    "freedom", "inbox",
-})
+VALID_STATUS_PILLS: frozenset[str] = frozenset(
+    {
+        "activity",
+        "backend",
+        "pipeline",
+        "perf",
+        "rag",
+        "tools",
+        "budget",
+        "coder",
+        "net",
+        "git_branch",
+        "memory",
+        "mcp",
+        "freedom",
+        "inbox",
+    }
+)
 
 # Устаревшие ID плиток статус-бара → актуальные (миграция старых конфигов).
 LEGACY_TO_PILL: dict[str, str] = {
@@ -976,6 +992,7 @@ LEGACY_TO_PILL: dict[str, str] = {
     "tok_per_sec": "perf",
     "cache": "perf",
 }
+
 
 class MemoryConfig(BaseModel):
     """4.3: эпизодическая память."""
@@ -1450,6 +1467,7 @@ def _detect_project_path() -> Path | None:
         return cwd
     return None
 
+
 def load_config(project_path: Path | None = None) -> AppConfig:
     if project_path is None:
         project_path = _detect_project_path()
@@ -1458,6 +1476,7 @@ def load_config(project_path: Path | None = None) -> AppConfig:
 
 def save_config(config: AppConfig, project_path: Path | None = None) -> None:
     config_loader.save_config(config, project_path)
+
 
 def get_model_by_role(config: AppConfig, role: ModelRole) -> ModelConfig:
     for model in config.models:

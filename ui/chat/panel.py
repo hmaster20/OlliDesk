@@ -4245,6 +4245,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             if b_mode == "extension":
                 try:
                     import websockets  # noqa: F401
+
                     b_avail = True
                 except ImportError:
                     b_avail = False
@@ -4266,6 +4267,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         s_prov, s_avail = "", False
         try:
             from agents.search_providers import build_chain
+
             cfg_s = load_config()
             chain = build_chain(cfg_s.search)
             s_prov = chain[0].name if chain else ""

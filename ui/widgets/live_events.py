@@ -97,8 +97,10 @@ _DOMAIN_FILTERS: tuple[tuple[str, str], ...] = (
     ("media", "media"),
 )
 
+
 class _ClickableLabel(QLabel):
     clicked = Signal()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()

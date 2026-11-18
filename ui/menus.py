@@ -76,9 +76,9 @@ class AppMenuBar(QMenuBar):
         self._config = config
         self._recent_menu: QMenu | None = None
         self._recent_actions: list[QAction] = []
-        self._status_actions: dict[str, QAction] = {}      # ← добавить
-        self._profiles_menu: QMenu | None = None           # ← добавить (есть в _refresh_profiles_menu)
-        self._profile_actions: list[QAction] = []          # ← добавить
+        self._status_actions: dict[str, QAction] = {}
+        self._profiles_menu: QMenu | None = None
+        self._profile_actions: list[QAction] = []
         self.project_structure_action: QAction | None = None
         self.confirm_web_search_action: QAction | None = None
 
