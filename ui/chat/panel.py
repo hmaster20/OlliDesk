@@ -15,9 +15,6 @@ os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-TaskType = Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
-Outcome = Literal["success", "partial", "failure"]
-
 from loguru import logger
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
@@ -113,6 +110,13 @@ if TYPE_CHECKING:
     from agents.model_pool import ModelPool
     from agents.orchestrator import Orchestrator
     from ui.chat.message_item import ToolCallCard
+
+
+# Типы рефлексии. Должны ТОЧНО совпадать с Literal-полями `Reflection`
+# из core.services.memory_service (task_type / outcome) — иначе mypy
+# снова начнёт ругаться на arg-type в _build_reflection.
+TaskType = Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
+Outcome = Literal["success", "partial", "failure"]
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
