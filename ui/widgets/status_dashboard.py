@@ -35,8 +35,8 @@ docstring прошлой версии утверждал ``addPermanentWidget``,
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QSizePolicy, QWidget
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QSizePolicy, QWidget
 
 # Цвета семантических индикаторов (в стиле «приборной панели»).
 _C_OK = "#98c379"

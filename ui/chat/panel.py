@@ -3391,8 +3391,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _on_tools_status_changed(self, active: bool):
         if self._dashboard is not None:
             self._dashboard.set_tools_active(active)
-        if hasattr(self, "_dashboard") and self._dashboard is not None:
-            self._dashboard.set_tools_active(active)
         if active:
             self.tool_status_label.setText("🔧 Инструменты активны")
             self.tool_status_label.setStyleSheet(
@@ -4224,20 +4222,21 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
 
-        # [2.11 + 2.13] Сеть (браузер + поиск)
+        # [2.11 + 2.13] Сеть (браузер + поиск) — объединённая плитка `net`.
         b_mode, b_avail = "isolated", False
         try:
             from agents.browser_client import is_playwright_available
+
             cfg_b = load_config()
-            mode = _cfg_b.browser.mode
-            if mode == "extension":
+            b_mode = cfg_b.browser.mode
+            if b_mode == "extension":
                 try:
                     import websockets  # noqa: F401
-                    available = True
+                    b_avail = True
                 except ImportError:
-                    available = False
+                    b_avail = False
             else:
-                available = is_playwright_available()
+                b_avail = is_playwright_available()
         except Exception:
             pass
 
@@ -4253,26 +4252,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         s_prov, s_avail = "", False
         try:
             from agents.search_providers import build_chain
-
             cfg_s = load_config()
             chain = build_chain(cfg_s.search)
             s_prov = chain[0].name if chain else ""
             s_avail = bool(chain)
         except Exception:
-            pass
-
-        self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
-        try:
-            from agents.search_providers import build_chain
-            from core.config import load_config as _load_cfg_search
-
-            _cfg_s = _load_cfg_search()
-            chain = build_chain(_cfg_s.search)
-            provider = chain[0].name if chain else ""
-            available = bool(chain)
-            self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
-        except Exception:
             logger.debug("Не удалось обновить search-индикатор", exc_info=True)
+        self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
+
         # [9.4] Git-ветка.
         try:
             from pathlib import Path as _Path

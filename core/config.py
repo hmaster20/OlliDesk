@@ -16,6 +16,7 @@ from core.profiles import (
     get_profile_by_id,
 )
 
+
 class ModelRole(StrEnum):
     """Роль модели в системе."""
 
@@ -968,6 +969,14 @@ VALID_STATUS_PILLS: frozenset[str] = frozenset({
     "freedom", "inbox",
 })
 
+# Устаревшие ID плиток статус-бара → актуальные (миграция старых конфигов).
+LEGACY_TO_PILL: dict[str, str] = {
+    "browser": "net",
+    "search": "net",
+    "tok_per_sec": "perf",
+    "cache": "perf",
+}
+
 class MemoryConfig(BaseModel):
     """4.3: эпизодическая память."""
 
@@ -1363,19 +1372,13 @@ class ConfigLoader:
 
     def _normalize_hidden_status_pills(self, config: dict[str, Any]) -> None:
         """Заменяет устаревшие ID плиток и отбрасывает неизвестные."""
-        LEGACY_TO_PILL = {
-            "browser": "net",
-            "search": "net",
-            "tok_per_sec": "perf",
-            "cache": "perf",
-        }
         pills = config.get("hidden_status_pills")
         if not isinstance(pills, list):
             return
         migrated: list[str] = []
         for p in pills:
             target = LEGACY_TO_PILL.get(p, p)
-            if target in VALID_PILLS and target not in migrated:
+            if target in VALID_STATUS_PILLS and target not in migrated:
                 migrated.append(target)
         config["hidden_status_pills"] = migrated
 
