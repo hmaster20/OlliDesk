@@ -21,6 +21,7 @@ class ProfilesSelector(QWidget):
     """ComboBox профилей (Разработка / Исследование / Обучение)."""
 
     profile_changed = Signal(object)  # ProfileConfig
+    dual_model_changed = Signal(bool)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)

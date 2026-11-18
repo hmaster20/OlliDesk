@@ -179,13 +179,16 @@ class ResearchMixin:
 
     def _pipeline_status_label(self) -> str:
         """Короткое описание состояния двухмодельного пайплайна."""
+
         if self._model_pool is not None and self._orchestrator is not None:
             try:
-                planner_id = self._model_pool.spec(Role.PLANNER).model_id
-                analyst_id = self._model_pool.spec(Role.ANALYST).model_id
-                return f"⚡ 2-model: {planner_id} (GPU) + {analyst_id} (CPU)"
+                ps = self._model_pool.spec(Role.PLANNER)
+                an = self._model_pool.spec(Role.ANALYST)
+                if ps.model_id == an.model_id:
+                    return f"⚡ 1-model: {ps.model_id} ({ps.device})"
+                return f"⚡ 2-model: {ps.model_id} ({ps.device}) + {an.model_id} ({an.device})"
             except Exception:
-                return "⚡ 2-model: загружен"
+                return "⚡ pipeline: загружен"
 
         if self._pool_load_thread is not None and self._pool_load_thread.isRunning():
             return "⏳ 2-model: загрузка planner+analyst…"
@@ -204,9 +207,8 @@ class ResearchMixin:
     def _update_pipeline_status(self) -> None:
         """Обновляет индикатор пайплайна.
 
-        Пишет в `_pipeline_selectors` (новый виджет 9.3) и в
-        `pipeline_status_label` (для обратной совместимости, если виджет
-        не создан). Эмитит `pipeline_status_changed` для приборной панели.
+        Пишет в `_pipeline_selectors` и в `pipeline_status_label`.
+        Эмитит `pipeline_status_changed` для приборной панели.
         """
         text = self._pipeline_status_label()
 
@@ -215,7 +217,7 @@ class ResearchMixin:
         if old_label is not None:
             old_label.setText(text)
 
-        # Новый виджет-селектор (9.3).
+        # Новый виджет-селектор.
         if self._pipeline_selectors is not None:
             if self._model_pool is not None and self._orchestrator is not None:
                 icon, color = "⚡", "#98c379"
@@ -322,17 +324,45 @@ class ResearchMixin:
 
     @Slot(object)
     def _on_pool_loaded(self, pool: ModelPool | None) -> None:
-        """Колбэк загрузки пула (в GUI-потоке)."""
+        """Колбэк загрузки пула (в GUI-потоке).
+
+        Валидирует обязательные роли: без planner+analyst Orchestrator
+        упадёт на runtime_ctx(ANALYST) посреди запроса. Непригодный пул
+        закрываем — иначе веса останутся в RAM/VRAM.
+        """
+        import asyncio
+
         if pool is None:
             self._on_pool_error("ModelPool вернул None")
             return
 
-        intel_cache_dir: Path | None = None
-        if self.project_root:
-            intel_cache_dir = Path(self.project_root) / ".ollidesk" / "graph"
-            intel_cache_dir.mkdir(parents=True, exist_ok=True)
+        loaded = set(pool.loaded_roles())
+        required = {Role.PLANNER, Role.ANALYST}
+        if not required.issubset(loaded):
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(pool.aclose())
+                finally:
+                    loop.close()
+            except Exception:
+                logger.debug("aclose непригодного пула упал", exc_info=True)
+            self._on_pool_error(
+                "нет обязательных ролей: "
+                + ", ".join(sorted(r.value for r in required - loaded))
+                + " (загружены: "
+                + (", ".join(sorted(r.value for r in loaded)) or "ничего")
+                + ")"
+            )
+            return
 
+        # --- Пул пригоден: создаём Orchestrator --------------------------
         try:
+            intel_cache_dir: Path | None = None
+            if self.project_root:
+                intel_cache_dir = Path(self.project_root) / ".ollidesk" / "graph"
+                intel_cache_dir.mkdir(parents=True, exist_ok=True)
+
             self._model_pool = pool
             self._orchestrator = Orchestrator(
                 pool=pool,
@@ -340,14 +370,19 @@ class ResearchMixin:
                 vector_store=self.vector_store,
                 counter=ApproxCounter(),
             )
-            logger.info(f"Orchestrator готов: planner+analyst загружены, intel_cache={intel_cache_dir}")
-            self.status_label.setText("✅ Двухмодельный пайплайн готов")
+            self._pool_load_failed = False
+
+            logger.info(
+                f"Orchestrator готов: "
+                f"{', '.join(sorted(r.value for r in pool.loaded_roles()))}, "
+                f"intel_cache={intel_cache_dir}"
+            )
+            self.status_label.setText("✅ Пайплайн готов (planner + analyst)")
             self._update_pipeline_status()
 
-            # [FIX] Синхронизируем UI селекторы с реально загруженным пулом
+            # Синхронизируем селекторы с реально загруженным пулом.
             if self._pipeline_selectors is not None:
                 self._pipeline_selectors.update_from_pool(pool)
-
         except Exception as e:
             logger.exception("Не удалось создать Orchestrator")
             self._on_pool_error(f"Orchestrator init: {e}")

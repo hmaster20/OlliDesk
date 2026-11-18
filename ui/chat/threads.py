@@ -255,15 +255,8 @@ class AgentChatThread(QThread):
         async def _on_budget_exceeded(snapshot: dict) -> None:
             self.budget_exceeded.emit(snapshot)
 
-        # [2.10] SoftBudget строится из AppConfig; для CHAT/PLAN
-        # `iterations` переопределяется `max_iterations` внутри run().
-        from core.config import load_config
-
-        try:
-            _cfg = load_config()
-            _budget = self.soft_budget
-        except Exception:
-            pass
+        # SoftBudget из UI (None → AgentLoop создаст свой из AppConfig).
+        _budget = self.soft_budget
 
         async def _run_with(client) -> tuple[str, AgentLoop]:
             loop = AgentLoop(
@@ -304,15 +297,15 @@ class AgentChatThread(QThread):
                 on_budget_warning=_on_budget_warning,
                 on_budget_exceeded=_on_budget_exceeded,
             )
-            # [2.10] Финальный сигнал с причиной остановки.
-            _iterations = _budget.iteration_count if _budget is not None else 0
-            _elapsed = round(_budget.elapsed(), 1) if _budget is not None else 0.0
+            # Реальные счётчики — из бюджета, который вёл AgentLoop:
+            # self.soft_budget обычно None, цикл создаёт свой внутри.
+            _snap = loop.last_budget_snapshot or {}
             self.agent_finished.emit(
                 {
                     "finish_reason": loop.last_finish_reason,
                     "budget": loop.last_budget_snapshot,
-                    "iterations": _iterations,
-                    "elapsed_s": _elapsed,
+                    "iterations": int(_snap.get("iterations", 0)),
+                    "elapsed_s": float(_snap.get("time_s", 0.0)),
                 }
             )
             return result, loop
@@ -695,22 +688,7 @@ class WebSearchThread(QThread):
 
 
 class _ModelPoolLoadThread(QThread):
-    """Загружает обе модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО.
-
-    Изменения по сравнению с предыдущей версией (после инцидента, когда
-    две qwen2.5-1.5b грузились параллельно на GPU и вешали поток):
-
-    * **Последовательная загрузка** вместо ``asyncio.gather`` — вторая
-      модель не пытается занять VRAM, пока первая не отпустила контекст.
-    * **Per-role timeout 90 с** — если llama.cpp завис в нативном коде
-      (OOM на CUDA), поток всё равно выходит, UI получает ``error`` и
-      показывает «⚠️ 2-model: недоступен», а не «⏳» вечно.
-    * **`device` из `RoleSpec` учитывается** — analyst с ``device="CPU"``
-      жёстко получает ``n_gpu_layers=0`` (в ``optimize()`` и в factory
-      как safety net).
-    * **Fail-fast при одинаковых моделях** — если planner и analyst
-      указывают на один файл, выдаём понятную ошибку, а не OOM.
-    """
+    """Загружает модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО."""
 
     finished = Signal(object)  # ModelPool | None
     error = Signal(str)
@@ -720,6 +698,8 @@ class _ModelPoolLoadThread(QThread):
 
     def run(self):
         try:
+            import time
+
             from agents.download_slm import get_model_path
             from agents.local_llm_client import LocalLLMClient
             from agents.model_pool import ModelPool, Role, RoleSpec
@@ -727,67 +707,96 @@ class _ModelPoolLoadThread(QThread):
             from agents.slm_selector import select_pair_park, select_park
             from core.config import load_config
 
-            # 4.1: парк моделей по ролям из активного профиля.
+            # --- 1. Конфиг + парк ролей активного профиля -----------------
+            cfg = None
+            park_roles: dict[str, str] = {}
+            profile_n_ctx_hint = 0
             try:
                 cfg = load_config()
-                park_roles = {}
-                profile_n_ctx_hint = 0
                 for p in cfg.profiles:
                     if p.id == cfg.active_profile:
                         park_roles = dict(p.park_roles)
                         profile_n_ctx_hint = int(p.n_ctx_hint)
                         break
             except Exception:
-                park_roles = {}
-                profile_n_ctx_hint = 0
+                logger.warning(
+                    "ModelPool: конфиг недоступен — парк подоберётся автоматически",
+                    exc_info=True,
+                )
 
-            # [FIX] Приоритет 1: явный выбор пользователя из PipelineSelectors
-            if cfg.slm.planner_model_id:
-                park_roles["planner"] = cfg.slm.planner_model_id
-            if cfg.slm.analyst_model_id:
-                park_roles["analyst"] = cfg.slm.analyst_model_id
+            # Явный выбор из PipelineSelectors важнее профиля.
+            if cfg is not None:
+                if cfg.slm.planner_model_id:
+                    park_roles["planner"] = cfg.slm.planner_model_id
+                if cfg.slm.analyst_model_id:
+                    park_roles["analyst"] = cfg.slm.analyst_model_id
 
-            if park_roles:
+            dual = bool(getattr(cfg.slm, "dual_model", True)) if cfg is not None else True
+            max_tokens = (
+                int(getattr(cfg.slm, "max_tokens", 1024) or 1024) if cfg is not None else 1024
+            )
+
+            # --- 2. Выбор парка ------------------------------------------
+            if not dual and cfg is not None:
+                # Single-model: один файл на planner+analyst. select_park НЕ
+                # используем — он дотянет router/coder/verifier.
+                main_id = cfg.slm.analyst_model_id or cfg.slm.selected_model
+                info = cfg.slm.get_model_by_id(main_id) if main_id else None
+                if info is None:
+                    info = cfg.slm.get_selected_info()
+                if info is None:
+                    self.error.emit("Single-model: модель не выбрана (откройте «⋯» → SLM).")
+                    return
+                park = {Role.PLANNER: info, Role.ANALYST: info}
+                self.progress.emit(f"Режим 1 модель: {info.display_name} на все роли")
+            elif park_roles:
                 park = select_park(profile_park_roles=park_roles)
             else:
-                # Fallback: только planner+analyst (совместимость с research).
                 park = select_pair_park()
 
             if not park:
                 self.error.emit(
-                    "Парк моделей пуст: скачайте хотя бы одну chat-модель через «View → Локальные модели»."
+                    "Парк моделей пуст: скачайте хотя бы одну chat-модель "
+                    "через «View → Локальные модели»."
                 )
                 return
 
-            # Резолвим пути и оптимизируем каждую роль.
+            # --- 3. Резолв путей + оптимизация ---------------------------
             specs: dict[Role, RoleSpec] = {}
             optim_params: dict[Role, OptimizedParams] = {}
-            paths: dict[Role, Path] = {}
+            n_hint = profile_n_ctx_hint if profile_n_ctx_hint > 0 else None
+
             for role, info in park.items():
                 path = get_model_path(info.file)
                 if path is None:
+                    logger.warning(
+                        f"ModelPool: роль {role.value} пропущена — файл не найден: {info.file}"
+                    )
                     self.progress.emit(f"⚠️ {role.value}: файл {info.file} не найден — пропущено")
                     continue
-                paths[role] = path
 
-                # Device: planner/router/verifier — GPU; coder/analyst — CPU.
-                device = "GPU" if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else "CPU"
-                self.progress.emit(f"Оптимизация {role.value}: {info.display_name} (device={device})")
-                # [4.2] n_ctx_hint из профиля (или 0 — без ограничения).
-                n_hint = profile_n_ctx_hint if profile_n_ctx_hint > 0 else None
+                self.progress.emit(f"Оптимизация {role.value}: {info.display_name}")
                 try:
-                    params = optimize(
-                        path,
-                        target_n_ctx=8192,
-                        device=device,
-                        n_ctx_hint=n_hint,
-                    )
+                    if dual:
+                        device = (
+                            "GPU" if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else "CPU"
+                        )
+                        params = optimize(
+                            path, target_n_ctx=8192, device=device, n_ctx_hint=n_hint
+                        )
+                    else:
+                        # Одна модель на обе роли: просим GPU, оптимизатор решает,
+                        # device берём из ФАКТА (иначе spec врёт про CPU/GPU).
+                        params = optimize(
+                            path, target_n_ctx=8192, device="GPU", n_ctx_hint=n_hint
+                        )
+                        device = "GPU" if params.n_gpu_layers != 0 else "CPU"
                 except Exception as e:
                     logger.exception(f"optimize {role.value} failed")
                     self.error.emit(f"optimize {role.value} failed: {e}")
                     return
-                optim_params[role] = params
 
+                optim_params[role] = params
                 specs[role] = RoleSpec(
                     role=role,
                     model_id=info.id,
@@ -795,7 +804,9 @@ class _ModelPoolLoadThread(QThread):
                     n_ctx=params.n_ctx,
                     kv_cache=params.kv_cache_type,
                     n_gpu_layers=params.n_gpu_layers,
-                    temperature=(0.0 if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else 0.35),
+                    temperature=(
+                        0.0 if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else 0.35
+                    ),
                     file=str(path),
                 )
 
@@ -806,20 +817,41 @@ class _ModelPoolLoadThread(QThread):
                 )
                 return
 
+            # Research-пайплайн физически не работает без planner+analyst.
+            # Молча пропускать нельзя: Orchestrator упадёт на
+            # runtime_ctx(ANALYST) посреди запроса → медленный ReAct.
+            missing = [r for r in (Role.PLANNER, Role.ANALYST) if r not in specs]
+            if missing:
+                details = "; ".join(
+                    f"{r.value} → {park[r].file}" for r in missing if r in park
+                )
+                self.error.emit(
+                    "Не загружены обязательные роли: "
+                    + ", ".join(r.value for r in missing)
+                    + f". Файлы не найдены: {details}. "
+                    "Скачайте их (View → Локальные модели) или выберите "
+                    "установленные модели в селекторах P/A."
+                )
+                return
+
+            # --- 4. Фабрика клиента --------------------------------------
             def factory(spec: RoleSpec) -> LocalLLMClient:
                 path = Path(spec.file) if spec.file else None
                 if path is None or not path.exists():
                     raise FileNotFoundError(f"Model file missing: {spec.model_id}")
+
                 base = optim_params[spec.role]
                 n_gpu_layers = spec.n_gpu_layers
                 flash = base.flash_attn
                 if spec.device == "CPU":
                     if n_gpu_layers != 0:
                         logger.warning(
-                            f"SLM {spec.role.value}: device=CPU, но n_gpu_layers={n_gpu_layers} → 0"
+                            f"SLM {spec.role.value}: device=CPU, но "
+                            f"n_gpu_layers={n_gpu_layers} → 0"
                         )
                         n_gpu_layers = 0
                     flash = False
+
                 params = OptimizedParams(
                     n_ctx=spec.n_ctx,
                     n_gpu_layers=n_gpu_layers,
@@ -831,13 +863,13 @@ class _ModelPoolLoadThread(QThread):
                     kv_cache_type=spec.kv_cache,
                     vram_used_mb=base.vram_used_mb if n_gpu_layers != 0 else 0,
                     ram_used_mb=(
-                        base.ram_used_mb if n_gpu_layers != 0 else base.ram_used_mb + base.vram_used_mb
+                        base.ram_used_mb
+                        if n_gpu_layers != 0
+                        else base.ram_used_mb + base.vram_used_mb
                     ),
                     notes=base.notes,
                 )
 
-                # [UI-2025] is_thinking берём из info (SLMModelInfo) — для роли
-                # есть spec.model_id, а в cfg.slm.available_models лежит сам info.
                 info = None
                 if cfg is not None:
                     info = next(
@@ -849,12 +881,12 @@ class _ModelPoolLoadThread(QThread):
                 return LocalLLMClient(
                     model_path=path,
                     params=params,
-                    max_tokens=1024,
+                    max_tokens=max_tokens,
                     is_thinking=is_thinking,
                 )
 
-            # 4.1: max_loaded=3 — router+planner (GPU) + coder (CPU).
-            pool = ModelPool(max_loaded=3)
+            # --- 5. Последовательная загрузка ----------------------------
+            pool = ModelPool(max_loaded=3 if dual else 1)
             loop = asyncio.new_event_loop()
             try:
                 for role, spec in specs.items():
@@ -862,6 +894,7 @@ class _ModelPoolLoadThread(QThread):
                         f"⏳ Загрузка {role.value}: {spec.model_id} "
                         f"(device={spec.device}, n_gpu_layers={spec.n_gpu_layers})…"
                     )
+                    t0 = time.perf_counter()
                     try:
                         loop.run_until_complete(
                             asyncio.wait_for(
@@ -871,47 +904,51 @@ class _ModelPoolLoadThread(QThread):
                         )
                     except Exception as e:
                         logger.error(f"SLM pool: ошибка {role.value}: {e}")
-
-                        # [FIX] Если упал Planner или Router — пробуем загрузить базовую 3B
-                        if role in (Role.PLANNER, Role.ROUTER):
+                        # Planner/Router — пробуем базовую 3B как fallback.
+                        if role in (Role.PLANNER, Role.ROUTER) and cfg is not None:
                             self.progress.emit(
-                                f"⚠️ Ошибка {role.value}. Пробую fallback: qwen2.5-3b-instruct-q4_k_m"
+                                f"⚠️ Ошибка {role.value}. "
+                                f"Пробую fallback: qwen2.5-3b-instruct-q4_k_m"
                             )
-                            from agents.download_slm import get_model_path
-                            from agents.slm_optimizer import optimize
-
                             fb_info = cfg.slm.get_model_by_id("qwen2.5-3b-instruct-q4_k_m")
-                            if fb_info:
-                                fb_path = get_model_path(fb_info.file)
-                                if fb_path and fb_path.exists():
-                                    try:
-                                        fb_params = optimize(fb_path, target_n_ctx=8192, device="GPU")
-                                        fb_spec = RoleSpec(
-                                            role=role,
-                                            model_id=fb_info.id,
-                                            device="GPU",
-                                            n_ctx=fb_params.n_ctx,
-                                            kv_cache=fb_params.kv_cache_type,
-                                            n_gpu_layers=fb_params.n_gpu_layers,
-                                            temperature=0.0,
-                                            file=str(fb_path),
+                            fb_path = get_model_path(fb_info.file) if fb_info else None
+                            if fb_info is not None and fb_path is not None and fb_path.exists():
+                                try:
+                                    fb_params = optimize(
+                                        fb_path, target_n_ctx=8192, device="GPU"
+                                    )
+                                    fb_spec = RoleSpec(
+                                        role=role,
+                                        model_id=fb_info.id,
+                                        device="GPU",
+                                        n_ctx=fb_params.n_ctx,
+                                        kv_cache=fb_params.kv_cache_type,
+                                        n_gpu_layers=fb_params.n_gpu_layers,
+                                        temperature=0.0,
+                                        file=str(fb_path),
+                                    )
+                                    optim_params[role] = fb_params
+                                    loop.run_until_complete(
+                                        asyncio.wait_for(
+                                            pool.add_role(fb_spec, factory),
+                                            timeout=self._ROLE_LOAD_TIMEOUT,
                                         )
-                                        optim_params[role] = fb_params
-                                        loop.run_until_complete(
-                                            asyncio.wait_for(
-                                                pool.add_role(fb_spec, factory),
-                                                timeout=self._ROLE_LOAD_TIMEOUT,
-                                            )
-                                        )
-                                        logger.info(f"Fallback для {role.value} успешно загружен.")
-                                        continue
-                                    except Exception as fb_err:
-                                        logger.error(f"Fallback тоже упал: {fb_err}")
+                                    )
+                                    logger.info(f"Fallback для {role.value} загружен")
+                                    continue
+                                except Exception as fb_err:
+                                    logger.error(f"Fallback тоже упал: {fb_err}")
 
-                        # Если это Analyst или fallback не помог — показываем ошибку
-                        self.error.emit(f"Ошибка загрузки {role.value} ({spec.model_id}): {e}")
+                        # Освобождаем уже загруженные веса перед выходом.
+                        try:
+                            loop.run_until_complete(pool.aclose())
+                        except Exception:
+                            logger.debug("aclose после ошибки загрузки упал", exc_info=True)
+                        self.error.emit(
+                            f"Ошибка загрузки {role.value} ({spec.model_id}): {e}"
+                        )
                         return
-                    # 2.5 + 4.1: событие slm.loaded с ролью.
+
                     emit_event(
                         EventKind.SLM_LOADED.value,
                         {
@@ -920,21 +957,35 @@ class _ModelPoolLoadThread(QThread):
                             "device": spec.device,
                             "n_ctx": spec.n_ctx,
                             "n_gpu_layers": spec.n_gpu_layers,
-                            "load_ms": round((pool.client(role) and 0) or 0, 2),
+                            "load_ms": round((time.perf_counter() - t0) * 1000, 2),
                         },
                     )
+
+                # Финальная проверка: LRU/fallback могли изменить состав.
+                roles_loaded = set(pool.loaded_roles())
+                missing_after = [
+                    r.value for r in (Role.PLANNER, Role.ANALYST) if r not in roles_loaded
+                ]
+                if missing_after:
+                    try:
+                        loop.run_until_complete(pool.aclose())
+                    except Exception:
+                        logger.debug("aclose неполного пула упал", exc_info=True)
+                    self.error.emit(
+                        "После загрузки не хватает ролей: " + ", ".join(missing_after)
+                    )
+                    return
             finally:
                 loop.close()
 
-            # Проверка: загрузились хотя бы две ключевые роли для research,
-            # либо coder для coding (зависит от профиля).
-            roles_loaded = set(pool.loaded_roles())
-            self.progress.emit(f"✅ Парк готов: {', '.join(r.value for r in roles_loaded)}")
+            self.progress.emit(
+                f"✅ Парк готов: {', '.join(sorted(r.value for r in roles_loaded))}"
+            )
             self.finished.emit(pool)
+
         except Exception as e:
             logger.exception("ModelPool load failed")
             self.error.emit(str(e))
-
 
 class _BenchmarkThread(QThread):
     """Фоновый прогон замеров производительности (4.7.B).

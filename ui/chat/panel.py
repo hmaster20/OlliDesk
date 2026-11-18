@@ -351,72 +351,49 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
 
-        # [9.3] Селекторы Planner/Analyst в верхней панели.
         self._pipeline_selectors: PipelineSelectors | None = None
-        # [9.4] Селектор профиля использования (Разработка / Исследование / Обучение).
         self._profiles_selector: ProfilesSelector | None = None
-        # Активный профиль + его runtime-флаги.
         self._profile: ProfileConfig | None = None
         self._profile_rag_enabled: bool = True
         self._profile_agent_max_iters: int = 30
         self._profile_chat_max_iters: int = 7
-        # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
         self._dashboard = None
-        # 2.5: QtEventBus + LiveEventsPanel (создаются в _setup_ui).
+        # QtEventBus + LiveEventsPanel (создаются в _setup_ui).
         self._qt_event_bus: QtEventBus | None = None
         self.live_events_panel: LiveEventsPanel | None = None
 
-        # [9.5.7] Активная tool-карточка: последняя созданная
+        # Активная tool-карточка: последняя созданная
         # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
         # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
         # последовательны (start→result), поэтому одной ссылки достаточно.
         self._active_tool_card: ToolCallCard | None = None
-        # [9.5.4] Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
+        # Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
+        # Предупреждение о несовпадении API дашборда — один раз за сессию.
+        self._perf_pill_warned: bool = False
 
-        # [9.6.2] QCompleter для `@`-команд.
+        # QCompleter для `@`-команд.
         self._command_completer: CommandCompleter | None = None
         # Есть ли сейчас активное автодополнение (для перехвата Tab/Enter).
         self._command_popup_active: bool = False
-
-        # [9.10] Свёрнутые виджеты (placeholder'ы) в layout.
-        # Заполняется в `_maybe_collapse_old_messages`, очищается в `_clear_chat`.
-        # Раньше объявлялось только в MainWindow — из-за этого первый же
-        # `load_history` падал с AttributeError (ChatPanel — владелец layout,
-        # именно он должен хранить placeholder'ы).
         self._collapsed_placeholders: list[CollapsedPlaceholder] = []
-
-        # [9.10] Флаг: подавляет `_maybe_collapse_old_messages` на время
-        # массовой загрузки (`load_history`), чтобы не делать O(n²).
         self._suppress_collapse: bool = False
 
         self._setup_ui()
-        # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
-        # чтобы _profiles_selector уже существовал).
         self._apply_initial_profile()
         self._update_model_selector_visibility()
         self._update_pipeline_status()
-        # 0.1.x: таймер привязан к self — deleteLater()/shutdown() его отменяет.
-        # Раньше был QTimer.singleShot(100, self._detect_backends) — статическая
-        # форма, которая выстреливала даже после удаления ChatPanel и стартовала
-        # реальную Llama() (захват CUDA), ломая QWebEngine-тесты и закрытие окна.
         self._detect_backends_timer = QTimer(self)
         self._detect_backends_timer.setSingleShot(True)
         self._detect_backends_timer.timeout.connect(self._detect_backends)
         self._detect_backends_timer.start(100)
-
-        # [2.12] Восстанавливаем inbox (running → pending) и обновляем
-        # индикатор. Делаем это сразу после создания UI — пользователь
-        # увидит счётчик незавершённых запросов.
         self._recover_inbox_on_startup()
-
-        # [7] Фоновая инициализация MCP-серверов.
         self._mcp_init_thread: QThread | None = None
         self._start_mcp_init()
 
-    # ---------------------------------------------------------
-    # Детект и загрузка бэкендов
-    # ---------------------------------------------------------
+        # 2M: синхронизация одно/двух-модельного режима
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.dual_model_changed.connect(self._on_dual_model_changed)
 
     def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
         """Лимит итераций для текущего режима и типа задачи.
@@ -431,8 +408,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         * Обычный вопрос в Chat/Plan — `chat_max_iterations` (по умолчанию 7).
 
         Фазовая модель внутри `AgentLoop` — главный регулятор остановки;
-        лимит — только аварийный стоп-кран, чтобы модель не ушла в
-        бесконечность.
+        лимит — только аварийный стоп-кран, чтобы модель не ушла в бесконечность.
         """
         default_chat = 7
         default_agent = 30
@@ -2877,20 +2853,49 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _on_stream_finished_event(self) -> None:
-        """[4.8.E + 4.2] Конец стрима: tok/s и prefix cache в дашборде."""
+        """[4.8.E + 4.2] Конец стрима: tok/s и prefix cache в плитке `perf`."""
         logger.trace("stream_finished")
         if self._dashboard is None:
             return
-        client = self._router.active_client
-        stats = getattr(client, "last_stats", None) or {}
-        tps = stats.get("tokens_per_sec", 0.0)
-        with contextlib.suppress(TypeError, ValueError):
-            self._dashboard.set_tok_per_sec(float(tps))
-        # [4.2] prefix caching (для SLM; для Ollama — 0/0)
-        with contextlib.suppress(TypeError, ValueError):
-            self._dashboard.set_cache(
-                int(stats.get("cache_reads", 0)),
-                int(stats.get("cache_writes", 0)),
+        stats = getattr(self._router.active_client, "last_stats", None) or {}
+        try:
+            tps = float(stats.get("tokens_per_sec", 0.0) or 0.0)
+            reads = int(stats.get("cache_reads", 0) or 0)
+            writes = int(stats.get("cache_writes", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        self._update_perf_pill(tps, reads, writes)
+
+    def _update_perf_pill(self, tps: float, reads: int, writes: int) -> None:
+        """Обновляет плитку `perf` (tok/s + prefix cache).
+
+        Плитки `tok_per_sec` и `cache` объединены в `perf`, старых сеттеров
+        больше нет. Подбираем сигнатуру `set_perf`; отсутствие метода —
+        warning один раз, а не падение Qt-слота.
+        """
+        dash = self._dashboard
+        if dash is None:
+            return
+        setter = getattr(dash, "set_perf", None)
+        if not callable(setter):
+            if not self._perf_pill_warned:
+                self._perf_pill_warned = True
+                logger.warning("StatusDashboard.set_perf отсутствует — плитка perf не обновляется")
+            return
+        for args, kwargs in (
+            ((tps, reads, writes), {}),
+            ((tps,), {"cache_reads": reads, "cache_writes": writes}),
+            ((tps,), {}),
+        ):
+            try:
+                setter(*args, **kwargs)
+                return
+            except TypeError:
+                continue
+        if not self._perf_pill_warned:
+            self._perf_pill_warned = True
+            logger.warning(
+                f"set_perf: не подошла ни одна сигнатура (tps={tps}, cache={reads}/{writes})"
             )
 
     def _is_message_widget(self, widget: QWidget | None) -> bool:
@@ -3984,9 +3989,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.reload_slm()
         self._update_pipeline_status()
 
-    # ------------------------------------------------------------------
-    # [9.4] Профили использования
-    # ------------------------------------------------------------------
+    @Slot(bool)
+    def _on_dual_model_changed(self, dual: bool) -> None:
+        """Смена топологии моделей: полный сброс, пересборка по новому конфигу."""
+        logger.info(f"Pipeline: dual_model={dual} — reload_slm")
+        self.reload_slm()
+        self._update_pipeline_status()
 
     def _apply_initial_profile(self) -> None:
         """Применяет профиль из конфига при старте приложения."""

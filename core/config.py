@@ -612,6 +612,12 @@ class SLMConfig(BaseModel):
         default_factory=lambda: [SLMModelInfo(**m) for m in _DEFAULT_SLM_MODELS]
     )
 
+    # Dual Model: две модели (planner GPU + analyst CPU) или одна на все роли.
+    # True  — раздельные веса: быстрый planner на GPU + сильный analyst на CPU.
+    # False — один набор весов на planner+analyst+AgentLoop (ModelPool кэширует по файлу).
+    # На выбор движка (Orchestrator / AgentLoop) НЕ влияет.
+    dual_model: bool = True
+
     @model_validator(mode="after")
     def _sync_builtin_models(self) -> "SLMConfig":
         """Обновляет встроенные модели до актуального каталога.
@@ -934,6 +940,7 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset(
     {
         "slm",
         "backends",
+        "dual_model",
         "confirm",
         "rerank",
         "embed_models",

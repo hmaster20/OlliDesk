@@ -16,9 +16,10 @@
 from __future__ import annotations
 
 from loguru import logger
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -35,8 +36,9 @@ from ui.state.async_resource import AsyncResource
 class PipelineSelectors(QWidget):
     """Пара ComboBox (planner + analyst) + кнопка «⋯» + индикатор состояния."""
 
-    planner_changed = Signal(str)  # model_id или ""
-    analyst_changed = Signal(str)  # model_id или ""
+    planner_changed = Signal(str)
+    analyst_changed = Signal(str)
+    dual_model_changed = Signal(bool)
     open_slm_dialog_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
@@ -44,10 +46,10 @@ class PipelineSelectors(QWidget):
         self._config = config
         self._project_path: str | None = None
         self._updating = False
-        # [9.3.2] Активный профиль — для подсветки coder-моделей.
+        # Активный профиль — для подсветки coder-моделей.
         self._active_profile_id: str = ""
-        # Иконки ролей (9.3.2): coder / reasoning / moE / router / planner /
-        # verifier / embed. Показываются в префиксе названия.
+        # Иконки ролей: coder / reasoning / moE / router / planner / verifier / embed.
+        # Показываются в префиксе названия.
         self._role_icons: dict[str, str] = {
             "coder": "⚡",
             "reasoning": "🧠",
@@ -57,9 +59,6 @@ class PipelineSelectors(QWidget):
             "verifier": "✅",
             "embed": "🔤",
         }
-
-        # [9.11] Ресурс «список моделей». Не мигает при refresh:
-        # при обновлении combo сохраняет старые items до `set_value`.
         self._models_resource: AsyncResource[list[SLMModelInfo]] = AsyncResource()
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -73,11 +72,25 @@ class PipelineSelectors(QWidget):
         self._state_icon.setToolTip("Состояние двухмодельного пайплайна")
         layout.addWidget(self._state_icon)
 
+        # --- 2M: переключатель одно/двух-модельного режима ---
+        self.dual_check = QCheckBox("2M")
+        self.dual_check.setToolTip(
+            "<b>2M — двухмодельный режим</b><br><br>"
+            "<b>Включён:</b> planner (малая, GPU) + analyst (крупная, CPU).<br>"
+            "classify/plan идут быстро на GPU, синтез — на сильной модели.<br><br>"
+            "<b>Выключен:</b> ОДНА модель на все роли и на Chat/Agent.<br>"
+            "Меньше памяти, но classify/plan считаются на той же модели.<br><br>"
+            "На выбор движка (Orchestrator/ReAct) не влияет."
+        )
+        self.dual_check.setChecked(bool(config.slm.dual_model))
+        self.dual_check.toggled.connect(self._on_dual_toggled)
+        layout.addWidget(self.dual_check)
+
         # Planner.
-        planner_lbl = QLabel("P:")
-        planner_lbl.setStyleSheet("color: #888; font-size: 11px;")
-        planner_lbl.setToolTip("Planner: GPU, classify/plan/critique (3B/1.5B)")
-        layout.addWidget(planner_lbl)
+        self._planner_lbl = QLabel("P:")
+        self._planner_lbl.setStyleSheet("color: #888; font-size: 11px;")
+        self._planner_lbl.setToolTip("Planner: GPU, classify/plan/critique (3B/1.5B)")
+        layout.addWidget(self._planner_lbl)
         self.planner_combo = QComboBox()
         self.planner_combo.setMinimumWidth(160)
         self.planner_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -86,10 +99,10 @@ class PipelineSelectors(QWidget):
         layout.addWidget(self.planner_combo, stretch=1)
 
         # Analyst.
-        analyst_lbl = QLabel("A:")
-        analyst_lbl.setStyleSheet("color: #888; font-size: 11px;")
-        analyst_lbl.setToolTip("Analyst: CPU, synthesis/regen (7B/14B)")
-        layout.addWidget(analyst_lbl)
+        self._analyst_lbl = QLabel("A:")
+        self._analyst_lbl.setStyleSheet("color: #888; font-size: 11px;")
+        self._analyst_lbl.setToolTip("Analyst: CPU, synthesis/regen (7B/14B)")
+        layout.addWidget(self._analyst_lbl)
         self.analyst_combo = QComboBox()
         self.analyst_combo.setMinimumWidth(160)
         self.analyst_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -105,7 +118,45 @@ class PipelineSelectors(QWidget):
         self.more_btn.clicked.connect(self.open_slm_dialog_requested.emit)
         layout.addWidget(self.more_btn)
 
+        self._apply_dual_visibility()
         self.refresh_models()
+
+    def set_dual_model(self, dual: bool) -> None:
+        """Программная установка (перезагрузка конфига) — без эмита сигнала."""
+        self._updating = True
+        try:
+            self._config.slm.dual_model = bool(dual)
+            self.dual_check.setChecked(bool(dual))
+            self._apply_dual_visibility()
+        finally:
+            self._updating = False
+
+    def _apply_dual_visibility(self) -> None:
+        dual = bool(self._config.slm.dual_model)
+        self._planner_lbl.setVisible(dual)
+        self.planner_combo.setVisible(dual)
+        self._analyst_lbl.setText("A:" if dual else "M:")
+        self.analyst_combo.setToolTip(
+            "Analyst (CPU) — synthesis/regen. Рекомендуется 7B."
+            if dual
+            else "Единая модель: classify/plan/synthesis + Chat/Agent."
+        )
+
+    @Slot(bool)
+    def _on_dual_toggled(self, checked: bool) -> None:
+        if self._updating:
+            return
+        self._config.slm.dual_model = bool(checked)
+        if not checked:
+            # Единая модель = текущий analyst. planner/analyst id НЕ затираем,
+            # чтобы возврат к 2M восстановил прежний выбор.
+            main_id = self.analyst_combo.currentData() or self._config.slm.selected_model
+            if main_id:
+                self._config.slm.selected_model = main_id
+        save_config(self._config)
+        self._apply_dual_visibility()
+        logger.info(f"Pipeline: dual_model={checked}")
+        self.dual_model_changed.emit(bool(checked))
 
     def set_project_path(self, path: str) -> None:
         self._project_path = path
