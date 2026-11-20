@@ -724,10 +724,11 @@ class ConfirmSettings(BaseModel):
 
 class BackendSettings(BaseModel):
     """Выбор LLM-бэкендов."""
-
     enabled: list[str] = Field(default_factory=lambda: ["local_slm"])
     priority: list[str] = Field(default_factory=lambda: ["local_slm", "ollama"])
     embed_backend: str = "auto"
+    # URL подключения к Ollama (используется, когда "ollama" в enabled).
+    ollama_url: str = "http://localhost:11434"
 
     @field_validator("enabled")
     @classmethod
@@ -1347,6 +1348,12 @@ class ConfigLoader:
     """Загрузчик и мержер конфигурации."""
 
     def __init__(self) -> None:
+        from core.utils import get_app_data_dir
+
+        self.global_config_path = get_app_data_dir() / "config.yaml"
+
+    def refresh_path(self) -> None:
+        """Обновляет путь к глобальному конфигу (после смены каталога данных)."""
         from core.utils import get_app_data_dir
 
         self.global_config_path = get_app_data_dir() / "config.yaml"

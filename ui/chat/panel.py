@@ -318,6 +318,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.prompt_manager: SystemPromptManager | None = None
 
         self._router = ModelRouter()
+        # URL Ollama: предпочитаем сохранённый в конфиге,
+        # иначе используем переданный параметр/дефолт.
+        try:
+            from core.config import load_config as _load_cfg_backend
+
+            _cfg_backend = _load_cfg_backend()
+            base_url = _cfg_backend.backends.ollama_url or base_url
+        except Exception:
+            pass
         self._ollama_client = OllamaClient(base_url=base_url)
         self._router.set_ollama(self._ollama_client)
 

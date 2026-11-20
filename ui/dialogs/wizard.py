@@ -1,339 +1,381 @@
-"""Визард первого запуска OlliDesk."""
+"""Визард первого запуска OlliDesk.
 
+Страницы:
+  1. Приветствие и выбор темы (по умолчанию — тёмная).
+  2. Расположение данных (Вариант А: каталог можно сменить; выбор
+     сохраняется в файл-указатель %APPDATA%/OlliDesk/data_dir.txt).
+  3. Поставщик моделей: локальные СЛМ (по умолчанию) / Оллама / ЛМ-студия.
+  4. Подтверждение.
+"""
+import shutil
 from pathlib import Path
-from typing import override
 
-import httpx
 from loguru import logger
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QProgressBar,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWizard,
     QWizardPage,
 )
 
-from core.config import AppConfig, ModelConfig, ModelRole, ToolPolicy, save_config
+from core.config import AppConfig, save_config
+from core.utils import get_app_data_dir, set_app_data_dir
+
+
+def _disk_free_gb(path: Path) -> float | None:
+    """Свободное место (ГБ) на томе, где лежит `path`; Нон — если недоступно."""
+    try:
+        anchor = path
+        while not anchor.exists() and anchor.parent != anchor:
+            anchor = anchor.parent
+        return shutil.disk_usage(anchor).free / (1024**3)
+    except OSError:
+        return None
+
+
+def _format_free_gb(path: Path) -> str:
+    free = _disk_free_gb(path)
+    return f"{free:.1f} ГБ" if free is not None else "?"
 
 
 class SetupWizard(QWizard):
-    """Визард первого запуска."""
+    """Визард первого запуска: тема + данные + бэкенд + подтверждение."""
 
     def __init__(self) -> None:
-        """Инициализация визарда."""
         super().__init__()
         self.setWindowTitle("OlliDesk — Первоначальная настройка")
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(640, 480)
 
-        self.project_path: Path | None = None
-        self.ollama_base_url: str = "http://localhost:11434"
-        self.available_models: list[str] = []
-        self.selected_chat_model: str | None = None
-        self.selected_embed_model: str | None = None
+        # Выбранные значения. Тема по умолчанию — тёмная, бэкенд — СЛМ.
+        self._selected_theme: str = "dark"
+        self._data_dir: Path = get_app_data_dir()
+        self._selected_backend: str = "local_slm"
+        self._ollama_url: str = "http://localhost:11434"
 
+        # Применяем тёмную тему сразу.
+        self._apply_theme(self._selected_theme)
         self._setup_pages()
 
     def _setup_pages(self) -> None:
-        """Настраивает страницы визарда."""
-        self.addPage(ProjectSelectionPage(self))
-        self.addPage(OllamaConnectionPage(self))
-        self.addPage(ModelSelectionPage(self))
+        self.addPage(WelcomeThemePage(self))
+        self.addPage(DataLocationPage(self))
+        self.addPage(BackendSelectionPage(self))
         self.addPage(ConfirmationPage(self))
 
-    def accept(self) -> None:
-        """Принимает визард и сохраняет конфигурацию."""
+    def _apply_theme(self, theme: str) -> None:
+        """Применяет тему ко всему приложению (визард + будущие диалоги)."""
         try:
-            self._wizard_dismissed = self._read_dismissed()
-            config = self._create_config()
+            from PySide6.QtWidgets import QApplication
+
+            from ui.theme import get_stylesheet
+
+            app = QApplication.instance()
+            if app is not None:
+                app.setStyleSheet(get_stylesheet(theme))
+            self._selected_theme = theme
+        except Exception:
+            logger.debug("Не удалось применить тему в визарде", exc_info=True)
+
+    def set_data_dir(self, path: Path) -> None:
+        self._data_dir = path
+
+    def set_backend(self, backend: str) -> None:
+        self._selected_backend = backend
+
+    def set_ollama_url(self, url: str) -> None:
+        self._ollama_url = url
+
+    def accept(self) -> None:
+        """Сохраняет конфигурацию и каталог данных, закрывает визард."""
+        try:
+            # 1. Если каталог данных сменился — записываем указатель (Вариант А)
+            # и обновляем путь конфиг-лоадера.
+            if self._data_dir.resolve() != get_app_data_dir().resolve():
+                set_app_data_dir(self._data_dir)
+                from core.config import config_loader
+
+                config_loader.refresh_path()
+
+            # 2. Собираем и сохраняем конфиг.
+            config = self._build_config()
             save_config(config)
-
-            # Сохраняем локальный конфиг для проекта
-            if self.project_path:
-                local_config = AppConfig(
-                    version=config.version,
-                    schema_version=config.schema_version,
-                    default_model=config.default_model,
-                    embed_model=config.embed_model,
-                    models=config.models,
-                    tool_policies=config.tool_policies,
-                    rules_file=config.rules_file,
-                )
-                save_config(local_config, self.project_path)
-
-            logger.info("Конфигурация успешно создана")
+            logger.info("Конфигурация создана визардом первого запуска")
             super().accept()
         except Exception as e:
             logger.error(f"Ошибка сохранения конфигурации: {e}")
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфигурацию:\n{e}")
 
-    def _read_dismissed(self) -> bool:
-        """Читает состояние чекбокса 'Не показывать' со страницы подтверждения."""
-        # findChildren в новых стабах PySide6 возвращает Iterable[_T],
-        # а не list[_T]. Материализуем, иначе mypy падает на аннотации.
-        pages: list[ConfirmationPage] = list(self.findChildren(ConfirmationPage))
-        if not pages:
-            return False
-        # PySide6-стабы: isChecked() возвращает Any, приводим к bool явно.
-        return bool(pages[0].dismiss_checkbox.isChecked())
+    def _build_config(self) -> AppConfig:
+        """Собирает дефолтный конфиг с выбранными темой/бэкендом."""
+        if self._selected_backend == "ollama":
+            enabled = ["ollama", "local_slm"]
+            priority = ["ollama", "local_slm"]
+        else:
+            # local_slm по умолчанию; лмстудио сюда не попадает (заблокирован).
+            enabled = ["local_slm"]
+            priority = ["local_slm", "ollama"]
 
-    def _create_config(self) -> AppConfig:
-        """Создает конфигурацию на основе выбора пользователя."""
-        chat_model = self.selected_chat_model or "qwen2.5-coder:7b"
-        embed_model = self.selected_embed_model or "nomic-embed-text"
+        pages = self.findChildren(ConfirmationPage)
+        dismissed = bool(pages[0].dismiss_checkbox.isChecked()) if pages else True
 
-        models = [
-            ModelConfig(
-                name=chat_model,
-                provider="ollama",
-                model=chat_model,
-                api_base=self.ollama_base_url,
-                roles=[ModelRole.CHAT, ModelRole.APPLY],
-                capabilities=["tool_use"],
-                temperature=0.7,
-                max_tokens=2048,
-                context_length=8192,
-                keep_alive=1800,
-            ),
-            ModelConfig(
-                name=embed_model,
-                provider="ollama",
-                model=embed_model,
-                api_base=self.ollama_base_url,
-                roles=[ModelRole.EMBED],
-                context_length=8192,
-            ),
-        ]
+        url = self._ollama_url if self._selected_backend == "ollama" else "http://localhost:11434"
 
         return AppConfig(
-            default_model=chat_model,
-            embed_model=embed_model,
-            models=models,
-            tool_policies={
-                "write_file": ToolPolicy.ASK_FIRST,
-                "web_search": ToolPolicy.ASK_FIRST,
-                "read_file": ToolPolicy.AUTO,
-                "search_codebase": ToolPolicy.AUTO,
+            theme=self._selected_theme,
+            default_model="qwen2.5-3b-instruct-q4_k_m",
+            embed_model="nomic-embed-text",
+            recent_projects=[],
+            wizard_dismissed=dismissed,
+            backends={
+                "enabled": enabled,
+                "priority": priority,
+                "ollama_url": url,
             },
-            recent_projects=[str(self.project_path)] if self.project_path else [],
-            wizard_dismissed=getattr(self, "_wizard_dismissed", False),
         )
 
 
-class ProjectSelectionPage(QWizardPage):
-    """Страница выбора проекта."""
+class WelcomeThemePage(QWizardPage):
+    """Страница 1: приветствие и выбор темы."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.setup_wizard = wizard
-        self.setTitle("Выбор папки проекта")
-        self.setSubTitle("Укажите папку, в которой будет храниться конфигурация проекта")
+        self.wizard_ref = wizard
+        self.setTitle("Добро пожаловать в OlliDesk")
+        self.setSubTitle("Локальный AI-ассистент. Давайте настроим его под вас.")
 
         layout = QVBoxLayout(self)
 
-        label = QLabel("Папка проекта:")
-        layout.addWidget(label)
+        intro = QLabel(
+            "OlliDesk работает на <b>локальных моделях</b>. Сейчас мы:\n"
+            "  • выберем тему оформления;\n"
+            "  • покажем, где будут храниться данные и модели;\n"
+            "  • выберем поставщика моделей;\n"
+            "  • сохраним конфигурацию.\n\n"
+            "Загрузку моделей можно выполнить позже через «Вид → Локальные модели»."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
 
-        path_layout = QHBoxLayout()
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Выберите папку...")
-        path_layout.addWidget(self.path_edit)
+        layout.addSpacing(12)
+        layout.addWidget(QLabel("<b>Тема оформления</b>"))
 
-        browse_btn = QPushButton("Обзор...")
-        browse_btn.clicked.connect(self._browse_folder)
-        path_layout.addWidget(browse_btn)
+        self.dark_radio = QRadioButton("Тёмная (рекомендуется)")
+        self.light_radio = QRadioButton("Светлая")
+        self.dark_radio.setChecked(True)
+        self.dark_radio.toggled.connect(self._on_theme_toggled)
+        self.light_radio.toggled.connect(self._on_theme_toggled)
+        layout.addWidget(self.dark_radio)
+        layout.addWidget(self.light_radio)
 
-        layout.addLayout(path_layout)
+        layout.addStretch()
 
-        self.registerField("project_path*", self.path_edit)
-
-    def _browse_folder(self) -> None:
-        """Открывает диалог выбора папки."""
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку проекта")
-        if folder:
-            self.path_edit.setText(folder)
-            self.setup_wizard.project_path = Path(folder)
+    def _on_theme_toggled(self, _checked: bool) -> None:
+        theme = "dark" if self.dark_radio.isChecked() else "light"
+        self.wizard_ref._apply_theme(theme)
 
 
-class OllamaConnectionPage(QWizardPage):
-    """Страница подключения к Ollama."""
+class DataLocationPage(QWizardPage):
+    """Страница 2: расположение данных (Вариант А)."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.setup_wizard = wizard
-        self.setTitle("Подключение к Ollama")
-        self.setSubTitle("Укажите адрес Ollama API и проверьте подключение")
+        self.wizard_ref = wizard
+        self.setTitle("Расположение данных")
+        self.setSubTitle("Где OlliDesk хранит настройки, журналы и модели.")
 
         layout = QVBoxLayout(self)
 
-        url_layout = QHBoxLayout()
-        url_layout.addWidget(QLabel("Ollama URL:"))
-        self.url_edit = QLineEdit("http://localhost:11434")
-        url_layout.addWidget(self.url_edit)
-
-        self.check_btn = QPushButton("Проверить")
-        self.check_btn.clicked.connect(self._check_connection)
-        url_layout.addWidget(self.check_btn)
-
-        layout.addLayout(url_layout)
-
-        self.status_label = QLabel("Статус: Не проверено")
-        self.status_label.setStyleSheet("color: gray; padding: 10px;")
-        layout.addWidget(self.status_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        self.registerField("ollama_url*", self.url_edit)
-
-        self.enable_check = QCheckBox("Настроить внешний сервис Ollama (необязательно)")
-        self.enable_check.setChecked(False)
-        self.enable_check.toggled.connect(self._on_enable_toggled)
-        layout.addWidget(self.enable_check)
-        self._on_enable_toggled(False)
-
-    def _on_enable_toggled(self, on: bool):
-        self.url_edit.setEnabled(on)
-        self.check_btn.setEnabled(on)
-        if not on:
-            self.status_label.setText("Используется встроенная SLM — внешние сервисы не подключаются.")
-
-    def _check_connection(self) -> None:
-        """Проверяет подключение к Ollama."""
-        url = self.url_edit.text().strip()
-        self.setup_wizard.ollama_base_url = url
-
-        self.status_label.setText("Статус: Проверка...")
-        self.status_label.setStyleSheet("color: orange; padding: 10px;")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Неопределенный прогресс
-
-        try:
-            response = httpx.get(f"{url}/api/tags", timeout=5.0)
-            response.raise_for_status()
-            data = response.json()
-
-            self.setup_wizard.available_models = [m["name"] for m in data.get("models", [])]
-
-            if self.setup_wizard.available_models:
-                self.status_label.setText(
-                    f"✅ Успешно! Найдено моделей: {len(self.setup_wizard.available_models)}"
-                )
-                self.status_label.setStyleSheet("color: green; padding: 10px;")
-            else:
-                self.status_label.setText(
-                    "⚠️ Подключено, но модели не найдены. Загрузите модели через `ollama pull`"
-                )
-                self.status_label.setStyleSheet("color: orange; padding: 10px;")
-
-        except httpx.ConnectError:
-            self.status_label.setText(
-                "❌ Ошибка: Не удалось подключиться к Ollama. Убедитесь, что Ollama запущен."
+        layout.addWidget(QLabel("<b>Каталог данных (профиль)</b>"))
+        row = QHBoxLayout()
+        self.data_edit = QLineEdit(str(get_app_data_dir()))
+        row.addWidget(self.data_edit)
+        browse_btn = QPushButton("Обзор…")
+        browse_btn.clicked.connect(self._browse_data_dir)
+        row.addWidget(browse_btn)
+        layout.addLayout(row)
+        layout.addWidget(
+            QLabel(
+                "Настройки, журналы, сессии, память. "
+                "<i>Можно будет изменить позже в Настройках.</i>"
             )
-            self.status_label.setStyleSheet("color: red; padding: 10px;")
-        except Exception as e:
-            self.status_label.setText(f"❌ Ошибка: {e}")
-            self.status_label.setStyleSheet("color: red; padding: 10px;")
-        finally:
-            self.progress_bar.setVisible(False)
+        )
+
+        layout.addSpacing(10)
+
+        # Каталог моделей — производный от каталога данных (только чтение).
+        layout.addWidget(QLabel("<b>Каталог моделей</b>"))
+        self.models_edit = QLineEdit(str(get_app_data_dir() / "models"))
+        self.models_edit.setReadOnly(True)
+        layout.addWidget(self.models_edit)
+        layout.addWidget(QLabel("Сюда скачиваются локальные модели (.gguf)."))
+
+        layout.addSpacing(10)
+
+        self.free_label = QLabel()
+        layout.addWidget(self.free_label)
+
+        warn = QLabel(
+            "⚠️ <b>Важно про размер моделей.</b><br>"
+            "Локальные модели занимают от ~1 до 20+ ГБ каждая:<br>"
+            "  • 3B (быстрые задачи) — ~2 ГБ;<br>"
+            "  • 7B (универсальная) — ~4–6 ГБ;<br>"
+            "  • 14B+ (сложный код) — от 8 ГБ.<br>"
+            "Убедитесь, что на диске достаточно места."
+        )
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #e5c07b;")
+        layout.addWidget(warn)
+
+        layout.addStretch()
+
+        self._refresh_free()
+
+    def _browse_data_dir(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self, "Каталог данных", str(self.data_edit.text())
+        )
+        if folder:
+            self.data_edit.setText(folder)
+            self._refresh_free()
+
+    def _refresh_free(self) -> None:
+        path = Path(self.data_edit.text())
+        free = _format_free_gb(path)
+        self.free_label.setText(f"Свободного места на диске: <b>{free}</b>")
+        # Каталог моделей следует за каталогом данных.
+        self.models_edit.setText(str(path / "models"))
+
+    def validatePage(self) -> bool:
+        chosen = Path(self.data_edit.text()).expanduser()
+        if not chosen.is_absolute():
+            QMessageBox.warning(self, "Ошибка", "Укажите абсолютный путь к каталогу данных.")
+            return False
+        self.wizard_ref.set_data_dir(chosen)
+        return True
 
 
-class ModelSelectionPage(QWizardPage):
-    """Страница выбора моделей."""
+class BackendSelectionPage(QWizardPage):
+    """Страница 3: поставщик моделей."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.setup_wizard = wizard
-        self.setTitle("Выбор моделей")
-        self.setSubTitle("Выберите модели для чата и векторизации")
+        self.wizard_ref = wizard
+        self.setTitle("Поставщик моделей")
+        self.setSubTitle("Какой бэкенд использовать для генерации ответов.")
 
         layout = QVBoxLayout(self)
 
-        # Модель для чата
-        layout.addWidget(QLabel("Модель для чата (chat/agent):"))
-        self.chat_model_combo = QComboBox()
-        layout.addWidget(self.chat_model_combo)
+        self.slm_radio = QRadioButton("Локальные модели SLM (рекомендуется)")
+        self.slm_radio.setToolTip(
+            "Встроенные модели на базе llama.cpp. Работают без внешних сервисов."
+        )
+        self.ollama_radio = QRadioButton("Ollama")
+        self.ollama_radio.setToolTip(
+            "Локальный сервер моделей. Требует установленного и запущенного Ollama."
+        )
+        self.lmstudio_radio = QRadioButton("LM Studio")
+        self.lmstudio_radio.setToolTip("В разработке.")
 
-        # Модель для эмбеддингов
-        layout.addWidget(QLabel("Модель для эмбеддингов (embed):"))
-        self.embed_model_combo = QComboBox()
-        layout.addWidget(self.embed_model_combo)
+        self.slm_radio.setChecked(True)
+        self.slm_radio.toggled.connect(self._on_backend_toggled)
+        self.ollama_radio.toggled.connect(self._on_backend_toggled)
+        self.lmstudio_radio.toggled.connect(self._on_backend_toggled)
 
-        self.registerField("chat_model*", self.chat_model_combo, "currentText")
-        self.registerField("embed_model*", self.embed_model_combo, "currentText")
+        layout.addWidget(self.slm_radio)
+        layout.addWidget(self.ollama_radio)
+        layout.addWidget(self.lmstudio_radio)
 
-    @override
-    def initializePage(self) -> None:
-        """Инициализирует страницу (загружает список моделей)."""
-        models = self.setup_wizard.available_models
+        layout.addSpacing(12)
 
-        # Фильтруем модели для чата (исключаем embed-модели)
-        chat_models = [m for m in models if "embed" not in m.lower()]
-        embed_models = [m for m in models if "embed" in m.lower()]
+        # Поле URL Ollama — видно только при выборе Ollama.
+        self.ollama_url_label = QLabel("Ollama URL:")
+        self.ollama_url_edit = QLineEdit("http://localhost:11434")
+        url_row = QHBoxLayout()
+        url_row.addWidget(self.ollama_url_label)
+        url_row.addWidget(self.ollama_url_edit)
+        layout.addLayout(url_row)
 
-        self.chat_model_combo.clear()
-        self.chat_model_combo.addItems(chat_models if chat_models else models)
+        # Сообщение «в разработке» для LM Studio.
+        self.lmstudio_note = QLabel(
+            "⚠️ Поддержка LM Studio находится <b>в разработке</b>.<br>"
+            "Пожалуйста, выберите другого поставщика."
+        )
+        self.lmstudio_note.setWordWrap(True)
+        self.lmstudio_note.setStyleSheet("color: #e5c07b;")
+        layout.addWidget(self.lmstudio_note)
 
-        self.embed_model_combo.clear()
-        self.embed_model_combo.addItems(embed_models if embed_models else models)
+        layout.addStretch()
+        self._sync_visibility()
 
-        # Выбираем модели по умолчанию
-        if "qwen2.5-coder:7b" in chat_models:
-            self.chat_model_combo.setCurrentText("qwen2.5-coder:7b")
-        if "nomic-embed-text" in embed_models:
-            self.embed_model_combo.setCurrentText("nomic-embed-text")
+    def _on_backend_toggled(self, _checked: bool) -> None:
+        self._sync_visibility()
 
-    @override
+    def _sync_visibility(self) -> None:
+        ollama_on = self.ollama_radio.isChecked()
+        self.ollama_url_label.setVisible(ollama_on)
+        self.ollama_url_edit.setVisible(ollama_on)
+        self.lmstudio_note.setVisible(self.lmstudio_radio.isChecked())
+
     def validatePage(self) -> bool:
-        """Валидирует страницу перед переходом к следующей."""
-        self.setup_wizard.selected_chat_model = self.chat_model_combo.currentText()
-        self.setup_wizard.selected_embed_model = self.embed_model_combo.currentText()
-
-        if not self.setup_wizard.selected_chat_model or not self.setup_wizard.selected_embed_model:
-            QMessageBox.warning(self, "Ошибка", "Выберите обе модели")
+        if self.lmstudio_radio.isChecked():
+            QMessageBox.warning(
+                self,
+                "В разработке",
+                "Поддержка LM Studio пока в разработке. Выберите другого поставщика.",
+            )
             return False
-
+        if self.ollama_radio.isChecked():
+            self.wizard_ref.set_backend("ollama")
+            self.wizard_ref.set_ollama_url(self.ollama_url_edit.text().strip())
+        else:
+            self.wizard_ref.set_backend("local_slm")
         return True
 
 
 class ConfirmationPage(QWizardPage):
-    """Страница подтверждения."""
+    """Страница 4: подтверждение."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
-        self.setup_wizard = wizard
+        self.wizard_ref = wizard
         self.setTitle("Подтверждение")
-        self.setSubTitle("Проверьте настройки перед сохранением")
+        self.setSubTitle("Проверьте настройки перед сохранением.")
 
         layout = QVBoxLayout(self)
-
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet("padding: 10px;")
         layout.addWidget(self.summary_label)
 
-        self.dismiss_checkbox = QCheckBox("Больше не показывать это окно при запуске")
+        self.dismiss_checkbox = QCheckBox("Больше не показывать этот мастер при запуске")
         self.dismiss_checkbox.setChecked(True)
         layout.addWidget(self.dismiss_checkbox)
 
-    @override
+        layout.addStretch()
+
     def initializePage(self) -> None:
-        """Инициализирует страницу (показывает сводку)."""
-        summary = f"""
-        <b>Папка проекта:</b> {self.setup_wizard.project_path or 'Не указана'}<br>
-        <b>Ollama URL:</b> {self.setup_wizard.ollama_base_url}<br>
-        <b>Модель для чата:</b> {self.setup_wizard.selected_chat_model}<br>
-        <b>Модель для эмбеддингов:</b> {self.setup_wizard.selected_embed_model}<br>
-        <br>
-        Конфигурация будет сохранена в:<br>
-        • <code>~/.ollidesk/config.yaml</code> (глобально)<br>
-        • <code>{self.setup_wizard.project_path}/.ollidesk/config.yaml</code> (локально)
-        """
-        self.summary_label.setText(summary)
+        theme_name = "Тёмная" if self.wizard_ref._selected_theme == "dark" else "Светлая"
+        backend_names = {
+            "local_slm": "Локальные модели SLM",
+            "ollama": "Ollama",
+            "lmstudio": "LM Studio",
+        }
+        backend_name = backend_names.get(self.wizard_ref._selected_backend, "Локальные модели SLM")
+        data_dir = self.wizard_ref._data_dir
+        lines = [
+            f"<b>Тема оформления:</b> {theme_name}",
+            f"<b>Каталог данных:</b> {data_dir}",
+            f"<b>Каталог моделей:</b> {data_dir / 'models'}",
+            f"<b>Поставщик моделей:</b> {backend_name}",
+        ]
+        if self.wizard_ref._selected_backend == "ollama":
+            lines.append(f"<b>Ollama URL:</b> {self.wizard_ref._ollama_url}")
+        lines.append("")
+        lines.append("Конфигурация будет сохранена в каталог данных.")
+        self.summary_label.setText("<br>".join(lines))

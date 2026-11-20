@@ -44,58 +44,34 @@ def _run_wizard_and_load(config_path: Path) -> AppConfig | None:
     logger.warning("Мастер настройки отменён пользователем — запуск прекращён")
     return None
 
+def _run_wizard() -> AppConfig | None:
+    """Показывает мастер настройки и загружает конфиг после его завершения."""
+    wizard = SetupWizard()
+    if wizard.exec():
+        try:
+            return load_config()
+        except ConfigError as e:
+            logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
+            return None
+    logger.warning("Визард отменён пользователем")
+    return None
 
 def _load_config_or_wizard() -> AppConfig | None:
-    """Загружает конфиг или показывает визард.
-
-    Логика:
-      1. Явная проверка существования `~/.ollidesk/config.yaml` ДО вызова
-         `load_config()`. Если файла нет — это первый запуск (или конфиг
-         удалён), принудительно показываем `SetupWizard` и продолжаем
-         только после его успешного завершения. Раньше `load_config()`
-         на отсутствующем файле молча возвращала дефолтный `AppConfig`,
-         и визард никогда не показывался.
-      2. Если файл есть — штатная загрузка. При `ConfigError` проверяем
-         `wizard_dismissed`: пользователь ранее отключил визард →
-         конфиг по умолчанию; иначе → визард для исправления.
-
-    Returns:
-        AppConfig или None, если визард не был завершён
-    """
+    """Загружает конфиг или показывает визард первого запуска."""
     config_path = get_app_data_dir() / "config.yaml"
 
-    # --- 1. Файла нет → первый запуск, мастер обязателен ---
-    if not _check_config_exists():
-        logger.info(
-            f"Файл конфигурации не найден: {config_path}. "
-            "Первый запуск — запускаю мастер настройки..."
-        )
-        return _run_wizard_and_load(config_path)
+    # Явная проверка: файла нет → первый запуск, показываем мастер.
+    if not config_path.exists():
+        logger.info("Файл конфигурации не найден — первый запуск, показываю визард")
+        return _run_wizard()
 
-    # --- 2. Файл есть → штатная загрузка ---
     try:
         config = load_config()
         logger.info(f"Конфигурация загружена: {config.version}")
         return config
     except ConfigError as e:
         logger.warning(f"Конфигурация невалидна: {e}")
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                import yaml
-                data = yaml.safe_load(f) or {}
-            if data.get("wizard_dismissed"):
-                logger.info("Визард отключён пользователем, использую конфиг по умолчанию")
-                return AppConfig(
-                    default_model="qwen2.5-coder:7b",
-                    embed_model="nomic-embed-text",
-                    wizard_dismissed=True,
-                )
-        except Exception:
-            logger.debug("Не удалось прочитать битый конфиг для проверки wizard_dismissed")
-        logger.info("Запуск визарда для исправления конфигурации...")
-        return _run_wizard_and_load(config_path)
-
-
+        return _run_wizard()
 class OlliDeskApp:
     """Главный класс приложения."""
 
@@ -127,25 +103,23 @@ class OlliDeskApp:
         self.app.setApplicationName("OlliDesk")
         self.app.setOrganizationName("OlliDesk")
 
+        initial_data_dir = get_app_data_dir()
         self.config = _load_config_or_wizard()
         if self.config is None:
             logger.error("Визард отменён пользователем")
             return 1
 
+        # Визард мог сменить каталог данных — переинициализируем
+        # логгер, чтобы логи писались уже в новый каталог.
+        if get_app_data_dir() != initial_data_dir:
+            logger.remove()
+            setup_logger(get_app_data_dir() / "logs", level="INFO")
+            logger.info(f"Каталог данных изменён визардом: {get_app_data_dir()}")
+
         self._apply_theme(self.config.theme)
 
         self.main_window = MainWindow(self.config)
 
-        # last_model — это имя модели Ollama. Применять его к ChatPanel
-        # имеет смысл только когда Ollama разрешена в backends.enabled.
-        # Иначе:
-        #   * combo моделей скрыт (`_update_model_selector_visibility`),
-        #   * сам combo получает «фантомное» значение 7B,
-        #   * при любом mode_changed `_on_chat_settings_changed` перетирает
-        #     last_model ещё раз — и в config.yaml навсегда оседает 7B,
-        #     хотя реально грузится SLM `qwen2.5-3b-instruct-q4_k_m`.
-        # Правильно: применять last_model только когда Ollama активна,
-        # и логировать одну понятную строку, если проигнорировали.
         ollama_enabled = "ollama" in self.config.backends.enabled
 
         if self.config.last_model and ollama_enabled:
