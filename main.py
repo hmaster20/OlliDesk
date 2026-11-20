@@ -48,11 +48,8 @@ class PosthogMock:
 
     disabled = True
 
-
-# Приводим к Any, чтобы Python разрешил подменить им целый модуль в sys.modules
 _posthog_mock: Any = PosthogMock()
 sys.modules["posthog"] = _posthog_mock
-
 
 # Настройка обработчика сообщений Qt
 def qt_message_handler(mode, context, message):
@@ -67,21 +64,16 @@ def qt_message_handler(mode, context, message):
     elif mode == QtMsgType.QtFatalMsg:
         logger.critical(f"Qt FATAL: {message}")
 
-
 qInstallMessageHandler(qt_message_handler)
-
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
     """Единая точка необработанных исключений.
 
-    Использует `logger.opt(exception=...)` вместо ручного
-    `traceback.format_exception`: Loguru сам построит трейсбек и не упадёт
-    на нестандартных объектах, которые PySide6 иногда передаёт в excepthook
-    (например, когда слот Qt бросил исключение из фонового контекста).
+    Использует `logger.opt(exception=...)` вместо ручного traceback.format_exception:
+    Loguru сам построит трейсбек и не упадёт на нестандартных объектах,
+    которые PySide6 иногда передаёт в excepthook
     """
     if exc_type is None and exc_value is None and exc_tb is None:
-        # PySide6 иногда вызывает excepthook "пустым" при завершении —
-        # не засоряем лог шумом.
         logger.debug("global_exception_handler: получен пустой вызов (PySide6)")
         return
     logger.opt(exception=(exc_type, exc_value, exc_tb)).error("Необработанное исключение")

@@ -1046,10 +1046,10 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Бэкенд переключён: {target.upper()}", 3000)
 
     def _check_ollama_connection(self) -> None:
-        """[9.7] Проверяет Ollama ТОЛЬКО если он разрешён в конфиге.
+        """Проверяет Ollama если он разрешён в конфиге.
 
-        Приборная панель (StatusDashboard) сама покажет состояние
-        бэкенда; отдельный `ollama_status_label` больше не нужен.
+        Приборная панель (StatusDashboard) сама покажет состояние бэкенда;
+        отдельный `ollama_status_label` больше не нужен.
         Если Ollama выключен в конфиге — проверка не запускается
         (никаких HTTP-запросов на localhost:11434).
         """
@@ -1058,7 +1058,7 @@ class MainWindow(QMainWindow):
 
             cfg = load_config()
             if "ollama" not in cfg.backends.enabled:
-                logger.info("Ollama не в enabled-списке — проверка подключения пропущена")
+                logger.debug("Ollama не в enabled-списке — проверка подключения пропущена")
                 return
         except Exception:
             return

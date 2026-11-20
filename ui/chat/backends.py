@@ -64,6 +64,7 @@ class BackendsMixin:
     _model_pool: ModelPool | None
     status_label: QLabel
     backend_status_changed: Any  # Signal(str)
+    wizard_requested: Any
     _update_model_selector_visibility: Callable[[], None]
     get_current_model: Callable[[], str]
 
@@ -114,6 +115,13 @@ class BackendsMixin:
                 уже записанный в конфиге ``slm.selected_model``. Нужно после
                 явного выбора модели пользователем в ``SLMModelsDialog``.
         """
+        from core.utils import get_app_data_dir
+
+        # Если это первый запуск (конфиг еще не создан), эмитим сигнал для показа Wizard
+        config_path = get_app_data_dir() / "config.yaml"
+        if not config_path.exists():
+            self.wizard_requested.emit()
+            return
         from agents.slm_optimizer import optimize
         from agents.slm_selector import select_best_model
 
@@ -158,7 +166,18 @@ class BackendsMixin:
         chat_path, embed_path = get_model_paths()
         if not chat_path:
             if self._config_slm_enabled():
-                self._download_and_load_slm()
+                # ИСПРАВЛЕНИЕ: Убираем автоматическое скачивание!
+                # self._download_and_load_slm()
+                logger.warning(
+                    "Локальная SLM-модель не найдена в каталоге. "
+                    "Автоматическое скачивание отключено. "
+                    "Пожалуйста, запустите Мастер настройки или используйте "
+                    "меню «Вид → Локальные модели (SLM)» для загрузки."
+                )
+                self.status_label.setText("⚠️ SLM не найдена. Требуется настройка.")
+                self._router.set_slm_available(False)
+                self._emit_backend_status()
+                # Здесь можно эмитить сигнал для показа Wizard, если это первый запуск
             return
 
         params = None
@@ -202,9 +221,8 @@ class BackendsMixin:
     def _detect_backends(self) -> None:
         """Определяет доступность бэкендов, уважая whitelist.
 
-        Ollama проверяется только если пользователь его явно включил в
-        настройках. Иначе приложение не отправляет ни одного HTTP-запроса
-        на localhost:11434.
+        Ollama проверяется только если пользователь его явно включил в настройках.
+        Иначе приложение не отправляет ни одного HTTP-запроса на localhost:11434.
         """
         ollama_enabled = False
         try:
@@ -218,7 +236,7 @@ class BackendsMixin:
         if ollama_enabled:
             self._check_ollama_async()
         else:
-            logger.info("Ollama не в enabled-списке — пропускаю проверку и автоактивацию")
+            logger.debug("Ollama не в enabled-списке — пропускаю проверку и автоактивацию")
             self._router.set_ollama_available(False)
 
         self._detect_and_load_slm()

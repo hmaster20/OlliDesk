@@ -24,6 +24,15 @@ class ModelRegistry:
     """Управляет справочником моделей и их локальным статусом."""
 
     def __init__(self) -> None:
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            if "ollama" not in cfg.backends.enabled:
+                logger.debug("Ollama не активна в бэкендах — пропуск сохранения model_registry.yaml")
+                return
+        except Exception as e:
+            logger.warning(f"Не удалось проверить бэкенды перед сохранением реестра: {e}")
+            return
         # C:\Users\<USERNAME>\.ollidesk\model_registry.yaml
         self.file_path = get_app_data_dir() / "model_registry.yaml"
         self.models: dict[str, ModelInfo] = {}

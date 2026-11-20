@@ -200,14 +200,10 @@ def read_project_rules(project_root: str | None) -> str:
 class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     """Панель чата с сообщениями, вводом и управлением.
 
-    [2.4] Логика управления SLM/Ollama вынесена в `BackendsMixin`
-    (`ui/chat/backends.py`), research-режим и двухмодельный пайплайн —
-    в `ResearchMixin` (`ui/chat/research.py`). Все поля для миксинов
-    по-прежнему инициализируются здесь в `__init__`; миксины обращаются
-    к ним через `self`.
-
-    MRO: `ChatPanel → QWidget → BackendsMixin → ResearchMixin`.
-    Qt-класс должен идти первым — PySide6 этого требует.
+    Логика управления SLM/Ollama вынесена в `BackendsMixin`(`ui/chat/backends.py`),
+    research-режим и двухмодельный пайплайн - в `ResearchMixin` (`ui/chat/research.py`).
+    Все поля для миксинов по-прежнему инициализируются здесь в `__init__`;
+    миксины обращаются к ним через `self`.
     """
 
     mode_changed = Signal(str)
@@ -216,18 +212,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     settings_changed = Signal(dict)
     backend_status_changed = Signal(str)
     pipeline_status_changed = Signal(str)
-
     directory_attach_requested = Signal(str)
     source_activated = Signal(str, int)
-
-    # [9.2] Дерево проекта (кнопка «📁» в верхней панели → MainWindow).
     project_tree_toggled = Signal(bool)
-    # [9.3] Открыть SLMModelsDialog из кнопки «⋯» в PipelineSelectors.
     slm_models_requested = Signal()
-    # [9.4] Смена профиля использования (MainWindow синхронизирует чекбокс).
+    wizard_requested = Signal()
     profile_changed = Signal(str)  # profile_id
-    # [9.8] Показать diff в Monaco DiffEditor (из карточки write_file).
-    # payload: {"path", "original", "modified", "language"}.
     diff_requested = Signal(object)
 
     def __init__(
@@ -1503,45 +1493,68 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.mode_changed.emit(mode)
         self._emit_settings_changed()
 
+    def _emit_settings_changed(self):
+        """Эмитит ``settings_changed`` с актуальным payload."""
+        self.settings_changed.emit(self._settings_payload())
+
+
     def _settings_payload(self) -> dict:
-        """Собирает актуальный payload для ``settings_changed`` (0.1.4).
-
-        Модель включается в payload только когда активна Ollama: при SLM
-        ``model_combo`` содержит «последнюю выбранную Ollama-модель», и
-        сохранять её в ``last_model`` при каждой смене режима бессмысленно —
-        в итоге ``config.last_model`` остался бы 7B, хотя реально грузится 3B.
-
-        Returns:
-            Словарь ``{"mode": ..., "model": ...}`` (``model`` — только при
-            Ollama). Оба потребителя (``_emit_settings_changed`` и
-            ``_save_current_settings``) используют этот метод, чтобы не
-            расходиться по фильтру.
-        """
+        """Собирает актуальный payload для ``settings_changed`` (0.1.4)."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
         payload: dict = {"mode": mode_map.get(self.mode_combo.currentIndex(), "chat")}
-        if self._router.active_backend == BackendType.OLLAMA:
-            payload["model"] = self.get_current_model()
+
+        # Отдаем модель активного бэкенда (Ollama или SLM)
+        backend = self._router.active_backend
+        if backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM):
+            payload["model"] = self.active_model_name()
         return payload
 
-    def _emit_settings_changed(self):
-        """Эмитит ``settings_changed`` с актуальным payload (0.1.4)."""
-        self.settings_changed.emit(self._settings_payload())
+
+    def get_settings(self) -> dict:
+        mode_map = {0: "chat", 1: "plan", 2: "agent"}
+        backend = self._router.active_backend
+
+        # Берем модель только если активен LLM-бэкенд
+        model = self.active_model_name() if backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM) else ""
+
+        return {
+            "model": model,
+            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
+            "show_reasoning": self._show_reasoning,
+        }
+
+
+    def apply_settings(self, settings: dict) -> None:
+        model = settings.get("model", "")
+        if model:
+            self.set_model(model)
+        mode = settings.get("mode", "chat")
+        mode_map = {"chat": 0, "plan": 1, "agent": 2}
+        idx = mode_map.get(mode, 0)
+        if 0 <= idx < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(idx)
+        self._show_reasoning = bool(settings.get("show_reasoning", True))
+
+        # Подхватываем сохраненный выбор моделей для этого проекта
+        if self._pipeline_selectors is not None:
+            if settings.get("planner_model_id"):
+                self._pipeline_selectors.set_planner(settings["planner_model_id"])
+            if settings.get("analyst_model_id"):
+                self._pipeline_selectors.set_analyst(settings["analyst_model_id"])
+
 
     def _toggle_agent_panel(self):
         self.agent_panel_toggle.emit(True)
 
     def _scroll_to_bottom(self):
-        """[9.5] Скроллит к нижней кромке, только если пользователь там."""
+        """Скроллит к нижней кромке, только если пользователь там."""
         self.scroll_area.scroll_to_bottom_if_sticky()
 
     def _scroll_to_bottom_force(self):
-        """[9.5] Принудительный скролл к нижней кромке (для Cmd+End)."""
+        """Принудительный скролл к нижней кромке (для Cmd+End)."""
         self.scroll_area.scroll_to_bottom_force()
 
     def _clear_chat(self, keep_session: bool = False):
-        # [9.10] Сначала удаляем свёрнутые виджеты внутри placeholder'ов,
-        # потом сами placeholder'ы (они тоже в layout — цикл ниже их
-        # обработает, но скрытые виджеты остались бы «сиротами» в памяти).
         for placeholder in self._collapsed_placeholders:
             try:
                 # Скроем и удалим содержимое placeholder'а.
@@ -1588,7 +1601,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._command_popup_active = False
         self._last_assistant_widget = None
         self._last_run_params = None
-        # [2.12] Сбрасываем ссылку на inbox-запись.
+        # Сбрасываем ссылку на inbox-запись.
         self._current_inbox_id = None
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
@@ -1608,11 +1621,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _stop_generation(self):
         """Останавливает генерацию с сохранением визуального лога.
 
-        Семантика (этап 4): Стоп = отмена, но информация НЕ теряется:
+        Семантика: Стоп = отмена, но информация НЕ теряется:
         * серый поток рассуждений остаётся видимым (с пометкой «прервано»);
         * виджеты гипотез остаются в ленте как визуальный архив;
-        * активный `HypothesisStore` очищается — в следующий запрос
-          гипотезы НЕ утекают;
+        * активный `HypothesisStore` очищается — в следующий запрос гипотезы НЕ утекают;
         * паспорт не строится;
         * внизу добавляется курсивный комментарий.
         """
@@ -1718,7 +1730,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._create_session()
 
-        # [2.12] Durable inbox: пишем запрос в pending ДО запуска.
+        # Durable inbox: пишем запрос в pending ДО запуска.
         # Если процесс упадёт — `recover()` при следующем старте
         # покажет счётчик. `AgentChatThread` вызовет `claim()` в run().
         inbox = self._ensure_inbox()
@@ -1738,7 +1750,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 )
                 self._current_inbox_id = None
 
-        # (дальше — как было)
         import hashlib
 
         msg_id = hashlib.sha1(f"{self._session_id or ''}|user|{text}".encode()).hexdigest()[:16]
@@ -1917,7 +1928,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
         self._reset_research_state()
 
-        # [D8] Определяем размер проекта и режим ДО запуска цикла.
+        # Определяем размер проекта и режим ДО запуска цикла.
         # _ensure_project_scan() заполняет self._project_files (кэш на сессию),
         # тот же вызов уже используется в _project_map_text().
 
@@ -1999,10 +2010,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             extra_rules=self._project_rules(),
             security=security,
             memory_service=self._ensure_memory_service(),
-            # [2.7] Единая точка авторизации.
             profile=self._profile,
             app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
-            # [9.4] Git-контекст (только в AGENT).
             git_context=self._build_git_context(),
         )
 
@@ -2017,7 +2026,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
-        # [2.8] ToolService на этот запрос.
+        # ToolService на этот запрос.
         from core.services.tool_service import ToolService
 
         # model_name = self.get_current_model()
@@ -2031,7 +2040,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
             soft_budget=override_budget,
-            # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
             tool_service=ToolService(registry, project_root=self.project_root),
@@ -2132,7 +2140,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         agents_context = load_agents_context(self.project_root)
         merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
 
-        # 0.1.1: политика безопасности — см. _do_chat.
+        # политика безопасности — см. _do_chat.
         try:
             _cfg = load_config()
             security = SecurityPolicy(
@@ -2157,10 +2165,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             extra_rules=self._project_rules(),
             security=security,
             memory_service=self._ensure_memory_service(),
-            # [2.7] Единая точка авторизации.
             profile=self._profile,
             app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
-            # [9.4] Git-контекст (только в AGENT).
             git_context=self._build_git_context(),
         )
 
@@ -2179,7 +2185,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             max_iterations=max_iters,
             orchestrator=self._orchestrator,
             soft_budget=override_budget,
-            # [2.12] inbox: claim в run() + complete/fail по завершении.
             inbox_id=self._current_inbox_id,
             inbox=self._inbox,
             tool_service=ToolService(registry, project_root=self.project_root),
@@ -3515,32 +3520,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             QTimer.singleShot(1500, self._ensure_orchestrator)
         self._update_pipeline_status()
 
-    def get_settings(self) -> dict:
-        mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        return {
-            "model": self.get_current_model(),
-            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-            "show_reasoning": self._show_reasoning,
-        }
-
-    def apply_settings(self, settings: dict) -> None:
-        model = settings.get("model", "")
-        if model:
-            self.set_model(model)
-        mode = settings.get("mode", "chat")
-        mode_map = {"chat": 0, "plan": 1, "agent": 2}
-        idx = mode_map.get(mode, 0)
-        if 0 <= idx < self.mode_combo.count():
-            self.mode_combo.setCurrentIndex(idx)
-        self._show_reasoning = bool(settings.get("show_reasoning", True))
-
-        # [FIX] Подхватываем сохраненный выбор моделей для этого проекта
-        if self._pipeline_selectors is not None:
-            if settings.get("planner_model_id"):
-                self._pipeline_selectors.set_planner(settings["planner_model_id"])
-            if settings.get("analyst_model_id"):
-                self._pipeline_selectors.set_analyst(settings["analyst_model_id"])
-
     def export_chat(self, parent: QWidget | None = None) -> None:
         """[9.6.3] Открывает диалог экспорта текущего чата."""
         from ui.dialogs.export_chat_dialog import ExportChatDialog
@@ -3779,6 +3758,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._update_model_status(model_name)
 
     def get_current_model(self) -> str:
+        if self._router.active_backend != BackendType.OLLAMA:
+            return "" # Если Ollama не активна, не отдаём мусор из скрытого комбобокса
         model = self.model_combo.currentData()
         if model is not None:
             return str(model)
@@ -3898,15 +3879,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             with contextlib.suppress(Exception):
                 self._memory_service.close()
             self._memory_service = None
-        # [2.12] Закрываем inbox.
         if self._inbox is not None:
             with contextlib.suppress(Exception):
                 self._inbox.close()
             self._inbox = None
-        # [7] Закрываем MCP-серверы.
         try:
             from tools.mcp_ops import MCPManager
-
             MCPManager.instance().shutdown_sync()
         except Exception:
             logger.debug("MCP shutdown failed", exc_info=True)
@@ -3925,7 +3903,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 logger.debug("ModelPool.aclose failed", exc_info=True)
                 pass
             self._model_pool = None
-        # [2.11] Закрываем браузер.
         try:
             from tools.browser_ops import shutdown_browser
 
@@ -3936,6 +3913,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 loop.close()
         except Exception:
             logger.debug("browser shutdown failed", exc_info=True)
+        # Принудительное завершение зависших фоновых потоков (исправляет Qt FATAL)
+        threads_to_kill = [
+            getattr(self, "_slm_download_thread", None),
+            getattr(self, "_slm_load_thread", None),
+            getattr(self, "_pool_load_thread", None),
+            getattr(self, "_ollama_check_thread", None),
+            getattr(self, "_mcp_init_thread", None),
+        ]
+        for thread in threads_to_kill:
+            if thread is not None and thread.isRunning():
+                logger.debug(f"Принудительная остановка потока {type(thread).__name__}")
+                thread.quit()
+                if not thread.wait(1000): # Ждем 1 секунду
+                    logger.warning(f"Поток {type(thread).__name__} завис, terminate()")
+                    thread.terminate()
+                    thread.wait(500)
 
     # ------------------------------------------------------------------
     # [9.3] Селекторы Planner/Analyst
