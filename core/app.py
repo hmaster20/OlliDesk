@@ -93,6 +93,19 @@ class OlliDeskApp:
 
         self.app = QApplication(sys.argv)
 
+        from PySide6.QtCore import QLibraryInfo, QTranslator
+
+        # Русификация встроенных диалогов Qt (QFileDialog, кнопки QMessageBox и т.п.).
+        # PySide6 поставляется с переводами в PySide6/translations.
+        self._translator = QTranslator(self.app)
+        if self._translator.load(
+            "qtbase_ru",
+            QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
+        ):
+            self.app.installTranslator(self._translator)
+        else:
+            logger.debug("Перевод qtbase_ru не найден — стандартные диалоги Qt останутся английскими")
+
         # Иконка приложения — до создания любых окон, иначе SetupWizard (в _load_config_or_wizard) откроется без неё.
         # QApplication.setWindowIcon распространяется на все QDialog (QMessageBox, QFileDialog, *Dialog) автоматически.
         icon = get_app_icon()

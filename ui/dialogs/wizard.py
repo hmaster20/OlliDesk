@@ -143,13 +143,15 @@ class SetupWizard(QWizard):
         self.setButtonText(QWizard.WizardButton.CancelButton, "Отмена")
 
         self._apply_theme(self._selected_theme)
+        self._confirmation_page: ConfirmationPage | None = None
         self._setup_pages()
 
     def _setup_pages(self) -> None:
         self.addPage(WelcomeThemePage(self))
         self.addPage(DataLocationPage(self))
         self.addPage(BackendSelectionPage(self))
-        self.addPage(ConfirmationPage(self))
+        self._confirmation_page = ConfirmationPage(self)
+        self.addPage(self._confirmation_page)
 
     # ------------------------------------------------------------------ тема
     def _apply_theme(self, theme: str) -> None:
@@ -414,14 +416,21 @@ class SetupWizard(QWizard):
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфигурацию:\n{e}")
 
     def _build_config(self) -> AppConfig:
+        """Собирает AppConfig из выборов, сделанных на страницах визарда."""
         if self._selected_backend == "ollama":
             enabled = ["ollama", "local_slm"]
             priority = ["ollama", "local_slm"]
         else:
             enabled = ["local_slm"]
             priority = ["local_slm", "ollama"]
-        pages = self.findChildren(ConfirmationPage)
-        dismissed = bool(pages[0].dismiss_checkbox.isChecked()) if pages else True
+
+        # Ссылка на страницу сохраняется в _setup_pages() — без поиска по дереву.
+        dismissed = (
+            self._confirmation_page.dismiss_checkbox.isChecked()
+            if self._confirmation_page is not None
+            else True
+        )
+
         url = self._ollama_url if self._selected_backend == "ollama" else "http://localhost:11434"
         return AppConfig(
             theme=self._selected_theme,
@@ -477,11 +486,11 @@ class DataLocationPage(QWizardPage):
         self._models_manual = False
 
         self.setTitle("Расположение данных")
-        self.setSubTitle("Где OlliDesk хранит настройки, журналы и модели.")
+        self.setSubTitle("Где OlliDesk хранит настройки, журналы, ChromaDB и модели.")
         layout = QVBoxLayout(self)
 
         # --- Каталог данных ---
-        layout.addWidget(QLabel("<b>Каталог данных (профиль)</b>"))
+        layout.addWidget(QLabel("<b>Расположение данных (профиль)</b>"))
         row = QHBoxLayout()
         self.data_edit = QLineEdit(str(wizard._data_dir))
         self.data_edit.textChanged.connect(self._on_data_changed)
@@ -496,7 +505,7 @@ class DataLocationPage(QWizardPage):
         layout.addSpacing(10)
 
         # --- Каталог моделей ---
-        layout.addWidget(QLabel("<b>Каталог моделей SLM</b>"))
+        layout.addWidget(QLabel("<b>Расположение малых языковых моделей (SLM)</b>"))
         models_row = QHBoxLayout()
         self.models_edit = QLineEdit(str(wizard._models_dir))
         self.models_edit.textChanged.connect(self._on_models_changed)
