@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Literal, Protocol
 
 # ---------------------------------------------------------------------------
 # RAG: VectorStoreLike
@@ -115,3 +115,59 @@ class AttachedFilesLike(Protocol):
     """
 
     def __bool__(self) -> bool: ...
+
+
+# ---------------------------------------------------------------------------
+# 4.3: память
+# ---------------------------------------------------------------------------
+
+
+class ReflectionLike(Protocol):
+    """Минимальный контракт рефлексии (совпадает с `Reflection`).
+
+    ВАЖНО: `task_type` и `outcome` объявлены через `Literal`, чтобы точно
+    совпадать с `Reflection` из `core.services.memory_service`. Attributes
+    в Protocol инвариантны — `Literal[...] != str` для mypy.
+    """
+
+    id: int | None
+    created_at: str
+    project_path: str
+    task_type: Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
+    summary: str
+    outcome: Literal["success", "partial", "failure"]
+    tags: list[str]
+
+
+class RecallResultLike(Protocol):
+    """Минимальный контракт результата recall.
+
+    AgentLoop использует только три вещи (см. `_build_memory_block`):
+      * ``result.hit``;
+      * ``bool(result.reflections)`` и ``len(result.reflections)``;
+      * ``result.render_for_prompt(max_chars=...)``.
+
+    Атрибуты объявлены как read-only property: такой протокол принимают
+    и обычные поля pydantic/dataclass, и вычисляемые свойства. Тип
+    элемента ``reflections`` не важен — ``object`` снимает требование
+    точного совпадения с вложенным ``ReflectionLike``.
+    """
+
+    @property
+    def hit(self) -> bool: ...
+
+    @property
+    def reflections(self) -> Sequence[object]: ...
+
+    def render_for_prompt(self, *, max_chars: int = 1200) -> str: ...
+
+
+class MemoryServiceLike(Protocol):
+    def recall(
+        self,
+        query: str,
+        *,
+        top_k: int = 3,
+        project_path: str | None = None,
+        max_age_days: int = 90,
+    ) -> RecallResultLike: ...

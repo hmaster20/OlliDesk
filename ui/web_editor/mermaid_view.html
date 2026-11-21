@@ -52,10 +52,12 @@
                     fontFamily: "'Segoe UI', sans-serif",
                 });
                 mermaid.run({ nodes: [el] }).catch(function (err) {
-                    el.textContent = 'Mermaid error: ' + err;
+                    var msg = (err && err.message) ? err.message : JSON.stringify(err);
+                    el.textContent = 'Mermaid error: ' + msg;
                 });
             } catch (e) {
-                el.textContent = 'Mermaid error: ' + e;
+                var msg = (e && e.message) ? e.message : JSON.stringify(e);
+                el.textContent = 'Mermaid error: ' + msg;
             }
         };
     </script>

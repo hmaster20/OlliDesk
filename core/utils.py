@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,15 +15,12 @@ def get_resource_path(relative_path: str) -> Path:
     """
     Получает абсолютный путь к ресурсу.
     Работает как в режиме разработки, так и в скомпилированном PyInstaller приложении.
-
     Args:
         relative_path: Относительный путь к ресурсу (например, "ui/web_editor/editor.html")
-
     Returns:
         Path: Абсолютный путь к ресурсу
     """
     try:
-        # PyInstaller создает временную папку и сохраняет ее путь в _MEIPASS
         base_path = sys._MEIPASS  # type: ignore[attr-defined]
     except Exception:
         # В режиме разработки используем корень проекта
@@ -30,17 +28,41 @@ def get_resource_path(relative_path: str) -> Path:
 
     return Path(base_path) / relative_path
 
+def _get_pointer_file() -> Path:
+    """Фиксированный файл-указатель каталога данных (Вариант А).
+
+    Хранится в постоянном месте, НЕ зависящем от самого каталога данных:
+    на Windows — %APPDATA%/OlliDesk/data_dir.txt, на остальных платформах —
+    ~/.config/OlliDesk/data_dir.txt. Это «якорь», который переживает перенос данных.
+    """
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "OlliDesk" / "data_dir.txt"
+    return Path.home() / ".config" / "OlliDesk" / "data_dir.txt"
+
 
 def get_app_data_dir() -> Path:
+    """Возвращает путь к папке данных приложения.
+    Сначала читает файл-указатель. Если там валидный существующий путь — использует его,
+    иначе дефолт ~/.ollidesk.
     """
-    Возвращает путь к папке данных приложения в профиле пользователя.
-    Используется для хранения конфигов, логов и БД ChromaDB.
-
-    Returns:
-        Path: Путь к ~/.ollidesk
-    """
+    pointer = _get_pointer_file()
+    if pointer.is_file():
+        try:
+            candidate = Path(pointer.read_text(encoding="utf-8").strip())
+            if candidate.is_absolute() and candidate.exists():
+                return candidate
+        except (OSError, ValueError):
+            pass
     return Path.home() / ".ollidesk"
 
+def set_app_data_dir(path: Path) -> None:
+    """Записывает файл-указатель каталога данных и создаёт сам каталог."""
+    resolved = Path(path).resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    pointer = _get_pointer_file()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(str(resolved), encoding="utf-8")
 
 def get_app_icon() -> QIcon | None:
     """Возвращает QIcon приложения или None, если файла нет.

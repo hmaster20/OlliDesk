@@ -62,6 +62,8 @@ def _hypothesis_dict(h: Any) -> dict[str, Any]:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def record_hypothesis(
     statement: str,
@@ -121,6 +123,8 @@ def record_hypothesis(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def update_hypothesis(
     hypothesis_id: str,
@@ -147,7 +151,7 @@ def update_hypothesis(
         allowed = ", ".join(sorted(_VALID_STATUSES))
         return f"Ошибка: недопустимый статус '{status}'. Разрешены: {allowed}."
 
-    h = store.update(hypothesis_id, status=status, evidence=evidence or "")  # type: ignore[arg-type]
+    h = store.update(hypothesis_id, status=status, evidence=evidence or "")
     if h is None:
         return f"Ошибка: гипотеза '{hypothesis_id}' не найдена."
 
@@ -172,6 +176,8 @@ def update_hypothesis(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["ui"],
+    timeout_s=5.0,
 )
 def list_hypotheses(hypotheses: Any = None) -> str:
     """Возвращает список гипотез с их статусами.

@@ -53,6 +53,8 @@ async def _fetch_rates(base: str) -> dict[str, float]:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["net"],
+    timeout_s=30.0,
 )
 async def get_exchange_rate(base: str = "USD", target: str = "RUB") -> str:
     """Возвращает текущий курс base→target.
@@ -89,6 +91,8 @@ async def get_exchange_rate(base: str = "USD", target: str = "RUB") -> str:
     description=("Возвращает несколько курсов к рублю за один вызов (например, USD и EUR одновременно)."),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["net"],
+    timeout_s=30.0,
 )
 async def get_exchange_rates_multi(base: str = "USD,EUR", target: str = "RUB") -> str:
     """Возвращает несколько курсов к target.

@@ -1,5 +1,7 @@
 """Инструменты для чтения и записи файлов."""
 
+import difflib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -9,8 +11,7 @@ from loguru import logger
 
 from agents.tool_registry import tool
 from core.config import AgentMode, ToolPolicy
-from core.sandbox import SandboxedPathResolver  # NEW
-from tools.git_ops import create_snapshot
+from core.sandbox import SandboxedPathResolver, is_denied_file
 
 _SKIP_NAMES = {
     ".git",
@@ -85,6 +86,8 @@ def _count_entries(directory: Path) -> int:
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=15.0,
 )
 def read_file(
     path: str,
@@ -97,16 +100,31 @@ def read_file(
     Args:
         path: Путь к файлу (абсолютный или относительный).
         offset: Смещение в символах от начала файла.
-        limit: Сколько символов вернуть. Жёсткий диапазон
-            [MIN_READ_CHUNK_CHARS, MAX_READ_FILE_CHUNK_CHARS].
+        limit: Сколько символов вернуть.
         project_root: Корень проекта для проверки безопасности.
 
     Returns:
-        Заголовок с диапазоном и размером, фрагмент, hint о продолжении.
+        Заголовок с диапазоном, **sha256 (8 hex)** и **mtime (unix)**,
+        фрагмент, hint о продолжении.
+
+    Note:
+        [10.9] sha256/mtime в заголовке нужны для stale check: перед
+        ``apply_patch(expected_hash=...)`` модель передаёт хэш обратно,
+        и инструмент сверяет его с текущим состоянием файла. Если файл
+        изменился между чтением и правкой — apply_patch откажется.
     """
-    # NEW: единый резолвер вместо дублированной `_resolve_path`.
+    # единый резолвер вместо дублированной `_resolve_path`.
     file_path = SandboxedPathResolver(project_root).resolve(path)
     if not file_path:
+        # 0.1.2: различаем «вне песочницы» и «запрещённый секрет» —
+        # модель должна понимать, что путь корректен, но политика
+        # безопасности его блокирует.
+        raw = str(path or "").strip()
+        if raw and is_denied_file(Path(raw).name):
+            return (
+                f"Ошибка: файл '{Path(raw).name}' заблокирован политикой "
+                f"безопасности (секрет). Не пытайся его читать."
+            )
         return "Ошибка: путь вне допустимой директории"
 
     if not file_path.exists():
@@ -158,8 +176,19 @@ def read_file(
     # Процент прочитанного — чтобы модель видела «прогресс» и не зацикливалась.
     percent = int(100 * end / total) if total > 0 else 100
 
+    # ... (без изменений до content)
+    # 10.9: fingerprint для stale check.
+    from tools.git_ops import file_fingerprint
+
+    fp = file_fingerprint(file_path)
+    header = (
+        f"{path} [символы {start}-{end} из {total}, {percent}%]"
+        f"{limit_note}\n"
+        f"sha256={fp['hash'][:8]} mtime={fp['mtime']:.0f}"
+    )
+
     # Заголовок: путь, диапазон, всего символов, прогресс.
-    header = f"{path} [символы {start}-{end} из {total}, {percent}%]{limit_note}"
+    # header = f"{path} [символы {start}-{end} из {total}, {percent}%]{limit_note}"
 
     # Хинт на продолжение — в КОНЕЦ, чтобы он выжил при вынужденном
     # усечении в AgentLoop (там сохраняется хвост результата).
@@ -194,6 +223,8 @@ def read_file(
     ),
     policy=ToolPolicy.AUTO,
     modes=[AgentMode.CHAT, AgentMode.PLAN, AgentMode.AGENT],
+    capabilities=["fs.read"],
+    timeout_s=15.0,
 )
 def list_directory(path: str, project_root: str = "") -> str:
     """Возвращает содержимое директории в виде дерева одного уровня."""
@@ -213,10 +244,18 @@ def list_directory(path: str, project_root: str = "") -> str:
         files: list[str] = []
         skipped = 0
         for entry in sorted(dir_path.iterdir(), key=lambda p: p.name.lower()):
-            if entry.name in _SKIP_NAMES:
+            if entry.name in _SKIP_NAMES or is_denied_file(entry.name):
                 skipped += 1
                 continue
             try:
+                if entry.is_dir():
+                    dirs.append(f"  {entry.name}/ — {_count_entries(entry)} элементов")
+                else:
+                    files.append(f"  {entry.name} — {_format_size(entry.stat().st_size)}")
+            except OSError:
+                (dirs if entry.is_dir() else files).append(f"  {entry.name}")
+            try:
+                ...
                 if entry.is_dir():
                     dirs.append(f"  {entry.name}/ — {_count_entries(entry)} элементов")
                 else:
@@ -295,24 +334,20 @@ def _verify_python_syntax(file_path: Path) -> str:
     modes=[AgentMode.AGENT],
     is_mutating=True,
     category="filesystem",
+    capabilities=["fs.write"],
+    timeout_s=30.0,
 )
 def write_file(path: str, content: str, project_root: str = "") -> str | dict[str, Any]:
     """Записывает содержимое в файл.
 
-    [9.6.1] Возвращает `dict` со структурированным результатом для UI:
-      * `_llm_text` — человекочитаемая строка для LLM (идёт в `content`);
-      * `status` — "ok" | "no_change";
-      * `path` — абсолютный путь;
-      * `is_new_file` — файла не было до записи;
-      * `original_content` — содержимое до записи (для отката);
-      * `diff` — unified diff (для UI);
-      * `lines_added`, `lines_removed` — статистика;
-      * `syntax_error` — текст ошибки `py_compile` (пусто, если ок).
+    [10.9] Перед записью создаёт файловый снапшот
+    (``~/.ollidesk/snapshots/<id>/``). `snapshot_id` возвращается в
+    метаданных и используется для кнопки «↩ Откатить» в UI-карточке.
 
-    Вне `ToolRegistry.execute` (прямой вызов) возвращает строку для
-    обратной совместимости — но в проде всегда идёт через registry.
+    `git stash` больше НЕ используется: файл-снапшот не требует
+    git-репозитория и восстанавливает даже новый файл (удаляет его).
     """
-    file_path = SandboxedPathResolver(project_root).resolve(path)
+    file_path = SandboxedPathResolver(project_root).resolve(path, allow_sensitive=True)
     if not file_path:
         return "Ошибка: путь вне допустимой директории"
     if file_path.is_dir():
@@ -321,7 +356,6 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # [9.6.1] Сохраняем оригинал ДО записи — для diff и отката.
         is_new_file = not file_path.exists()
         original_content = ""
         if not is_new_file:
@@ -330,8 +364,6 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
             except Exception:
                 original_content = ""
 
-        # Идемпотентность: если содержимое не изменилось — не пишем,
-        # не создаём снапшот, возвращаем no_change.
         if not is_new_file and original_content == content:
             return {
                 "_llm_text": f"Файл не изменился: {file_path.name}",
@@ -344,24 +376,40 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
                 "lines_added": 0,
                 "lines_removed": 0,
                 "syntax_error": "",
+                "snapshot_id": "",
             }
 
-        snapshot_status = None
+        # [10.9] Автоснапшот (всегда, если задан project_root).
+        snapshot_id = ""
         if project_root:
-            repo_path = Path(project_root)
             try:
-                snapshot_status = create_snapshot(repo_path, message=f"Before agent write: {file_path.name}")
+                from tools.git_ops import create_file_snapshot
+
+                snapshot_id = create_file_snapshot(
+                    [file_path],
+                    tool="write_file",
+                    args_summary=f"{file_path.name} ({len(content)} chars)",
+                    project_root=Path(project_root),
+                )
             except Exception:
-                snapshot_status = None
+                logger.debug("write_file: снапшот не создан", exc_info=True)
 
         file_path.write_text(content, encoding="utf-8")
         logger.info(f"Файл записан: {file_path} ({len(content)} символов)")
 
-        # Внешний верификатор: py_compile для .py.
         syntax_error = _verify_python_syntax(file_path)
 
-        # [9.6.1] Unified diff — для UI. difflib.unified_diff, без контекста
-        # в заголовках (относительный путь вместо абсолютного — чище).
+        # --- [10.8] LSP-диагностика (если сервер доступен) ---
+        lsp_errors: list[dict] = []
+        try:
+            from agents.lsp_bridge import LspBridge
+
+            bridge = LspBridge._get_default()
+            if bridge is not None:
+                lsp_errors = bridge.diagnostics(file_path)
+        except Exception:
+            logger.debug("LSP diagnostics unavailable", exc_info=True)
+
         import difflib
 
         original_lines = original_content.splitlines(keepends=True)
@@ -376,24 +424,23 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
             )
         )
         diff_text = "".join(diff_chunks)
-
-        # Статистика по строкам.
         lines_added = sum(1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++"))
         lines_removed = sum(1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---"))
 
-        # [9.6.1] `_llm_text` — что видит модель. Добавляем хвост с
-        # синтаксической ошибкой (если есть) — модель должна исправить.
         status_line = "Файл создан" if is_new_file else "Файл успешно обновлён"
         llm_text = f"{status_line}: {file_path.name}"
-        if snapshot_status:
-            llm_text += ". Создан Git-снапшот для отката."
-        elif not project_root:
-            llm_text += " (project_root не задан — без Git-снапшота)."
-        else:
-            llm_text += " (Git-снапшот не создан — репозиторий не найден или нет изменений)."
+        if snapshot_id:
+            llm_text += f". Снапшот: {snapshot_id}."
+        if not project_root:
+            llm_text += " (project_root не задан — без снапшота)."
         if syntax_error:
-            logger.warning(f"py_compile {file_path} выявил синтаксическую ошибку")
             llm_text += f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
+        if lsp_errors:
+            preview = "; ".join(
+                f"{e.get('file', '?')}:{e.get('line', '?')} {e.get('message', '')[:120]}"
+                for e in lsp_errors[:5]
+            )
+            llm_text += f"\n\n⚠️ LSP: {len(lsp_errors)} ошибок: {preview}"
 
         return {
             "_llm_text": llm_text,
@@ -401,14 +448,13 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
             "path": str(file_path),
             "is_new_file": is_new_file,
             "original_content": original_content,
-            # [9.8] Полное записанное содержимое — для Monaco DiffEditor
-            # без повторного чтения с диска (файл мог измениться
-            # параллельно, а diff должен показать ровно то, что записал агент).
             "written_content": content,
             "diff": diff_text,
             "lines_added": lines_added,
             "lines_removed": lines_removed,
             "syntax_error": syntax_error,
+            "lsp_errors": lsp_errors,
+            "snapshot_id": snapshot_id,
         }
     except PermissionError:
         return f"Ошибка доступа при записи: {file_path}"
@@ -416,11 +462,331 @@ def write_file(path: str, content: str, project_root: str = "") -> str | dict[st
         return f"Ошибка записи файла: {e}"
 
 
-def _resolve_path(path: str, project_root: str = "") -> Path | None:
+def _resolve_path(path: str, project_root: str = "", *, allow_sensitive: bool = False) -> Path | None:
     """Устаревшая обёртка для обратной совместимости тестов.
 
     Реализация — `core.sandbox.SandboxedPathResolver`. Оставлена, чтобы
     существующие тесты `tests/tools/test_file_ops.py` продолжали
     импортировать это имя. Новый код должен использовать резолвер напрямую.
     """
-    return SandboxedPathResolver(project_root).resolve(path)
+    return SandboxedPathResolver(project_root).resolve(path, allow_sensitive=allow_sensitive)
+
+
+# ---------------------------------------------------------------------------
+# 10.1: apply_patch — правка файла через unified diff
+# ---------------------------------------------------------------------------
+
+# Паттерн для hunk-заголовка: `@@ -1,3 +1,4 @@` или `@@ -1 +1 @@`.
+_HUNK_HEADER_RE = re.compile(
+    r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@",
+)
+
+
+@tool(
+    name="apply_patch",
+    description=(
+        "Применяет unified diff к файлу. Используй для ПРАВОК существующих "
+        "файлов вместо write_file (write_file перезаписывает файл целиком).\n\n"
+        "Формат patch — стандартный unified diff (как в `git diff`):\n"
+        "  --- a/file.py\n"
+        "  +++ b/file.py\n"
+        "  @@ -10,3 +10,3 @@\n"
+        "   context\n"
+        "  -old line\n"
+        "  +new line\n"
+        "   context\n\n"
+        "Обязательно передавай expected_hash из read_file (sha256=... в "
+        "заголовке). Если файл изменился между чтением и правкой — apply_patch "
+        "откажется, чтобы не затереть чужие изменения."
+    ),
+    policy=ToolPolicy.ASK_FIRST,
+    modes=[AgentMode.AGENT],
+    is_mutating=True,
+    category="filesystem",
+    capabilities=["fs.write"],
+    timeout_s=30.0,
+)
+def apply_patch(
+    path: str,
+    patch: str,
+    expected_hash: str = "",
+    project_root: str = "",
+) -> str | dict[str, Any]:
+    """Применяет unified diff к файлу.
+
+    Args:
+        path: Путь к файлу (относительно project_root).
+        patch: Unified diff (может содержать `---/+++` заголовки, они
+            игнорируются; важны hunk'и `@@ ... @@` и строки ` `, `-`, `+`).
+        expected_hash: Ожидаемый sha256 файла (первые 8+ hex из read_file).
+            Если задан и не совпадает с текущим — отказ (stale check).
+            Пустая строка → stale check пропускается (не рекомендуется).
+        project_root: Корень проекта.
+
+    Returns:
+        dict — как у write_file (с ``diff``, ``lines_added``, ``snapshot_id``,
+        ``lsp_errors``), либо строка с ошибкой.
+    """
+    # 1. Резолв и проверки.
+    file_path = SandboxedPathResolver(project_root).resolve(path, allow_sensitive=False)
+    if not file_path:
+        raw = str(path or "").strip()
+        if raw and is_denied_file(Path(raw).name):
+            return f"Ошибка: файл '{Path(raw).name}' заблокирован политикой безопасности (секрет)."
+        return "Ошибка: путь вне допустимой директории"
+
+    if not file_path.exists():
+        return f"Ошибка: файл не найден ({file_path}). Для нового файла используй write_file."
+    if not file_path.is_file():
+        return f"Ошибка: {file_path} не является файлом."
+
+    # 2. Stale check (10.9).
+    from tools.git_ops import file_fingerprint
+
+    fp = file_fingerprint(file_path)
+    if expected_hash and not fp["hash"].startswith(expected_hash):
+        return (
+            f"Ошибка: stale check failed. Файл изменился с момента "
+            f"чтения (expected hash {expected_hash[:8]}, "
+            f"actual {fp['hash'][:8]}). Перечитай файл через "
+            f"read_file и повтори apply_patch с новым expected_hash."
+        )
+
+    # 3. Читаем оригинал.
+    try:
+        original_content = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"Ошибка чтения файла: {e}"
+
+    # 4. Парсим патч и применяем.
+    try:
+        new_content = _apply_unified_diff(original_content, patch)
+    except _PatchError as e:
+        return f"Ошибка применения патча: {e}"
+
+    if new_content == original_content:
+        return {
+            "_llm_text": f"Файл не изменился: {file_path.name}",
+            "status": "no_change",
+            "path": str(file_path),
+            "is_new_file": False,
+            "original_content": original_content,
+            "written_content": original_content,
+            "diff": "",
+            "lines_added": 0,
+            "lines_removed": 0,
+            "syntax_error": "",
+            "lsp_errors": [],
+            "snapshot_id": "",
+        }
+
+    # 5. Снапшот (10.9).
+    snapshot_id = ""
+    if project_root:
+        try:
+            from tools.git_ops import create_file_snapshot
+
+            snapshot_id = create_file_snapshot(
+                [file_path],
+                tool="apply_patch",
+                args_summary=f"{file_path.name} ({len(patch)} chars patch)",
+                project_root=Path(project_root),
+            )
+        except Exception:
+            logger.debug("apply_patch: снапшот не создан", exc_info=True)
+
+    # 6. Запись.
+    try:
+        file_path.write_text(new_content, encoding="utf-8")
+    except OSError as e:
+        return f"Ошибка записи: {e}"
+    logger.info(f"apply_patch: {file_path} ({len(original_content)} → {len(new_content)} chars)")
+
+    # 7. Верификация (py_compile + LSP).
+    syntax_error = _verify_python_syntax(file_path)
+    lsp_errors: list[dict] = []
+    try:
+        from agents.lsp_bridge import LspBridge
+
+        bridge = LspBridge._get_default()
+        if bridge is not None:
+            lsp_errors = bridge.diagnostics(file_path)
+    except Exception:
+        logger.debug("LSP diagnostics unavailable", exc_info=True)
+
+    # 8. Diff и статистика.
+    diff_chunks = list(
+        difflib.unified_diff(
+            original_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=f"a/{file_path.name}",
+            tofile=f"b/{file_path.name}",
+            n=3,
+        )
+    )
+    diff_text = "".join(diff_chunks)
+    lines_added = sum(1 for ln in diff_chunks if ln.startswith("+") and not ln.startswith("+++"))
+    lines_removed = sum(1 for ln in diff_chunks if ln.startswith("-") and not ln.startswith("---"))
+
+    llm_text = f"Файл успешно обновлён через apply_patch: {file_path.name}"
+    if snapshot_id:
+        llm_text += f". Снапшот: {snapshot_id}."
+    if syntax_error:
+        llm_text += f"\n\n⚠️ Синтаксическая ошибка Python (py_compile):\n{syntax_error}"
+    if lsp_errors:
+        preview = "; ".join(
+            f"{e.get('file', '?')}:{e.get('line', '?')} {e.get('message', '')[:120]}" for e in lsp_errors[:5]
+        )
+        llm_text += f"\n\n⚠️ LSP: {len(lsp_errors)} ошибок: {preview}"
+
+    return {
+        "_llm_text": llm_text,
+        "status": "ok",
+        "path": str(file_path),
+        "is_new_file": False,
+        "original_content": original_content,
+        "written_content": new_content,
+        "diff": diff_text,
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
+        "syntax_error": syntax_error,
+        "lsp_errors": lsp_errors,
+        "snapshot_id": snapshot_id,
+    }
+
+
+class _PatchError(Exception):
+    """Ошибка применения патча (контекст не совпал, битый формат)."""
+
+
+def _apply_unified_diff(original: str, patch: str) -> str:
+    """Применяет unified diff к тексту, возвращает результат.
+
+    Поддерживает стандартный формат `git diff` / `diff -u`:
+      * строки-заголовки ``---`` и ``+++`` игнорируются (файл уже открыт);
+      * ``@@ -old_start,old_count +new_start,new_count @@`` — hunk;
+      * `` `` (пробел) — контекст, должен совпасть;
+      * ``-`` — удаляемая строка;
+      * ``+`` — добавляемая строка.
+
+    Ханки применяются последовательно, со сдвигом индекса. Контекст
+    сверяется по точному совпадению — если не совпал, _PatchError.
+
+    Args:
+        original: Оригинальное содержимое.
+        patch: Unified diff.
+
+    Returns:
+        Новое содержимое.
+
+    Raises:
+        _PatchError: Битый формат или несовпадение контекста.
+    """
+    orig_lines = original.splitlines(keepends=True)
+    patch_lines = patch.splitlines(keepends=True)
+    if not patch_lines:
+        raise _PatchError("пустой patch")
+
+    # Результат собираем через «сдвиг»: копим строки до очередного hunk'а
+    # и после него — уже применённые. Индекс в orig_lines — курсор.
+    result: list[str] = []
+    cursor = 0  # позиция в orig_lines (сколько уже «прошло»)
+    i = 0
+    n = len(patch_lines)
+
+    # Пропускаем возможные `---/+++` заголовки.
+    while i < n and not patch_lines[i].startswith("@@"):
+        line = patch_lines[i]
+        if line.startswith(("---", "+++", "diff ", "index ")):
+            i += 1
+            continue
+        # Если до первого hunk'а есть что-то ещё — это ошибка формата.
+        if line.strip() == "":
+            i += 1
+            continue
+        raise _PatchError(f"ожидался hunk @@ ... @@, получено {line!r}")
+
+    while i < n:
+        header = patch_lines[i].rstrip("\r\n")
+        m = _HUNK_HEADER_RE.match(header)
+        if not m:
+            raise _PatchError(f"некорректный hunk-заголовок: {header!r}")
+        old_start = int(m.group(1))
+        i += 1
+
+        # Собираем строки hunk'а до следующего `@@` или до конца.
+        hunk_old: list[str] = []  # ожидаемые строки (context + removed)
+        hunk_new: list[str] = []  # результат (context + added)
+        while i < n:
+            line = patch_lines[i]
+            if line.startswith("@@"):
+                break
+            if line.startswith(("---", "+++", "diff ")):
+                # Заголовок следующего файла — тоже стоп (но у нас один
+                # файл, так что это скорее ошибка).
+                break
+            if line.startswith("\\"):
+                # `\ No newline at end of file` — пропускаем.
+                i += 1
+                continue
+            if not line:
+                # Пустая строка в патче = контекстная пустая строка.
+                hunk_old.append("\n")
+                hunk_new.append("\n")
+                i += 1
+                continue
+            marker = line[0]
+            text = line[1:]
+            if marker == " ":
+                hunk_old.append(text)
+                hunk_new.append(text)
+            elif marker == "-":
+                hunk_old.append(text)
+            elif marker == "+":
+                hunk_new.append(text)
+            else:
+                raise _PatchError(f"неизвестный префикс строки: {line[:40]!r}")
+            i += 1
+
+        # Ищем hunk_old в orig_lines начиная с (old_start - 1).
+        # Стандарт: old_start 1-based. Если hunk пуст — просто вставка.
+        target_idx = max(0, old_start - 1)
+
+        # Допускаем неточное позиционирование: ищем блок в радиусе ±5.
+        found_at = -1
+        search_window = range(max(0, target_idx - 5), min(len(orig_lines), target_idx + 6))
+        for start in search_window:
+            if orig_lines[start : start + len(hunk_old)] == hunk_old:
+                found_at = start
+                break
+        if found_at < 0:
+            # Совсем не нашли — ищем по всему файлу (для патчей, где
+            # old_start устарел).
+            for start in range(len(orig_lines) - len(hunk_old) + 1):
+                if orig_lines[start : start + len(hunk_old)] == hunk_old:
+                    found_at = start
+                    break
+        if found_at < 0:
+            # Диагностика: показываем ожидаемый и реальный контекст.
+            expected = "".join(hunk_old[:3])
+            actual_start = min(target_idx, len(orig_lines))
+            actual = "".join(orig_lines[actual_start : actual_start + 3])
+            raise _PatchError(
+                f"контекст не совпал (hunk at old_start={old_start}).\n"
+                f"Ожидалось:\n{expected}\n"
+                f"Фактически:\n{actual}"
+            )
+
+        # Копируем всё, что было ДО найденного блока, из оригинала.
+        while cursor < found_at:
+            result.append(orig_lines[cursor])
+            cursor += 1
+        # Пропускаем hunk_old в оригинале, вставляем hunk_new.
+        cursor += len(hunk_old)
+        result.extend(hunk_new)
+
+    # Остаток оригинала после последнего hunk'а.
+    while cursor < len(orig_lines):
+        result.append(orig_lines[cursor])
+        cursor += 1
+    return "".join(result)

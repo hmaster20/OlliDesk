@@ -13,6 +13,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ui.chat.threads import _BenchmarkThread
+
 from loguru import logger
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
@@ -49,8 +54,10 @@ class BenchmarkDialog(QDialog):
     def __init__(self, config: AppConfig, parent: QWidget | None = None):
         super().__init__(parent)
         self._config = config
-        self._thread = None
+        # QThread из ui.chat.threads; в _on_start импортируется в рантайме.
+        self._thread: _BenchmarkThread | None = None
         self._last_result: BenchmarkResult | None = None
+        ...
         self._model_checkboxes: dict[str, QCheckBox] = {}
         self._model_specs: dict[str, dict] = {}
 
@@ -216,24 +223,24 @@ class BenchmarkDialog(QDialog):
 
             cfg = load_config()
             found = 0
-            for info in cfg.slm.get_chat_models():
-                if not is_model_installed(info.file):
+            for slm_info in cfg.slm.get_chat_models():
+                if not is_model_installed(slm_info.file):
                     continue
-                path = get_model_path(info.file)
+                path = get_model_path(slm_info.file)
                 if path is None:
                     continue
                 spec = {
-                    "id": info.id,
-                    "name": info.display_name,
+                    "id": slm_info.id,
+                    "name": slm_info.display_name,
                     "provider": "slm",
                     "path": str(path),
                 }
-                self._model_specs[info.id] = spec
-                cb = QCheckBox(f"🖥 {info.display_name}")
-                cb.setToolTip(f"{path.name}\ntier={info.tier}")
+                self._model_specs[slm_info.id] = spec
+                cb = QCheckBox(f"🖥 {slm_info.display_name}")
+                cb.setToolTip(f"{path.name}\ntier={slm_info.tier}")
                 cb.setChecked(True)
                 self.slm_layout.addWidget(cb)
-                self._model_checkboxes[info.id] = cb
+                self._model_checkboxes[slm_info.id] = cb
                 found += 1
             if found == 0:
                 hint = QLabel("(нет установленных SLM-моделей)")
@@ -248,8 +255,8 @@ class BenchmarkDialog(QDialog):
 
             reg = ModelRegistry()
             found = 0
-            for name, info in reg.get_all_models().items():
-                if not info.is_local:
+            for name, ollama_info in reg.get_all_models().items():
+                if not ollama_info.is_local:
                     continue
                 spec = {
                     "id": name,

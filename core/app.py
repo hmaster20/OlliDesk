@@ -1,6 +1,7 @@
 """Инициализация приложения OlliDesk."""
 
 import sys
+from pathlib import Path
 
 from loguru import logger
 from PySide6.QtGui import QColor
@@ -20,47 +21,57 @@ def _check_config_exists() -> bool:
     return (get_app_data_dir() / "config.yaml").exists()
 
 
-def _load_config_or_wizard() -> AppConfig | None:
-    """Загружает конфиг или показывает визард.
-    Returns:
-        AppConfig или None, если визард не был завершён
+def _run_wizard_and_load(config_path: Path) -> AppConfig | None:
+    """Показывает мастер настройки и загружает конфиг после его завершения.
+
+    Вызывается в двух случаях:
+      * файл конфигурации отсутствует (первый запуск / каталог удалён);
+      * файл существует, но невалиден, и пользователь не отключал визард.
+
+    Продолжение запуска приложения возможно ТОЛЬКО после успешного
+    завершения мастера: отмена или падение `load_config()` → ``None``
+    (`OlliDeskApp.run` при этом закрывает приложение с кодом 1).
     """
+    wizard = SetupWizard()
+    if wizard.exec():
+        try:
+            config = load_config()
+            logger.info(f"Конфигурация создана мастером: {config.version}")
+            return config
+        except ConfigError as e:
+            logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
+            return None
+    logger.warning("Мастер настройки отменён пользователем — запуск прекращён")
+    return None
+
+def _run_wizard() -> AppConfig | None:
+    """Показывает мастер настройки и загружает конфиг после его завершения."""
+    wizard = SetupWizard()
+    if wizard.exec():
+        try:
+            return load_config()
+        except ConfigError as e:
+            logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
+            return None
+    logger.warning("Визард отменён пользователем")
+    return None
+
+def _load_config_or_wizard() -> AppConfig | None:
+    """Загружает конфиг или показывает визард первого запуска."""
     config_path = get_app_data_dir() / "config.yaml"
+
+    # Явная проверка: файла нет → первый запуск, показываем мастер.
+    if not config_path.exists():
+        logger.info("Файл конфигурации не найден — первый запуск, показываю визард")
+        return _run_wizard()
 
     try:
         config = load_config()
         logger.info(f"Конфигурация загружена: {config.version}")
         return config
     except ConfigError as e:
-        logger.warning(f"Конфигурация не найдена или невалидна: {e}")
-
-        if _check_config_exists():
-            try:
-                with open(config_path, encoding="utf-8") as f:
-                    import yaml
-
-                    data = yaml.safe_load(f) or {}
-                if data.get("wizard_dismissed"):
-                    logger.info("Визард отключён пользователем, использую конфиг по умолчанию")
-                    return AppConfig(
-                        default_model="qwen2.5-coder:7b",
-                        embed_model="nomic-embed-text",
-                        wizard_dismissed=True,
-                    )
-            except Exception:
-                pass
-
-        logger.info("Запуск визарда для первого запуска...")
-        wizard = SetupWizard()
-        if wizard.exec():
-            try:
-                return load_config()
-            except ConfigError as e2:
-                logger.error(f"Ошибка загрузки конфигурации после визарда: {e2}")
-                return None
-        return None
-
-
+        logger.warning(f"Конфигурация невалидна: {e}")
+        return _run_wizard()
 class OlliDeskApp:
     """Главный класс приложения."""
 
@@ -82,10 +93,21 @@ class OlliDeskApp:
 
         self.app = QApplication(sys.argv)
 
-        # [FIX] Иконка приложения — до создания любых окон, иначе
-        # SetupWizard (в _load_config_or_wizard) откроется без неё.
-        # QApplication.setWindowIcon распространяется на все QDialog
-        # (QMessageBox, QFileDialog, наши *Dialog) автоматически.
+        from PySide6.QtCore import QLibraryInfo, QTranslator
+
+        # Русификация встроенных диалогов Qt (QFileDialog, кнопки QMessageBox и т.п.).
+        # PySide6 поставляется с переводами в PySide6/translations.
+        self._translator = QTranslator(self.app)
+        if self._translator.load(
+            "qtbase_ru",
+            QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
+        ):
+            self.app.installTranslator(self._translator)
+        else:
+            logger.debug("Перевод qtbase_ru не найден — стандартные диалоги Qt останутся английскими")
+
+        # Иконка приложения — до создания любых окон, иначе SetupWizard (в _load_config_or_wizard) откроется без неё.
+        # QApplication.setWindowIcon распространяется на все QDialog (QMessageBox, QFileDialog, *Dialog) автоматически.
         icon = get_app_icon()
         if icon is not None:
             self.app.setWindowIcon(icon)
@@ -94,25 +116,23 @@ class OlliDeskApp:
         self.app.setApplicationName("OlliDesk")
         self.app.setOrganizationName("OlliDesk")
 
+        initial_data_dir = get_app_data_dir()
         self.config = _load_config_or_wizard()
         if self.config is None:
             logger.error("Визард отменён пользователем")
             return 1
 
+        # Визард мог сменить каталог данных — переинициализируем
+        # логгер, чтобы логи писались уже в новый каталог.
+        if get_app_data_dir() != initial_data_dir:
+            logger.remove()
+            setup_logger(get_app_data_dir() / "logs", level="INFO")
+            logger.info(f"Каталог данных изменён визардом: {get_app_data_dir()}")
+
         self._apply_theme(self.config.theme)
 
         self.main_window = MainWindow(self.config)
 
-        # [FIX] last_model — это имя модели Ollama. Применять его к ChatPanel
-        # имеет смысл только когда Ollama разрешена в backends.enabled.
-        # Иначе:
-        #   * combo моделей скрыт (`_update_model_selector_visibility`),
-        #   * сам combo получает «фантомное» значение 7B,
-        #   * при любом mode_changed `_on_chat_settings_changed` перетирает
-        #     last_model ещё раз — и в config.yaml навсегда оседает 7B,
-        #     хотя реально грузится SLM `qwen2.5-3b-instruct-q4_k_m`.
-        # Правильно: применять last_model только когда Ollama активна,
-        # и логировать одну понятную строку, если проигнорировали.
         ollama_enabled = "ollama" in self.config.backends.enabled
 
         if self.config.last_model and ollama_enabled:
@@ -127,8 +147,10 @@ class OlliDeskApp:
 
         if self.config.last_mode:
             logger.info(f"Применяю last_mode={self.config.last_mode}")
-            # 2.4: публичный API вместо прямого доступа к mode_combo.
             self.main_window.chat_panel.set_mode_by_name(self.config.last_mode)
+
+        # Сигнал из BackendsMixin._detect_and_load_slm: первый запуск / нет конфига
+        self.main_window.chat_panel.wizard_requested.connect(self._run_wizard)
 
         self.main_window.theme_changed.connect(self._on_theme_changed)
         self.main_window.showMaximized()
@@ -137,7 +159,7 @@ class OlliDeskApp:
         return self.app.exec()
 
     def _apply_theme(self, theme: str) -> None:
-        """[9.1] Применяет тему из дизайн-системы (ui.theme).
+        """Применяет тему из дизайн-системы (ui.theme).
 
         Палитра и QSS приходят из одного источника — `get_colors` и
         `get_stylesheet`. Дублирование цветов из QSS в палитре убрано.
@@ -171,6 +193,24 @@ class OlliDeskApp:
         from core.config import save_config
 
         save_config(self.config)
+
+
+    def _run_wizard(self) -> None:
+        """Показывает мастер настройки по запросу из ChatPanel (первый запуск, нет моделей)."""
+        logger.info("Запуск визарда по запросу из ChatPanel...")
+        wizard = SetupWizard()
+        if wizard.exec():
+            try:
+                config = load_config()
+                logger.info(f"Конфигурация обновлена после визарда: {config.version}")
+                # Перезагружаем конфиг в MainWindow/ChatPanel, чтобы они подхватили
+                # новые модели/бэкенды без перезапуска приложения.
+                if self.main_window is not None:
+                    self.main_window.chat_panel.reload_slm()
+            except Exception as e:
+                logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
+        else:
+            logger.warning("Визард отменён пользователем")
 
 
 def main() -> int:

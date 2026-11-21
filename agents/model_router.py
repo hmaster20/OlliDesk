@@ -2,7 +2,6 @@
 
 from collections.abc import AsyncIterator
 from enum import Enum, auto
-from typing import Any
 
 from loguru import logger
 

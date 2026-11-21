@@ -19,17 +19,21 @@ ChatPanel.__init__ явно.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import QLabel
 
 from agents.download_slm import get_model_paths
 from agents.local_llm_client import LocalLLMClient
+from agents.model_pool import Role
 from agents.model_router import BackendType, ModelRouter
 from agents.ollama_client import OllamaClient
+from core.event_bus import emit_event
+from core.events import EventKind
 from ui.chat.threads import (
     _OllamaCheckThread,
     _SLMDownloadThread,
@@ -37,27 +41,32 @@ from ui.chat.threads import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from agents.model_pool import ModelPool
+    from agents.orchestrator import Orchestrator
+    from core.services.model_service import ModelService
 
 
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
 
-    # ------------------------------------------------------------------
-    # Поля, предоставляемые ChatPanel (class-level для mypy).
-    # ------------------------------------------------------------------
     _router: ModelRouter
     _ollama_client: OllamaClient
     _slm_client: LocalLLMClient | None
     _slm_loading: bool
+    _model_service: ModelService
+    _slm_model_id: str
     _slm_model_name: str
     _slm_load_generation: int
     _slm_load_thread: _SLMLoadThread | None
     _slm_download_thread: _SLMDownloadThread | None
     _ollama_check_thread: _OllamaCheckThread | None
-
+    _orchestrator: Orchestrator | None
+    _model_pool: ModelPool | None
     status_label: QLabel
-    backend_status_changed: Signal
+    backend_status_changed: Any  # Signal(str)
+    wizard_requested: Any
+    _update_model_selector_visibility: Callable[[], None]
+    get_current_model: Callable[[], str]
 
     # ------------------------------------------------------------------
     # Публичный API: перезагрузка SLM
@@ -106,13 +115,18 @@ class BackendsMixin:
                 уже записанный в конфиге ``slm.selected_model``. Нужно после
                 явного выбора модели пользователем в ``SLMModelsDialog``.
         """
+        from core.utils import get_app_data_dir
+
+        # Если это первый запуск (конфиг еще не создан), эмитим сигнал для показа Wizard
+        config_path = get_app_data_dir() / "config.yaml"
+        if not config_path.exists():
+            self.wizard_requested.emit()
+            return
         from agents.slm_optimizer import optimize
         from agents.slm_selector import select_best_model
 
         try:
-            from core.config import load_config
-
-            cfg = load_config()
+            cfg = self._model_service.reload_config()
         except Exception as e:
             logger.warning(f"Не удалось прочитать конфиг для автовыбора SLM: {e}")
             cfg = None
@@ -152,7 +166,18 @@ class BackendsMixin:
         chat_path, embed_path = get_model_paths()
         if not chat_path:
             if self._config_slm_enabled():
-                self._download_and_load_slm()
+                # ИСПРАВЛЕНИЕ: Убираем автоматическое скачивание!
+                # self._download_and_load_slm()
+                logger.warning(
+                    "Локальная SLM-модель не найдена в каталоге. "
+                    "Автоматическое скачивание отключено. "
+                    "Пожалуйста, запустите Мастер настройки или используйте "
+                    "меню «Вид → Локальные модели (SLM)» для загрузки."
+                )
+                self.status_label.setText("⚠️ SLM не найдена. Требуется настройка.")
+                self._router.set_slm_available(False)
+                self._emit_backend_status()
+                # Здесь можно эмитить сигнал для показа Wizard, если это первый запуск
             return
 
         params = None
@@ -196,9 +221,8 @@ class BackendsMixin:
     def _detect_backends(self) -> None:
         """Определяет доступность бэкендов, уважая whitelist.
 
-        Ollama проверяется только если пользователь его явно включил в
-        настройках. Иначе приложение не отправляет ни одного HTTP-запроса
-        на localhost:11434.
+        Ollama проверяется только если пользователь его явно включил в настройках.
+        Иначе приложение не отправляет ни одного HTTP-запроса на localhost:11434.
         """
         ollama_enabled = False
         try:
@@ -212,7 +236,7 @@ class BackendsMixin:
         if ollama_enabled:
             self._check_ollama_async()
         else:
-            logger.info("Ollama не в enabled-списке — пропускаю проверку и автоактивацию")
+            logger.debug("Ollama не в enabled-списке — пропускаю проверку и автоактивацию")
             self._router.set_ollama_available(False)
 
         self._detect_and_load_slm()
@@ -222,9 +246,16 @@ class BackendsMixin:
         """Человекочитаемое имя активного бэкенда (для UI)."""
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
-            # get_current_model — метод ChatPanel.
-            return f"🌐 Ollama · {self.get_current_model()}"  # type: ignore[attr-defined]
+            return f"🌐 Ollama · {self.get_current_model()}"
         if backend == BackendType.LOCAL_SLM:
+            pool = self._model_pool
+            if self._orchestrator is not None and pool is not None:
+                try:
+                    p = pool.spec(Role.PLANNER).model_id.split(".gguf")[0][:15]
+                    a = pool.spec(Role.ANALYST).model_id.split(".gguf")[0][:15]
+                    return f"🖥 SLM · P:{p} A:{a}"
+                except Exception:
+                    pass
             name = self._slm_model_name or "локальная модель"
             return f"🖥 Локально · {name}"
         if backend == BackendType.RULE_BASED:
@@ -272,6 +303,8 @@ class BackendsMixin:
         self._slm_client = client
         if not self._slm_model_name:
             self._slm_model_name = Path(client.model_path).stem
+        if not self._slm_model_id:
+            self._slm_model_id = Path(client.model_path).stem
         self._router.set_local_slm(client)
         self._router.set_slm_available(True)
         self._slm_loading = False
@@ -281,6 +314,15 @@ class BackendsMixin:
         self._emit_backend_status()
         # _update_pipeline_status — из ResearchMixin.
         self._update_pipeline_status()  # type: ignore[attr-defined]
+
+        # 2.5: событие «SLM загружена».
+        emit_event(
+            EventKind.SLM_LOADED.value,
+            {
+                "model_id": self._slm_model_id,
+                "load_ms": round(float(getattr(client, "load_ms", 0.0) or 0.0), 2),
+            },
+        )
 
     def _load_slm_async(
         self,
@@ -318,11 +360,32 @@ class BackendsMixin:
             info = slm.get_selected_info()
             if info is not None:
                 self._slm_model_name = info.display_name
+                self._slm_model_id = info.id
         except Exception as e:
             logger.debug(f"Не удалось прочитать SLM-параметры из конфига: {e}")
 
         self._slm_loading = True
         self.status_label.setText(f"⏳ Загрузка {self._slm_model_name or chat_path.name}...")
+
+        # 2.5: событие «началась загрузка SLM».
+        emit_event(
+            EventKind.SLM_LOADING.value,
+            {
+                "model_id": self._slm_model_id or chat_path.name,
+                "path": str(chat_path),
+            },
+        )
+
+        # [UI-2025] is_thinking — из выбранной модели (для парсера <think>).
+        selected_info = None
+        try:
+            from core.config import load_config as _load_cfg
+
+            _cfg = _load_cfg()
+            selected_info = _cfg.slm.get_selected_info()
+        except Exception:
+            pass
+        is_thinking = bool(selected_info.is_thinking) if selected_info else False
 
         self._slm_load_thread = _SLMLoadThread(
             chat_path,
@@ -333,6 +396,7 @@ class BackendsMixin:
             n_gpu_layers=n_gpu_layers,
             max_tokens=max_tokens,
             params=params,
+            is_thinking=is_thinking,
         )
         self._slm_load_thread.finished.connect(
             lambda client, gen=generation: self._on_slm_loaded(client, gen)
@@ -402,6 +466,15 @@ class BackendsMixin:
         self._slm_loading = False
         logger.error(f"Ошибка загрузки SLM: {error_msg}")
         self.status_label.setText(f"⚠️ SLM недоступна: {error_msg}")
+
+        # 2.5: событие «SLM не загрузилась».
+        emit_event(
+            EventKind.SLM_FAILED.value,
+            {
+                "model_id": self._slm_model_id or "?",
+                "error": error_msg,
+            },
+        )
 
     def _on_slm_downloaded(
         self,
