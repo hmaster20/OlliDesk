@@ -15,10 +15,9 @@ class ModelInfo(BaseModel):
     name: str
     description: str = "Пользовательская модель. Отредактируйте описание в model_registry.yaml"
     recommended_modes: list[str] = Field(default_factory=lambda: ["chat"])
-    supports_tools: bool | None = None  # None = неизвестно, True/False = проверено
+    supports_tools: bool | None = None
     last_checked: str | None = None
-    is_local: bool = False  # Скачана ли модель в Ollama
-
+    is_local: bool = False
 
 class ModelRegistry:
     """Управляет справочником моделей и их локальным статусом."""
@@ -35,6 +34,7 @@ class ModelRegistry:
             return
         # C:\Users\<USERNAME>\.ollidesk\model_registry.yaml
         self.file_path = get_app_data_dir() / "model_registry.yaml"
+        # Явная инициализация для предотвращения AttributeError
         self.models: dict[str, ModelInfo] = {}
         self._load_or_create()
 
@@ -56,42 +56,12 @@ class ModelRegistry:
         """Создает файл с дефолтным справочником популярных моделей."""
         logger.info("Создаю дефолтный справочник моделей (model_registry.yaml)")
         defaults = {
-            "qwen2.5-coder:7b": ModelInfo(
-                name="Qwen 2.5 Coder 7B",
-                description="Отличная сбалансированная модель для написания и рефакторинга кода. Быстрая и эффективная.",
-                recommended_modes=["chat", "plan", "agent"],
-                supports_tools=True,
-            ),
-            "qwen2.5-coder:32b": ModelInfo(
-                name="Qwen 2.5 Coder 32B",
-                description="Продвинутая версия для сложных архитектурных задач и рефакторинга больших файлов.",
-                recommended_modes=["plan", "agent"],
-                supports_tools=True,
-            ),
-            "llama3.1:70b": ModelInfo(
-                name="Llama 3.1 70B",
-                description="Мощная коммерческая модель для сложных логических задач и агентных сценариев. Требует ~40-60 ГБ RAM.",
-                recommended_modes=["agent", "plan"],
-                supports_tools=True,
-            ),
-            "qwen2.5:72b": ModelInfo(
-                name="Qwen 2.5 72B",
-                description="Одна из лучших открытых моделей общего назначения. Идеальна для глубокого анализа кода.",
-                recommended_modes=["agent", "plan", "chat"],
-                supports_tools=True,
-            ),
-            "deepseek-r1:70b": ModelInfo(
-                name="DeepSeek R1 Distill Llama 70B",
-                description="Продвинутая модель с цепочкой рассуждений (Reasoning). Идеальна для тяжелых логических задач и планирования.",
-                recommended_modes=["plan", "agent"],
-                supports_tools=True,
-            ),
-            "command-r-plus": ModelInfo(
-                name="Command R+ (104B)",
-                description="Огромная модель, отлично справляется с RAG и сложными агентными workflows. Требует ~60+ ГБ RAM.",
-                recommended_modes=["agent"],
-                supports_tools=True,
-            ),
+            "qwen2.5-coder:7b": ModelInfo(name="Qwen 2.5 Coder 7B", description="Отличная сбалансированная модель для кода.", recommended_modes=["chat", "plan", "agent"], supports_tools=True),
+            "qwen2.5-coder:32b": ModelInfo(name="Qwen 2.5 Coder 32B", description="Продвинутая версия для сложных задач.", recommended_modes=["plan", "agent"], supports_tools=True),
+            "llama3.1:70b": ModelInfo(name="Llama 3.1 70B", description="Мощная модель для сложных логических задач.", recommended_modes=["agent", "plan"], supports_tools=True),
+            "qwen2.5:72b": ModelInfo(name="Qwen 2.5 72B", description="Одна из лучших открытых моделей общего назначения.", recommended_modes=["agent", "plan", "chat"], supports_tools=True),
+            "deepseek-r1:70b": ModelInfo(name="DeepSeek R1 Distill Llama 70B", description="Модель с цепочкой рассуждений.", recommended_modes=["plan", "agent"], supports_tools=True),
+            "command-r-plus": ModelInfo(name="Command R+ (104B)", description="Отлично справляется с RAG.", recommended_modes=["agent"], supports_tools=True),
         }
         self.models = defaults
         self.save()
@@ -111,16 +81,9 @@ class ModelRegistry:
         ollama_set = set(ollama_model_names)
         for key in self.models:
             self.models[key].is_local = key in ollama_set
-        # Добавляем новые из Ollama, которых нет в справочнике
         for name in ollama_set:
             if name not in self.models:
-                self.models[name] = ModelInfo(
-                    name=name,
-                    description="Модель добавлена из Ollama. Вы можете отредактировать её описание в model_registry.yaml",
-                    recommended_modes=["chat"],
-                    supports_tools=None,
-                    is_local=True,
-                )
+                self.models[name] = ModelInfo(name=name, description="Модель добавлена из Ollama.", recommended_modes=["chat"], supports_tools=None, is_local=True)
         self.save()
 
     def get(self, model_name: str) -> ModelInfo | None:
