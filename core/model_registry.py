@@ -1,5 +1,10 @@
-"""Реестр моделей: справочник с описаниями и кэш возможностей."""
+"""Реестр Ollama-моделей: справочник с описаниями и кэш возможностей.
 
+Относится только к бэкенду Ollama (SLM-модели живут в slm_models.yaml).
+Когда Ollama выключена в backends.enabled, объект всё равно полностью
+сконструирован и пригоден к использованию (пустой in-memory справочник),
+но не читает, не создаёт и не сохраняет model_registry.yaml.
+"""
 from datetime import datetime
 
 import yaml
@@ -19,24 +24,35 @@ class ModelInfo(BaseModel):
     last_checked: str | None = None
     is_local: bool = False
 
+
 class ModelRegistry:
-    """Управляет справочником моделей и их локальным статусом."""
+    """Управляет справочником Ollama-моделей и их локальным статусом.
+
+    Инвариант: после __init__ ВСЕГДА существуют self.models и self.file_path.
+    Ранний return до инициализации полей ломал SLM-only конфигурацию
+    (AttributeError в ChatPanel._update_model_list).
+    """
 
     def __init__(self) -> None:
+        # 1. Полная конструкция объекта — без ранних return.
+        self.file_path = get_app_data_dir() / "model_registry.yaml"
+        self.models: dict[str, ModelInfo] = {}
+        # 2. Только I/O зависит от того, включена ли Ollama.
+        if self._ollama_enabled():
+            self._load_or_create()
+        else:
+            logger.debug("Ollama выключена — model_registry.yaml не читается и не создаётся")
+
+    @staticmethod
+    def _ollama_enabled() -> bool:
+        """Ollama в backends.enabled? Ошибка чтения конфига не роняет объект."""
         try:
             from core.config import load_config
-            cfg = load_config()
-            if "ollama" not in cfg.backends.enabled:
-                logger.debug("Ollama не активна в бэкендах — пропуск сохранения model_registry.yaml")
-                return
+
+            return "ollama" in load_config().backends.enabled
         except Exception as e:
-            logger.warning(f"Не удалось проверить бэкенды перед сохранением реестра: {e}")
-            return
-        # C:\Users\<USERNAME>\.ollidesk\model_registry.yaml
-        self.file_path = get_app_data_dir() / "model_registry.yaml"
-        # Явная инициализация для предотвращения AttributeError
-        self.models: dict[str, ModelInfo] = {}
-        self._load_or_create()
+            logger.warning(f"Не удалось проверить бэкенды для реестра моделей: {e}")
+            return False
 
     def _load_or_create(self) -> None:
         if self.file_path.exists():
@@ -67,6 +83,9 @@ class ModelRegistry:
         self.save()
 
     def save(self) -> None:
+        # Проверяем динамически: Ollama могли выключить уже после создания реестра.
+        if not self._ollama_enabled():
+            return
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             data = {"models": {k: v.model_dump() for k, v in self.models.items()}}
@@ -77,13 +96,26 @@ class ModelRegistry:
             logger.error(f"Ошибка сохранения model_registry.yaml: {e}")
 
     def sync_with_ollama(self, ollama_model_names: list[str]) -> None:
-        """Обновляет флаг is_local и добавляет неизвестные Ollama модели в реестр."""
+        """Обновляет флаг is_local и добавляет неизвестные Ollama-модели.
+
+        Вызывается только при реальном подключении к Ollama. Если реестр
+        пуст (Ollama была выключена на старте и включена в этой сессии) —
+        сначала подгружаем справочник, чтобы модели получили описания.
+        """
+        if not self.models:
+            self._load_or_create()
         ollama_set = set(ollama_model_names)
         for key in self.models:
             self.models[key].is_local = key in ollama_set
         for name in ollama_set:
             if name not in self.models:
-                self.models[name] = ModelInfo(name=name, description="Модель добавлена из Ollama.", recommended_modes=["chat"], supports_tools=None, is_local=True)
+                self.models[name] = ModelInfo(
+                    name=name,
+                    description="Модель добавлена из Ollama.",
+                    recommended_modes=["chat"],
+                    supports_tools=None,
+                    is_local=True,
+                )
         self.save()
 
     def get(self, model_name: str) -> ModelInfo | None:
