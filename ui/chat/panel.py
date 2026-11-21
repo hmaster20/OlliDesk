@@ -68,7 +68,7 @@ from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
 from core.event_bus import emit_event
 from core.events import EventKind
-from core.model_registry import ModelInfo, ModelRegistry
+from core.model_registry import ModelRegistry
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
 from core.security import SecurityPolicy
@@ -86,6 +86,7 @@ from ui.chat.message_item import (
     ChatMessageItem,
     ChatSourcesItem,
 )
+from ui.chat.ollama_models import OllamaModelsMixin
 from ui.chat.reasoning_panel import ReasoningPanel
 from ui.chat.research import ResearchMixin
 from ui.chat.research_passport import ChatResearchPassport
@@ -197,12 +198,14 @@ def read_project_rules(project_root: str | None) -> str:
     return ""
 
 
-class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
+class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     """Панель чата с сообщениями, вводом и управлением.
 
-    Логика управления SLM/Ollama вынесена в `BackendsMixin`(`ui/chat/backends.py`),
-    research-режим и двухмодельный пайплайн - в `ResearchMixin` (`ui/chat/research.py`).
-    Все поля для миксинов по-прежнему инициализируются здесь в `__init__`;
+    Логика управления SLM/Ollama вынесена в `BackendsMixin` (`ui/chat/backends.py`),
+    Ollama-селектор моделей (combo/реестр/статусы/tools-guard) — в
+    `OllamaModelsMixin` (`ui/chat/ollama_models.py`), research-режим и
+    двухмодельный пайплайн — в `ResearchMixin` (`ui/chat/research.py`).
+    Все поля для миксинов по-прежнему инициализируются здесь, в `__init__`;
     миксины обращаются к ним через `self`.
     """
 
@@ -1481,24 +1484,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
         self.mode_combo.setToolTip(_MODE_DESCRIPTIONS.get(index, ""))
-
-        if index > 0 and self.registry:
-            model_name = self.get_current_model()
-            cap = self.registry.get(model_name)
-
-            if cap and not cap.supports_tools:
-                self.mode_combo.blockSignals(True)
-                self.mode_combo.setCurrentIndex(0)
-                self.mode_combo.blockSignals(False)
-
-                QMessageBox.warning(
-                    self,
-                    "Режим недоступен",
-                    f"Модель '{model_name}' не поддерживает инструменты.\n"
-                    "Используйте модели с пометкой ✅ Agent/Plan.",
-                )
-                return
-
+        # Ollama-ограничение по tools живёт в OllamaModelsMixin.
+        if self._ollama_mode_guard(index):
+            return
         self.mode_changed.emit(mode)
         self._emit_settings_changed()
 
@@ -2182,11 +2170,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_assistant_content = ""
         self._current_thinking_content = ""
 
-        model_name = self.get_current_model()
         registry = self._build_registry(mode)
         self._agent_thread = AgentChatThread(
             client=client,
-            registry=self._build_registry(mode),
+            registry=registry,
             model=model_name,
             context=context,
             messages_history=list(self._messages),
@@ -2919,7 +2906,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         return out
 
     def _maybe_collapse_old_messages(self) -> None:
-        """[9.10] Сворачивает самые старые сообщения при превышении порога.
+        """Сворачивает самые старые сообщения при превышении порога.
 
         Вызывается после добавления нового виджета. Порог —
         `_MAX_VISIBLE_MESSAGE_WIDGETS`; сверху добавляется
@@ -2929,27 +2916,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         messages = self._message_widgets()
         if len(messages) <= _MAX_VISIBLE_MESSAGE_WIDGETS:
             return
-
-        # Сколько свернуть: всё, что превышает порог, + буфер.
         over = len(messages) - _MAX_VISIBLE_MESSAGE_WIDGETS
         to_collapse_count = over + _COLLAPSE_BUFFER
-
-        # Берём самые старые (в начале layout).
         to_collapse = messages[:to_collapse_count]
         if not to_collapse:
             return
 
-        # Индекс в layout, с которого начинается группа (первый из to_collapse).
         start_idx = to_collapse[0][0]
-
-        # Отсоединяем виджеты из layout и скрываем.
         collapsed_widgets: list[QWidget] = []
         for _idx, widget in to_collapse:
             self.scroll_layout.removeWidget(widget)
             widget.setVisible(False)
             collapsed_widgets.append(widget)
 
-        # Вставляем placeholder на место первого свёрнутого виджета.
         placeholder = CollapsedPlaceholder(collapsed_widgets, parent=self.scroll_content)
         placeholder.restore_requested.connect(self._on_restore_collapsed)
         self.scroll_layout.insertWidget(start_idx, placeholder)
@@ -2962,46 +2941,33 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(object)
     def _on_restore_collapsed(self, placeholder) -> None:
-        """[9.10] Пользователь кликнул по placeholder — разворачиваем порцию."""
+        """Пользователь кликнул по placeholder — разворачиваем порцию."""
         if not isinstance(placeholder, CollapsedPlaceholder):
             return
         self._restore_placeholder_batch(placeholder)
 
     def _restore_placeholder_batch(self, placeholder: CollapsedPlaceholder) -> None:
-        """Разворачивает `_RESTORE_BATCH` последних свёрнутых виджетов.
-
-        Вставляет их в layout СРАЗУ ПОСЛЕ placeholder'а — так хронология
-        сохраняется: placeholder (более старые) → следующие за ним
-        (более свежие, которые только что развернули).
-
-        Если `placeholder.collapsed_count == 0` — placeholder удаляется.
-        """
-        # Позиция placeholder'а в layout.
+        """Разворачивает `_RESTORE_BATCH` последних свёрнутых виджетов."""
         try:
             idx = self.scroll_layout.indexOf(placeholder)
         except Exception:
             idx = -1
         if idx < 0:
-            logger.debug("[9.10] Placeholder не найден в layout — пропускаем")
+            logger.debug("Placeholder не найден в layout — пропускаем")
             return
 
         widgets = placeholder.pop_restore_batch(_RESTORE_BATCH)
         if not widgets:
-            # Нечего разворачивать — удаляем placeholder.
             self.scroll_layout.removeWidget(placeholder)
             placeholder.deleteLater()
             if placeholder in self._collapsed_placeholders:
                 self._collapsed_placeholders.remove(placeholder)
             return
 
-        # Вставляем виджеты после placeholder'а, сохраняя их хронологический
-        # порядок: widgets[0] — самый старый из порции, widgets[-1] — самый свежий.
         insert_at = idx + 1
         for offset, widget in enumerate(widgets):
             self.scroll_layout.insertWidget(insert_at + offset, widget)
             widget.setVisible(True)
-            # Обновляем максимальную ширину пузыря (на случай ресайза окна,
-            # пока виджет был скрыт).
             if isinstance(widget, ChatMessageItem):
                 self._update_bubble_width(widget)
 
@@ -3014,25 +2980,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self.scroll_area.scroll_to_bottom_if_sticky()
         logger.debug(
-            f"[9.10] Развёрнуто {len(widgets)} сообщений, осталось свёрнутых: {placeholder.collapsed_count}"
+            f"Развёрнуто {len(widgets)} сообщений, осталось свёрнутых: {placeholder.collapsed_count}"
         )
 
     def _expand_all_collapsed(self) -> None:
-        """[9.10] Разворачивает все placeholder'ы (для «Показать всё»).
+        """Разворачивает все placeholder'ы (для «Показать всё»).
 
         Не используется в UI напрямую, но полезно для палитры команд /
         отладки. Проходит по списку placeholder'ов и разворачивает
         каждый до конца.
         """
-        # Копируем список — `_restore_placeholder_batch` может удалять
-        # элементы из `_collapsed_placeholders` при полном развороте.
         for placeholder in list(self._collapsed_placeholders):
             while placeholder.collapsed_count > 0:
                 self._restore_placeholder_batch(placeholder)
-
-    # ------------------------------------------------------------------
-    # [9.5.4] Индикатор активности
-    # ------------------------------------------------------------------
 
     _ACTIVITY_ICONS = {
         "idle": "💤",
@@ -3050,8 +3010,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         "error": "Ошибка",
         "cancelled": "Остановлено",
     }
-    # [9.5.4] Цвет фона кнопки Stop по состоянию. Кнопка остаётся «■»
-    # (привычный Stop), но цвет фона подсказывает, что происходит.
     _STOP_BUTTON_BG = {
         "idle": "#d32f2f",  # обычный Stop
         "thinking": "#d4a373",  # янтарный — «думает»
@@ -3062,8 +3020,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     }
 
     def _set_activity_state(self, state: str, detail: str = "") -> None:
-        """[9.5.4] Единый индикатор активности.
-
+        """Единый индикатор активности.
         Меняет:
           * текст `status_label` (эмодзи + подпись + detail);
           * tooltip кнопки Stop/Отправить;
@@ -3077,13 +3034,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
         self._activity_state = state
         self.status_label.setText(full)
-
-        # 2.5: пульсация в StatusDashboard.
         if self._dashboard is not None:
             self._dashboard.set_activity_state(state)
 
         if self._generating:
-            # Кнопка Stop: ■ + фон по состоянию.
             self.send_btn.setText("■")
             bg = self._STOP_BUTTON_BG.get(state, "#d32f2f")
             self.send_btn.setStyleSheet(
@@ -3092,7 +3046,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
             self.send_btn.setToolTip(f"{full}\nНажмите, чтобы остановить")
         else:
-            # Вне генерации кнопка — «Отправить», фон синий.
             self.send_btn.setText("▶ Отправить")
             self.send_btn.setStyleSheet(
                 "font-size: 14px; padding: 8px 20px; background: #1976d2;"
@@ -3101,12 +3054,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
 
     def _build_assistant_message(self, *, fallback_text: str = "") -> ChatMessage:
-        """Собирает ChatMessage из накопленных частей текущего ответа (0.1.3b).
-
-        Reasoning добавляется первым, чтобы модель и UI видели его до текста
-        (порядок важен для воспроизведения истории). Tool-call/result-части
-        идут в порядке реального выполнения.
-
+        """Собирает ChatMessage из накопленных частей текущего ответа.
+        Reasoning добавляется первым, чтобы модель и UI видели его до текста.
+        Tool-call/result-части идут в порядке реального выполнения.
         Args:
             fallback_text: Что подставить, если буферы пусты (например,
                 модель вернула только финальный текст без стрима — на
@@ -3129,19 +3079,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str)
     def _on_agent_finish(self, result: str):
-        # 4.8.B: свернуть reasoning в последнем пузыре — модель закончила.
         if self._last_assistant_widget is not None:
             self._last_assistant_widget.finalize()
-
-        # --- Research-режим: паспорт с выводами, без обычного пузыря ---
         if self._research_mode_active and not self._research_cancelled:
             summary = self._last_research_summary
             final_text = self._pending_final_answer
             if summary:
                 summary["final_answer"] = final_text
-                # Если финального текста нет — добавляем явную плашку.
-                # Раньше паспорт показывался с пустым разделом «Выводы»,
-                # и пользователь не понимал, что произошло.
                 if not (summary["final_answer"] or "").strip():
                     reason = (result or "").strip() or "финальный синтез не был сформирован"
                     summary["final_answer"] = (
@@ -3154,16 +3098,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if self._should_show_passport(summary):
                     self._show_research_passport(summary)
 
-            # 0.1.3b/c: в research-режиме тоже сохраняем ответ в сессию,
-            # иначе после перезагрузки пользователь видел только паспорт,
-            # а reasoning/tool-calls/финальный текст пропадали.
             if final_text and self._session_id:
                 assistant_message = self._build_assistant_message(fallback_text=final_text)
                 self._messages.append(assistant_message)
                 self.session_store.save_message(self._session_id, assistant_message)
 
-            # [UI-2024] Паспорт показываем не только в research, но и в Agent/Plan,
-            # если есть evidence (файлы/гипотезы/поиски).
             if (
                 self._last_research_summary is not None
                 and self._last_assistant_widget is not None
@@ -3184,20 +3123,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._research_mode_active = False
             return
 
-        # --- Обычный режим: как раньше, но через _build_assistant_message ---
         if result and result != "Отменено":
             assistant_message = self._build_assistant_message(fallback_text=result)
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
-            # [9.5.3] В Chat-режиме (без трейса) — плоский activity.
-            # В Agent/Plan трейс уже показывает ход; финальный статус
-            # выставит `_reset_send_button` → idle.
             if self._current_thought_stream is None:
                 self._show_activity("✅ Готово")
-
-        # [UI-2024] Паспорт показываем не только в research, но и в Agent/Plan,
-        # если есть evidence (файлы/гипотезы/поиски).
         if (
             self._last_research_summary is not None
             and self._last_assistant_widget is not None
@@ -3212,7 +3144,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._current_assistant_text = ""
         self._current_assistant_reasoning = ""
         self._last_assistant_widget = None
-        # [9.5.3] Ссылку сбрасываем, но виджет трейса остаётся в ленте.
         self._current_thought_stream = None
         self._pending_final_answer = ""
         self._last_research_summary = None
@@ -3221,9 +3152,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _reset_send_button(self):
         self._generating = False
         self.input_edit.setEnabled(True)
-        # [9.5.7] Сбрасываем ссылку на активную карточку.
         self._active_tool_card = None
-        # [9.5.4] Единая точка: idle ставит и текст, и фон, и tooltip.
         self._set_activity_state("idle")
 
     def _set_button_stop(self) -> None:
@@ -3258,7 +3187,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(str)
     def _on_agent_error(self, error_msg: str):
-        # Помечаем серый поток как прерванный, если он был.
         if self._current_thought_stream is not None:
             self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
         # [2.12] inbox: fail.
@@ -3270,14 +3198,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             finally:
                 self._current_inbox_id = None
                 self._sync_inbox_indicator()
-        # [9.5.4] Индикатор: ошибка (короткий detail).
         self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(f"Ошибка: {error_msg[:200]}", is_error=True)
             self._active_tool_card = None
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
-        # _reset_send_button ставит idle — явно выставим error после.
         self._set_activity_state("error", error_msg[:60])
         self._current_assistant_parts = []
         self._current_assistant_text = ""
@@ -3292,8 +3218,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """[2.10] Hard ceiling достигнут (safety net, а не «лимит»)."""
         self._reset_research_state()
         self._reset_send_button()
-        # [2.12] inbox: hard ceiling — запрос завершён «failed»,
-        # следующий запрос будет новой записью.
         if self._inbox is not None and self._current_inbox_id:
             try:
                 self._inbox.fail(self._current_inbox_id, "iteration_limit")
@@ -3314,7 +3238,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _continue_unlimited(self) -> None:
-        """[2.10] «Продолжить до результата»: time=∞, tok=∞, iterations=∞.
+        """«Продолжить до результата»: time=∞, tok=∞, iterations=∞.
 
         Единственная остановка — `user_cancel`. Если модель зациклилась
         на повторных tool_calls, `AgentLoop` сам сделает финальный синтез
@@ -3326,22 +3250,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not params:
             self.continue_btn.setVisible(False)
             return
-
         self.continue_btn.setVisible(False)
         self._add_message(
             "system",
             "▶ Продолжаю до результата: бюджеты по времени/токенам/итерациям "
             "сняты. Остановить можно кнопкой «■».",
         )
-
-        # Огромные бюджеты — фактически «без лимита».
         from agents.agent_loop import SoftBudget
 
         unlimited = SoftBudget(
             iterations=100_000,
             tokens=10_000_000,
             time_s=86_400.0,
-            warning_ratio=0.999,  # WARNING практически не сработает
+            warning_ratio=0.999,
         )
 
         if params["kind"] == "chat":
@@ -3371,10 +3292,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
 
         current = int(params.get("max_iters", 10))
-        # Удваиваем, но не меньше +10 и не больше 200 — иначе 7B на CPU
-        # будет считать часами.
         new_limit = min(max(current * 2, current + 10), 200)
-
         self.continue_btn.setVisible(False)
         self._add_message(
             "system",
@@ -3415,98 +3333,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
         self.tool_status_label.setVisible(True)
 
-    def set_model(self, model: str):
-        """Устанавливает модель в combo (0.1.4).
-
-        Программная установка (восстановление ``last_model`` при открытии
-        проекта, ``core/app.py::run``) не должна триггерить сохранение —
-        иначе при SLM-active ``_on_model_changed`` мог бы записать чужую
-        модель в ``config.last_model``. ``_suppress_model_save`` подавляет
-        только сохранение; обновление статуса/совместимости остаётся.
-        """
-        self._suppress_model_save = True
-        try:
-            idx = self.model_combo.findData(model)
-            if idx >= 0:
-                self.model_combo.setCurrentIndex(idx)
-            else:
-                self.model_combo.addItem(model, model)
-                self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
-        finally:
-            self._suppress_model_save = False
-
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         self.tool_policies[tool_name] = policy
 
     def set_show_reasoning(self, show: bool) -> None:
-        """Включает/выключает отображение reasoning_content в чате.
-
-        False — токены размышлений продолжают приходить и логируются, но
-        виджет сообщения не создаётся/не обновляется. Уже показанные блоки
-        reasoning не скрываются — это «тумблер для будущих токенов».
-        """
+        """Включает/выключает отображение reasoning_content в чате."""
         self._show_reasoning = bool(show)
         logger.debug(f"Показ размышлений: {'вкл' if show else 'выкл'}")
 
     def set_vector_store(self, vector_store):
         self.vector_store = vector_store
 
-    # ---------------------------------------------------------
-    # Публичный API для MainWindow (план 2.4)
-    #
-    # Раньше MainWindow обращался к приватным полям напрямую:
-    #   chat_panel._update_mode_tooltips()
-    #   chat_panel.mode_combo.setCurrentIndex(...)
-    #   chat_panel._show_reasoning
-    #   chat_panel._update_model_list()
-    #   chat_panel.refresh_models_btn.setText(...)
-    # Это связывало классы и делало невозможным вынести меню
-    # в отдельный модуль. Теперь — явные методы с понятным контрактом.
-    # ---------------------------------------------------------
-
     def update_mode_tooltips(self) -> None:
-        """Пересчитывает тултипы селектора режимов (из актуальных промптов).
-
-        Публичная замена `_update_mode_tooltips()` для MainWindow
-        (после сохранения промптов в редакторе).
-        """
+        """Пересчитывает тултипы селектора режимов (из актуальных промптов)."""
         self._update_mode_tooltips()
 
-    def update_model_list(self) -> None:
-        """Перерисовывает список моделей (после синхронизации с Ollama).
-
-        Публичная замена `_update_model_list()` для MainWindow
-        (в `_on_model_check_finished`).
-        """
-        self._update_model_list()
 
     def set_mode_by_name(self, mode: str) -> None:
-        """Переключает режим по имени: 'chat' | 'plan' | 'agent'.
-
-        Публичная замена прямому доступу к `mode_combo.setCurrentIndex(...)`
-        из MainWindow (после открытия проекта восстанавливаем сохранённый
-        режим из config / project_settings).
-        """
+        """Переключает режим по имени: 'chat' | 'plan' | 'agent'."""
         mode_map = {"chat": 0, "plan": 1, "agent": 2}
         idx = mode_map.get(mode, 2)
         if 0 <= idx < self.mode_combo.count():
             self.mode_combo.setCurrentIndex(idx)
 
     def get_show_reasoning(self) -> bool:
-        """Текущее состояние тумблера «Показывать размышления».
-
-        Публичная замена прямому чтению `_show_reasoning` из MainWindow
-        (синхронизация чекбокса в правой панели при `_do_open_project`).
-        """
+        """Текущее состояние тумблера «Показывать размышления»."""
         return self._show_reasoning
-
-    def set_refresh_button_text(self, text: str) -> None:
-        """Меняет текст кнопки обновления моделей (⏹ Стоп / 🔄 / ⏳).
-
-        Публичная замена прямому `refresh_models_btn.setText(...)` из
-        MainWindow (индикация процесса проверки поддержки tools).
-        """
-        self.refresh_models_btn.setText(text)
 
     @property
     def router(self) -> ModelRouter:
@@ -3517,14 +3369,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._project_scanned = False
         self._project_scan_root = None
         self._rag_scope = None
-
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.set_project_path(project_root)
-
-        # полный сброс пайплайна вместо ручного обнуления
         self.reset_pipeline()
-
-        # [9.4] Профиль «Обучение» не использует пайплайн — не триггерим загрузку.
         if project_root and (self._profile is None or self._profile.id != "learning"):
             QTimer.singleShot(1500, self._ensure_orchestrator)
         self._update_pipeline_status()
@@ -3553,7 +3400,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         dialog.exec()
 
     def set_project_open(self, is_open: bool):
-        """[9.6.2] Placeholder обновляется через `_update_command_placeholder`,
+        """Placeholder обновляется через `_update_command_placeholder`,
         но при отсутствии проекта — стандартный.
         """
         if not is_open:
@@ -3566,159 +3413,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._update_command_placeholder()
         self.send_btn.setVisible(True)
 
-    def set_registry(self, registry):
-        self.registry = registry
-        self._update_model_list()
-
-    def update_models(self, models: list[str]) -> None:
-        self._update_model_list()
-
-    def _update_model_list(self):
-        if not self.registry:
-            return
-        current = self.model_combo.currentData()
-        self.model_combo.blockSignals(True)
-        self.model_combo.clear()
-        all_models = self.registry.get_all_models()
-        sorted_names = sorted(
-            all_models.keys(),
-            key=lambda x: (not all_models[x].is_local, x.lower()),
-        )
-        for model_name in sorted_names:
-            info = all_models[model_name]
-            display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
-            idx = self.model_combo.count()
-            self.model_combo.addItem(display, model_name)
-            self.model_combo.setItemData(
-                idx,
-                self._build_registry_model_tooltip(info),
-                Qt.ItemDataRole.ToolTipRole,
-            )
-
-        if current and self.model_combo.findData(current) >= 0:
-            self.model_combo.setCurrentIndex(self.model_combo.findData(current))
-        else:
-            for i in range(self.model_combo.count()):
-                model_data = self.model_combo.itemData(i)
-                if not model_data:
-                    continue
-                found = self.registry.get(model_data)
-                if found is not None and found.is_local:
-                    self.model_combo.setCurrentIndex(i)
-                    break
-            else:
-                if self.model_combo.count() > 0:
-                    self.model_combo.setCurrentIndex(0)
-        self.model_combo.blockSignals(False)
-        self._update_model_status(self.model_combo.currentData())
-
-    def _update_model_selector_visibility(self) -> None:
-        """Скрывает выбор Ollama-модели, если Ollama не активна в конфиге.
-
-        Назначение: когда Ollama выключена (не в `cfg.backends.enabled`),
-        combo моделей Ollama, кнопка «🔄» (проверка tools) и иконка статуса
-        модели бесполезны — все записи в combo неактивны, `_start_model_check`
-        сразу отказывает. Оставлять их на виду — источник недоумения.
-
-        Безопасно вызывается в любой момент: если UI ещё не создан
-        (`model_combo` отсутствует), тихо выходит.
-        """
-        if not hasattr(self, "model_combo"):
-            return
-        try:
-            from core.config import load_config as _load_cfg
-
-            cfg = _load_cfg()
-            ollama_enabled = "ollama" in cfg.backends.enabled
-        except Exception:
-            ollama_enabled = False
-        for widget in (
-            getattr(self, "model_label", None),
-            self.model_combo,
-            self.refresh_models_btn,
-            self.model_status_label,
-        ):
-            if widget is not None:
-                widget.setVisible(ollama_enabled)
-
-    def _update_model_status(self, model_name: str):
-        if not self.registry:
-            self.model_status_label.setText("❓")
-            self.model_status_label.setToolTip("Реестр моделей не загружен")
-            return
-        info = self.registry.get(model_name)
-        if not info:
-            self.model_status_label.setText("❓")
-            self.model_status_label.setToolTip("Модель не найдена в реестре")
-            return
-        if info.is_local:
-            if info.supports_tools is True:
-                status_icon = "✅"
-                tooltip = "Поддерживает инструменты"
-            elif info.supports_tools is False:
-                status_icon = "⚠️"
-                tooltip = "Только чат (нет поддержки tools)"
-            else:
-                status_icon = "❓"
-                tooltip = "Поддержка tools не проверена"
-        else:
-            status_icon = "⬇️"
-            tooltip = "Модель не скачана локально"
-        if info.description:
-            tooltip += f"\n{info.description}"
-        self.model_status_label.setText(status_icon)
-        self.model_status_label.setToolTip(tooltip)
-
-    def _on_model_changed(self, index: int):
-        """Реакция на смену модели в combo (0.1.4).
-
-        Обновляет статус и совместимость **всегда** (это UI), а сохранение
-        настроек — только когда это ручное действие пользователя. При
-        программной установке через ``set_model`` флаг ``_suppress_model_save``
-        подавляет сохранение: иначе восстановление ``last_model`` из конфига
-        при открытии проекта могло бы записать это значение обратно в SLM-сессию.
-        """
-        model_name = self.get_current_model()
-        if model_name:
-            self._update_model_status(model_name)
-            self._check_mode_compatibility()
-            if not self._suppress_model_save:
-                self._save_current_settings()
-
-    def _save_current_settings(self):
-        """Эмитит settings_changed с актуальным mode (и model, если Ollama активна).
-
-        0.1.4: при активном SLM поле ``model`` НЕ эмитится. Иначе
-        ``MainWindow._on_chat_settings_changed`` перетёр бы ``config.last_model``
-        именем модели Ollama, которая на самом деле не используется. Тот же
-        фильтр уже применён в ``_emit_settings_changed`` — теперь оба пути
-        (смена режима и смена модели) согласованы.
-        """
-        try:
-            self.settings_changed.emit(self._settings_payload())
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить настройки: {e}")
-
-    def set_checking_state(self, is_checking: bool):
-        self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
-
-    def _check_mode_compatibility(self):
-        if not self.registry:
-            return
-        model_name = self.get_current_model()
-        cap = self.registry.get(model_name)
-
-        if cap and not cap.supports_tools:
-            current_mode = self._current_mode()
-            if current_mode in (AgentMode.PLAN, AgentMode.AGENT):
-                self.mode_combo.setCurrentIndex(0)
-                QMessageBox.warning(
-                    self,
-                    "Режим недоступен",
-                    f"Модель '{model_name}' не поддерживает инструменты.\n"
-                    "Режим автоматически переключен на 'Chat'.",
-                )
-
     def set_role_manager(self, manager: RoleManager):
         self.role_manager = manager
         self.role_combo.blockSignals(True)
@@ -3727,9 +3421,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         for role in manager.get_all_roles():
             idx = self.role_combo.count()
             self.role_combo.addItem(f"{role.icon} {role.name}", role.id)
-            # Per-item tooltip: описание роли из её frontmatter.
-            # Для default — «Универсальный AI-ассистент …»,
-            # для python_dev — «Senior Python разработчик (FastAPI, Django, Pydantic)» и т.д.
             tooltip = role.description.strip() if role.description else ""
             if not tooltip and role.id == "default":
                 tooltip = "Универсальный ассистент — подходит для большинства задач."
@@ -3752,32 +3443,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return self.role_manager.get_role(self.current_role_id).system_prompt
         return ""
 
-    def update_model_status(self, model_name: str):
-        if not self.registry:
-            return
-        info = self.registry.get(model_name)
-        if not info:
-            return
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model_name:
-                display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
-                self.model_combo.setItemText(i, display)
-                break
-        if self.model_combo.currentData() == model_name:
-            self._update_model_status(model_name)
-
-    def get_current_model(self) -> str:
-        if self._router.active_backend != BackendType.OLLAMA:
-            return "" # Если Ollama не активна, не отдаём мусор из скрытого комбобокса
-        model = self.model_combo.currentData()
-        if model is not None:
-            return str(model)
-        text = self.model_combo.currentText()
-        for prefix in ("✅ ", "⬇️ "):
-            if text.startswith(prefix):
-                return text[len(prefix) :]
-        return text or "llama3.2"
-
     @Slot()
     def _on_web_finish(self):
         self._reset_send_button()
@@ -3797,9 +3462,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._session_id = session_id
 
     def load_history(self, messages: list[ChatMessage]):
-        """[9.10] Загрузка истории с одним проходом сворачивания в конце.
+        """Загрузка истории с одним проходом сворачивания в конце.
 
-        0.1.3c: рендерим не только content, но и reasoning/tool_calls/
+        рендерим не только content, но и reasoning/tool_calls/
         tool_results из `msg.parts`. Для старых сообщений без parts
         (`content`-only) остаётся текстовый рендер — обратная совместимость
         через `ChatMessage.parts`, собранный в `model_validator`.
@@ -3873,10 +3538,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             "hypotheses": deep,
             "phases": "full" if deep else "light",
         }
-
-    # ------------------------------------------------------------------
-    # P3: Orchestrator lifecycle
-    # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
@@ -4315,28 +3976,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception:
             logger.debug("Не удалось обновить freedom-индикатор", exc_info=True)
 
-    @staticmethod
-    def _build_registry_model_tooltip(info: ModelInfo) -> str:
-        """HTML-tooltip для пункта главного селектора моделей (Ollama)."""
-        lines = [f"<b>{info.name}</b>", ""]
-        if info.description:
-            lines.append(info.description)
-            lines.append("")
-        if info.recommended_modes:
-            lines.append(f"Рекомендуемые режимы: {', '.join(info.recommended_modes)}")
-        if info.supports_tools is True:
-            lines.append("Инструменты: ✅ поддерживает")
-        elif info.supports_tools is False:
-            lines.append("Инструменты: ❌ только чат")
-        else:
-            lines.append("Инструменты: ❓ не проверено")
-        lines.append("Локально: ✅" if info.is_local else "Локально: ⬇️ не скачана")
-        return "<br>".join(lines)
-
-    # ------------------------------------------------------------------
-    # [2.12] Durable inbox
-    # ------------------------------------------------------------------
-
     def _ensure_inbox(self) -> SessionInbox | None:
         """Ленивое создание `SessionInbox`.
 
@@ -4379,7 +4018,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             logger.debug("inbox recover упал", exc_info=True)
 
     def _sync_inbox_indicator(self) -> None:
-        """2.12: обновляет индикатор inbox в дашборде."""
+        """обновляет индикатор inbox в дашборде."""
         if self._dashboard is None:
             return
         inbox = self._inbox
@@ -4392,74 +4031,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             pending = 0
         self._dashboard.set_inbox(pending)
 
-    # ------------------------------------------------------------------
-    # [9.4] Git-контекст
-    # ------------------------------------------------------------------
-
     def _build_git_context(self) -> str:
         """Собирает git-контекст для system-промпта в режиме AGENT (2.8)."""
         if not self.project_root:
             return ""
         return self._project_service.build_git_context(self.project_root, mode=self._current_mode())
 
-    #     def _build_git_context(self) -> str:
-    #         """Собирает git-контекст для system-промпта в режиме AGENT.
-
-    #         Формат:
-    # Ветка: feature/x (abc1234)
-    # Последние коммиты:
-    # • a1b2c3d 2025-01-01 feat: added parser
-    # • …
-    # Незакоммиченные изменения:
-    # diff-содержимое (обрезано)
-
-    # text
-
-    # В CHAT/PLAN — пустая строка (контекст там не нужен, экономит
-    # токены).
-    # """
-    # if self._current_mode() != AgentMode.AGENT:
-    #     return ""
-    # if not self.project_root:
-    #     return ""
-
-    # try:
-    #     from tools.git_ops import (
-    #         get_branch_hash,
-    #         get_current_branch,
-    #         get_recent_commits,
-    #         get_uncommitted_diff,
-    #     )
-    #     from pathlib import Path as _Path
-
-    #     root = _Path(self.project_root)
-    #     branch = get_current_branch(root)
-    #     if not branch:
-    #         return ""
-
-    #     lines: list[str] = [
-    #         f"Ветка: {branch} ({get_branch_hash(root)})"
-    #     ]
-    #     commits = get_recent_commits(root, limit=5)
-    #     if commits:
-    #         lines.append("Последние коммиты:")
-    #         for c in commits:
-    #             lines.append(
-    #                 f"  • {c['hash']} {c['date']} {c['subject'][:80]}"
-    #             )
-    #     diff = get_uncommitted_diff(root, max_chars=1500)
-    #     if diff:
-    #         lines.append("Незакоммиченные изменения (diff):")
-    #         lines.append(diff)
-    #     return "\n".join(lines)
-    # except Exception:
-    #     logger.debug(
-    #         "Не удалось собрать git_context", exc_info=True
-    #     )
-    #     return ""
-
     def _ensure_memory_service(self) -> MemoryService | None:
-        """4.3: ленивое создание MemoryService.
+        """ленивое создание MemoryService.
 
         Возвращает ``None``, если память отключена в конфиге
         (``MemoryConfig.enabled=False``) или упала инициализация
@@ -4517,10 +4096,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
             return None
 
-    # ------------------------------------------------------------------
-    # [7] MCP
-    # ------------------------------------------------------------------
-
     def _start_mcp_init(self) -> None:
         """Запускает инициализацию MCP-серверов в фоне."""
         try:
@@ -4575,17 +4150,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """Пост-обработка инициализации MCP в GUI-потоке (9.8)."""
         self.status_label.setText(f"✅ MCP: подключено {connected}/{total} серверов")
         logger.info(f"MCP: {connected}/{total} серверов готовы")
-        # [9.8] Обновляем индикатор MCP сразу.
         self._sync_dashboard()
 
     def registry_for_permissions(self) -> ToolRegistry:
-        """[9.10] Возвращает полный ToolRegistry для Permissions Dashboard.
-
+        """Возвращает полный ToolRegistry для Permissions Dashboard.
         Отличается от `_build_registry(mode)`:
           * регистрирует ВСЕ инструменты, включая `read_attached_file`
             (для отображения политики даже без прикреплённых файлов);
           * не зависит от режима.
-
         Returns:
             Свежий реестр с полным набором инструментов.
         """
