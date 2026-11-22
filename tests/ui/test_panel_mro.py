@@ -63,7 +63,6 @@ def test_panel_size_reduced() -> None:
         "def _on_slm_loaded",
         "def _detect_and_load_slm",
         "def _load_slm_async",
-        "def _download_and_load_slm",
         "def _on_pool_loaded",
         "def _on_orchestrator_result",
         "def _on_thought_chunk",

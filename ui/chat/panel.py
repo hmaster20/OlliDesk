@@ -96,7 +96,6 @@ from ui.chat.threads import (
     WebSearchThread,
     _ModelPoolLoadThread,
     _OllamaCheckThread,
-    _SLMDownloadThread,
     _SLMLoadThread,
 )
 from ui.widgets.auto_scroll import AutoScrollArea
@@ -329,7 +328,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._orchestrator: Orchestrator | None = None
         self._pool_load_thread: _ModelPoolLoadThread | None = None
         self._pool_load_failed: bool = False
-        self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
 
         self._pipeline_selectors: PipelineSelectors | None = None
