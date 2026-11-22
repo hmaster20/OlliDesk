@@ -1,7 +1,6 @@
-"""Инициализация приложения OlliDesk."""
+"""Инициализация приложения."""
 
 import sys
-from pathlib import Path
 
 from loguru import logger
 from PySide6.QtGui import QColor
@@ -14,35 +13,6 @@ from core.logger import setup_logger
 from core.utils import get_app_data_dir, get_app_icon
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
-
-
-def _check_config_exists() -> bool:
-    """Проверяет, существует ли файл конфигурации."""
-    return (get_app_data_dir() / "config.yaml").exists()
-
-
-def _run_wizard_and_load(config_path: Path) -> AppConfig | None:
-    """Показывает мастер настройки и загружает конфиг после его завершения.
-
-    Вызывается в двух случаях:
-      * файл конфигурации отсутствует (первый запуск / каталог удалён);
-      * файл существует, но невалиден, и пользователь не отключал визард.
-
-    Продолжение запуска приложения возможно ТОЛЬКО после успешного
-    завершения мастера: отмена или падение `load_config()` → ``None``
-    (`OlliDeskApp.run` при этом закрывает приложение с кодом 1).
-    """
-    wizard = SetupWizard()
-    if wizard.exec():
-        try:
-            config = load_config()
-            logger.info(f"Конфигурация создана мастером: {config.version}")
-            return config
-        except ConfigError as e:
-            logger.error(f"Ошибка загрузки конфигурации после визарда: {e}")
-            return None
-    logger.warning("Мастер настройки отменён пользователем — запуск прекращён")
-    return None
 
 def _run_wizard() -> AppConfig | None:
     """Показывает мастер настройки и загружает конфиг после его завершения."""

@@ -1414,14 +1414,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self.input_edit.setPlaceholderText(DEFAULT_PLACEHOLDER)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # [9.7] Drag&drop файлов в поле ввода.
+        # Drag&drop файлов в поле ввода.
         if obj is self.input_edit:
             if event.type() == QEvent.Type.DragEnter:
                 mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
                 if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
-                    self.input_edit.setStyleSheet(
-                        "font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
-                    )
                     event.acceptProposedAction()
                     return True
 
@@ -1432,23 +1429,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                             self._attach_local_file(url.toLocalFile())
                     event.acceptProposedAction()
                     return True
-            # (второй обработчик Drop удалён — он дублировал первый и не сужал тип)
             elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
                 if event.key() == Qt.Key.Key_Escape:
                     if self._command_completer is not None:
                         self._command_completer.hide_popup()
                     self._command_popup_active = False
                     return True
-
-        if (
-            obj is self.input_edit
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and event.key() == Qt.Key.Key_Return
-            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
-        ):
-            self._toggle_send_stop()
-            return True
 
         if (
             obj is self.input_edit
@@ -1508,18 +1494,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
 
     def get_settings(self) -> dict:
-        mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        backend = self._router.active_backend
-
-        # Берем модель только если активен LLM-бэкенд
-        model = self.active_model_name() if backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM) else ""
-
-        return {
-            "model": model,
-            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-            "show_reasoning": self._show_reasoning,
-        }
-
+        payload = self._settings_payload()
+        payload.setdefault("model", "")  # RULE_BASED/None → пустая модель
+        payload["show_reasoning"] = self._show_reasoning
+        return payload
 
     def apply_settings(self, settings: dict) -> None:
         model = settings.get("model", "")
@@ -1906,82 +1884,40 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     # ---------------------------------------------------------
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
+    def _project_size(self) -> tuple[int, int]:
+        """(file_count, total_bytes) для `_resolve_research_mode`.
 
-    def _do_chat(
-        self,
-        text: str,
-        override_limit: int | None = None,
-        override_budget=None,
-    ):
-        """Запускает ReAct-цикл в режиме Chat.
-
-        Размер проекта определяет флоу:
-          • light (≤100 файлов / ≤300 КБ) — 3 итерации, без research-фаз;
-          • medium — research-вопрос идёт с 8 итерациями, без фаз;
-          • deep (>500 файлов) — 5 итераций с фазами/гипотезами.
-        Раньше research-вопрос всегда гонялся через full research (23 итерации),
-        и маленький 43-файловый проект тратил 15 минут.
+        total_bytes считаем только при ≤100 файлов — иначе всё равно
+        medium/deep, и суммарный размер на решение не влияет.
         """
-        logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
-        self._reset_research_state()
-
-        # Определяем размер проекта и режим ДО запуска цикла.
-        # _ensure_project_scan() заполняет self._project_files (кэш на сессию),
-        # тот же вызов уже используется в _project_map_text().
-
         self._ensure_project_scan()
         file_count = len(self._project_files)
-        # total_bytes считаем только если файлов мало (≤100) — иначе всё
-        # равно deep/medium, а суммарный размер не влияет на решение.
+        total_bytes = 0
         if file_count <= 100:
-            total_bytes = 0
             for rel in self._project_files:
                 with contextlib.suppress(OSError):
                     total_bytes += (Path(self.project_root) / rel).stat().st_size
-        else:
-            total_bytes = 0  # не используется при file_count > 100
+        return file_count, total_bytes
 
-        plan = self._resolve_research_mode(
-            text,
-            file_count=file_count,
-            total_bytes=total_bytes,
-        )
+    def _build_agent_context(self, mode: AgentMode, rag_context: str) -> AgentContext:
+        """Единая сборка AgentContext для Chat/Plan/Agent.
 
-        # [9.4] Профиль ограничивает верхнюю границу итераций для
-        # не-research вопросов. Research-лимит не трогаем — там фазовая
-        # машина сама регулирует.
-        if override_limit is None and self._profile is not None and not plan["research"]:
-            plan["max_iters"] = min(plan["max_iters"], self._profile_chat_max_iters)
-
-        is_research = plan["research"] and is_research_question(text)
-        max_iters = override_limit if override_limit is not None else plan["max_iters"]
-
-        if is_research:
-            logger.info(
-                f"Chat-режим, research-вопрос: лимит итераций {max_iters} "
-                f"(файлов={file_count}, режим фаз={plan['phases']}, "
-                f"гипотезы={'on' if plan['hypotheses'] else 'off'})"
-            )
-        else:
-            logger.info(
-                f"Chat-режим, {max_iters} итераций "
-                f"(файлов={file_count}, light={'да' if plan['phases'] == 'off' else 'нет'})"
-            )
-
+        Раньше этот блок был дословно продублирован в _do_chat/_do_agent.
+        `app_config=self._safe_load_config()` эквивалентен прежнему
+        walrus-выражению `cfg if (cfg := ...) is not None else None`.
+        """
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt("chat", project_root=p_root, context=self._template_context())
+            self.prompt_manager.get_prompt(
+                mode.value, project_root=p_root, context=self._template_context()
+            )
             if self.prompt_manager
             else ""
         )
         combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
-
-        raw_cache = getattr(self, "search_cache", None)
-        agents_context = load_agents_context(self.project_root)
-        merged_rag = "\n\n".join(filter(None, [self._attached_context(), self._rag_context or ""]))
-
-        # 0.1.1: политика безопасности — прокидывается в инструменты
+        merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
+        # Политика безопасности — прокидывается в инструменты
         # через AgentContext.security (run_shell_command, web_search).
         try:
             _cfg = load_config()
@@ -1990,187 +1926,41 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             )
         except Exception:
             security = SecurityPolicy()
-
-        context = AgentContext(
+        return AgentContext(
             system_prompt=combined,
             rag_context=merged_rag,
-            agents_context=agents_context,
-            project_root=self.project_root,
-            project_name=self._project_name(),
-            project_map=self._project_map_text(),
-            vector_store=self.vector_store,
-            num_ctx=self._router.num_ctx,
-            mode=AgentMode.CHAT,
-            search_cache=raw_cache,
-            attached_files=self._attached_files if self._attached_files else None,
-            hypotheses=self._hypotheses,
-            extra_rules=self._project_rules(),
-            security=security,
-            memory_service=self._ensure_memory_service(),
-            profile=self._profile,
-            app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
-            git_context=self._build_git_context(),
-        )
-
-        client, model_name = self._client_and_model(AgentMode.CHAT)
-        if client is None:
-            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
-            self._reset_send_button()
-            return
-
-        registry = self._build_registry(AgentMode.CHAT)
-
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-
-        # ToolService на этот запрос.
-        from core.services.tool_service import ToolService
-
-        # model_name = self.get_current_model()
-        self._agent_thread = AgentChatThread(
-            client=client,
-            registry=registry,
-            model=model_name,
-            context=context,
-            messages_history=list(self._messages),
-            agent_mode=AgentMode.CHAT,
-            max_iterations=max_iters,
-            orchestrator=self._orchestrator,
-            soft_budget=override_budget,
-            inbox_id=self._current_inbox_id,
-            inbox=self._inbox,
-            tool_service=ToolService(registry, project_root=self.project_root),
-        )
-        self._last_run_params = {
-            "kind": "chat",
-            "text": text,
-            "rag_context": self._rag_context or "",
-            "max_iters": max_iters,
-        }
-
-        self._connect_agent_thread_signals()
-
-    def _do_agent(
-        self,
-        text: str,
-        mode: AgentMode,
-        rag_context: str,
-        override_limit: int | None = None,
-        override_budget=None,
-    ):
-        """Запускает ReAct-цикл в режимах Plan / Agent.
-
-        Размер проекта определяет лимит итераций и наличие research-фаз:
-          • Agent-режим — всегда `agent_max_iterations` (полный доступ, задача
-            может быть длинной: рефакторинг, миграция), research не ограничиваем;
-          • Plan-режим — как Chat (light=3 / medium=8 / deep=5 итераций),
-            но с read-only инструментами.
-        """
-        self._reset_research_state()
-
-        client, model_name = self._client_and_model(mode)
-        if client is None:
-            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
-            self._reset_send_button()
-            return
-
-        # Определяем режим по размеру проекта.
-
-        self._ensure_project_scan()
-        file_count = len(self._project_files)
-        if file_count <= 100:
-            total_bytes = 0
-            for rel in self._project_files:
-                with contextlib.suppress(OSError):
-                    total_bytes += (Path(self.project_root) / rel).stat().st_size
-        else:
-            total_bytes = 0
-
-        plan = self._resolve_research_mode(
-            text,
-            file_count=file_count,
-            total_bytes=total_bytes,
-        )
-        is_research = plan["research"] and is_research_question(text)
-
-        # Agent-режим: полный лимит независимо от размера проекта (рефакторинг
-        # может быть длинным); research-фазы не ограничиваем.
-        if mode == AgentMode.AGENT:
-            if override_limit is not None:
-                max_iters = override_limit
-            elif self._profile is not None:
-                max_iters = self._profile_agent_max_iters
-            else:
-                try:
-                    from core.config import load_config
-
-                    max_iters = load_config().agent_max_iterations
-                except Exception:
-                    max_iters = 30
-            logger.info(
-                f"Agent-режим, {max_iters} итераций "
-                f"(файлов={file_count}, research={'on' if is_research else 'off'})"
-            )
-        else:
-            # Plan-режим: как Chat — размер проекта важен.
-            max_iters = override_limit if override_limit is not None else plan["max_iters"]
-            if override_limit is None and self._profile is not None:
-                max_iters = min(max_iters, self._profile_agent_max_iters)
-            if is_research:
-                logger.info(
-                    f"Plan-режим, research-вопрос: лимит {max_iters} "
-                    f"(файлов={file_count}, фазы={plan['phases']})"
-                )
-            else:
-                logger.info(f"Plan-режим, {max_iters} итераций (файлов={file_count})")
-
-        role_prompt = self.get_current_role_prompt()
-        p_root = Path(self.project_root) if self.project_root else None
-        mode_prompt = (
-            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
-            if self.prompt_manager
-            else ""
-        )
-        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
-
-        raw_cache = getattr(self, "search_cache", None)
-        agents_context = load_agents_context(self.project_root)
-        merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
-
-        # политика безопасности — см. _do_chat.
-        try:
-            _cfg = load_config()
-            security = SecurityPolicy(
-                allow_arbitrary_shell=bool(getattr(_cfg, "allow_arbitrary_shell", False)),
-            )
-        except Exception:
-            security = SecurityPolicy()
-
-        context = AgentContext(
-            system_prompt=combined,
-            rag_context=merged_rag,
-            agents_context=agents_context,
+            agents_context=load_agents_context(self.project_root),
             project_root=self.project_root,
             project_name=self._project_name(),
             project_map=self._project_map_text(),
             vector_store=self.vector_store,
             num_ctx=self._router.num_ctx,
             mode=mode,
-            search_cache=raw_cache,
+            search_cache=getattr(self, "search_cache", None),
             attached_files=self._attached_files if self._attached_files else None,
             hypotheses=self._hypotheses,
             extra_rules=self._project_rules(),
             security=security,
             memory_service=self._ensure_memory_service(),
             profile=self._profile,
-            app_config=cfg if (cfg := self._safe_load_config()) is not None else None,
+            app_config=self._safe_load_config(),
             git_context=self._build_git_context(),
         )
 
+    def _launch_agent_thread(
+        self,
+        *,
+        client: Any,
+        model_name: str,
+        mode: AgentMode,
+        context: AgentContext,
+        max_iters: int,
+        override_budget=None,
+    ) -> None:
+        """Создаёт AgentChatThread (один реестр на запрос), подключает сигналы, стартует."""
+        registry = self._build_registry(mode)
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-
-        registry = self._build_registry(mode)
         self._agent_thread = AgentChatThread(
             client=client,
             registry=registry,
@@ -2185,7 +1975,113 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             inbox=self._inbox,
             tool_service=ToolService(registry, project_root=self.project_root),
         )
+        self._connect_agent_thread_signals()
 
+    def _do_chat(
+        self,
+        text: str,
+        override_limit: int | None = None,
+        override_budget=None,
+    ):
+        """Запускает ReAct-цикл в режиме Chat.
+
+        Размер проекта определяет флоу (см. `_resolve_research_mode`):
+        light — 3 итерации без фаз; medium — research 8; deep — 5 с фазами.
+        Профиль ограничивает верхнюю границу для не-research вопросов.
+        """
+        logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
+        self._reset_research_state()
+
+        client, model_name = self._client_and_model(AgentMode.CHAT)
+        if client is None:
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
+            self._reset_send_button()
+            return
+
+        file_count, total_bytes = self._project_size()
+        plan = self._resolve_research_mode(text, file_count=file_count, total_bytes=total_bytes)
+        if override_limit is None and self._profile is not None and not plan["research"]:
+            plan["max_iters"] = min(plan["max_iters"], self._profile_chat_max_iters)
+        is_research = plan["research"] and is_research_question(text)
+        max_iters = override_limit if override_limit is not None else plan["max_iters"]
+        if is_research:
+            logger.info(
+                f"Chat-режим, research-вопрос: лимит итераций {max_iters} "
+                f"(файлов={file_count}, режим фаз={plan['phases']}, "
+                f"гипотезы={'on' if plan['hypotheses'] else 'off'})"
+            )
+        else:
+            logger.info(
+                f"Chat-режим, {max_iters} итераций "
+                f"(файлов={file_count}, light={'да' if plan['phases'] == 'off' else 'нет'})"
+            )
+
+        context = self._build_agent_context(AgentMode.CHAT, self._rag_context or "")
+        self._last_run_params = {
+            "kind": "chat",
+            "text": text,
+            "rag_context": self._rag_context or "",
+            "max_iters": max_iters,
+        }
+        self._launch_agent_thread(
+            client=client,
+            model_name=model_name,
+            mode=AgentMode.CHAT,
+            context=context,
+            max_iters=max_iters,
+            override_budget=override_budget,
+        )
+
+    def _do_agent(
+        self,
+        text: str,
+        mode: AgentMode,
+        rag_context: str,
+        override_limit: int | None = None,
+        override_budget=None,
+    ):
+        """Запускает ReAct-цикл в режимах Plan / Agent.
+
+        Agent — всегда полный лимит (profile/config), research не ограничиваем;
+        Plan — как Chat (размер проекта), но с read-only инструментами.
+        """
+        self._reset_research_state()
+
+        client, model_name = self._client_and_model(mode)
+        if client is None:
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
+            self._reset_send_button()
+            return
+
+        file_count, total_bytes = self._project_size()
+        plan = self._resolve_research_mode(text, file_count=file_count, total_bytes=total_bytes)
+        is_research = plan["research"] and is_research_question(text)
+
+        if mode == AgentMode.AGENT:
+            if override_limit is not None:
+                max_iters = override_limit
+            elif self._profile is not None:
+                max_iters = self._profile_agent_max_iters
+            else:
+                cfg = self._safe_load_config()
+                max_iters = cfg.agent_max_iterations if cfg is not None else 30
+            logger.info(
+                f"Agent-режим, {max_iters} итераций "
+                f"(файлов={file_count}, research={'on' if is_research else 'off'})"
+            )
+        else:
+            max_iters = override_limit if override_limit is not None else plan["max_iters"]
+            if override_limit is None and self._profile is not None:
+                max_iters = min(max_iters, self._profile_agent_max_iters)
+            if is_research:
+                logger.info(
+                    f"Plan-режим, research-вопрос: лимит {max_iters} "
+                    f"(файлов={file_count}, фазы={plan['phases']})"
+                )
+            else:
+                logger.info(f"Plan-режим, {max_iters} итераций (файлов={file_count})")
+
+        context = self._build_agent_context(mode, rag_context)
         self._last_run_params = {
             "kind": "agent",
             "text": text,
@@ -2193,8 +2089,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             "rag_context": rag_context,
             "max_iters": max_iters,
         }
-
-        self._connect_agent_thread_signals()
+        self._launch_agent_thread(
+            client=client,
+            model_name=model_name,
+            mode=mode,
+            context=context,
+            max_iters=max_iters,
+            override_budget=override_budget,
+        )
 
     def _connect_agent_thread_signals(self) -> None:
         """Подключает сигналы AgentChatThread к слотам панели."""
@@ -2772,14 +2674,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         reflection = self._build_reflection(outcome=outcome, summary_hint=summary_hint)
         if reflection is None:
             return
-
         try:
             svc.remember(reflection)
-            # [9.8] Обновляем индикатор сразу — иначе счётчик
-            # отстаёт до следующего `_sync_dashboard`.
             self._sync_dashboard()
         except Exception:
-            logger.warning("4.3: не удалось записать рефлексию", exc_info=True)
+            logger.warning("не удалось записать рефлексию", exc_info=True)
 
     @Slot(dict)
     def _on_agent_finished(self, payload: dict) -> None:
@@ -3485,13 +3384,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         # Один проход после загрузки всей истории.
         self._maybe_collapse_old_messages()
 
-    def keyPressEvent(self, event):
-        if self.input_edit.hasFocus():
-            key = event.key()
-            if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
-                pass
-        super().keyPressEvent(event)
-
     def set_search_cache(self, cache):
         self.search_cache = cache
 
@@ -3571,8 +3463,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                     loop.close()
             except Exception:
                 logger.debug("ModelPool.aclose failed", exc_info=True)
-                pass
-            self._model_pool = None
         try:
             from tools.browser_ops import shutdown_browser
 
@@ -3583,7 +3473,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                 loop.close()
         except Exception:
             logger.debug("browser shutdown failed", exc_info=True)
-        # Принудительное завершение зависших фоновых потоков (исправляет Qt FATAL)
         threads_to_kill = [
             getattr(self, "_slm_download_thread", None),
             getattr(self, "_slm_load_thread", None),
@@ -3600,10 +3489,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                     thread.terminate()
                     thread.wait(500)
 
-    # ------------------------------------------------------------------
-    # [9.3] Селекторы Planner/Analyst
-    # ------------------------------------------------------------------
-
     @Slot(str)
     def _on_planner_changed(self, model_id: str) -> None:
         """Пользователь сменил planner — пересоздаём пайплайн."""
@@ -3617,8 +3502,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     def _on_analyst_changed(self, model_id: str) -> None:
         """Смена analyst = смена основной модели: перезагружаем всё."""
         logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reload_slm")
-        # reload_slm сам делает reset_pipeline + _detect_and_load_slm
-        # (skip_auto_select=True) + _ensure_orchestrator.
         self.reload_slm()
         self._update_pipeline_status()
 
@@ -3648,7 +3531,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         *,
         emit_signal: bool = True,
     ) -> None:
-        """[9.4] Применяет профиль к ChatPanel.
+        """Применяет профиль к ChatPanel.
 
         Устанавливает режим, tool_policies, флаг RAG, show_reasoning,
         лимиты итераций. НЕ трогает `_pipeline_selectors` — planner/analyst
@@ -3695,11 +3578,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         # 5. Лимиты итераций.
         self._profile_agent_max_iters = int(profile.agent_max_iterations)
         self._profile_chat_max_iters = int(profile.chat_max_iterations)
-
-        # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.set_recommended_model(profile.recommended_model, profile.name)
-        # [9.3.2] Подсветка coder-моделей в профиле development.
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.set_active_profile(profile.id)
 
@@ -3717,14 +3597,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         if not isinstance(profile, ProfileConfig):
             return
         self._apply_profile(profile, emit_signal=True)
-        # Профиль влияет на pipeline (какие модели), пересобираем.
         self.reset_pipeline()
         self.status_label.setText(f"{profile.icon} Профиль: {profile.name}")
         logger.info(f"Профиль сменён: {profile.id} → reset_pipeline")
 
     @Slot()
     def _back_to_development(self) -> None:
-        """[9.4] Возврат в профиль «Разработка» одним кликом."""
+        """Возврат в профиль «Разработка» одним кликом."""
         if self._profiles_selector is None:
             return
         try:
@@ -3766,30 +3645,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception as e:
             logger.warning(f"Не удалось обновить PipelineSelectors: {e}")
 
-    # ------------------------------------------------------------------
-    # [9.7] Приборная панель — инжектится из MainWindow
-    # ------------------------------------------------------------------
-
     def set_dashboard(self, dashboard) -> None:
         """MainWindow передаёт StatusDashboard после создания статус-бара."""
         self._dashboard = dashboard
         self._sync_dashboard()
-        # 2.5: синхронизация начального состояния активности.
         if self._dashboard is not None:
             self._dashboard.set_activity_state(self._activity_state)
 
-    # ------------------------------------------------------------------
-    # [9.5.1] Тема чата
-    # ------------------------------------------------------------------
-
     def set_theme(self, theme: str) -> None:
-        """Переключает тему чата (light / dark).
-
-        Вызывается из `MainWindow._on_theme_changed_for_editor`. Пузыри,
-        reasoning, tool-карточки перекрашиваются через
-        `_apply_theme_to_messages`. `StatusDashboard` и Monaco — отдельно,
-        их настраивает MainWindow.
-        """
+        """Переключает тему чата (light / dark)."""
         self._is_dark = theme != "light"
         self._apply_theme_to_messages()
         logger.debug(f"ChatPanel theme={theme} (is_dark={self._is_dark})")
@@ -3817,7 +3681,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         """Синхронизирует backend/pipeline/coder/net/git/memory/mcp/freedom с приборной панелью."""
         if self._dashboard is None:
             return
-        # Бэкенд.
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
             self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
@@ -3827,8 +3690,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._dashboard.set_backend("rule", "Резерв", "без LLM")
         else:
             self._dashboard.set_backend("none", "Нет", "—")
-
-        # Pipeline (4.1: показываем все загруженные роли).
         if self._orchestrator is not None and self._model_pool is not None:
             try:
                 roles = self._model_pool.loaded_roles()
@@ -3857,8 +3718,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._dashboard.set_pipeline("💤", "не активирован")
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
-
-        # [10.6] Coder
         try:
             from agents.slm_selector import select_coder
             from core.config import load_config as _load_cfg
@@ -3879,8 +3738,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                 self._dashboard.set_coder("⚠️", "coder (нет модели)", "Скачайте coder-модель")
         except Exception:
             logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
-
-        # [2.11 + 2.13] Сеть (браузер + поиск) — объединённая плитка `net`.
         b_mode, b_avail = "isolated", False
         try:
             from agents.browser_client import is_playwright_available
@@ -3899,16 +3756,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception:
             pass
 
-        # [2.12] Durable inbox.
         self._sync_inbox_indicator()
-        # try:
-        #     from state.inbox import DurableInbox
-        #     inbox = DurableInbox.instance()
-        #     pending = inbox.count_pending()
-        #     self._dashboard.set_inbox(pending)
-        # except Exception:
-        #     logger.debug("Не удалось обновить inbox-индикатор", exc_info=True)
-
         s_prov, s_avail = "", False
         try:
             from agents.search_providers import build_chain
@@ -3920,8 +3768,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception:
             logger.debug("Не удалось обновить search-индикатор", exc_info=True)
         self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
-
-        # [9.4] Git-ветка.
         try:
             from pathlib import Path as _Path
 
@@ -3940,9 +3786,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                 self._dashboard.set_git_branch("", "")
         except Exception:
             logger.debug("Не удалось обновить git-индикатор", exc_info=True)
-        # ... (всё, что было выше: backend/pipeline/coder/browser/search/git_branch)
-
-        # [4.3] Память: количество рефлексий + последние 3.
         try:
             svc = self._memory_service
             count = 0
@@ -3955,8 +3798,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._dashboard.set_memory(count, recent)
         except Exception:
             logger.debug("Не удалось обновить memory-индикатор", exc_info=True)
-
-        # [7] MCP: количество подключённых серверов.
         try:
             from tools.mcp_ops import MCPManager
 
@@ -3966,8 +3807,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._dashboard.set_mcp(connected, servers)
         except Exception:
             logger.debug("Не удалось обновить MCP-индикатор", exc_info=True)
-
-        # [9.12] freedom_level активного профиля.
         try:
             if self._profile is not None:
                 self._dashboard.set_freedom(self._profile.freedom_level)
@@ -3977,12 +3816,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             logger.debug("Не удалось обновить freedom-индикатор", exc_info=True)
 
     def _ensure_inbox(self) -> SessionInbox | None:
-        """Ленивое создание `SessionInbox`.
-
-        Возвращает ``None``, если SQLite не открывается (права, битый
-        файл) — тогда inbox не работает, но ChatPanel продолжает
-        функционировать.
-        """
+        """Ленивое создание `SessionInbox`."""
         if self._inbox is not None:
             return self._inbox
         try:
@@ -3990,22 +3824,17 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             return self._inbox
         except Exception:
             logger.warning(
-                "2.12: SessionInbox не инициализирован — inbox отключён",
+                "SessionInbox не инициализирован — inbox отключён",
                 exc_info=True,
             )
             return None
 
     def _recover_inbox_on_startup(self) -> None:
-        """2.12: восстанавливает «зависшие» running → pending при старте.
-
-        Вызывается из `__init__` после `_setup_ui`. Показывает счётчик
-        `pending` в `StatusDashboard`, если есть незавершённые запросы.
-        """
+        """восстанавливает «зависшие» running → pending при старте."""
         inbox = self._ensure_inbox()
         if inbox is None:
             return
         try:
-            # Очистка старых done/failed.
             try:
                 inbox.cleanup_old()
             except Exception:
@@ -4038,13 +3867,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         return self._project_service.build_git_context(self.project_root, mode=self._current_mode())
 
     def _ensure_memory_service(self) -> MemoryService | None:
-        """ленивое создание MemoryService.
-
-        Возвращает ``None``, если память отключена в конфиге
-        (``MemoryConfig.enabled=False``) или упала инициализация
-        (битый SQLite, права и т.п.) — в этом случае работа
-        продолжается без памяти, с warning в логе.
-        """
+        """ленивое создание MemoryService."""
         if self._memory_service is not None:
             return self._memory_service
         try:
@@ -4062,7 +3885,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
     @Slot(str)
     def _on_undo_file_snapshot(self, snapshot_id: str) -> None:
-        """[10.9] Откатывает файл из снапшота."""
+        """Откатывает файл из снапшота."""
         from PySide6.QtWidgets import QMessageBox
 
         if not snapshot_id:

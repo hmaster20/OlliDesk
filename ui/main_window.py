@@ -185,7 +185,9 @@ class MainWindow(QMainWindow):
         self.session_store = SessionStore(db_path)
 
         # Инициализация клиента Ollama
-        self.ollama_client = OllamaClient(base_url="http://localhost:11434")
+        self.ollama_client = OllamaClient(
+            base_url=self.config.backends.ollama_url or "http://localhost:11434"
+        )
         self._ollama_connected = False
         self._available_models: list[str] = []
         # 🆕 Фоновый поток проверки Ollama вместо new_event_loop() на GUI-потоке.
@@ -414,14 +416,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # [9.1] Стек из двух страниц. Никакого QTabWidget в MainWindow.
         self.center_stack = QStackedWidget()
-
-        # --- Страница 0: чат (базовый экран) ---
         default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
-            base_url="http://localhost:11434",
+            base_url=self.config.backends.ollama_url or "http://localhost:11434",
             model=default_model,
         )
         self.chat_panel.set_project_open(False)
@@ -433,22 +432,13 @@ class MainWindow(QMainWindow):
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
         self.chat_panel.diff_requested.connect(self._on_show_diff)
         self.center_stack.addWidget(self.chat_panel)  # index 0
-
-        # --- Страница 1: редактор (с файловыми вкладками) ---
         self.editor_widget = EditorWidget()
         self.editor_widget.set_file_reader(self._read_file)
         self.editor_widget.set_file_writer(self._write_file)
         self.editor_widget.set_theme(self.config.theme)
-
-        # [9.1] Сигналы редактора:
-        # * tabs_changed(0) → вернуть чат; (>0) → переключиться на редактор.
-        # * back_to_chat_requested → кнопка «💬 Чат» в тулбаре редактора.
         self.editor_widget.tabs_changed.connect(self._on_editor_tabs_changed)
         self.editor_widget.back_to_chat_requested.connect(self._show_chat_tab)
-
         self.center_stack.addWidget(self.editor_widget)  # index 1
-
-        # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
         try:
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QAction, QKeySequence
@@ -463,10 +453,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.center_stack)
         return panel
-
-    # ------------------------------------------------------------------
-    # [9.1] Переключение страниц (чат ⇄ редактор)
-    # ------------------------------------------------------------------
 
     @Slot(int)
     def _on_editor_tabs_changed(self, count: int) -> None:
@@ -487,17 +473,17 @@ class MainWindow(QMainWindow):
         """Показывает страницу чата (базовый экран)."""
         if hasattr(self, "center_stack"):
             self.center_stack.setCurrentIndex(0)
-            logger.debug("[9.1] Переключено на чат")
+            logger.debug("Переключено на чат")
 
     def _switch_to_editor(self) -> None:
         """Показывает страницу редактора."""
         if hasattr(self, "center_stack"):
             self.center_stack.setCurrentIndex(1)
-            logger.debug("[9.1] Переключено на редактор")
+            logger.debug("Переключено на редактор")
 
     @Slot()
     def _diff_current_editor_file(self) -> None:
-        """[9.8] Ctrl+D: diff текущего файла редактора с HEAD."""
+        """Ctrl+D: diff текущего файла редактора с HEAD."""
         if not hasattr(self, "editor_widget"):
             return
         file_path = self.editor_widget.current_file
@@ -510,9 +496,7 @@ class MainWindow(QMainWindow):
     # 🆕 Слот: смена темы → Monaco.
     @Slot(str)
     def _on_theme_changed_for_editor(self, theme: str) -> None:
-        """
-        [9.5.1] Смена темы: Monaco Editor + ChatPanel (пузыри, reasoning,
-        tool-карточки).
+        """Смена темы: Monaco Editor + ChatPanel (пузыри, reasoning, tool-карточки).
         Прокидывает смену темы в Monaco Editor.
         """
         if hasattr(self, "editor_widget"):
@@ -550,8 +534,6 @@ class MainWindow(QMainWindow):
             file_path = Path(path)
             file_path.write_text(content, encoding="utf-8")
             logger.info(f"Файл сохранен: {path}")
-            # После сохранения git-статус мог измениться — обновляем делегат.
-            # План 2.4: делегат живёт в FileTreeController.
             self.file_tree_controller.git_delegate.refresh()
             return True
         except Exception as e:
@@ -561,7 +543,7 @@ class MainWindow(QMainWindow):
     def open_file_in_editor(self, file_path: str, line: int = 0):
         """Открывает файл в редакторе и переключает на страницу редактора.
 
-        [9.1] Чат больше не вкладка — `EditorWidget.open_file` сам
+        Чат больше не вкладка — `EditorWidget.open_file` сам
         добавляет файл в свой `tab_bar`. `tabs_changed` эмитится, но мы
         дополнительно принудительно переключаемся, чтобы реакция была
         мгновенной (важно при первом открытии файла из дерева).
@@ -570,7 +552,7 @@ class MainWindow(QMainWindow):
         self._switch_to_editor()
 
     def _setup_menu(self) -> None:
-        """Создаёт меню-бар и подключает его сигналы (план 2.4).
+        """Создаёт меню-бар и подключает его сигналы.
 
         Само построение меню живёт в `ui.menus.AppMenuBar`; здесь — только
         связь сигналов с обработчиками MainWindow.
@@ -615,7 +597,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.about_requested.connect(self._show_about)
 
     def _open_benchmark(self) -> None:
-        """[4.7.B] Открывает диалог замеров производительности.
+        """Открывает диалог замеров производительности.
 
         Перед прогоном предупреждает, что это займёт время (7B CPU на
         длинных промптах — до минуты на строку).
@@ -639,7 +621,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _export_chat(self) -> None:
-        """[9.6.3] Экспорт текущего чата в Markdown/HTML."""
+        """Экспорт текущего чата в Markdown/HTML."""
         if not self.chat_panel:
             return
         self.chat_panel.export_chat(parent=self)
@@ -690,21 +672,12 @@ class MainWindow(QMainWindow):
         self.dashboard.slm_models_requested.connect(self._open_slm_manager)
         self.status_bar.addPermanentWidget(self.dashboard)
 
-        # Инжектим панель в ChatPanel — она будет синхронизировать
-        # backend/pipeline/tok/s.
-        if hasattr(self, "chat_panel") and self.chat_panel is not None:
-            self.chat_panel.set_dashboard(self.dashboard)
-
         # Инжектим панель в ChatPanel для синхронизации бэкенда/pipeline/tok/s.
-        if hasattr(self, "chat_panel") and self.chat_panel:
+        if getattr(self, "chat_panel", None) is not None:
             self.chat_panel.set_dashboard(self.dashboard)
 
         self.dashboard.pill_visibility_changed.connect(self._on_pill_visibility_changed)
         self.dashboard.apply_visibility_settings(self.config.hidden_status_pills)
-
-    # ------------------------------------------------------------------
-    # Палитра команд
-    # ------------------------------------------------------------------
 
     def _install_global_shortcuts(self) -> None:
         """Ctrl+Shift+P — глобальный shortcut на всё окно.
@@ -1308,10 +1281,6 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
 
-        # [9.1] При открытии проекта показываем чат: пользователь пришёл
-        # за вопросами, а не за прошлым состоянием редактора.
-        self._switch_to_chat()
-
         # Индексация: контроллер сам загрузит previous_state (план 2.4).
         self.indexing_controller.configure(
             project_path=self.project_path,
@@ -1817,14 +1786,11 @@ class MainWindow(QMainWindow):
                 self.config = load_config()
                 self.menu_bar.set_config(self.config)
                 if self.chat_panel:
-                    models = [m.model for m in self.config.models]
-                    self.chat_panel.update_models(models)
-                    default = self.config.default_model
-                    self.chat_panel.set_model(default)
+                    if "ollama" in self.config.backends.enabled:
+                        models = [m.model for m in self.config.models]
+                        self.chat_panel.update_models(models)
+                        self.chat_panel.set_model(self.config.default_model)
                     self.chat_panel.set_project_open(self.project_path is not None)
-                from core.config import save_config
-
-                save_config(self.config)
             except Exception as e:
                 logger.error(f"Ошибка загрузки конфига после визарда: {e}")
         else:
@@ -1915,9 +1881,10 @@ class MainWindow(QMainWindow):
             self._palette_dialog = None
         self._save_project_settings()
         if self.chat_panel:
-            self.config.last_model = self.chat_panel.get_current_model()
-            mode_map = {0: "chat", 1: "plan", 2: "agent"}
-            self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
+            model = self.chat_panel.get_current_model()
+            if model:  # Ollama активна; при SLM не затираем сохранённый last_model
+                self.config.last_model = model
+            self.config.last_mode = self.chat_panel.get_settings().get("mode", "chat")
             from core.config import save_config
 
             logger.info(
@@ -2157,10 +2124,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str, bool)
     def _on_model_checked(self, model_name: str, supports: bool):
-        """[2.4] Обновляет UI для проверенной модели (публичный API ChatPanel)."""
+        """Обновляет UI для проверенной модели (публичный API ChatPanel)."""
         self.chat_panel.update_model_status(model_name)
-        if self.chat_panel.get_current_model() == model_name:
-            self.chat_panel.update_model_status(model_name)
 
     @Slot(dict)
     def _on_model_check_finished(self, results: dict):
