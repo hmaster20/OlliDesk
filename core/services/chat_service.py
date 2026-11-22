@@ -1,18 +1,4 @@
-"""Сервис сборки `AgentContext` (2.8).
-
-Полный вынос `ChatPanel._do_chat/_do_agent` — большая работа с высоким
-риском регрессии. В этой итерации — только **сборка контекста** (без
-создания `AgentChatThread`): тестируемо без Qt, легко подключить
-к существующему `_do_chat` позже.
-
-`ChatService.build_agent_context(snapshot, mode)`:
-  * принимает «снимок» состояния ChatPanel (`ChatRequestSnapshot`);
-  * возвращает готовый `AgentContext` — ровно то, что сейчас собирается
-    вручную в 30 строк внутри `_do_chat/_do_agent`.
-
-`ChatService.pick_max_iterations(mode, ...)`:
-  * вынести `ChatPanel._iteration_limit` — он не зависит от Qt.
-"""
+"""Сервис сборки `AgentContext."""
 
 from __future__ import annotations
 

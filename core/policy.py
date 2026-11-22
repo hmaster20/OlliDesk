@@ -2,7 +2,7 @@
 
 Заменяет три места, где политики раскиданы сейчас:
   * `@tool(policy=...)` — дефолт;
-  * `ChatPanel._apply_config_policies` — config.tool_policies;
+  * `AppConfig.tool_policies` — config.tool_policies;
   * `ProfileToolPolicies` — профиль.
 
 `effective_policy(spec, ...)` сводит их в один `EffectivePolicy` с полем

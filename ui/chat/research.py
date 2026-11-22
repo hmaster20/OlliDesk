@@ -311,8 +311,10 @@ class ResearchMixin:
         if self._model_pool is not None:
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._model_pool.aclose())
-                loop.close()
+                try:
+                    loop.run_until_complete(self._model_pool.aclose())
+                finally:
+                    loop.close()
             except Exception:
                 logger.debug("ModelPool.aclose failed", exc_info=True)
 
@@ -390,10 +392,24 @@ class ResearchMixin:
     @Slot(str)
     def _on_pool_error(self, error_msg: str) -> None:
         """Ошибка загрузки пайплайна (в GUI-потоке)."""
+        import asyncio
+
         logger.warning(f"ModelPool/Orchestrator недоступен: {error_msg}")
         self._pool_load_failed = True
         self._orchestrator = None
-        self._model_pool = None
+        # Пул мог быть уже присвоен (упал Orchestrator.init) — закрываем,
+        # иначе веса останутся в RAM/VRAM.
+        if self._model_pool is not None:
+            pool = self._model_pool
+            self._model_pool = None
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(pool.aclose())
+                finally:
+                    loop.close()
+            except Exception:
+                logger.debug("aclose пула после ошибки упал", exc_info=True)
         self.status_label.setText(f"⚠️ Оркестратор недоступен (ReAct продолжит работу): {error_msg[:100]}")
         self._update_pipeline_status()
 
@@ -411,8 +427,6 @@ class ResearchMixin:
         try:
             if self._last_assistant_widget is not None:
                 self._last_assistant_widget.finalize()
-
-            # Сохраняем assistant-сообщение в историю (0.1.3b).
             if result.answer:
                 assistant_message = ChatMessage(
                     role="assistant",
@@ -424,8 +438,6 @@ class ResearchMixin:
                         self._session_id,
                         assistant_message,
                     )
-
-            # Диаграмма компонентов.
             if result.ascii_diagram or result.mermaid_diagram:
                 diagram_item = ChatDiagramItem(
                     result.ascii_diagram or "",
@@ -436,7 +448,6 @@ class ResearchMixin:
                     diagram_item,
                 )
 
-            # Evidence pack — короткая строка.
             if result.evidence_ids:
                 verify_mark = "✅" if result.verify_ok else "⚠️"
                 critique_mark = "✅" if result.critique_ok else "⚠️"
@@ -448,7 +459,10 @@ class ResearchMixin:
                 )
                 if unsupported:
                     summary += f" · без доказательств: {unsupported}"
-            # [10.7] Coding-флоу: показываем прогресс тестов и патчи.
+            if unsupported:
+                summary += f" · без доказательств: {unsupported}"
+            self._add_message("system", summary)  # раньше summary терялся без coding_flow
+
             if result.coding_flow:
                 tests_ok = result.tests_failed == 0 and result.tests_errors == 0
                 icon = "✅" if tests_ok else "❌"
@@ -463,7 +477,6 @@ class ResearchMixin:
                     summary += f" · патчей: {applied_ok}/{len(result.patches)}"
                 self._add_message("system", summary)
 
-                # Патчи с ошибками — отдельным блоком.
                 failed_patches = [p for p in result.patches if p.get("status") == "error"]
                 if failed_patches:
                     lines = ["⚠️ Не применены патчи:"]

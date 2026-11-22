@@ -1,4 +1,4 @@
-"""Схема событий OlliDesk (2.5).
+"""Схема событий OlliDesk
 
 `EventBus` передаёт `dict`. Здесь — контракты (TypedDict) для type hints
 и документации.

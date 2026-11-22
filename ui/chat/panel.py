@@ -242,12 +242,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._current_thinking_content = ""
-
-        # 0.1.3b: аккумулятор частей текущего ответа ассистента.
-        # Нужен, чтобы _on_agent_finish/_send_finished сохраняли полный
-        # ChatMessage (reasoning + text + tool_calls + tool_results),
-        # а не только TextPart. Без этого reasoning и tool-calls терялись
-        # при перезагрузке сессии.
         self._current_assistant_parts: list[MessagePart] = []
         self._current_assistant_text: str = ""
         self._current_assistant_reasoning: str = ""
@@ -261,32 +255,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._project_scan_root: str | None = None
         self._project_scanned: bool = False
         self._attached_files = AttachedFileStore()
-
         self._hypotheses = HypothesisStore()
         self._hypothesis_widgets: dict[str, ChatHypothesisItem] = {}
-
-        # 4.3: эпизодическая память. Создаётся лениво (первое обращение
-        # к `_ensure_memory_service`), потому что SQLite-коннект не нужен
-        # в тестах без памяти.
         self._memory_service: MemoryService | None = None
-
-        # 2.12: durable inbox. Ленивая инициализация через `_ensure_inbox`,
-        # чтобы тесты без SQLite не падали.
         self._inbox: SessionInbox | None = None
-        # [2.12] id текущего inbox-запроса (для complete/fail).
         self._current_inbox_id: str | None = None
-
-        # [2.8] Application Services.
         from core.services.model_service import ModelService
         from core.services.project_service import ProjectService
-
         self._project_service = ProjectService()
         self._model_service = ModelService()
-
-        # [9.7] Флаг «идёт распознавание» — чтобы не запускать параллельный OCR/STT.
         self._media_busy: bool = False
-
-        # [9.5.1] Текущая тема чата (передаётся в ChatMessageItem).
         self._is_dark: bool = True
         try:
             from core.config import load_config as _load_cfg_theme
@@ -296,6 +274,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             pass
 
         # --- Новые поля для серого потока и паспорта ---
+        self._current_thought_stream: Any = None  # legacy: мысли теперь в ReasoningPanel
         self._research_mode_active: bool = False
         self._research_cancelled: bool = False
         self._pending_final_answer: str = ""
@@ -394,47 +373,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         # 2M: синхронизация одно/двух-модельного режима
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.dual_model_changed.connect(self._on_dual_model_changed)
-
-    def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
-        """Лимит итераций для текущего режима и типа задачи.
-
-        Логика:
-        * Agent-режим — всегда `agent_max_iterations` (полный доступ,
-            задача может быть длинной: рефакторинг, миграция и т. п.).
-        * Research-вопрос в Chat/Plan — повышенный потолок (не меньше 15
-            и не меньше половины от agent-лимита). Фазовая модель
-            (RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS) + работа с гипотезами
-            естественным образом требуют 12–20 шагов; 7 физически мало.
-        * Обычный вопрос в Chat/Plan — `chat_max_iterations` (по умолчанию 7).
-
-        Фазовая модель внутри `AgentLoop` — главный регулятор остановки;
-        лимит — только аварийный стоп-кран, чтобы модель не ушла в бесконечность.
-        """
-        default_chat = 7
-        default_agent = 30
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-        except Exception:
-            cfg = None
-
-        if mode == AgentMode.AGENT:
-            return cfg.agent_max_iterations if cfg else default_agent
-
-        if cfg is None:
-            # Без конфига — эвристика: research требует больше итераций.
-            return 15 if is_research else default_chat
-
-        if is_research:
-            # Не меньше 15, и не меньше половины agent-лимита. Верхняя
-            # граница — сам agent-лимит, чтобы не превысить общий потолок.
-            return max(
-                15,
-                min(cfg.agent_max_iterations, cfg.agent_max_iterations // 2 + 8),
-            )
-
-        return cfg.chat_max_iterations
 
     # ---------------------------------------------------------
     # UI
@@ -992,12 +930,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                     w = item.widget()
                     if isinstance(w, ChatMessageItem):
                         apply_policy(w.bubble, w.role)
-
-    def _relayout_all_items(self) -> None:
-        for i in range(self.scroll_layout.count()):
-            item = self.scroll_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
-                self._update_bubble_width(item.widget())
 
     @Slot(str)
     def _on_thinking(self, token: str):
@@ -2209,22 +2141,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                 overrides[name] = policy
         return overrides
 
-    def _apply_config_policies(self, registry: ToolRegistry) -> None:
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать политики из конфига: {e}")
-            return
-
-        for tool_name, policy in cfg.tool_policies.items():
-            registry.set_policy(tool_name, policy)
-
-        confirm = cfg.confirm
-        if not (confirm.enabled or confirm.web_search):
-            registry.set_policy("web_search", ToolPolicy.AUTO)
-
     @Slot(str, str, str)
     def _on_tool_call_detected(self, name: str, description: str, arguments_json: str):
         from ui.dialogs.tool_confirmation_dialog import ToolConfirmationDialog
@@ -2653,8 +2569,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     ) -> None:
         """Записывает рефлексию, если включён ``auto_remember``.
 
-        Вызывается из `_on_agent_finished` (2.10) и `_send_finished`
-        (старый путь). ``auto_remember=False`` → ничего не пишет
+        Вызывается из `_on_agent_finished` (2.10). ``auto_remember=False`` → ничего не пишет
         (пользователь отключил в настройках).
 
         ``summary_hint`` — например, первые 300 символов финального
@@ -3065,24 +2980,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             "font-size: 18px; padding: 8px 20px; background: #d32f2f;"
             " color: white; border: none; border-radius: 4px;"
         )
-
-    def _send_finished(self):
-        if self._last_assistant_widget is not None:
-            self._last_assistant_widget.finalize()
-
-        if self._current_assistant_text or self._current_assistant_reasoning:
-            assistant_message = self._build_assistant_message(fallback_text=self._current_assistant_content)
-            self._messages.append(assistant_message)
-            if self._session_id:
-                self.session_store.save_message(self._session_id, assistant_message)
-
-        self._reset_send_button()
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-        self._current_assistant_parts = []
-        self._current_assistant_text = ""
-        self._current_assistant_reasoning = ""
-        self._last_assistant_widget = None
 
     @Slot(str)
     def _on_agent_error(self, error_msg: str):

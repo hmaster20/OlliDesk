@@ -1815,22 +1815,6 @@ class MainWindow(QMainWindow):
                 logger.error(f"Ошибка перезагрузки конфига: {e}")
 
     @Slot(str, bool)
-    def _on_toggle_status_pill(self, pill_id: str, visible: bool) -> None:
-        if not hasattr(self, "dashboard"):
-            return
-
-        hidden = list(self.config.hidden_status_pills)
-        if visible and pill_id in hidden:
-            hidden.remove(pill_id)
-        elif not visible and pill_id not in hidden:
-            hidden.append(pill_id)
-
-        self.config.hidden_status_pills = hidden
-        from core.config import save_config
-
-        save_config(self.config)
-
-    @Slot(str, bool)
     def _on_pill_visibility_changed(self, pill_id: str, visible: bool) -> None:
         """Централизованно обрабатывает скрытие/отображение плиток.
 
