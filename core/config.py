@@ -724,6 +724,7 @@ class ConfirmSettings(BaseModel):
 
 class BackendSettings(BaseModel):
     """Выбор LLM-бэкендов."""
+
     enabled: list[str] = Field(default_factory=lambda: ["local_slm"])
     priority: list[str] = Field(default_factory=lambda: ["local_slm", "ollama"])
     embed_backend: str = "auto"
@@ -1254,7 +1255,7 @@ class AppConfig(BaseModel):
     rules_file: str = ".ollidesk/rules.md"
     recent_projects: list[str] = Field(default_factory=list)
     wizard_dismissed: bool = False
-    theme: str = "dark"   # "light"
+    theme: str = "dark"  # "light"
     last_model: str = ""
     last_mode: str = "agent"
     agent_max_iterations: int = 30

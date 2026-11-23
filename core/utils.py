@@ -28,6 +28,7 @@ def get_resource_path(relative_path: str) -> Path:
 
     return Path(base_path) / relative_path
 
+
 def _get_pointer_file() -> Path:
     """Фиксированный файл-указатель каталога данных (Вариант А).
 
@@ -56,6 +57,7 @@ def get_app_data_dir() -> Path:
             pass
     return Path.home() / ".ollidesk"
 
+
 def set_app_data_dir(path: Path) -> None:
     """Записывает файл-указатель каталога данных и создаёт сам каталог."""
     resolved = Path(path).resolve()
@@ -63,6 +65,7 @@ def set_app_data_dir(path: Path) -> None:
     pointer = _get_pointer_file()
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(str(resolved), encoding="utf-8")
+
 
 def get_app_icon() -> QIcon | None:
     """Возвращает QIcon приложения или None, если файла нет.

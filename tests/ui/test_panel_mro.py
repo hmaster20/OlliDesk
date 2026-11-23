@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+
 def test_mro_order() -> None:
     """QWidget первым, миксины после. Иначе PySide6 не работает."""
 
     pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QWidget
+
     from ui.chat.backends import BackendsMixin
     from ui.chat.ollama_models import OllamaModelsMixin
     from ui.chat.panel import ChatPanel
     from ui.chat.research import ResearchMixin
-    from PySide6.QtWidgets import QWidget
 
     mro = ChatPanel.__mro__
     qwidget_idx = mro.index(QWidget)
@@ -23,6 +25,7 @@ def test_mro_order() -> None:
     research_idx = mro.index(ResearchMixin)
     ollama_idx = mro.index(OllamaModelsMixin)
     assert qwidget_idx < backends_idx < research_idx < ollama_idx
+
 
 def test_methods_from_mixins() -> None:
     """Ключевые методы доступны на ChatPanel через миксины."""
@@ -51,6 +54,7 @@ def test_methods_from_mixins() -> None:
     assert hasattr(ChatPanel, "get_current_model")
     assert hasattr(ChatPanel, "_update_model_selector_visibility")
     assert hasattr(ChatPanel, "_ollama_mode_guard")
+
 
 def test_panel_size_reduced() -> None:
     """panel.py не должен содержать определения вынесенных методов.

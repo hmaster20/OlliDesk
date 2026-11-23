@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from agents.orchestrator import Orchestrator
     from core.services.model_service import ModelService
 
+
 class BackendsMixin:
     """Методы ChatPanel для управления SLM и Ollama (2.4)."""
 
@@ -323,6 +324,7 @@ class BackendsMixin:
         selected_info = None
         try:
             from core.config import load_config as _load_cfg
+
             _cfg = _load_cfg()
             selected_info = _cfg.slm.get_selected_info()
         except Exception:
@@ -346,7 +348,6 @@ class BackendsMixin:
         self._slm_load_thread.error.connect(lambda err, gen=generation: self._on_slm_error(err, gen))
         self._slm_load_thread.start()
 
-
     def _on_slm_error(self, error_msg: str, generation: int | None = None) -> None:
         """Ошибка загрузки/скачивания SLM (в GUI-потоке)."""
         if generation is not None and generation != self._slm_load_generation:
@@ -362,5 +363,6 @@ class BackendsMixin:
                 "error": error_msg,
             },
         )
+
 
 __all__ = ["BackendsMixin"]

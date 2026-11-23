@@ -14,6 +14,7 @@ from core.utils import get_app_data_dir, get_app_icon
 from ui.dialogs.wizard import SetupWizard
 from ui.main_window import MainWindow
 
+
 def _run_wizard() -> AppConfig | None:
     """Показывает мастер настройки и загружает конфиг после его завершения."""
     wizard = SetupWizard()
@@ -25,6 +26,7 @@ def _run_wizard() -> AppConfig | None:
             return None
     logger.warning("Визард отменён пользователем")
     return None
+
 
 def _load_config_or_wizard() -> AppConfig | None:
     """Загружает конфиг или показывает визард первого запуска."""
@@ -42,6 +44,8 @@ def _load_config_or_wizard() -> AppConfig | None:
     except ConfigError as e:
         logger.warning(f"Конфигурация невалидна: {e}")
         return _run_wizard()
+
+
 class OlliDeskApp:
     """Главный класс приложения."""
 
@@ -163,7 +167,6 @@ class OlliDeskApp:
         from core.config import save_config
 
         save_config(self.config)
-
 
     def _run_wizard(self) -> None:
         """Показывает мастер настройки по запросу из ChatPanel (первый запуск, нет моделей)."""

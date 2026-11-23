@@ -48,8 +48,10 @@ class PosthogMock:
 
     disabled = True
 
+
 _posthog_mock: Any = PosthogMock()
 sys.modules["posthog"] = _posthog_mock
+
 
 # Настройка обработчика сообщений Qt
 def qt_message_handler(mode, context, message):
@@ -64,7 +66,9 @@ def qt_message_handler(mode, context, message):
     elif mode == QtMsgType.QtFatalMsg:
         logger.critical(f"Qt FATAL: {message}")
 
+
 qInstallMessageHandler(qt_message_handler)
+
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
     """Единая точка необработанных исключений.

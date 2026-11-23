@@ -6,6 +6,7 @@ ClassicStyle + QSS из токенов ui.theme + палитра QPalette.
 диска каталога моделей («облачко» на строке поля). При свободном
 месте < MODELS_MIN_FREE_GB для моделей — жёлтое предупреждение.
 """
+
 from __future__ import annotations
 
 import os
@@ -70,7 +71,7 @@ def _disk_label(path: Path) -> str:
 def _rgba(hex_color: str, alpha: float) -> str:
     """#rrggbb -> rgba(r, g, b, a) для QSS."""
     h = hex_color.strip().lstrip("#")
-    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    r, g, b = (int(h[i : i + 2], 16) for i in (0, 2, 4))
     return f"rgba({r}, {g}, {b}, {alpha:.2f})"
 
 
@@ -366,16 +367,17 @@ class SetupWizard(QWizard):
 
             dwm = ctypes.windll.dwmapi
             dwm.DwmSetWindowAttribute.argtypes = [
-                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
             ]
             dwm.DwmSetWindowAttribute.restype = ctypes.c_int32
             hwnd = ctypes.c_void_p(int(self.winId()))
             value = ctypes.c_int(1 if dark else 0)
             # 20 — Win10 20H1+/Win11; 19 — Win10 1809–1909.
             for attr in (20, 19):
-                if dwm.DwmSetWindowAttribute(
-                    hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
-                ) == 0:
+                if dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
                     break
         except Exception as e:
             logger.debug(f"Не удалось применить тёмный заголовок окна: {e}")
@@ -569,7 +571,9 @@ class DataLocationPage(QWizardPage):
 
     def _browse_data_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(
-            self, "Каталог данных", self.data_edit.text(),
+            self,
+            "Каталог данных",
+            self.data_edit.text(),
             QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog,
         )
         if folder:
@@ -577,7 +581,9 @@ class DataLocationPage(QWizardPage):
 
     def _browse_models_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(
-            self, "Каталог моделей SLM", self.models_edit.text(),
+            self,
+            "Каталог моделей SLM",
+            self.models_edit.text(),
             QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog,
         )
         if folder:
@@ -605,8 +611,7 @@ class DataLocationPage(QWizardPage):
             box.setIcon(QMessageBox.Icon.Warning)
             box.setWindowTitle("Мало места для моделей")
             box.setText(
-                f"На диске {label} свободно {free:.1f} ГБ — меньше "
-                f"рекомендуемых {MODELS_MIN_FREE_GB:.0f} ГБ."
+                f"На диске {label} свободно {free:.1f} ГБ — меньше рекомендуемых {MODELS_MIN_FREE_GB:.0f} ГБ."
             )
             box.setInformativeText(
                 "Локальные модели занимают от ~1 до 20+ ГБ каждая. "

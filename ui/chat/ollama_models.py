@@ -11,6 +11,7 @@
 Когда Ollama будет выведена из эксплуатации, достаточно удалить этот
 файл, убрать миксин из баз ChatPanel и блок Ollama-виджетов в _setup_ui.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
@@ -224,7 +225,7 @@ class OllamaModelsMixin:
         text = self.model_combo.currentText()
         for prefix in ("✅ ", "⬇️ "):
             if text.startswith(prefix):
-                return text[len(prefix):]
+                return text[len(prefix) :]
         return text or "llama3.2"
 
     def _on_model_changed(self, index: int):

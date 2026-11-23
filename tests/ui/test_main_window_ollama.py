@@ -1,4 +1,5 @@
 """Ollama-проверки вынесены из MainWindow в OllamaController."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,9 +8,7 @@ import pytest
 
 
 def test_ollama_code_moved_out() -> None:
-    src = (
-        Path(__file__).parent.parent.parent / "ui" / "main_window.py"
-    ).read_text(encoding="utf-8")
+    src = (Path(__file__).parent.parent.parent / "ui" / "main_window.py").read_text(encoding="utf-8")
     for name in (
         "class ModelCheckThread",
         "def _do_check_ollama",

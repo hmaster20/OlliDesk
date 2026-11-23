@@ -14,6 +14,7 @@ MainWindow не знает про потоки и HTTP — только подк
 Когда Ollama будет выведена из эксплуатации, достаточно удалить этот
 файл, его создание/подключение в MainWindow и пункт меню/палитры.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,9 +41,9 @@ class ModelCheckThread(QThread):
     живут в этом же файле, внешнее поведение не меняется.
     """
 
-    progress = Signal(str, int, int)   # model_name, current, total
+    progress = Signal(str, int, int)  # model_name, current, total
     model_checked = Signal(str, bool)  # model_name, supports_tools
-    check_finished = Signal(dict)      # {model_name: supports_tools}
+    check_finished = Signal(dict)  # {model_name: supports_tools}
 
     def __init__(self, base_url: str, registry: ModelRegistry) -> None:
         super().__init__()
@@ -87,8 +88,7 @@ class ModelCheckThread(QThread):
                     # Сервис недоступен: перебирать остальные N моделей
                     # бессмысленно — все упадут с тем же таймаутом.
                     logger.warning(
-                        f"Ollama недоступна, проверка моделей прервана "
-                        f"на {i + 1}/{total} ({model}): {e}"
+                        f"Ollama недоступна, проверка моделей прервана на {i + 1}/{total} ({model}): {e}"
                     )
                     break
                 except Exception as e:
@@ -102,12 +102,12 @@ class ModelCheckThread(QThread):
 class OllamaController(QObject):
     """Состояние и фоновые проверки Ollama. Наружу — только сигналы."""
 
-    models_synced = Signal(list)          # реестр синхронизирован со списком моделей
+    models_synced = Signal(list)  # реестр синхронизирован со списком моделей
     check_progress = Signal(str, int, int)
     model_checked = Signal(str, bool)
     check_finished = Signal(dict)
-    check_state_changed = Signal(str)     # checking | stopping | idle | background
-    check_refused = Signal(str)           # disabled | unavailable
+    check_state_changed = Signal(str)  # checking | stopping | idle | background
+    check_refused = Signal(str)  # disabled | unavailable
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -189,8 +189,7 @@ class OllamaController(QObject):
                 self.check_state_changed.emit("idle")
                 return
             logger.warning(
-                "ModelCheckThread не завершился за 10 сек; продолжает работу "
-                "в фоне и выйдет по cancel()"
+                "ModelCheckThread не завершился за 10 сек; продолжает работу в фоне и выйдет по cancel()"
             )
             self.check_state_changed.emit("background")
             return
@@ -235,9 +234,7 @@ class OllamaController(QObject):
         self._available_models = list(models or [])
         self._connected = bool(ok) and bool(self._available_models)
         if not self._connected:
-            logger.info(
-                f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})"
-            )
+            logger.info(f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})")
             return
         logger.info(f"Ollama: подключён, моделей={len(self._available_models)}")
         try:

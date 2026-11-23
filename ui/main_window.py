@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.ollama_controller import OllamaController
 from core.config import AppConfig, ToolPolicy
 from core.profiles import get_profile_by_id
 from core.prompt_watcher import PromptWatcher
@@ -63,8 +62,10 @@ from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_controller import FileTreeController
 from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
+from ui.ollama_controller import OllamaController
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
+
 
 class MainWindow(QMainWindow):
     """Главное окно приложения.
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
         db_path = get_app_data_dir() / "sessions.db"
         self.session_store = SessionStore(db_path)
         from core.roles import RoleManager
+
         self.role_manager = RoleManager()
         self.prompt_manager = SystemPromptManager()
         self.prompt_watcher = PromptWatcher(self.prompt_manager, self.role_manager)
@@ -869,7 +871,7 @@ class MainWindow(QMainWindow):
             logger.exception("Не удалось остановить генерацию из палитры")
 
     def _toggle_backend(self) -> None:
-        """ Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
+        """Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
 
         Если Ollama не включён в `AppConfig.backends.enabled` — показываем
         диалог с предложением включить в настройках.
@@ -1342,7 +1344,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _show_editor_tab(self) -> None:
-        """ Переключает на страницу редактора.
+        """Переключает на страницу редактора.
 
         Если не открыто ни одного файла — редактор пуст, показывать
         нечего. Сообщаем пользователю и остаёмся в чате.
@@ -1608,9 +1610,7 @@ class MainWindow(QMainWindow):
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
 
-        dlg = ModelManagerDialog(
-            self.ollama_controller.registry, self.ollama_controller.base_url, self
-        )
+        dlg = ModelManagerDialog(self.ollama_controller.registry, self.ollama_controller.base_url, self)
         dlg.exec()
 
     def _open_slm_manager(self):
@@ -1710,11 +1710,7 @@ class MainWindow(QMainWindow):
         if not self.chat_panel.get_current_model() and models:
             registry = self.ollama_controller.registry
             first_local = next(
-                (
-                    m
-                    for m in models
-                    if (info := registry.get(m)) is not None and info.is_local
-                ),
+                (m for m in models if (info := registry.get(m)) is not None and info.is_local),
                 models[0],
             )
             self.chat_panel.set_model(first_local)

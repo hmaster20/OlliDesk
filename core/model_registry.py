@@ -5,6 +5,7 @@
 сконструирован и пригоден к использованию (пустой in-memory справочник),
 но не читает, не создаёт и не сохраняет model_registry.yaml.
 """
+
 from datetime import datetime
 
 import yaml
@@ -72,12 +73,42 @@ class ModelRegistry:
         """Создает файл с дефолтным справочником популярных моделей."""
         logger.info("Создаю дефолтный справочник моделей (model_registry.yaml)")
         defaults = {
-            "qwen2.5-coder:7b": ModelInfo(name="Qwen 2.5 Coder 7B", description="Отличная сбалансированная модель для кода.", recommended_modes=["chat", "plan", "agent"], supports_tools=True),
-            "qwen2.5-coder:32b": ModelInfo(name="Qwen 2.5 Coder 32B", description="Продвинутая версия для сложных задач.", recommended_modes=["plan", "agent"], supports_tools=True),
-            "llama3.1:70b": ModelInfo(name="Llama 3.1 70B", description="Мощная модель для сложных логических задач.", recommended_modes=["agent", "plan"], supports_tools=True),
-            "qwen2.5:72b": ModelInfo(name="Qwen 2.5 72B", description="Одна из лучших открытых моделей общего назначения.", recommended_modes=["agent", "plan", "chat"], supports_tools=True),
-            "deepseek-r1:70b": ModelInfo(name="DeepSeek R1 Distill Llama 70B", description="Модель с цепочкой рассуждений.", recommended_modes=["plan", "agent"], supports_tools=True),
-            "command-r-plus": ModelInfo(name="Command R+ (104B)", description="Отлично справляется с RAG.", recommended_modes=["agent"], supports_tools=True),
+            "qwen2.5-coder:7b": ModelInfo(
+                name="Qwen 2.5 Coder 7B",
+                description="Отличная сбалансированная модель для кода.",
+                recommended_modes=["chat", "plan", "agent"],
+                supports_tools=True,
+            ),
+            "qwen2.5-coder:32b": ModelInfo(
+                name="Qwen 2.5 Coder 32B",
+                description="Продвинутая версия для сложных задач.",
+                recommended_modes=["plan", "agent"],
+                supports_tools=True,
+            ),
+            "llama3.1:70b": ModelInfo(
+                name="Llama 3.1 70B",
+                description="Мощная модель для сложных логических задач.",
+                recommended_modes=["agent", "plan"],
+                supports_tools=True,
+            ),
+            "qwen2.5:72b": ModelInfo(
+                name="Qwen 2.5 72B",
+                description="Одна из лучших открытых моделей общего назначения.",
+                recommended_modes=["agent", "plan", "chat"],
+                supports_tools=True,
+            ),
+            "deepseek-r1:70b": ModelInfo(
+                name="DeepSeek R1 Distill Llama 70B",
+                description="Модель с цепочкой рассуждений.",
+                recommended_modes=["plan", "agent"],
+                supports_tools=True,
+            ),
+            "command-r-plus": ModelInfo(
+                name="Command R+ (104B)",
+                description="Отлично справляется с RAG.",
+                recommended_modes=["agent"],
+                supports_tools=True,
+            ),
         }
         self.models = defaults
         self.save()

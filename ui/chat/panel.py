@@ -261,6 +261,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._current_inbox_id: str | None = None
         from core.services.model_service import ModelService
         from core.services.project_service import ProjectService
+
         self._project_service = ProjectService()
         self._model_service = ModelService()
         self._media_busy: bool = False
@@ -1363,7 +1364,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         """Эмитит ``settings_changed`` с актуальным payload."""
         self.settings_changed.emit(self._settings_payload())
 
-
     def _settings_payload(self) -> dict:
         """Собирает актуальный payload для ``settings_changed`` (0.1.4)."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
@@ -1374,7 +1374,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         if backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM):
             payload["model"] = self.active_model_name()
         return payload
-
 
     def get_settings(self) -> dict:
         payload = self._settings_payload()
@@ -1399,7 +1398,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
                 self._pipeline_selectors.set_planner(settings["planner_model_id"])
             if settings.get("analyst_model_id"):
                 self._pipeline_selectors.set_analyst(settings["analyst_model_id"])
-
 
     def _toggle_agent_panel(self):
         self.agent_panel_toggle.emit(True)
@@ -1792,9 +1790,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         role_prompt = self.get_current_role_prompt()
         p_root = Path(self.project_root) if self.project_root else None
         mode_prompt = (
-            self.prompt_manager.get_prompt(
-                mode.value, project_root=p_root, context=self._template_context()
-            )
+            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
             if self.prompt_manager
             else ""
         )
@@ -2230,7 +2226,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         Args:
             payload: {"path", "original_content", "is_new_file"} от карточки.
         """
-        from PySide6.QtWidgets import QMessageBox
 
         path = str(payload.get("path") or "")
         original = str(payload.get("original_content") or "")
@@ -3029,7 +3024,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         """Пересчитывает тултипы селектора режимов (из актуальных промптов)."""
         self._update_mode_tooltips()
 
-
     def set_mode_by_name(self, mode: str) -> None:
         """Переключает режим по имени: 'chat' | 'plan' | 'agent'."""
         mode_map = {"chat": 0, "plan": 1, "agent": 2}
@@ -3229,6 +3223,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._inbox = None
         try:
             from tools.mcp_ops import MCPManager
+
             MCPManager.instance().shutdown_sync()
         except Exception:
             logger.debug("MCP shutdown failed", exc_info=True)
@@ -3265,7 +3260,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             if thread is not None and thread.isRunning():
                 logger.debug(f"Принудительная остановка потока {type(thread).__name__}")
                 thread.quit()
-                if not thread.wait(1000): # Ждем 1 секунду
+                if not thread.wait(1000):  # Ждем 1 секунду
                     logger.warning(f"Поток {type(thread).__name__} завис, terminate()")
                     thread.terminate()
                     thread.wait(500)
@@ -3667,7 +3662,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     @Slot(str)
     def _on_undo_file_snapshot(self, snapshot_id: str) -> None:
         """Откатывает файл из снапшота."""
-        from PySide6.QtWidgets import QMessageBox
 
         if not snapshot_id:
             return
