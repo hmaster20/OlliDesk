@@ -1,10 +1,13 @@
 """Фоновые потоки для панели чата."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import threading
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from PySide6.QtCore import QThread, Signal
@@ -13,6 +16,7 @@ from agents.agent_loop import (
     AgentContext,
     AgentIterationLimitError,
     AgentLoop,
+    SoftBudget,
 )
 from agents.base import LLMBackend
 from agents.download_slm import download_model, get_model_parts
@@ -22,7 +26,13 @@ from agents.ollama_client import ChatMessage, OllamaClient
 from agents.orchestrator import Orchestrator, RunResult
 from agents.tool_registry import ToolRegistry
 from core.config import AgentMode
+from core.event_bus import emit_event
+from core.events import EventKind
 from fs.vector_store import SearchResult
+
+if TYPE_CHECKING:
+    from agents.slm_optimizer import OptimizedParams
+
 
 # Лимит времени Orchestrator. Синтез 7B на CPU занимает 200-250 с,
 # поэтому 5 минут не хватало даже без регенерации.
@@ -94,6 +104,13 @@ class AgentChatThread(QThread):
     orchestrator_event = Signal(str, dict)
     orchestrator_result = Signal(object)  # RunResult
 
+    # --- [2.10] Бюджет и завершение агента ---
+    budget_warning = Signal(dict)  # SoftBudget.snapshot()
+    budget_exceeded = Signal(dict)  # SoftBudget.snapshot()
+    # {"finish_reason": str | None, "budget": dict | None,
+    #  "iterations": int, "elapsed_s": float}
+    agent_finished = Signal(dict)
+
     def __init__(
         self,
         client: LLMBackend,
@@ -104,6 +121,12 @@ class AgentChatThread(QThread):
         agent_mode: AgentMode,
         max_iterations: int = 10,
         orchestrator: Orchestrator | None = None,
+        soft_budget: SoftBudget | None = None,
+        # [2.12] Durable inbox.
+        inbox_id: str | None = None,
+        inbox: Any = None,  # SessionInbox | None
+        # [2.8] Единая точка исполнения.
+        tool_service: Any = None,
     ):
         super().__init__()
         self.client = client
@@ -114,10 +137,15 @@ class AgentChatThread(QThread):
         self.agent_mode = agent_mode
         self.max_iterations = max_iterations
         self.orchestrator = orchestrator
+        self.soft_budget = soft_budget
+        # [2.12]
+        self.inbox_id = inbox_id
+        self.inbox = inbox
 
         self._tool_response: tuple[bool, dict[str, Any] | None] | None = None
         self._tool_event = threading.Event()
         self._research_mode: bool = False
+        self.tool_service = tool_service
 
     def respond_to_tool(self, approved: bool, arguments: dict | None = None):
         self._tool_response = (approved, arguments)
@@ -142,7 +170,17 @@ class AgentChatThread(QThread):
     # ------------------------------------------------------------------
 
     async def _run_agent(self):
-        # Пытаемся распознать research-вопрос для роутинга.
+        # [2.12] Атомарно забираем запрос из inbox (pending → running).
+        # Если claim вернул False — запись уже забрана (крайне редко;
+        # например, вторая сессия по ошибке). Продолжаем без inbox.
+        if self.inbox is not None and self.inbox_id:
+            try:
+                claimed = self.inbox.claim(self.inbox_id)
+                if not claimed:
+                    logger.warning(f"inbox.claim: id={self.inbox_id[:8]}… не pending (возможно, уже забрали)")
+            except Exception:
+                logger.debug("inbox.claim упал", exc_info=True)
+
         last_user = next(
             (m for m in reversed(self.messages_history) if m.role == "user"),
             None,
@@ -210,8 +248,24 @@ class AgentChatThread(QThread):
         async def _on_stream_finish():
             self.stream_finished.emit()
 
+        # [2.10] Колбэки бюджета пробрасывают snapshot в сигналы UI.
+        async def _on_budget_warning(snapshot: dict) -> None:
+            self.budget_warning.emit(snapshot)
+
+        async def _on_budget_exceeded(snapshot: dict) -> None:
+            self.budget_exceeded.emit(snapshot)
+
+        # SoftBudget из UI (None → AgentLoop создаст свой из AppConfig).
+        _budget = self.soft_budget
+
         async def _run_with(client) -> tuple[str, AgentLoop]:
-            loop = AgentLoop(client=client, registry=self.registry, model=self.model)
+            loop = AgentLoop(
+                client=client,
+                registry=self.registry,
+                model=self.model,
+                tool_service=self.tool_service,
+                project_root=self.context.project_root,
+            )
             from agents.investigation import is_research_question
 
             last_user_local = next(
@@ -234,11 +288,25 @@ class AgentChatThread(QThread):
                 on_tool_result=self._on_tool_result,
                 on_thought=_on_thought if self._research_mode else None,
                 on_final_answer_started=(_on_final_started if self._research_mode else None),
-                # [4.8.E] низкоуровневые события
                 on_text_delta=_on_text_delta,
                 on_reasoning_delta=_on_reasoning_delta,
                 on_stream_start=_on_stream_start,
                 on_stream_end=_on_stream_finish,
+                # [2.10]
+                soft_budget=_budget,
+                on_budget_warning=_on_budget_warning,
+                on_budget_exceeded=_on_budget_exceeded,
+            )
+            # Реальные счётчики — из бюджета, который вёл AgentLoop:
+            # self.soft_budget обычно None, цикл создаёт свой внутри.
+            _snap = loop.last_budget_snapshot or {}
+            self.agent_finished.emit(
+                {
+                    "finish_reason": loop.last_finish_reason,
+                    "budget": loop.last_budget_snapshot,
+                    "iterations": int(_snap.get("iterations", 0)),
+                    "elapsed_s": float(_snap.get("time_s", 0.0)),
+                }
             )
             return result, loop
 
@@ -255,13 +323,14 @@ class AgentChatThread(QThread):
 
             self.finish_received.emit(result)
         except AgentIterationLimitError:
-            # error_occurred НЕ эмитим: UI в _on_iteration_limit_exceeded
-            # показывает «⏸ Достигнут лимит» и кнопку «Продолжить». Дубль
-            # «❌ Ошибка агента: ...» только запутал бы пользователя —
-            # это не сбой, а исчерпание бюджета шагов.
+            # [2.10] Это уже не «лимит итераций» в старом смысле, а
+            # hard ceiling (safety net). UI показывает «⏸ Предел шагов»
+            # и кнопку «Продолжить до результата».
             self.iteration_limit_exceeded.emit()
         except Exception as e:
-            self.error_occurred.emit(f"Ошибка агента: {e}")
+            from core.redaction import redact_exc
+
+            self.error_occurred.emit(f"Ошибка агента: {redact_exc(e)}")
 
     # ------------------------------------------------------------------
     # Orchestrator-путь
@@ -283,7 +352,11 @@ class AgentChatThread(QThread):
             # Зеркалим прогресс в thought-stream — пользователь видит,
             # что работа идёт (без каракулей).
             if kind == "classify":
-                self.thought_chunk.emit(f"🤔 Классификация: {str(data.get('query', ''))[:80]}\n")
+                # Увеличиваем лимит до 200 символов для отображения
+                query_preview = str(data.get('query', ''))[:200]
+                if len(str(data.get('query', ''))) > 200:
+                    query_preview += "…"
+                self.thought_chunk.emit(f"🤔 Классификация: {query_preview}\n")
             elif kind == "plan":
                 self.thought_chunk.emit(
                     f"📋 План: task={data.get('task')}, "
@@ -306,11 +379,17 @@ class AgentChatThread(QThread):
                 preview = ", ".join(str(g) for g in gaps[:3])
                 self.thought_chunk.emit(f"🔁 Досбор данных (итерация {data.get('iter')}): {preview}\n")
 
+        # [FIX] Колбэк для стриминга токенов в UI (печатная машинка)
+        async def _on_token(token: str) -> None:
+            self.chunk_received.emit(token)
+
         project_root = Path(self.context.project_root or ".")
         if not project_root.exists():
             raise FileNotFoundError(f"Корень проекта не найден: {project_root}")
 
         self.status_changed.emit("🧠 Оркестратор: классификация…")
+
+        # [FIX] Передаем on_token в orchestrator.run
         result: RunResult = await self.orchestrator.run(
             user_query,
             project_root=project_root,
@@ -318,18 +397,17 @@ class AgentChatThread(QThread):
             on_event=_on_event,
             quality_mode=False,
             time_budget_s=ORCHESTRATOR_TIME_BUDGET_S,
+            on_token=_on_token,  # <-- ПЕРЕДАЕМ СЮДА
         )
 
-        # Стримим ответ одним куском (оркестратор не стримит токены).
-        # ChatPanel._on_chunk создаст ChatMessageItem.
-        self.research_mode_detected.emit(False)
-        if result.answer:
-            self.chunk_received.emit(result.answer)
+        # ВАЖНО: Теперь мы НЕ делаем self.chunk_received.emit(result.answer),
+        # потому что текст уже был отправлен по кусочкам через _on_token!
+        # Убираем эту строку:
+        # if result.answer:
+        #     self.chunk_received.emit(result.answer)
 
         # Полный RunResult (answer + diagram + evidence) — Panel разрулит.
         self.orchestrator_result.emit(result)
-        # НЕ эмитим finish_received — Panel сделает cleanup в
-        # _on_orchestrator_result; иначе будет дубль сообщения.
 
     async def _on_token(self, token: str):
         self.chunk_received.emit(token)
@@ -362,15 +440,14 @@ class RagSearchThread(QThread):
         query: str,
         n_results: int = 5,
         file_filter: list[str] | None = None,
-        categories: list[str] | None = None,
+        categories: Sequence[str] | None = None,
     ):
         super().__init__()
         self.vector_store = vector_store
         self.query = query
         self.n_results = n_results
         self.file_filter = file_filter
-        # [9.4] Категории RAG из профиля (code / docs / оба).
-        self.categories = categories
+        self.categories: list[str] | None = list(categories) if categories is not None else None
 
     def run(self):
         try:
@@ -469,7 +546,8 @@ class _SLMLoadThread(QThread):
         n_batch: int = 512,
         n_gpu_layers: int = 0,
         max_tokens: int = 1024,
-        params: object | None = None,  # OptimizedParams | None
+        params: OptimizedParams | None = None,
+        is_thinking: bool = False,
     ):
         super().__init__()
         self.chat_path = chat_path
@@ -479,7 +557,8 @@ class _SLMLoadThread(QThread):
         self.n_batch = n_batch
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
-        self.params = params
+        self.params: OptimizedParams | None = params
+        self.is_thinking = is_thinking
 
     def run(self):
         try:
@@ -492,6 +571,7 @@ class _SLMLoadThread(QThread):
                 n_gpu_layers=self.n_gpu_layers,
                 max_tokens=self.max_tokens,
                 params=self.params,
+                is_thinking=self.is_thinking,
             )
             self.finished.emit(client)
         except Exception as e:
@@ -608,22 +688,7 @@ class WebSearchThread(QThread):
 
 
 class _ModelPoolLoadThread(QThread):
-    """Загружает обе модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО.
-
-    Изменения по сравнению с предыдущей версией (после инцидента, когда
-    две qwen2.5-1.5b грузились параллельно на GPU и вешали поток):
-
-    * **Последовательная загрузка** вместо ``asyncio.gather`` — вторая
-      модель не пытается занять VRAM, пока первая не отпустила контекст.
-    * **Per-role timeout 90 с** — если llama.cpp завис в нативном коде
-      (OOM на CUDA), поток всё равно выходит, UI получает ``error`` и
-      показывает «⚠️ 2-model: недоступен», а не «⏳» вечно.
-    * **`device` из `RoleSpec` учитывается** — analyst с ``device="CPU"``
-      жёстко получает ``n_gpu_layers=0`` (в ``optimize()`` и в factory
-      как safety net).
-    * **Fail-fast при одинаковых моделях** — если planner и analyst
-      указывают на один файл, выдаём понятную ошибку, а не OOM.
-    """
+    """Загружает модели (planner + analyst) ПОСЛЕДОВАТЕЛЬНО."""
 
     finished = Signal(object)  # ModelPool | None
     error = Signal(str)
@@ -633,125 +698,134 @@ class _ModelPoolLoadThread(QThread):
 
     def run(self):
         try:
+            import time
+
             from agents.download_slm import get_model_path
             from agents.local_llm_client import LocalLLMClient
             from agents.model_pool import ModelPool, Role, RoleSpec
             from agents.slm_optimizer import OptimizedParams, optimize
-            from agents.slm_selector import select_pair
+            from agents.slm_selector import select_pair_park, select_park
+            from core.config import load_config
 
-            pair = select_pair()
-            planner_info = pair.get("planner")
-            analyst_info = pair.get("analyst")
-            if not planner_info or not analyst_info:
-                self.error.emit(
-                    "Двухмодельный пайплайн недоступен. Нужны ДВЕ разные "
-                    "модели: planner (3B или 1.5B) и analyst (7B или 14B). "
-                    "Скачайте недостающую через «View → Локальные модели»."
-                )
-                return
-
-            # [FIX] Раньше здесь была ошибка «Нужны ДВЕ разные модели»
-            # если planner_info.id == analyst_info.id. Это ломало
-            # сценарий single-model (пользователь явно выбрал одну модель
-            # на обе роли, или второй модели нет в каталоге). ModelPool.add_role
-            # умеет кэшировать клиент по файлу — грузим ОДИН раз, используем
-            # для обеих ролей. Ниже есть ветка `same_file`, которая это делает.
-            if planner_info.id == analyst_info.id:
-                self.progress.emit(
-                    f"ℹ️ planner и analyst — одна модель ({planner_info.id}). "
-                    f"Работаем в single-model режиме: модель загрузится один раз "
-                    f"и обслужит обе роли."
-                )
-            # НЕ return — продолжаем, обработка same_file ниже по коду.
-
-            planner_path = get_model_path(planner_info.file)
-            if planner_path is None:
-                self.error.emit(f"Файл planner не найден: {planner_info.file}")
-                return
-            analyst_path = get_model_path(analyst_info.file)
-            if analyst_path is None:
-                self.error.emit(f"Файл analyst не найден: {analyst_info.file}")
-                return
-
-            # [FIX] planner и analyst могут указывать на ОДИН ФАЙЛ под
-            # разными id (например, `qwen2.5-3b-instruct-q4_k_m` и
-            # `qwen2.5-3b-instruct` ведут на `qwen2.5-3b-instruct-q4_k_m.gguf`).
-            # Проверка `planner_info.id == analyst_info.id` выше это НЕ поймает.
-            # `ModelPool.add_role` кэширует клиент по файлу — вторая роль
-            # получит уже загруженный клиент, без второго 3 ГБ VRAM/RAM и без
-            # повторного `optimize`.
-            same_file = planner_path == analyst_path
-            if same_file:
-                self.progress.emit(
-                    f"⚠️ planner и analyst используют один файл ({planner_path.name}), грузим модель один раз"
-                )
-
-            # --- Оптимизация: устройство задаётся ЯВНО ---
-            # planner на GPU (пытаемся уместить целиком), analyst на CPU
-            # (никогда не делит VRAM с planner).
-            self.progress.emit(f"Оптимизация planner: {planner_info.display_name}")
+            # --- 1. Конфиг + парк ролей активного профиля -----------------
+            cfg = None
+            park_roles: dict[str, str] = {}
+            profile_n_ctx_hint = 0
             try:
-                planner_params = optimize(
-                    planner_path,
-                    target_n_ctx=8192,
-                    device="GPU",
+                cfg = load_config()
+                for p in cfg.profiles:
+                    if p.id == cfg.active_profile:
+                        park_roles = dict(p.park_roles)
+                        profile_n_ctx_hint = int(p.n_ctx_hint)
+                        break
+            except Exception:
+                logger.warning(
+                    "ModelPool: конфиг недоступен — парк подоберётся автоматически",
+                    exc_info=True,
                 )
-            except Exception as e:
-                logger.exception("planner optimize failed")
-                self.error.emit(f"planner optimize failed: {e}")
+
+            # Явный выбор из PipelineSelectors важнее профиля.
+            if cfg is not None:
+                if cfg.slm.planner_model_id:
+                    park_roles["planner"] = cfg.slm.planner_model_id
+                if cfg.slm.analyst_model_id:
+                    park_roles["analyst"] = cfg.slm.analyst_model_id
+
+            dual = bool(getattr(cfg.slm, "dual_model", True)) if cfg is not None else True
+            max_tokens = int(getattr(cfg.slm, "max_tokens", 1024) or 1024) if cfg is not None else 1024
+
+            # --- 2. Выбор парка ------------------------------------------
+            if not dual and cfg is not None:
+                # Single-model: один файл на planner+analyst. select_park НЕ
+                # используем — он дотянет router/coder/verifier.
+                main_id = cfg.slm.analyst_model_id or cfg.slm.selected_model
+                info = cfg.slm.get_model_by_id(main_id) if main_id else None
+                if info is None:
+                    info = cfg.slm.get_selected_info()
+                if info is None:
+                    self.error.emit("Single-model: модель не выбрана (откройте «⋯» → SLM).")
+                    return
+                park = {Role.PLANNER: info, Role.ANALYST: info}
+                self.progress.emit(f"Режим 1 модель: {info.display_name} на все роли")
+            elif park_roles:
+                park = select_park(profile_park_roles=park_roles)
+            else:
+                park = select_pair_park()
+
+            if not park:
+                self.error.emit(
+                    "Парк моделей пуст: скачайте хотя бы одну chat-модель через «View → Локальные модели»."
+                )
                 return
 
-            if same_file:
-                # Тот же файл — оптимизировать второй раз незачем, клиент
-                # берётся из кэша ModelPool.add_role.
-                analyst_params = planner_params
-            else:
-                self.progress.emit(f"Оптимизация analyst: {analyst_info.display_name}")
+            # --- 3. Резолв путей + оптимизация ---------------------------
+            specs: dict[Role, RoleSpec] = {}
+            optim_params: dict[Role, OptimizedParams] = {}
+            n_hint = profile_n_ctx_hint if profile_n_ctx_hint > 0 else None
+
+            for role, info in park.items():
+                path = get_model_path(info.file)
+                if path is None:
+                    logger.warning(f"ModelPool: роль {role.value} пропущена — файл не найден: {info.file}")
+                    self.progress.emit(f"⚠️ {role.value}: файл {info.file} не найден — пропущено")
+                    continue
+
+                self.progress.emit(f"Оптимизация {role.value}: {info.display_name}")
                 try:
-                    analyst_params = optimize(
-                        analyst_path,
-                        target_n_ctx=8192,
-                        device="CPU",
-                    )
+                    if dual:
+                        device = "GPU" if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else "CPU"
+                        params = optimize(path, target_n_ctx=8192, device=device, n_ctx_hint=n_hint)
+                    else:
+                        # Одна модель на обе роли: просим GPU, оптимизатор решает,
+                        # device берём из ФАКТА (иначе spec врёт про CPU/GPU).
+                        params = optimize(path, target_n_ctx=8192, device="GPU", n_ctx_hint=n_hint)
+                        device = "GPU" if params.n_gpu_layers != 0 else "CPU"
                 except Exception as e:
-                    logger.exception("analyst optimize failed")
-                    self.error.emit(f"analyst optimize failed: {e}")
+                    logger.exception(f"optimize {role.value} failed")
+                    self.error.emit(f"optimize {role.value} failed: {e}")
                     return
 
-            specs: dict[Role, RoleSpec] = {
-                Role.PLANNER: RoleSpec(
-                    role=Role.PLANNER,
-                    model_id=planner_info.id,
-                    device="GPU",
-                    n_ctx=planner_params.n_ctx,
-                    kv_cache=planner_params.kv_cache_type,
-                    n_gpu_layers=planner_params.n_gpu_layers,
-                    temperature=0.0,
-                    file=str(planner_path),
-                ),
-                Role.ANALYST: RoleSpec(
-                    role=Role.ANALYST,
-                    model_id=analyst_info.id,
-                    # [FIX] При same_file физически клиент тот же (GPU).
-                    # Ставим device="GPU", чтобы tooltip приборной панели был
-                    # честным и чтобы factory (если всё же вызван — например,
-                    # planner упал) не обнулил n_gpu_layers.
-                    device=("GPU" if same_file else "CPU"),
-                    n_ctx=analyst_params.n_ctx,
-                    kv_cache=analyst_params.kv_cache_type,
-                    n_gpu_layers=analyst_params.n_gpu_layers,
-                    temperature=0.35,
-                    file=str(analyst_path),
-                ),
-            }
+                optim_params[role] = params
+                specs[role] = RoleSpec(
+                    role=role,
+                    model_id=info.id,
+                    device=device,
+                    n_ctx=params.n_ctx,
+                    kv_cache=params.kv_cache_type,
+                    n_gpu_layers=params.n_gpu_layers,
+                    temperature=(0.0 if role in (Role.ROUTER, Role.PLANNER, Role.VERIFIER) else 0.35),
+                    file=str(path),
+                )
 
+            if not specs:
+                self.error.emit(
+                    "Ни одна модель из парка не найдена на диске. "
+                    "Скачайте модели через «View → Локальные модели»."
+                )
+                return
+
+            # Research-пайплайн физически не работает без planner+analyst.
+            # Молча пропускать нельзя: Orchestrator упадёт на
+            # runtime_ctx(ANALYST) посреди запроса → медленный ReAct.
+            missing = [r for r in (Role.PLANNER, Role.ANALYST) if r not in specs]
+            if missing:
+                details = "; ".join(f"{r.value} → {park[r].file}" for r in missing if r in park)
+                self.error.emit(
+                    "Не загружены обязательные роли: "
+                    + ", ".join(r.value for r in missing)
+                    + f". Файлы не найдены: {details}. "
+                    "Скачайте их (View → Локальные модели) или выберите "
+                    "установленные модели в селекторах P/A."
+                )
+                return
+
+            # --- 4. Фабрика клиента --------------------------------------
             def factory(spec: RoleSpec) -> LocalLLMClient:
                 path = Path(spec.file) if spec.file else None
                 if path is None or not path.exists():
                     raise FileNotFoundError(f"Model file missing: {spec.model_id}")
-                base = planner_params if spec.role is Role.PLANNER else analyst_params
-                # Safety net: если device=CPU, но n_gpu_layers≠0 —
-                # жёстко обнуляем и выключаем FlashAttention.
+
+                base = optim_params[spec.role]
                 n_gpu_layers = spec.n_gpu_layers
                 flash = base.flash_attn
                 if spec.device == "CPU":
@@ -761,6 +835,7 @@ class _ModelPoolLoadThread(QThread):
                         )
                         n_gpu_layers = 0
                     flash = False
+
                 params = OptimizedParams(
                     n_ctx=spec.n_ctx,
                     n_gpu_layers=n_gpu_layers,
@@ -776,18 +851,32 @@ class _ModelPoolLoadThread(QThread):
                     ),
                     notes=base.notes,
                 )
-                return LocalLLMClient(model_path=path, params=params, max_tokens=1024)
 
-            # --- Последовательная загрузка с per-role timeout ---
-            pool = ModelPool()
+                info = None
+                if cfg is not None:
+                    info = next(
+                        (i for i in cfg.slm.available_models if i.id == spec.model_id),
+                        None,
+                    )
+                is_thinking = bool(info.is_thinking) if info else False
+
+                return LocalLLMClient(
+                    model_path=path,
+                    params=params,
+                    max_tokens=max_tokens,
+                    is_thinking=is_thinking,
+                )
+
+            # --- 5. Последовательная загрузка ----------------------------
+            pool = ModelPool(max_loaded=3 if dual else 1)
             loop = asyncio.new_event_loop()
             try:
                 for role, spec in specs.items():
                     self.progress.emit(
                         f"⏳ Загрузка {role.value}: {spec.model_id} "
-                        f"(device={spec.device}, "
-                        f"n_gpu_layers={spec.n_gpu_layers})…"
+                        f"(device={spec.device}, n_gpu_layers={spec.n_gpu_layers})…"
                     )
+                    t0 = time.perf_counter()
                     try:
                         loop.run_until_complete(
                             asyncio.wait_for(
@@ -795,42 +884,74 @@ class _ModelPoolLoadThread(QThread):
                                 timeout=self._ROLE_LOAD_TIMEOUT,
                             )
                         )
-                    except TimeoutError:
-                        logger.error(
-                            f"SLM pool: таймаут загрузки {role.value} "
-                            f"({spec.model_id}) за "
-                            f"{self._ROLE_LOAD_TIMEOUT} с"
-                        )
-                        self.error.emit(
-                            f"Таймаут загрузки {role.value} "
-                            f"({spec.model_id}) за "
-                            f"{self._ROLE_LOAD_TIMEOUT:.0f} с. "
-                            f"Скорее всего не хватает VRAM/RAM или модель "
-                            f"битая. Проверьте свободную память и повторите."
-                        )
-                        return
                     except Exception as e:
-                        logger.exception(f"SLM pool: ошибка загрузки {role.value}")
+                        logger.error(f"SLM pool: ошибка {role.value}: {e}")
+                        # Planner/Router — пробуем базовую 3B как fallback.
+                        if role in (Role.PLANNER, Role.ROUTER) and cfg is not None:
+                            self.progress.emit(
+                                f"⚠️ Ошибка {role.value}. Пробую fallback: qwen2.5-3b-instruct-q4_k_m"
+                            )
+                            fb_info = cfg.slm.get_model_by_id("qwen2.5-3b-instruct-q4_k_m")
+                            fb_path = get_model_path(fb_info.file) if fb_info else None
+                            if fb_info is not None and fb_path is not None and fb_path.exists():
+                                try:
+                                    fb_params = optimize(fb_path, target_n_ctx=8192, device="GPU")
+                                    fb_spec = RoleSpec(
+                                        role=role,
+                                        model_id=fb_info.id,
+                                        device="GPU",
+                                        n_ctx=fb_params.n_ctx,
+                                        kv_cache=fb_params.kv_cache_type,
+                                        n_gpu_layers=fb_params.n_gpu_layers,
+                                        temperature=0.0,
+                                        file=str(fb_path),
+                                    )
+                                    optim_params[role] = fb_params
+                                    loop.run_until_complete(
+                                        asyncio.wait_for(
+                                            pool.add_role(fb_spec, factory),
+                                            timeout=self._ROLE_LOAD_TIMEOUT,
+                                        )
+                                    )
+                                    logger.info(f"Fallback для {role.value} загружен")
+                                    continue
+                                except Exception as fb_err:
+                                    logger.error(f"Fallback тоже упал: {fb_err}")
+
+                        # Освобождаем уже загруженные веса перед выходом.
+                        try:
+                            loop.run_until_complete(pool.aclose())
+                        except Exception:
+                            logger.debug("aclose после ошибки загрузки упал", exc_info=True)
                         self.error.emit(f"Ошибка загрузки {role.value} ({spec.model_id}): {e}")
                         return
-                    logger.info(
-                        f"SLM pool: {role.value} загружен "
-                        f"(model={spec.model_id}, device={spec.device}, "
-                        f"n_gpu_layers={spec.n_gpu_layers}, "
-                        f"n_ctx={spec.n_ctx}, kv={spec.kv_cache})"
+
+                    emit_event(
+                        EventKind.SLM_LOADED.value,
+                        {
+                            "model_id": spec.model_id,
+                            "role": spec.role.value,
+                            "device": spec.device,
+                            "n_ctx": spec.n_ctx,
+                            "n_gpu_layers": spec.n_gpu_layers,
+                            "load_ms": round((time.perf_counter() - t0) * 1000, 2),
+                        },
                     )
+
+                # Финальная проверка: LRU/fallback могли изменить состав.
+                roles_loaded = set(pool.loaded_roles())
+                missing_after = [r.value for r in (Role.PLANNER, Role.ANALYST) if r not in roles_loaded]
+                if missing_after:
+                    try:
+                        loop.run_until_complete(pool.aclose())
+                    except Exception:
+                        logger.debug("aclose неполного пула упал", exc_info=True)
+                    self.error.emit("После загрузки не хватает ролей: " + ", ".join(missing_after))
+                    return
             finally:
                 loop.close()
 
-            # Финальная проверка, что обе роли на месте.
-            try:
-                pool.client(Role.PLANNER)
-                pool.client(Role.ANALYST)
-            except RuntimeError as e:
-                self.error.emit(f"ModelPool incomplete: {e}")
-                return
-
-            self.progress.emit("✅ Двухмодельный пайплайн готов")
+            self.progress.emit(f"✅ Парк готов: {', '.join(sorted(r.value for r in roles_loaded))}")
             self.finished.emit(pool)
 
         except Exception as e:

@@ -22,12 +22,12 @@
   подключает сигналы контроллеров к своим слотам, но не знает про внутренности.
 """
 
-import asyncio
 import contextlib
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -38,14 +38,13 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
-from agents.ollama_client import OllamaClient
 from core.config import AppConfig, ToolPolicy
-from core.model_registry import ModelRegistry
 from core.profiles import get_profile_by_id
 from core.prompt_watcher import PromptWatcher
 from core.search_cache import SearchCache
@@ -57,87 +56,15 @@ from fs.vector_store import VectorStore
 from state.project_settings import ProjectSettings
 from state.session_store import SessionStore
 from ui.chat import ChatPanel
-from ui.chat.threads import _OllamaCheckThread  # 🆕
 from ui.command_registry import CommandRegistry, PaletteCommand
 from ui.dialogs.agent_settings_dialog import AgentSettingsDialog
 from ui.dialogs.prompt_editor_dialog import PromptEditorDialog
 from ui.file_tree_controller import FileTreeController
 from ui.indexing_controller import IndexingController
 from ui.menus import AppMenuBar
+from ui.ollama_controller import OllamaController
 from ui.widgets.command_palette import CommandPalette
 from ui.widgets.status_dashboard import StatusDashboard
-
-
-class ModelCheckThread(QThread):
-    """Поток для проверки поддержки инструментов моделями Ollama.
-
-    Остаётся в `main_window.py`, потому что это одноразовая операция,
-    привязанная к жизненному циклу окна (`_start_model_check` / `_stop_model_check`).
-    При появлении третьего потребителя — вынести в `ui/model_check_controller.py`
-    по образцу `FileTreeController`/`IndexingController`.
-    """
-
-    progress = Signal(str, int, int)  # model_name, current, total
-    model_checked = Signal(str, bool)  # model_name, supports_tools
-    finished = Signal(dict)
-
-    def __init__(self, base_url: str, registry: ModelRegistry):
-        super().__init__()
-        self.base_url = base_url
-        self.registry = registry
-        self._cancel = False
-
-    def cancel(self):
-        """Запрашивает остановку проверки."""
-        self._cancel = True
-
-    def run(self):
-        asyncio.run(self._check())
-
-    async def _check(self):
-        from agents.ollama_client import OllamaClient
-        from core.exceptions import OllamaConnectionError
-
-        client = OllamaClient(base_url=self.base_url)
-
-        results: dict[str, bool] = {}
-
-        # Собираем модели для проверки
-        models_to_check = [
-            name
-            for name, info in self.registry.models.items()
-            if info.is_local and info.supports_tools is None
-        ]
-        total = len(models_to_check)
-        if total == 0:
-            self.finished.emit(results)
-            return
-
-        async with client:
-            for i, model in enumerate(models_to_check):
-                if self._cancel:
-                    logger.info(f"Проверка моделей прервана пользователем на модели {model}")
-                    break
-                self.progress.emit(model, i + 1, total)
-                try:
-                    supports = await client.check_tools_support(model)
-                    results[model] = supports
-                    self.registry.update_tool_support(model, supports)
-                    self.model_checked.emit(model, supports)
-                except OllamaConnectionError as e:
-                    # [FIX] Сервис недоступен. Перебирать остальные N моделей
-                    # бессмысленно — все упадут с тем же таймаутом. Логируем
-                    # ОДНУ строку вместо 39.
-                    logger.warning(
-                        f"Ollama недоступна, проверка моделей прервана на {i + 1}/{total} ({model}): {e}"
-                    )
-                    break
-                except Exception as e:
-                    logger.error(f"Ошибка проверки модели {model}: {e}")
-                    results[model] = False
-                    self.registry.update_tool_support(model, False)
-                    self.model_checked.emit(model, False)
-        self.finished.emit(results)
 
 
 class MainWindow(QMainWindow):
@@ -170,50 +97,21 @@ class MainWindow(QMainWindow):
         """
         super().__init__()
         self.config = config
-
-        # Состояние проекта (должно быть до _update_window_title)
         self.project_path: Path | None = None
-
         self._update_window_title()
         self.setMinimumSize(1200, 800)
         self.resize(1600, 1000)
-
-        # Инициализация хранилища сессий
         db_path = get_app_data_dir() / "sessions.db"
         self.session_store = SessionStore(db_path)
-
-        # Инициализация клиента Ollama
-        self.ollama_client = OllamaClient(base_url="http://localhost:11434")
-        self._ollama_connected = False
-        self._available_models: list[str] = []
-        # 🆕 Фоновый поток проверки Ollama вместо new_event_loop() на GUI-потоке.
-        self._ollama_check_thread: _OllamaCheckThread | None = None
-
-        # Инициализация хранилища возможностей моделей
-        self.model_registry = ModelRegistry()
-
-        # Инициализация менеджера ролей
         from core.roles import RoleManager
 
         self.role_manager = RoleManager()
-
-        # Инициализация менеджера промптов
         self.prompt_manager = SystemPromptManager()
-
-        # Горячая перезагрузка промптов и ролей при правке файлов на диске
         self.prompt_watcher = PromptWatcher(self.prompt_manager, self.role_manager)
         self.prompt_watcher.start()
-
-        # Индексация
         self.indexer = FileIndexer(config, self.project_path)
         self.vector_store: VectorStore | None = None
-        # Реранкер создаётся лениво при открытии проекта и кэшируется по имени модели
         self._reranker: CrossEncoderReranker | None = None
-
-        self._model_check_thread: ModelCheckThread | None = None
-        self._is_checking = False
-
-        # [9.9] Палитра команд.
         self._palette_registry = CommandRegistry()
         self._palette_dialog: CommandPalette | None = None
 
@@ -222,14 +120,11 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._register_palette_commands()
         self._install_global_shortcuts()
-        self._check_ollama_connection()
-
-        # [9.2] Правая панель заменена на поповер-диалог AgentSettingsDialog.
+        self.ollama_controller.check_connection()
 
         self.chat_panel.settings_changed.connect(self._on_chat_settings_changed)
         self.chat_panel.directory_attach_requested.connect(self._on_directory_attach_requested)
 
-        # [9.2] Синхронизируем кнопку «📁» с сохранённым состоянием.
         if hasattr(self.chat_panel, "project_tree_btn"):
             show_tree = bool(getattr(self.config, "show_project_tree", False))
             self.chat_panel.project_tree_btn.blockSignals(True)
@@ -282,6 +177,15 @@ class MainWindow(QMainWindow):
         self.indexing_controller.error.connect(self._on_index_error)
         self.indexing_controller.summary.connect(self._on_indexing_summary)
 
+        # --- Ollama (резервный бэкенд): проверки живут в контроллере ---
+        self.ollama_controller = OllamaController(parent=self)
+        self.ollama_controller.models_synced.connect(self._on_ollama_models_synced)
+        self.ollama_controller.check_progress.connect(self._on_model_check_progress)
+        self.ollama_controller.model_checked.connect(self._on_model_checked)
+        self.ollama_controller.check_finished.connect(self._on_model_check_finished)
+        self.ollama_controller.check_state_changed.connect(self._on_ollama_check_state)
+        self.ollama_controller.check_refused.connect(self._on_ollama_check_refused)
+
         # --- Виджеты ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -301,29 +205,18 @@ class MainWindow(QMainWindow):
         center_panel = self._create_center_panel()
         self.main_splitter.addWidget(center_panel)
 
-        # Инициализация кэша Web Search
         self.search_cache = SearchCache(get_app_data_dir() / "cache")
         self.chat_panel.set_search_cache(self.search_cache)
 
         self.main_splitter.setSizes([320, 800])
         layout.addWidget(self.main_splitter, stretch=1)
 
-        # [9.2] Правая панель настроек агента — теперь поповер-диалог
-        # AgentSettingsDialog, открывается по «⚙» из ChatPanel.
-
-        # [9.2] Кнопка «📁» в ChatPanel управляет видимостью дерева.
         self.chat_panel.project_tree_toggled.connect(self._on_project_tree_toggled)
-        # [9.3] Кнопка «⋯» в PipelineSelectors открывает SLMModelsDialog.
         self.chat_panel.slm_models_requested.connect(self._open_slm_manager)
 
     @Slot(object)
     def _on_show_diff(self, payload: dict) -> None:
-        """[9.8] Открывает Monaco DiffEditor с original↔modified.
-
-        Вызывается из карточки `write_file` («🔍 Показать diff»).
-        В редактор передаётся и `file_path`, чтобы после accept/reject
-        пользователь мог сохранить — Monaco уже умеет.
-        """
+        """[9.8 + 9.1] Открывает Monaco DiffEditor с original↔modified."""
         if not payload or not hasattr(self, "editor_widget"):
             return
         original = str(payload.get("original") or "")
@@ -337,21 +230,14 @@ class MainWindow(QMainWindow):
             language=language,
             file_path=file_path or None,
         )
-        # Переключаемся на вкладку редактора.
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     @Slot(str)
     def _show_file_diff(self, path: str) -> None:
-        """[9.8.3] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
+        """[9.8.3 + 9.1] Показать diff файла в редакторе (HEAD ↔ рабочая копия)."""
         if hasattr(self, "editor_widget"):
             self.editor_widget.show_git_diff_for_file(path)
-            index = self.tab_widget.indexOf(self.editor_widget)
-            if index >= 0:
-                self.tab_widget.setCurrentWidget(self.editor_widget)
+            self._switch_to_editor()
 
     def _create_left_panel(self) -> QWidget:
         """Создает левую панель (дерево файлов проекта + индексация).
@@ -412,48 +298,41 @@ class MainWindow(QMainWindow):
         return panel
 
     def _create_center_panel(self) -> QWidget:
-        """Создает центральную панель (вкладки: Чат / Редактор)."""
-        from PySide6.QtWidgets import QTabWidget
+        """Центральная панель: QStackedWidget (чат / редактор).
 
+        Чат — базовый экран, не вкладка. Вкладки есть только в редакторе
+        (внутри `EditorWidget.tab_bar`) и только для файлов. При закрытии
+        последней вкладки — автоматический возврат к чату.
+        """
         from ui.web_editor.editor_widget import EditorWidget
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.tabCloseRequested.connect(self._close_tab)
-
+        self.center_stack = QStackedWidget()
         default_model = self.config.default_model if hasattr(self.config, "default_model") else "llama3.2"
         self.chat_panel = ChatPanel(
             session_store=self.session_store,
-            base_url="http://localhost:11434",
+            base_url=self.config.backends.ollama_url or "http://localhost:11434",
             model=default_model,
         )
         self.chat_panel.set_project_open(False)
         self.chat_panel.agent_panel_toggle.connect(self._toggle_side_panel)
 
-        self.chat_panel.set_registry(self.model_registry)
+        self.chat_panel.set_registry(self.ollama_controller.registry)
         self.chat_panel.set_role_manager(self.role_manager)
         self.chat_panel.set_prompt_manager(self.prompt_manager)
         self.chat_panel.refresh_models_requested.connect(self._start_model_check)
-        # [9.8] Diff из карточки write_file → Monaco DiffEditor.
-        # Подключаем ЗДЕСЬ: chat_panel уже создан (перенесено из _setup_ui,
-        # где обращение к атрибуту падало с AttributeError).
         self.chat_panel.diff_requested.connect(self._on_show_diff)
-
-        self.tab_widget.addTab(self.chat_panel, "💬 Чат")
-
+        self.center_stack.addWidget(self.chat_panel)  # index 0
         self.editor_widget = EditorWidget()
         self.editor_widget.set_file_reader(self._read_file)
         self.editor_widget.set_file_writer(self._write_file)
-        # 🆕 Инициализация темы Monaco из текущего конфига.
         self.editor_widget.set_theme(self.config.theme)
-        self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-
-        # [9.8] Ctrl+D в редакторе → diff с HEAD текущего файла.
+        self.editor_widget.tabs_changed.connect(self._on_editor_tabs_changed)
+        self.editor_widget.back_to_chat_requested.connect(self._show_chat_tab)
+        self.center_stack.addWidget(self.editor_widget)  # index 1
         try:
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QAction, QKeySequence
@@ -466,12 +345,39 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Не удалось установить Ctrl+D для diff", exc_info=True)
 
-        layout.addWidget(self.tab_widget)
+        layout.addWidget(self.center_stack)
         return panel
+
+    @Slot(int)
+    def _on_editor_tabs_changed(self, count: int) -> None:
+        """Реакция на изменение числа вкладок в редакторе.
+
+        * ``count == 0`` → вкладок нет, возвращаем чат (базовый экран);
+        * ``count > 0`` → открыт хотя бы один файл, переключаемся в редактор.
+
+        Раньше эта проверка была внутри `_close_tab` (защита индекса 0).
+        Теперь чат не вкладка — `_close_tab` удалён.
+        """
+        if count == 0:
+            self._switch_to_chat()
+        else:
+            self._switch_to_editor()
+
+    def _switch_to_chat(self) -> None:
+        """Показывает страницу чата (базовый экран)."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(0)
+            logger.debug("Переключено на чат")
+
+    def _switch_to_editor(self) -> None:
+        """Показывает страницу редактора."""
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentIndex(1)
+            logger.debug("Переключено на редактор")
 
     @Slot()
     def _diff_current_editor_file(self) -> None:
-        """[9.8] Ctrl+D: diff текущего файла редактора с HEAD."""
+        """Ctrl+D: diff текущего файла редактора с HEAD."""
         if not hasattr(self, "editor_widget"):
             return
         file_path = self.editor_widget.current_file
@@ -484,14 +390,16 @@ class MainWindow(QMainWindow):
     # 🆕 Слот: смена темы → Monaco.
     @Slot(str)
     def _on_theme_changed_for_editor(self, theme: str) -> None:
-        """Прокидывает смену темы в Monaco Editor.
-
-        Вызывается из `MainWindow.theme_changed` (испускается
-        `_toggle_theme`), когда `OlliDeskApp._on_theme_changed` уже
-        применил QSS к приложению.
+        """Смена темы: Monaco Editor + ChatPanel (пузыри, reasoning, tool-карточки).
+        Прокидывает смену темы в Monaco Editor.
         """
         if hasattr(self, "editor_widget"):
             self.editor_widget.set_theme(theme)
+        if hasattr(self, "chat_panel") and self.chat_panel is not None:
+            try:
+                self.chat_panel.set_theme(theme)
+            except Exception:
+                logger.debug("chat_panel.set_theme упал", exc_info=True)
 
     @Slot(dict)
     def _on_chat_settings_changed(self, settings: dict):
@@ -520,39 +428,25 @@ class MainWindow(QMainWindow):
             file_path = Path(path)
             file_path.write_text(content, encoding="utf-8")
             logger.info(f"Файл сохранен: {path}")
-            # После сохранения git-статус мог измениться — обновляем делегат.
-            # План 2.4: делегат живёт в FileTreeController.
             self.file_tree_controller.git_delegate.refresh()
             return True
         except Exception as e:
             logger.error(f"Ошибка записи файла: {e}")
             return False
 
-    def _close_tab(self, index: int):
-        """Закрывает вкладку (кроме чата)."""
-        if index == 0:  # Чат нельзя закрыть
-            return
-        self.tab_widget.removeTab(index)
-
     def open_file_in_editor(self, file_path: str, line: int = 0):
-        """Открывает файл в редакторе.
+        """Открывает файл в редакторе и переключает на страницу редактора.
 
-        Многофайловость обеспечивает сам `EditorWidget` (собственный QTabBar
-        и отдельные модели Monaco). Во внешнем `QTabWidget` окна вкладка
-        «📝 Редактор» одна — она переиспользуется.
+        Чат больше не вкладка — `EditorWidget.open_file` сам
+        добавляет файл в свой `tab_bar`. `tabs_changed` эмитится, но мы
+        дополнительно принудительно переключаемся, чтобы реакция была
+        мгновенной (важно при первом открытии файла из дерева).
         """
         self.editor_widget.open_file(file_path, line)
-
-        index = self.tab_widget.indexOf(self.editor_widget)
-        if index < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        else:
-            self.tab_widget.setTabText(index, "📝 Редактор")
-
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        self._switch_to_editor()
 
     def _setup_menu(self) -> None:
-        """Создаёт меню-бар и подключает его сигналы (план 2.4).
+        """Создаёт меню-бар и подключает его сигналы.
 
         Само построение меню живёт в `ui.menus.AppMenuBar`; здесь — только
         связь сигналов с обработчиками MainWindow.
@@ -575,15 +469,20 @@ class MainWindow(QMainWindow):
         self.menu_bar.manage_models_requested.connect(self._open_model_manager)
         self.menu_bar.slm_models_requested.connect(self._open_slm_manager)
         self.menu_bar.preload_pipeline_requested.connect(self._preload_two_model_pipeline)
-        # [4.7.B] Замер производительности.
+        # Замер производительности.
         self.menu_bar.benchmark_requested.connect(self._open_benchmark)
         self.menu_bar.edit_prompts_requested.connect(self._open_prompt_editor)
         self.menu_bar.manage_sessions_requested.connect(self._open_session_manager)
         self.menu_bar.edit_iterations_requested.connect(self._edit_agent_iterations)
-        # [9.9] Палитра команд.
-        self.menu_bar.command_palette_requested.connect(self._open_command_palette)
+        self.menu_bar.memory_requested.connect(self._open_memory_dialog)
 
-        # [9.4] Профили использования.
+        self.menu_bar.toggle_status_pill_requested.connect(self._on_pill_visibility_changed)
+
+        # Палитра команд.
+        self.menu_bar.command_palette_requested.connect(self._open_command_palette)
+        self.menu_bar.permissions_requested.connect(self._open_permissions)
+
+        # Профили использования.
         self.menu_bar.profile_selected.connect(self._on_menu_profile_selected)
         self.menu_bar.profile_editor_requested.connect(self._open_profile_editor)
 
@@ -592,7 +491,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.about_requested.connect(self._show_about)
 
     def _open_benchmark(self) -> None:
-        """[4.7.B] Открывает диалог замеров производительности.
+        """Открывает диалог замеров производительности.
 
         Перед прогоном предупреждает, что это займёт время (7B CPU на
         длинных промптах — до минуты на строку).
@@ -616,7 +515,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _export_chat(self) -> None:
-        """[9.6.3] Экспорт текущего чата в Markdown/HTML."""
+        """Экспорт текущего чата в Markdown/HTML."""
         if not self.chat_panel:
             return
         self.chat_panel.export_chat(parent=self)
@@ -652,12 +551,7 @@ class MainWindow(QMainWindow):
             self.chat_panel.set_role_manager(self.role_manager)
 
     def _setup_status_bar(self) -> None:
-        """[9.7] Статус-бар с единой приборной панелью.
-
-        Убраны отдельные `ollama_status_label` / `backend_status_label`
-        (заменены на StatusDashboard). `project_label` остаётся —
-        путь к проекту нужен, но не дублирует бэкенд-инфо.
-        """
+        """Статус-бар с единой приборной панелью."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -672,21 +566,15 @@ class MainWindow(QMainWindow):
         self.dashboard.slm_models_requested.connect(self._open_slm_manager)
         self.status_bar.addPermanentWidget(self.dashboard)
 
-        # Инжектим панель в ChatPanel — она будет синхронизировать
-        # backend/pipeline/tok/s.
-        if hasattr(self, "chat_panel") and self.chat_panel is not None:
-            self.chat_panel.set_dashboard(self.dashboard)
-
         # Инжектим панель в ChatPanel для синхронизации бэкенда/pipeline/tok/s.
-        if hasattr(self, "chat_panel") and self.chat_panel:
+        if getattr(self, "chat_panel", None) is not None:
             self.chat_panel.set_dashboard(self.dashboard)
 
-    # ------------------------------------------------------------------
-    # [9.9] Палитра команд
-    # ------------------------------------------------------------------
+        self.dashboard.pill_visibility_changed.connect(self._on_pill_visibility_changed)
+        self.dashboard.apply_visibility_settings(self.config.hidden_status_pills)
 
     def _install_global_shortcuts(self) -> None:
-        """[9.9] Ctrl+Shift+P — глобальный shortcut на всё окно.
+        """Ctrl+Shift+P — глобальный shortcut на всё окно.
 
         Меню `View → Палитра команд…` уже имеет такой же shortcut —
         при фокусе в меню QAction сработает. Глобальный QShortcut нужен,
@@ -703,7 +591,7 @@ class MainWindow(QMainWindow):
             logger.debug("Не удалось установить Ctrl+Shift+P на окно", exc_info=True)
 
     def _register_palette_commands(self) -> None:
-        """[9.9] Регистрирует команды палитры.
+        """Регистрирует команды палитры.
 
         Каждая команда — `PaletteCommand` с callback на существующий слот.
         Профили и бэкенд добавляются динамически (зависят от конфига).
@@ -743,7 +631,7 @@ class MainWindow(QMainWindow):
                     hint="Закрыть OlliDesk",
                     shortcut="Ctrl+Q",
                     group="File",
-                    callback=self.close,
+                    callback=self._exit_from_palette,
                 ),
             ]
         )
@@ -819,7 +707,10 @@ class MainWindow(QMainWindow):
                         label=f"Профиль: {p.icon} {p.name}",
                         hint=p.description[:80] if p.description else "",
                         group="Профиль",
-                        callback=lambda _pid=p.id, _p=p: self._apply_profile_from_palette(_p),
+                        # partial вместо lambda: mypy выводит сигнатуру Callable[[], None]
+                        # из bound-метода и одного аргумента. Lambda с default-arg
+                        # сбивает inference («Cannot infer type of lambda»).
+                        callback=partial(self._apply_profile_from_palette, p),
                     )
                 )
         except Exception:
@@ -921,6 +812,15 @@ class MainWindow(QMainWindow):
             self._palette_dialog = CommandPalette(self._palette_registry, self)
         self._palette_dialog.open_fresh()
 
+    def _exit_from_palette(self) -> None:
+        """Хелпер для палитры: закрывает окно (без возврата bool).
+
+        `QWidget.close()` возвращает bool (принято ли событие), а
+        `PaletteCommand.callback` ждёт `Callable[[], None]`. Оборачиваем,
+        чтобы не «тащить» bool-возврат в API палитры.
+        """
+        self.close()
+
     def _toggle_project_tree_from_palette(self) -> None:
         """Хелпер для палитры: переключает видимость дерева проекта."""
         visible = not self.left_panel.isVisible()
@@ -971,7 +871,7 @@ class MainWindow(QMainWindow):
             logger.exception("Не удалось остановить генерацию из палитры")
 
     def _toggle_backend(self) -> None:
-        """[9.3] Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
+        """Переключает SLM ⇄ Ollama (если Ollama включён в конфиге).
 
         Если Ollama не включён в `AppConfig.backends.enabled` — показываем
         диалог с предложением включить в настройках.
@@ -1000,8 +900,8 @@ class MainWindow(QMainWindow):
                 return
             cfg.backends.enabled = list(cfg.backends.enabled) + ["ollama"]
             save_config(cfg)
+            self.ollama_controller.check_connection()
 
-        # Меняем приоритет и применяем на лету.
         new_priority = ["ollama", "local_slm"] if target == "ollama" else ["local_slm", "ollama"]
         cfg.backends.priority = new_priority
         save_config(cfg)
@@ -1012,104 +912,9 @@ class MainWindow(QMainWindow):
             self.chat_panel._update_model_selector_visibility()
         self.status_bar.showMessage(f"Бэкенд переключён: {target.upper()}", 3000)
 
-    def _check_ollama_connection(self) -> None:
-        """[9.7] Проверяет Ollama ТОЛЬКО если он разрешён в конфиге.
-
-        Приборная панель (StatusDashboard) сама покажет состояние
-        бэкенда; отдельный `ollama_status_label` больше не нужен.
-        Если Ollama выключен в конфиге — проверка не запускается
-        (никаких HTTP-запросов на localhost:11434).
-        """
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-            if "ollama" not in cfg.backends.enabled:
-                logger.info("Ollama не в enabled-списке — проверка подключения пропущена")
-                return
-        except Exception:
-            return
-        QTimer.singleShot(500, self._do_check_ollama)
-
-    @Slot(bool, list)
-    def _on_ollama_checked(self, ok: bool, models: list[str]) -> None:
-        """[9.7] Обрабатывает результат фоновой проверки Ollama (GUI-поток).
-
-        Заменяет удалённый `ollama_status_label`:
-          * при успехе — синхронизирует `ModelRegistry`, обновляет
-            список моделей в ChatPanel, ставит первую локальную модель
-            по умолчанию (только если пользователь ещё не выбирал);
-          * приборную панель обновляет `ChatPanel._sync_dashboard`
-            (вызывается из `_on_backend_status_changed`).
-        """
-        self._available_models = list(models or [])
-        self._ollama_connected = bool(ok) and bool(self._available_models)
-
-        if not self._ollama_connected:
-            logger.info(f"Ollama: не подключён (ok={ok}, моделей={len(self._available_models)})")
-            return
-
-        logger.info(f"Ollama: подключён, моделей={len(self._available_models)}")
-
-        # Синхронизируем реестр.
-        try:
-            self.model_registry.sync_with_ollama(self._available_models)
-        except Exception as e:
-            logger.warning(f"sync_with_ollama failed: {e}")
-
-        # Обновляем список в ChatPanel.
-        if self.chat_panel is not None:
-            try:
-                if getattr(self.chat_panel, "registry", None) is None:
-                    self.chat_panel.set_registry(self.model_registry)
-                else:
-                    self.chat_panel.update_models(self._available_models)
-            except Exception:
-                logger.debug(
-                    "Не удалось обновить модели в ChatPanel",
-                    exc_info=True,
-                )
-
-            # Первая локальная модель по умолчанию — только если пользователь
-            # ещё ничего не выбрал (не перетираем `last_model`).
-            current_model = self.chat_panel.get_current_model()
-            if not current_model and self._available_models:
-                first_local = next(
-                    (
-                        m
-                        for m in self._available_models
-                        if (info := self.model_registry.get(m)) is not None and info.is_local
-                    ),
-                    self._available_models[0],
-                )
-                self.chat_panel.set_model(first_local)
-
-            # Dashboard.
-            self.chat_panel._sync_dashboard()
-
-    # 🆕 Полностью переписано: фоновая проверка вместо new_event_loop().
-    def _do_check_ollama(self) -> None:
-        """Проверка Ollama в фоновом потоке.
-
-        Раньше здесь создавался `new_event_loop().run_until_complete(...)`
-        на GUI-потоке — это блокировало окно на всё время `is_available()`
-        (до 3 с таймаута при недоступном сервере) и на `list_models()`.
-        Теперь — `_OllamaCheckThread` (тот же, что использует ChatPanel
-        для `_on_ollama_check_result`), сигналы `result(bool)` и
-        `models_ready(bool, list)` обрабатываются на GUI-потоке.
-
-        `_OllamaCheckThread.result` уже подключён в ChatPanel — двойной
-        коннект не нужен: MainWindow слушает только `models_ready`.
-        """
-        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
-            return
-        self._ollama_check_thread = _OllamaCheckThread(self.ollama_client)
-        self._ollama_check_thread.models_ready.connect(self._on_ollama_checked)
-        self._ollama_check_thread.start()
-
     @Slot(str)
     def _on_backend_status_changed(self, label: str) -> None:
-        """[9.7] Проброс в приборную панель (совместимость)."""
+        """Проброс в приборную панель (совместимость)."""
         if self.chat_panel:
             self.chat_panel._sync_dashboard()
 
@@ -1123,11 +928,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_branch_changed(self, branch: str) -> None:
-        """Обновляет лейбл с текущей веткой Git в шапке левой панели.
-
-        Сигнал приходит из `self.file_tree_controller.branch_changed`
-        (план 2.4). `branch_label` создаётся в `_create_left_panel`.
-        """
+        """Обновляет лейбл с текущей веткой Git в шапке левой панели."""
         if branch:
             self.branch_label.setText(f"🌿 {branch}")
         else:
@@ -1152,11 +953,7 @@ class MainWindow(QMainWindow):
             self._do_open_project(Path(folder))
 
     def _add_recent_project(self, path: str) -> None:
-        """Добавляет проект в список недавних и перерисовывает меню.
-
-        План 2.4: `AppMenuBar.set_recent_projects` пересобирает подменю
-        Recent Projects; `_update_recent_projects_menu` удалён.
-        """
+        """Добавляет проект в список недавних и перерисовывает меню."""
         from core.config import save_config
 
         projects = self.config.recent_projects
@@ -1168,13 +965,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.set_recent_projects(self.config.recent_projects)
 
     def _open_recent_project(self, path: str) -> None:
-        """Открывает проект из списка недавних.
-
-        Сигнал `open_recent_requested(str)` от `AppMenuBar` вызывает этот
-        слот. Если путь исчез — удаляем запись и перерисовываем меню через
-        `self.menu_bar.set_recent_projects` (вместо удалённого
-        `_update_recent_projects_menu`).
-        """
+        """Открывает проект из списка недавних."""
         folder = Path(path)
         if folder.exists():
             self._do_open_project(folder)
@@ -1194,35 +985,36 @@ class MainWindow(QMainWindow):
                 self.menu_bar.set_recent_projects(self.config.recent_projects)
 
     def _do_open_project(self, project_path: Path) -> None:
-        """Внутренняя логика открытия проекта (без диалога).
-
-        План 2.4: дерево файлов настраивается через `FileTreeController`,
-        индексация — через `IndexingController` (configure + start).
-        """
+        """Внутренняя логика открытия проекта (без диалога)."""
         self.project_path = project_path
         logger.info(f"Открыт проект: {self.project_path}")
         self.project_label.setText(f"Проект: {self.project_path.name}")
-
-        # Дерево — через FileTreeController (план 2.4).
         self.file_tree_controller.set_project_root(self.project_path)
         self.project_title_label.setText(self.project_path.name)
         self._update_window_title()
-
-        # [9.2] Восстанавливаем видимость дерева проекта.
+        project_str = str(self.project_path)
+        is_first_open = project_str not in (self.config.recent_projects or [])
         try:
             from core.config import load_config as _load_cfg
 
             _cfg = _load_cfg()
-            show_tree = bool(getattr(_cfg, "show_project_tree", False))
+            saved_visible = bool(getattr(_cfg, "show_project_tree", False))
         except Exception:
-            show_tree = False
+            saved_visible = False
+
+        show_tree = True if is_first_open else saved_visible
+
         self.left_panel.setVisible(show_tree)
         if hasattr(self.chat_panel, "project_tree_btn"):
             self.chat_panel.project_tree_btn.blockSignals(True)
             self.chat_panel.project_tree_btn.setChecked(show_tree)
             self.chat_panel.project_tree_btn.blockSignals(False)
-
-        # [9.4] Применяем профиль из конфига (мог быть изменён в другом окне).
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(show_tree)
+            action.blockSignals(False)
+        self._switch_to_chat()
         try:
             from core.config import load_config as _load_cfg_prof
 
@@ -1244,10 +1036,7 @@ class MainWindow(QMainWindow):
             rerank_cache=self.search_cache,
         )
         self.chat_panel.set_vector_store(self.vector_store)
-        # Пересоздаём индексер с путём проекта, чтобы подхватить игнор-файлы
         self.indexer = FileIndexer(self.config, self.project_path)
-
-        # Загружаем последнюю сессию для этого проекта
         sessions = self.session_store.list_sessions(str(project_path))
         if sessions:
             last = sessions[0]  # уже отсортированы по updated_at DESC
@@ -1257,8 +1046,6 @@ class MainWindow(QMainWindow):
 
         self.chat_panel.set_project_root(str(self.project_path))
         self.chat_panel.set_project_open(True)
-
-        # Индексация: контроллер сам загрузит previous_state (план 2.4).
         self.indexing_controller.configure(
             project_path=self.project_path,
             indexer=self.indexer,
@@ -1268,7 +1055,6 @@ class MainWindow(QMainWindow):
         self.reindex_btn.setVisible(True)
         self.reindex_btn.setEnabled(True)
 
-        # Восстанавливаем настройки проекта (они приоритетнее глобальных)
         project_settings = ProjectSettings.load(self.project_path)
         if project_settings.model:
             self.chat_panel.apply_settings(project_settings.model_dump())
@@ -1277,9 +1063,18 @@ class MainWindow(QMainWindow):
                 self.chat_panel.set_model(self.config.last_model)
             if self.config.last_mode:
                 self.chat_panel.set_mode_by_name(self.config.last_mode)
+        try:
+            from state.project_settings import snapshot_git_state
 
-        # Синхронизируем чекбокс с фактическим состоянием — apply_settings
-        # мог применить show_reasoning=False из project_settings.yaml.
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                project_settings.git_branch = git_state["branch"]
+                project_settings.git_hash = git_state["hash"]
+                project_settings.git_last_sync = git_state["timestamp"]
+                project_settings.save(self.project_path)
+                logger.info(f"git context: {git_state['branch']}@{git_state['hash']}")
+        except Exception:
+            logger.debug("git snapshot не сохранён", exc_info=True)
         if hasattr(self, "show_reasoning_check"):
             self.show_reasoning_check.blockSignals(True)
             self.show_reasoning_check.setChecked(self.chat_panel.get_show_reasoning())
@@ -1288,11 +1083,7 @@ class MainWindow(QMainWindow):
         self._start_indexing()
 
     def _get_reranker(self) -> CrossEncoderReranker | None:
-        """Возвращает реранкер по текущему конфигу (или ``None``, если выключен).
-
-        Экземпляр кэшируется и пересоздаётся только при смене модели — модель
-        кросс-энкодера загружается лениво, не хочется перезагружать её каждый раз.
-        """
+        """Возвращает реранкер по текущему конфигу (или ``None``, если выключен)."""
         settings = self.config.rerank
         if not settings.enabled:
             return None
@@ -1311,14 +1102,19 @@ class MainWindow(QMainWindow):
         Отличие от `_do_open_project`: текущая сессия и история чата не трогаются,
         каталог не добавляется в список недавних. Пользователь может держать
         открытым один проект, а вопросы задавать по другому каталогу.
-
-        План 2.4: дерево — `file_tree_controller.set_project_root`,
-        индексация — `indexing_controller.configure`/`start`.
         """
         path = Path(path_str).expanduser().resolve()
         if not path.is_dir():
             logger.warning(f"@dir: путь недоступен: {path}")
             return
+        try:
+            from state.project_settings import snapshot_git_state
+
+            git_state = snapshot_git_state(path)
+            if git_state["branch"]:
+                logger.info(f"@dir git context: {git_state['branch']}@{git_state['hash']}")
+        except Exception:
+            pass
 
         logger.info(f"@dir: прикрепляю директорию {path}")
         self.project_path = path
@@ -1327,8 +1123,16 @@ class MainWindow(QMainWindow):
         self.file_tree_controller.set_project_root(path)
         self.project_title_label.setText(path.name)
         self._update_window_title()
-
-        # Индекс хранится в .ollidesk внутри самого каталога
+        self.left_panel.setVisible(True)
+        if hasattr(self.chat_panel, "project_tree_btn"):
+            self.chat_panel.project_tree_btn.blockSignals(True)
+            self.chat_panel.project_tree_btn.setChecked(True)
+            self.chat_panel.project_tree_btn.blockSignals(False)
+        action = self.menu_bar.project_structure_action
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(True)
+            action.blockSignals(False)
         self.vector_store = VectorStore(
             persist_dir=path / ".ollidesk" / "vector_db",
             embed_client=self.chat_panel.router,
@@ -1341,14 +1145,11 @@ class MainWindow(QMainWindow):
         self.chat_panel.set_vector_store(self.vector_store)
         self.chat_panel.set_project_root(str(path))
         self.chat_panel.set_project_open(True)
-        # Пересоздаём индексер для нового каталога
+        self._switch_to_chat()
         self.indexer = FileIndexer(self.config, self.project_path)
-
-        # Индексация: контроллер сам загрузит previous_state (план 2.4).
         if self.indexing_controller.is_running:
             logger.info("@dir: ждём завершения индексации предыдущего каталога")
             self.indexing_controller.stop()
-
         self.indexing_controller.configure(
             project_path=path,
             indexer=self.indexer,
@@ -1358,16 +1159,8 @@ class MainWindow(QMainWindow):
         self.reindex_btn.setEnabled(True)
         self._start_indexing()
 
-    # ------------------------------------------------------------------
-    # Индексация (тонкие обёртки над IndexingController, план 2.4)
-    # ------------------------------------------------------------------
-
     def _reindex_project(self) -> None:
-        """Запускает полную переиндексацию.
-
-        Сброс `previous_state` и `ProjectState.clear` — внутри контроллера
-        (`IndexingController.reindex`). MainWindow только готовит UI.
-        """
+        """Запускает полную переиндексацию."""
         if not self.project_path:
             return
         self.index_progress.setVisible(True)
@@ -1393,11 +1186,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _on_index_progress(self, current: int, total: int):
-        """Обновляет прогресс-бар индексации.
-
-        При total == 0 индексация не нужна — скрываем прогресс немедленно,
-        чтобы пользователь не думал, что идёт переиндексация.
-        """
+        """Обновляет прогресс-бар индексации."""
         if total == 0:
             self.index_progress.setVisible(False)
             self.index_status_label.setVisible(False)
@@ -1410,12 +1199,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_index_finished(self):
-        """Обрабатывает завершение индексации (UI).
-
-        Сохранение `ProjectState` теперь делает `IndexingController`
-        в `_on_thread_finished` (без `scan_project` — состояние приходит
-        из worker'а через `state_ready`) — здесь только UI.
-        """
+        """Обрабатывает завершение индексации (UI)."""
         if self.index_progress.isVisible():
             self.index_progress.setValue(self.index_progress.maximum())
             self.index_status_label.setText("✅ Индексация завершена")
@@ -1452,7 +1236,7 @@ class MainWindow(QMainWindow):
         self.index_status_label.setVisible(False)
 
     def _toggle_side_panel(self) -> None:
-        """[9.2] Открывает AgentSettingsDialog (замена правой панели)."""
+        """Открывает AgentSettingsDialog (замена правой панели)."""
         if not self.chat_panel:
             return
         settings = self.chat_panel.get_settings()
@@ -1466,6 +1250,7 @@ class MainWindow(QMainWindow):
             tools_enabled={
                 name: policy != ToolPolicy.EXCLUDED for name, policy in self.chat_panel.tool_policies.items()
             },
+            allow_arbitrary_shell=bool(getattr(self.config, "allow_arbitrary_shell", False)),
             parent=self,
         )
         dialog.settings_applied.connect(self._on_agent_settings_applied)
@@ -1473,10 +1258,7 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def _on_agent_settings_applied(self, settings: dict) -> None:
-        """[9.2] Применяет настройки агента к ChatPanel и конфигу."""
-        # Температура/max_tokens/context_window — в текущую модель.
-        # ChatPanel пока не хранит их per-model, но get_settings() возвращает
-        # только model/mode/show_reasoning. Расширяем постепенно:
+        """Применяет настройки агента к ChatPanel и конфигу."""
         model_name = self.chat_panel.get_current_model()
         try:
             for m in self.config.models:
@@ -1488,18 +1270,14 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Не удалось применить temp/tokens к модели", exc_info=True)
 
-        # Max iterations.
         self.config.agent_max_iterations = int(settings["max_iterations"])
         self.config.chat_max_iterations = max(1, min(int(settings["max_iterations"]), 15))
-
-        # Reasoning.
         self.chat_panel.set_show_reasoning(bool(settings["show_reasoning"]))
         if hasattr(self, "show_reasoning_check"):
             self.show_reasoning_check.blockSignals(True)
             self.show_reasoning_check.setChecked(bool(settings["show_reasoning"]))
             self.show_reasoning_check.blockSignals(False)
 
-        # Tools: policy auto/excluded.
         tools = settings.get("tools") or {}
         for name, enabled in tools.items():
             policy = ToolPolicy.AUTO if enabled else ToolPolicy.EXCLUDED
@@ -1510,11 +1288,45 @@ class MainWindow(QMainWindow):
                 cb.setChecked(enabled)
                 cb.blockSignals(False)
 
-        # RAG.
         if hasattr(self, "rag_check"):
             self.rag_check.blockSignals(True)
             self.rag_check.setChecked(bool(settings.get("rag_enabled", True)))
             self.rag_check.blockSignals(False)
+
+        self.config.allow_arbitrary_shell = bool(settings.get("allow_arbitrary_shell", False))
+        mcp_enabled = bool(settings.get("mcp_enabled", False))
+        if self.config.mcp.enabled != mcp_enabled:
+            self.config.mcp.enabled = mcp_enabled
+            if mcp_enabled:
+                if self.chat_panel is not None:
+                    self.chat_panel._start_mcp_init()
+            else:
+                try:
+                    from tools.mcp_ops import MCPManager
+
+                    MCPManager.instance().shutdown_sync()
+                except Exception:
+                    logger.debug("MCP shutdown failed", exc_info=True)
+        b_mode = str(settings.get("browser_mode", "isolated"))
+        b_ack = bool(settings.get("browser_full_ack", False))
+        if b_mode == "full" and not b_ack:
+            logger.warning("browser: full без явного подтверждения — откатываю на isolated")
+            b_mode = "isolated"
+            b_ack = False
+        self.config.browser.mode = b_mode  # type: ignore[assignment]
+        self.config.browser.full_access_acknowledged = b_ack
+        try:
+            import asyncio as _aio
+
+            from tools.browser_ops import shutdown_browser
+
+            _loop = _aio.new_event_loop()
+            try:
+                _loop.run_until_complete(shutdown_browser())
+            finally:
+                _loop.close()
+        except Exception:
+            logger.debug("browser shutdown на смене режима", exc_info=True)
 
         try:
             from core.config import save_config
@@ -1525,24 +1337,27 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Настройки агента применены", 3000)
 
+    @Slot()
     def _show_chat_tab(self) -> None:
-        """Показывает вкладку чата (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.chat_panel) < 0:
-            self.tab_widget.insertTab(0, self.chat_panel, "💬 Чат")
-        self.tab_widget.setCurrentWidget(self.chat_panel)
+        """Возвращает на страницу чата. Вкладки файлов сохраняются."""
+        self._switch_to_chat()
 
+    @Slot()
     def _show_editor_tab(self) -> None:
-        """Показывает вкладку редактора (создаёт если закрыта)."""
-        if self.tab_widget.indexOf(self.editor_widget) < 0:
-            self.tab_widget.addTab(self.editor_widget, "📝 Редактор")
-        self.tab_widget.setCurrentWidget(self.editor_widget)
+        """Переключает на страницу редактора.
+
+        Если не открыто ни одного файла — редактор пуст, показывать
+        нечего. Сообщаем пользователю и остаёмся в чате.
+        """
+        if self.editor_widget.tab_count() == 0:
+            self.status_bar.showMessage("Редактор пуст: откройте файл из дерева проекта.", 3000)
+            self._switch_to_chat()
+            return
+        self._switch_to_editor()
 
     @Slot(bool)
     def _toggle_project_structure(self, visible: bool) -> None:
-        """[9.2] Показывает/скрывает левую панель (F4, меню).
-
-        Синхронизирует кнопку «📁» в ChatPanel и сохраняет состояние в конфиг.
-        """
+        """Показывает/скрывает левую панель (F4, меню)."""
         self.left_panel.setVisible(visible)
         if hasattr(self.chat_panel, "project_tree_btn"):
             self.chat_panel.project_tree_btn.blockSignals(True)
@@ -1559,7 +1374,7 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_project_tree_toggled(self, visible: bool) -> None:
-        """[9.2] Пользователь кликнул «📁» в ChatPanel — переключаем дерево."""
+        """Пользователь кликнул «📁» в ChatPanel — переключаем дерево."""
         self.left_panel.setVisible(visible)
         # Синхронизируем галочку меню.
         action = self.menu_bar.project_structure_action
@@ -1578,26 +1393,20 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_profile_changed(self, profile_id: str) -> None:
-        """[9.4] Профиль сменился — синхронизируем UI MainWindow.
+        """Профиль сменился — синхронизируем UI MainWindow.
 
         * чекбокс «Показывать размышления» (из ChatPanel);
         * статус-бар — короткое сообщение;
         * селектор профиля (на случай вызова из ChatPanel API).
         """
-        # [9.4] Обновляем галочку в подменю View → Профили.
         self.menu_bar._refresh_profiles_menu()
-        # Синхронизируем чекбокс reasoning (он в AgentSettingsDialog).
         if hasattr(self, "show_reasoning_check") and self.chat_panel:
             value = self.chat_panel.get_show_reasoning()
             self.show_reasoning_check.blockSignals(True)
             self.show_reasoning_check.setChecked(value)
             self.show_reasoning_check.blockSignals(False)
-
-        # Синхронизируем селектор профиля в ChatPanel (на случай API-вызова).
         if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
             self.chat_panel._profiles_selector.set_profile(profile_id)
-
-        # Показываем имя профиля в статус-баре.
         profile = get_profile_by_id(self.config.profiles, profile_id)
         if profile is not None:
             self.status_bar.showMessage(f"{profile.icon} Профиль: {profile.name}", 4000)
@@ -1605,7 +1414,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_menu_profile_selected(self, profile_id: str) -> None:
-        """[9.4] Пользователь выбрал профиль из меню View → Профили."""
+        """Пользователь выбрал профиль из меню View → Профили."""
         if not self.chat_panel:
             return
         try:
@@ -1615,7 +1424,6 @@ class MainWindow(QMainWindow):
             profile = get_profile_by_id(cfg.profiles, profile_id)
             if profile is None:
                 return
-            # Обновляем селектор и применяем профиль.
             if hasattr(self.chat_panel, "_profiles_selector") and self.chat_panel._profiles_selector:
                 self.chat_panel._profiles_selector.set_profile(profile_id)
             self.chat_panel._on_profile_changed(profile)
@@ -1623,7 +1431,7 @@ class MainWindow(QMainWindow):
             logger.warning(f"Не удалось применить профиль из меню: {e}")
 
     def _open_profile_editor(self) -> None:
-        """[9.4] Открывает ProfileEditorDialog. После сохранения перечитывает
+        """Открывает ProfileEditorDialog. После сохранения перечитывает
         конфиг, обновляет селектор профиля в ChatPanel и подменю в меню.
         """
         from ui.dialogs.profile_editor_dialog import ProfileEditorDialog
@@ -1634,7 +1442,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_profiles_saved(self) -> None:
-        """[9.4] Профили сохранены: перечитываем конфиг и синхронизируем UI."""
+        """Профили сохранены: перечитываем конфиг и синхронизируем UI."""
         try:
             from core.config import load_config
 
@@ -1643,10 +1451,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Не удалось перечитать конфиг после редактора профилей: {e}")
 
-        # Обновляем селектор профиля в ChatPanel.
         if self.chat_panel is not None:
             self.chat_panel.refresh_profiles_selector()
-            # Применяем активный профиль (мог измениться/исчезнуть).
             try:
                 profile = get_profile_by_id(self.config.profiles, self.config.active_profile)
                 if profile is not None:
@@ -1675,14 +1481,11 @@ class MainWindow(QMainWindow):
                 self.config = load_config()
                 self.menu_bar.set_config(self.config)
                 if self.chat_panel:
-                    models = [m.model for m in self.config.models]
-                    self.chat_panel.update_models(models)
-                    default = self.config.default_model
-                    self.chat_panel.set_model(default)
+                    if "ollama" in self.config.backends.enabled:
+                        models = [m.model for m in self.config.models]
+                        self.chat_panel.update_models(models)
+                        self.chat_panel.set_model(self.config.default_model)
                     self.chat_panel.set_project_open(self.project_path is not None)
-                from core.config import save_config
-
-                save_config(self.config)
             except Exception as e:
                 logger.error(f"Ошибка загрузки конфига после визарда: {e}")
         else:
@@ -1694,17 +1497,34 @@ class MainWindow(QMainWindow):
 
         dlg = SettingsDialog(config=self.config, project_path=self.project_path, parent=self)
         if dlg.exec():
-            # Перезагружаем конфиг
             from core.config import load_config
 
             try:
                 self.config = load_config(self.project_path)
                 self.menu_bar.set_config(self.config)
-                # Обновляем индексер с новым конфигом
                 self.indexer = FileIndexer(self.config, self.project_path)
                 logger.info("Настройки сохранены, конфиг перезагружен")
             except Exception as e:
                 logger.error(f"Ошибка перезагрузки конфига: {e}")
+
+    @Slot(str, bool)
+    def _on_pill_visibility_changed(self, pill_id: str, visible: bool) -> None:
+        """Централизованно обрабатывает скрытие/отображение плиток.
+
+        Вызывается как из контекстного меню StatusDashboard, так и из
+        верхнего меню View → Элементы статус-бара.
+        """
+        hidden = list(self.config.hidden_status_pills)
+        if visible and pill_id in hidden:
+            hidden.remove(pill_id)
+        elif not visible and pill_id not in hidden:
+            hidden.append(pill_id)
+        self.config.hidden_status_pills = hidden
+        from core.config import save_config
+
+        save_config(self.config)
+        self.dashboard.apply_visibility_settings(hidden)
+        self.menu_bar.update_status_pills_menu(hidden)
 
     def _toggle_theme(self) -> None:
         """Переключает между тёмной и светлой темой."""
@@ -1727,16 +1547,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         logger.info("Закрытие главного окна")
-        # [9.9] Закрываем палитру команд, если была открыта.
         if self._palette_dialog is not None:
             with contextlib.suppress(Exception):
                 self._palette_dialog.close()
             self._palette_dialog = None
         self._save_project_settings()
         if self.chat_panel:
-            self.config.last_model = self.chat_panel.get_current_model()
-            mode_map = {0: "chat", 1: "plan", 2: "agent"}
-            self.config.last_mode = mode_map.get(self.chat_panel.mode_combo.currentIndex(), "chat")
+            model = self.chat_panel.get_current_model()
+            if model:
+                self.config.last_model = model
+            self.config.last_mode = self.chat_panel.get_settings().get("mode", "chat")
             from core.config import save_config
 
             logger.info(
@@ -1745,65 +1565,56 @@ class MainWindow(QMainWindow):
             save_config(self.config)
             logger.info("✅ Конфиг сохранён в closeEvent")
         self._stop_all_threads()
-        self._stop_model_check()
+        self.ollama_controller.shutdown()
         self.prompt_watcher.stop()
 
-        # K3: освобождаем ModelPool (обе llama.cpp модели) и Orchestrator.
         if self.chat_panel and hasattr(self.chat_panel, "shutdown"):
             try:
                 self.chat_panel.shutdown()
             except Exception:
                 logger.debug("ChatPanel.shutdown failed", exc_info=True)
 
-        # Останавливаем фоновый опрос git-статусов у делегата.
         if hasattr(self, "file_tree_controller"):
             self.file_tree_controller.set_project_root(None)
 
         event.accept()
 
     def _save_project_settings(self) -> None:
-        """Сохраняет настройки проекта."""
+        """Сохраняет настройки проекта (+ git-снимок, 9.4)."""
         if not self.project_path:
             return
         settings = self.chat_panel.get_settings()
+        try:
+            from state.project_settings import snapshot_git_state
+
+            existing = ProjectSettings.load(self.project_path)
+            git_state = snapshot_git_state(self.project_path)
+            if git_state["branch"]:
+                existing.git_branch = git_state["branch"]
+                existing.git_hash = git_state["hash"]
+                existing.git_last_sync = git_state["timestamp"]
+            settings["git_branch"] = existing.git_branch
+            settings["git_hash"] = existing.git_hash
+            settings["git_last_sync"] = existing.git_last_sync
+        except Exception:
+            logger.debug("git snapshot при save не обновлён", exc_info=True)
         ProjectSettings(**settings).save(self.project_path)
 
-    # 🆕 Убран new_event_loop() — закрытие окна больше не блокируется.
     def _stop_all_threads(self) -> None:
-        """Останавливает фоновые потоки.
-
-        Ollama-клиент больше не закрываем через
-        `new_event_loop().run_until_complete(self.ollama_client.__aexit__)`:
-        это блокировало закрытие окна (до 3 с) и потенциально висело на
-        Windows Proactor при незавершённых httpx-коннектах. `httpx.AsyncClient`
-        уберётся GC при выходе процесса — ресурс-утечки нет, а закрытие
-        мгновенное.
-        """
-        # План 2.4: индексация — через контроллер.
+        """Останавливает фоновые потоки."""
         if hasattr(self, "indexing_controller"):
             self.indexing_controller.stop()
         if hasattr(self, "chat_panel") and self.chat_panel:
             self.chat_panel._stop_generation()
-        # Ждём фоновый Ollama-check (максимум 1 с) — поток daemon, но лучше
-        # не оставлять его висеть на закрывающемся QApplication.
-        if self._ollama_check_thread is not None and self._ollama_check_thread.isRunning():
-            self._ollama_check_thread.wait(1000)
 
     def _open_model_manager(self):
         from ui.dialogs.model_manager_dialog import ModelManagerDialog
 
-        dlg = ModelManagerDialog(self.model_registry, self.ollama_client.base_url, self)
+        dlg = ModelManagerDialog(self.ollama_controller.registry, self.ollama_controller.base_url, self)
         dlg.exec()
 
     def _open_slm_manager(self):
-        """Открывает диалог управления локальными SLM-моделями.
-
-        После закрытия:
-          * если модели изменились — перечитываем конфиг;
-          * `reload_slm()` перезагружает активную single-SLM и сбрасывает
-            двухмодельный пайплайн (см. panel.reset_pipeline), чтобы
-            следующий research-запрос шёл уже с новыми planner/analyst.
-        """
+        """Открывает диалог управления локальными SLM-моделями."""
         from core.config import load_config
         from ui.dialogs.slm_models_dialog import SLMModelsDialog
 
@@ -1819,7 +1630,6 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "chat_panel") and self.chat_panel:
                 self.chat_panel.reload_slm()
-                # [9.3] Селекторы Planner/Analyst могли измениться — обновляем.
                 self.chat_panel.refresh_pipeline_selectors()
 
                 self.status_bar.showMessage(
@@ -1866,95 +1676,71 @@ class MainWindow(QMainWindow):
                 "Сначала откройте проект: путь проекта нужен для кэша графа и evidence.",
             )
             return
-
-        # Сбрасываем флаг прошлой ошибки, чтобы _ensure_orchestrator
-        # не сделал no-op.
         self.chat_panel._pool_load_failed = False
         self.chat_panel._ensure_orchestrator()
         self.status_bar.showMessage("Загрузка двух моделей (planner + analyst)…", 5000)
 
-    def _start_model_check(self):
-        """Запускает или останавливает проверку моделей."""
-        if self._is_checking:
-            self._stop_model_check()
-            return
+    _OLLAMA_CHECK_UI: dict[str, tuple[str, str, int]] = {
+        "checking": ("🔄 Проверка поддержки инструментов моделями...", "⏹ Стоп", 0),
+        "stopping": ("⏹ Останавливаю проверку (до 10 сек)...", "⏹ Останавливаю…", 0),
+        "idle": ("⏹ Проверка остановлена", "🔄", 3000),
+        "background": (
+            "⏹ Останавливаю проверку в фоне (завершится при следующем ответе Ollama)",
+            "⏹ Останавливаю…",
+            5000,
+        ),
+    }
 
-        if (
-            hasattr(self, "_model_check_thread")
-            and self._model_check_thread
-            and self._model_check_thread.isRunning()
-        ):
-            return
+    def _start_model_check(self) -> None:
+        """Кнопка 🔄 / палитра: старт-стоп проверки tools (логика в контроллере)."""
+        self.ollama_controller.toggle_tools_check()
 
-        # [FIX] Проверка идёт через Ollama API. Без включённого/запущенного
-        # Ollama перебор N моделей даёт N × 5 сек таймаутов и N строк ERROR.
+    @Slot(list)
+    def _on_ollama_models_synced(self, models: list) -> None:
+        """Реестр Ollama синхронизирован — обновляем список моделей в ChatPanel."""
+        if self.chat_panel is None:
+            return
         try:
-            from core.config import load_config
-
-            cfg = load_config()
-            if "ollama" not in cfg.backends.enabled:
-                QMessageBox.information(
-                    self,
-                    "Ollama выключена",
-                    "Проверка поддержки инструментов выполняется через Ollama API.\n\n"
-                    "Ollama сейчас выключена в списке активных бэкендов: "
-                    "Файл → Настройки → Бэкенды LLM.",
-                )
-                return
+            if getattr(self.chat_panel, "registry", None) is None:
+                self.chat_panel.set_registry(self.ollama_controller.registry)
+            else:
+                self.chat_panel.update_models(models)
         except Exception:
-            logger.debug("Не удалось прочитать конфиг для проверки Ollama", exc_info=True)
+            logger.debug("Не удалось обновить модели в ChatPanel", exc_info=True)
+        if not self.chat_panel.get_current_model() and models:
+            registry = self.ollama_controller.registry
+            first_local = next(
+                (m for m in models if (info := registry.get(m)) is not None and info.is_local),
+                models[0],
+            )
+            self.chat_panel.set_model(first_local)
+        self.chat_panel._sync_dashboard()
 
-        if not self._ollama_connected:
+    @Slot(str)
+    def _on_ollama_check_state(self, state: str) -> None:
+        text, btn, timeout = self._OLLAMA_CHECK_UI.get(state, ("", "🔄", 0))
+        if text:
+            self.status_bar.showMessage(text, timeout)
+        self.chat_panel.set_refresh_button_text(btn)
+
+    @Slot(str)
+    def _on_ollama_check_refused(self, reason: str) -> None:
+        if reason == "disabled":
             QMessageBox.information(
                 self,
-                "Ollama недоступна",
-                "Ollama не отвечает на localhost:11434, поэтому проверка "
-                "поддержки инструментов невозможна.\n\n"
-                "Запустите сервис в терминале: `ollama serve`.",
+                "Ollama выключена",
+                "Проверка поддержки инструментов выполняется через Ollama API.\n\n"
+                "Ollama сейчас выключена в списке активных бэкендов: "
+                "Файл → Настройки → Бэкенды LLM.",
             )
             return
-
-        self.status_bar.showMessage("🔄 Проверка поддержки инструментов моделями...")
-        self.chat_panel.set_refresh_button_text("⏹ Стоп")
-        self._is_checking = True
-
-        self._model_check_thread = ModelCheckThread(self.ollama_client.base_url, self.model_registry)
-        self._model_check_thread.progress.connect(self._on_model_check_progress)
-        self._model_check_thread.model_checked.connect(self._on_model_checked)
-        self._model_check_thread.finished.connect(self._on_model_check_finished)
-        self._model_check_thread.start()
-
-    def _stop_model_check(self):
-        """Останавливает проверку моделей.
-
-        [FIX] Не используем terminate(): Python-поток с asyncio.run внутри
-        через PyThreadState_SetAsyncExc не убивается — только портится
-        состояние (в логе видно, что после «прервана» проверки продолжались).
-        Вместо этого шлём cancel() и ждём штатного завершения: текущий
-        check_tools_support выйдет по httpx-таймауту (~5-10 сек), затем
-        цикл увидит self._cancel и завершится.
-        """
-        if self._model_check_thread and self._model_check_thread.isRunning():
-            self._model_check_thread.cancel()
-            self.status_bar.showMessage("⏹ Останавливаю проверку (до 10 сек)...")
-            self.chat_panel.set_refresh_button_text("⏹ Останавливаю…")
-            # Даём потоку время корректно выйти. UI не блокируется надолго:
-            # 10 сек — потолок на один httpx-таймаут.
-            if self._model_check_thread.wait(10000):
-                self.status_bar.showMessage("⏹ Проверка остановлена", 3000)
-            else:
-                # Поток всё ещё живёт (например, соединение висит дольше).
-                # НЕ убиваем — выйдет сам по cancel(). Сообщаем пользователю.
-                logger.warning(
-                    "ModelCheckThread не завершился за 10 сек; продолжает работу в фоне и выйдет по cancel()"
-                )
-                self.status_bar.showMessage(
-                    "⏹ Останавливаю проверку в фоне (завершится при следующем ответе Ollama)",
-                    5000,
-                )
-                return
-        self._is_checking = False
-        self.chat_panel.set_refresh_button_text("🔄")
+        QMessageBox.information(
+            self,
+            "Ollama недоступна",
+            f"Ollama не отвечает на {self.ollama_controller.base_url}, поэтому "
+            "проверка поддержки инструментов невозможна.\n\n"
+            "Запустите сервис в терминале: `ollama serve`.",
+        )
 
     @Slot(str, int, int)
     def _on_model_check_progress(self, model_name: str, current: int, total: int):
@@ -1962,22 +1748,94 @@ class MainWindow(QMainWindow):
 
     @Slot(str, bool)
     def _on_model_checked(self, model_name: str, supports: bool):
-        """[2.4] Обновляет UI для проверенной модели (публичный API ChatPanel)."""
+        """Обновляет UI для проверенной модели (публичный API ChatPanel)."""
         self.chat_panel.update_model_status(model_name)
-        if self.chat_panel.get_current_model() == model_name:
-            self.chat_panel.update_model_status(model_name)
 
     @Slot(dict)
     def _on_model_check_finished(self, results: dict):
         self.status_bar.showMessage("✅ Проверка моделей завершена", 5000)
         self.chat_panel.set_checking_state(False)
         self.chat_panel.set_refresh_button_text("🔄")
-        self._is_checking = False
         self.chat_panel.update_model_list()
-        self.chat_panel.update_models(self._available_models)
+        self.chat_panel.update_models(self.ollama_controller.available_models)
+
+    @Slot()
+    def _open_memory_dialog(self) -> None:
+        """открывает диалог просмотра/удаления памяти агента."""
+        from core.config import load_config
+
+        try:
+            cfg = load_config()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать конфиг: {e}")
+            return
+        if not cfg.memory.enabled:
+            QMessageBox.information(
+                self,
+                "Память отключена",
+                "Включите память в настройках (⚙ → Память агента) или в config.yaml: `memory.enabled: true`.",
+            )
+            return
+        if self.chat_panel is None:
+            return
+        service = self.chat_panel._ensure_memory_service()
+        if service is None:
+            QMessageBox.warning(
+                self,
+                "Память недоступна",
+                "Не удалось инициализировать SQLite. См. лог.",
+            )
+            return
+        from ui.dialogs.memory_dialog import MemoryDialog
+
+        dlg = MemoryDialog(service, self)
+        dlg.exec()
 
     def _open_session_manager(self):
         from ui.dialogs.session_manager_dialog import SessionManagerDialog
 
         dlg = SessionManagerDialog(self.session_store, self.chat_panel, self)
         dlg.exec()
+
+    def _open_permissions(self) -> None:
+        """Открывает Permissions Dashboard."""
+        if self.chat_panel is None:
+            return
+        try:
+            registry = self.chat_panel.registry_for_permissions()
+        except Exception:
+            logger.exception("Не удалось собрать реестр для Permissions")
+            return
+        active_profile = self.chat_panel.get_active_profile()
+        current_mode = self.chat_panel._current_mode()  # приватный, но это UI-окно
+        session_overrides = dict(self.config.session_overrides)
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            session_overrides.update(self.chat_panel._current_session_overrides())
+
+        from ui.dialogs.permissions_dashboard import PermissionsDashboard
+
+        dlg = PermissionsDashboard(
+            registry,
+            self.config,
+            active_profile=active_profile,
+            current_mode=current_mode,
+            session_overrides=session_overrides,
+            parent=self,
+        )
+        dlg.exec()
+        try:
+            self.config.session_overrides = dict(
+                dlg._session_overrides  # noqa: SLF001
+            )
+            from core.config import save_config
+
+            save_config(self.config)
+            if self.chat_panel is not None:
+                self.chat_panel._sync_dashboard()
+        except Exception:
+            logger.debug(
+                "Не удалось сохранить session overrides после закрытия",
+                exc_info=True,
+            )

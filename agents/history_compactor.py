@@ -68,17 +68,32 @@ def compact_history(
     messages: list[ChatMessage],
     num_ctx: int,
     *,
-    threshold: float = COMPACT_THRESHOLD,
+    threshold: float | None = None,
     keep_recent: int = KEEP_RECENT_MESSAGES,
+    # [4.2] Бюджет горячего окна. ``0`` — старое поведение (без
+    # защиты горячего окна). ``> 0`` — хвост диалога, укладывающийся
+    # в этот бюджет, не режется ни на одном шаге.
+    hot_window_tokens: int = 0,
 ) -> list[ChatMessage]:
     """Прореживает историю, если она занимает больше порога окна контекста.
 
     Порядок шагов: reasoning → tool-результаты → старейшие реплики. После
     каждого шага проверяем, влезли ли в бюджет, и останавливаемся досрочно.
+
+    **4.2**: если ``hot_window_tokens > 0``, компактор гарантирует, что
+    последние реплики, укладывающиеся в этот бюджет, останутся
+    нетронутыми (ни reasoning, ни tool-результаты, ни сама реплика).
+    Это нужно, чтобы модель не теряла результаты своих недавних
+    tool-calls в ReAct-цикле и не повторяла одни и те же вызовы.
     """
     if not messages or num_ctx <= 0:
         return messages
 
+    # [4.2] Порог по умолчанию зависит от размера окна.
+    if threshold is None:
+        from core.context_budget import compactor_threshold
+
+        threshold = compactor_threshold(num_ctx)
     budget = max(MIN_BUDGET_TOKENS, int(num_ctx * threshold))
     if messages_tokens(messages) <= budget:
         return messages
@@ -89,27 +104,55 @@ def compact_history(
     head = messages[:head_len]
     dialogue = messages[head_len:]
 
+    # [4.2] Индекс, с которого начинается горячее окно. Всё, что >= этого
+    # индекса (в ``dialogue``), компактор не трогает.
+    hot_from = _hot_window_start(dialogue, hot_window_tokens)
+
     logger.info(
         f"Сжатие истории: {messages_tokens(messages)} токенов > {budget} "
-        f"({threshold:.0%} от {num_ctx}), реплик {len(dialogue)}"
+        f"({threshold:.0%} от {num_ctx}), реплик {len(dialogue)}, "
+        f"hot_window_tokens={hot_window_tokens}, hot_from_idx={hot_from}"
     )
 
-    # Шаг 1: опустошить reasoning в старых assistant-сообщениях.
-    dialogue = _stub_old_reasoning(dialogue, keep_recent)
+    # Шаг 1: опустошить reasoning в СТАРЫХ assistant-сообщениях
+    # (не трогая горячее окно).
+    dialogue = _stub_old_reasoning_with_hot(dialogue, hot_from)
     if messages_tokens(head) + messages_tokens(dialogue) <= budget:
         logger.info(f"Сжатие истории: опустошён reasoning ({len(dialogue)} реплик)")
         return head + dialogue
 
-    # Шаг 2: опустошить содержимое старых tool-результатов.
-    dialogue = _stub_old_tool_results(dialogue, keep_recent)
+    # Шаг 2: опустошить содержимое СТАРЫХ tool-результатов.
+    dialogue = _stub_old_tool_results_with_hot(dialogue, hot_from)
     if messages_tokens(head) + messages_tokens(dialogue) <= budget:
         logger.info(f"Сжатие истории: опустошены старые tool-результаты ({len(dialogue)} реплик)")
         return head + dialogue
 
-    # Шаг 3: выбросить старейшие реплики целиком.
-    dialogue = _drop_oldest_turns(dialogue, budget - messages_tokens(head))
+    # Шаг 3: выбросить старейшие реплики целиком (с учётом hot).
+    dialogue = _drop_oldest_turns_with_hot(dialogue, budget - messages_tokens(head), hot_from)
     logger.info(f"Сжатие истории: после отбрасывания реплик осталось {len(dialogue)}")
     return head + dialogue
+
+
+def _hot_window_start(dialogue: list[ChatMessage], hot_budget: int) -> int:
+    """Индекс первого сообщения горячего окна (с конца диалога).
+
+    Идём с конца и накапливаем токены, пока не превысим ``hot_budget``.
+    Всё, начиная с этого индекса, компактор не трогает.
+    """
+    if hot_budget <= 0:
+        return len(dialogue)  # ничего не защищено
+    from core.context_budget import estimate_tokens
+
+    used = 0
+    for i in range(len(dialogue) - 1, -1, -1):
+        m = dialogue[i]
+        cost = estimate_tokens(m.content or "") + estimate_tokens(m.reasoning_content or "")
+        # tool_calls учитывать не будем — их немного, и они не влияют
+        # на общий вес критично.
+        if used + cost > hot_budget:
+            return i + 1
+        used += cost
+    return 0  # весь диалог укладывается в горячее окно
 
 
 def _stub_old_reasoning(dialogue: list[ChatMessage], keep_recent: int) -> list[ChatMessage]:
@@ -184,3 +227,84 @@ def _drop_oldest_turns(dialogue: list[ChatMessage], budget: int) -> list[ChatMes
             break
         turns.pop(0)
     return [message for turn in turns for message in turn]
+
+
+def _stub_old_reasoning_with_hot(
+    dialogue: list[ChatMessage],
+    hot_from: int,
+) -> list[ChatMessage]:
+    """[4.2] Опустошает reasoning в старых assistant-сообщениях.
+
+    Не трогает сообщения с индексом ``>= hot_from`` (горячее окно).
+    """
+    result: list[ChatMessage] = []
+    for index, message in enumerate(dialogue):
+        if (
+            index < hot_from
+            and message.role == "assistant"
+            and any(isinstance(p, ReasoningPart) for p in message.parts)
+        ):
+            new_parts = [
+                ReasoningPart(text=REASONING_STUB) if isinstance(p, ReasoningPart) else p
+                for p in message.parts
+            ]
+            result.append(
+                ChatMessage(
+                    id=message.id,
+                    role=message.role,
+                    parts=new_parts,
+                    images=message.images,
+                    tool_call_id=message.tool_call_id,
+                    name=message.name,
+                )
+            )
+        else:
+            result.append(message)
+    return result
+
+
+def _stub_old_tool_results_with_hot(
+    dialogue: list[ChatMessage],
+    hot_from: int,
+) -> list[ChatMessage]:
+    """[4.2] Опустошает содержимое старых tool-сообщений.
+
+    Не трогает ``>= hot_from``.
+    """
+    result: list[ChatMessage] = []
+    for index, message in enumerate(dialogue):
+        if index < hot_from and message.role == "tool" and message.content != TOOL_RESULT_STUB:
+            result.append(message.with_content(TOOL_RESULT_STUB))
+        else:
+            result.append(message)
+    return result
+
+
+def _drop_oldest_turns_with_hot(
+    dialogue: list[ChatMessage],
+    budget: int,
+    hot_from: int,
+) -> list[ChatMessage]:
+    """[4.2] Выбрасывает старейшие реплики, не трогая горячее окно.
+
+    Горячее окно (``>= hot_from``) сохраняется целиком. Из старых реплик
+    выкидываем целыми turn'ами, пока не влезем в ``budget``. Если даже
+    пустое «старое» + горячее не влезает — обрезаем горячее окно
+    вынужденно (последняя реплика важна, но если не влезает вообще
+    ничего — оставляем только её).
+    """
+    old = dialogue[:hot_from]
+    hot = dialogue[hot_from:]
+    turns = _split_turns(old)
+    while turns:
+        flattened = [m for turn in turns for m in turn]
+        if messages_tokens(flattened) + messages_tokens(hot) <= budget:
+            break
+        turns.pop(0)
+    result = [m for turn in turns for m in turn] + hot
+    # Финальная защита: если и без старых не влезает — оставляем
+    # только последнюю реплику (она критична).
+    if messages_tokens(result) > budget and hot:
+        last_turn = _split_turns(hot)[-1] if hot else []
+        result = last_turn
+    return result

@@ -24,6 +24,7 @@ from agents.gpu_utils import detect_optimal_threads
 from agents.ollama_client import (
     ChatChunk,
     ChatMessage,
+    ReasoningPart,
     TextPart,
     ToolCall,
     ToolCallPart,
@@ -65,6 +66,89 @@ _FORMAT_INSTRUCTION = (
 )
 
 
+class _ThinkParser:
+    """Потоковый парсер `<think>...</think>` для thinking-моделей.
+
+    DeepSeek-R1-Distill и Qwen 3 отдают reasoning в блоках `<think>...</think>`
+    внутри `delta.content`. Этот парсер:
+      * режет поток на (kind="think", text) и (kind="text", text);
+      * корректно обрабатывает случай, когда тег приходит по частям
+        (`<` → `think` → `>` в разных токенах);
+      * в конце генерации `flush()` отдаёт хвост буфера — если модель
+        не закрыла `<think>` (обрезалась по max_tokens), reasoning
+        всё равно сохранится.
+
+    Не thread-safe — используется в одном потоке `_generate`.
+    """
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buf: str = ""
+        self._in_think: bool = False
+
+    @classmethod
+    def _partial_prefix_len(cls, text: str, marker: str) -> int:
+        """Сколько последних символов `text` — префикс `marker` (0..len(marker)-1)."""
+        max_k = min(len(marker) - 1, len(text))
+        for k in range(max_k, 0, -1):
+            if marker.startswith(text[-k:]):
+                return k
+        return 0
+
+    def feed(self, token: str) -> list[tuple[str, str]]:
+        """Принимает токен, возвращает список (kind, text) — kind ∈ {think, text}."""
+        if not token:
+            return []
+        self._buf += token
+        out: list[tuple[str, str]] = []
+
+        while self._buf:
+            if not self._in_think:
+                idx = self._buf.find(self.OPEN)
+                if idx == -1:
+                    keep = self._partial_prefix_len(self._buf, self.OPEN)
+                    if keep:
+                        if len(self._buf) > keep:
+                            out.append(("text", self._buf[:-keep]))
+                        self._buf = self._buf[-keep:]
+                    else:
+                        out.append(("text", self._buf))
+                        self._buf = ""
+                    break
+                if idx > 0:
+                    out.append(("text", self._buf[:idx]))
+                self._buf = self._buf[idx + len(self.OPEN) :]
+                self._in_think = True
+            else:
+                idx = self._buf.find(self.CLOSE)
+                if idx == -1:
+                    keep = self._partial_prefix_len(self._buf, self.CLOSE)
+                    if keep:
+                        if len(self._buf) > keep:
+                            out.append(("think", self._buf[:-keep]))
+                        self._buf = self._buf[-keep:]
+                    else:
+                        out.append(("think", self._buf))
+                        self._buf = ""
+                    break
+                if idx > 0:
+                    out.append(("think", self._buf[:idx]))
+                self._buf = self._buf[idx + len(self.CLOSE) :]
+                self._in_think = False
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        """Отдаёт остаток буфера в конце генерации."""
+        if not self._buf:
+            return []
+        kind = "think" if self._in_think else "text"
+        rest = self._buf
+        self._buf = ""
+        return [(kind, rest)]
+
+
 class LocalLLMClient:
     """Клиент локальной SLM через llama-cpp-python.
 
@@ -86,6 +170,7 @@ class LocalLLMClient:
         max_tokens: int = 1024,
         verbose: bool = False,
         params: "OptimizedParams | None" = None,
+        is_thinking: bool = False,
     ):
         from llama_cpp import Llama
 
@@ -119,6 +204,10 @@ class LocalLLMClient:
         self.n_gpu_layers = n_gpu_layers
         self.max_tokens = max_tokens
 
+        # [UI-2025] thinking-модели (DeepSeek-R1-Distill / Qwen 3) отдают
+        # reasoning в `<think>...</think>`. Для них включаем потоковый парсер.
+        self.is_thinking = is_thinking
+
         self._cancel_requested = False
         self._lock = threading.Lock()
         self.load_ms: float = 0.0
@@ -146,7 +235,9 @@ class LocalLLMClient:
             type_k=kv_type_int,
             type_v=kv_type_int,
             verbose=verbose,
-            chat_format="chatml",
+            # [FIX] Убран chat_format="chatml". Для Qwen2.5 в llama-cpp-python
+            # он вызывает баг со "съеданием" пробелов (слипшийся текст).
+            # Без него llama.cpp использует встроенный chat_template из GGUF.
         )
         load_ms = (time.perf_counter() - load_started) * 1000
 
@@ -204,7 +295,7 @@ class LocalLLMClient:
         """Генерирует ответ через llama.cpp с построчным стримингом."""
         self.reset_cancel()
 
-        chat_messages = self._prepare_messages(messages, tools)
+        chat_messages = self._prepare_messages(messages, tools, op_type=op_type)
 
         temperature = (
             _TEMPERATURE_BY_OP.get(op_type, _DEFAULT_TEMPERATURE) if op_type else _DEFAULT_TEMPERATURE
@@ -228,15 +319,30 @@ class LocalLLMClient:
 
             [9.5] Стримит TextPart на каждый токен. Tool calls парсятся
             на полном тексте после цикла и эмитятся одним ToolCallPart.
+            [2.10] Отслеживаем finish_reason из llama.cpp (choices[0]).
             """
-            # [9.5] start-event — симметрично OllamaClient.
             _safe_put(ChatChunk(event_type="start", done=False))
-
             cancelled = False
             full_text_parts: list[str] = []
+            finish_reason = "stop"
             prompt_chars = sum(len(str(m.get("content") or "")) for m in chat_messages)
             gen_started = time.perf_counter()
+            gen_ms = 0.0
             first_token_at: float | None = None
+
+            # [4.2] Prefix caching: сколько токенов уже в KV до вызова.
+            # llama.cpp сам найдёт общий префикс с предыдущим вызовом;
+            # `self.llm.n_tokens` = текущий размер KV. После вызова
+            # увеличится на новые prompt-токены + сгенерированное.
+            try:
+                cache_reads_before = int(self.llm.n_tokens)
+            except Exception:
+                cache_reads_before = 0
+
+            # [UI-2025] Для thinking-моделей — потоковый парсер `<think>`.
+            think_parser = _ThinkParser() if self.is_thinking else None
+            reasoning_parts: list[str] = []
+
             try:
                 with self._lock:
                     response = self.llm.create_chat_completion(
@@ -254,45 +360,127 @@ class LocalLLMClient:
                         choices = cast(Any, chunk).get("choices") or []
                         if not choices:
                             continue
-                        delta = choices[0].get("delta") or {}
-                        content = str(delta.get("content") or "")
-                        if not content:
+                        choice = choices[0]
+                        finish = choice.get("finish_reason")
+                        if finish:
+                            finish_reason = str(finish)
+                        delta = choice.get("delta") or {}
+                        raw = str(delta.get("content") or "")
+                        if not raw:
                             continue
+
+                        # Заменяем маркеры пробелов SentencePiece / BPE.
+                        raw = raw.replace("▁", " ").replace("Ġ", " ")
+
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
-                        full_text_parts.append(content)
-                        # [9.5] Стрим каждого токена сразу.
-                        _safe_put(
-                            ChatChunk(
-                                part=TextPart(text=content),
-                                event_type="delta",
-                                done=False,
-                            )
-                        )
 
+                        if think_parser is not None:
+                            for kind, piece in think_parser.feed(raw):
+                                if not piece:
+                                    continue
+                                if kind == "think":
+                                    reasoning_parts.append(piece)
+                                    _safe_put(
+                                        ChatChunk(
+                                            part=ReasoningPart(text=piece),
+                                            event_type="delta",
+                                            done=False,
+                                        )
+                                    )
+                                else:
+                                    full_text_parts.append(piece)
+                                    _safe_put(
+                                        ChatChunk(
+                                            part=TextPart(text=piece),
+                                            event_type="delta",
+                                            done=False,
+                                        )
+                                    )
+                        else:
+                            full_text_parts.append(raw)
+                            _safe_put(
+                                ChatChunk(
+                                    part=TextPart(text=raw),
+                                    event_type="delta",
+                                    done=False,
+                                )
+                            )
+
+                    # [UI-2025] Хвост парсера — если модель не закрыла <think>
+                    # (обрезалась по max_tokens) или не закончила слово.
+                    if think_parser is not None and not cancelled:
+                        for kind, piece in think_parser.flush():
+                            if not piece:
+                                continue
+                            if kind == "think":
+                                reasoning_parts.append(piece)
+                                _safe_put(
+                                    ChatChunk(
+                                        part=ReasoningPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    )
+                                )
+                            else:
+                                full_text_parts.append(piece)
+                                _safe_put(
+                                    ChatChunk(
+                                        part=TextPart(text=piece),
+                                        event_type="delta",
+                                        done=False,
+                                    )
+                                )
+
+                # Время генерации считаем ВСЕГДА: после выхода из блокировки,
+                # независимо от thinking-режима, отмены и наличия хвоста парсера.
                 gen_ms = (time.perf_counter() - gen_started) * 1000
 
+                # [4.2] Метрики prefix caching.
+                try:
+                    total_kv_after = int(self.llm.n_tokens)
+                except Exception:
+                    total_kv_after = 0
+
+                full_text = "".join(full_text_parts)
+
+                if reasoning_parts:
+                    logger.debug(
+                        f"SLM: reasoning {sum(len(p) for p in reasoning_parts)} симв., "
+                        f"ответ {len(full_text)} симв."
+                    )
                 if cancelled:
                     self.last_stats = self._make_stats(prompt_chars, 0, gen_ms, None, cancelled=True)
                     logger.info(f"SLM: генерация отменена за {gen_ms:.0f} мс")
                     _safe_put(ChatChunk(done=True, event_type="end"))
                     return
 
-                full_text = "".join(full_text_parts)
                 tokens = self._count_tokens(full_text)
                 ttft_ms = (first_token_at - gen_started) * 1000 if first_token_at is not None else None
-                self.last_stats = self._make_stats(prompt_chars, tokens, gen_ms, ttft_ms)
+
+                # prompt_tokens = total_after - tokens (то, что уже в KV,
+                # включая переиспользованное и новое). cache_reads — из
+                # ранее закешированного префикса.
+                prompt_tokens = max(0, total_kv_after - tokens) if tokens else total_kv_after
+                cache_reads = min(cache_reads_before, prompt_tokens)
+                cache_writes = max(0, prompt_tokens - cache_reads)
+
+                self.last_stats = self._make_stats(
+                    prompt_chars,
+                    tokens,
+                    gen_ms,
+                    ttft_ms,
+                    cache_reads=cache_reads,
+                    cache_writes=cache_writes,
+                )
                 logger.info(
                     f"SLM: {tokens} ток. за {gen_ms / 1000:.1f} с "
                     f"({tokens / (gen_ms / 1000):.1f} ток/с)"
                     + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
-                    + f", промпт ~{prompt_chars} симв."
+                    + f", промпт ~{prompt_chars} симв., "
+                    f"cache: {cache_reads} reads / {cache_writes} writes"
                 )
 
-                # [9.5] Tool calls парсятся на полном тексте после стрима.
-                # Текст уже ушёл в UI дельтами; tool_call-карточка появится
-                # сверху неё. Это приемлемая цена за живой стрим — на SLM
-                # модель либо отдаёт текст, либо JSON-вызов, не оба сразу.
                 tool_calls: list[ToolCall] = []
                 if tools and full_text.strip():
                     tool_calls = self._parse_tool_calls(full_text, tools)
@@ -306,8 +494,13 @@ class LocalLLMClient:
                             done=False,
                         )
                     )
+                    # 2.10: model вызвала инструмент — это тоже «stop», но
+                    # AgentLoop проверит pending_tool_calls. Finish_reason
+                    # остаётся stop (llama.cpp обычно возвращает stop и
+                    # когда модель вызвала tool через JSON-разметку).
+                    finish_reason = "tool_calls"
 
-                _safe_put(ChatChunk(done=True, event_type="end"))
+                _safe_put(ChatChunk(done=True, event_type="end", finish_reason=finish_reason))
 
             except Exception as e:
                 logger.error(f"SLM generation error: {e}")
@@ -409,8 +602,19 @@ class LocalLLMClient:
         gen_ms: float,
         ttft_ms: float | None,
         cancelled: bool = False,
+        *,
+        cache_reads: int = 0,
+        cache_writes: int = 0,
     ) -> dict[str, Any]:
-        seconds = gen_ms / 1000
+        # seconds = gen_ms / 1000
+        seconds = max(gen_ms / 1000.0, 1e-6)
+        logger.info(
+            f"SLM: {tokens} ток. за {seconds:.1f} с ({tokens / seconds:.1f} ток/с)"
+            + (f", TTFT {ttft_ms:.0f} мс" if ttft_ms is not None else "")
+            + f", промпт ~{prompt_chars} симв., "
+            f"cache: {cache_reads} reads / {cache_writes} writes"
+        )
+
         return {
             "prompt_chars": prompt_chars,
             "tokens": tokens,
@@ -418,6 +622,9 @@ class LocalLLMClient:
             "ttft_ms": round(ttft_ms) if ttft_ms is not None else None,
             "tokens_per_sec": round(tokens / seconds, 1) if seconds > 0 and tokens else 0.0,
             "cancelled": cancelled,
+            # [4.2] prefix caching
+            "cache_reads": cache_reads,
+            "cache_writes": cache_writes,
         }
 
     # --- Tool-call parsing ---
@@ -440,34 +647,34 @@ class LocalLLMClient:
             '  {"name": "read_file", "arguments": {"path": "README.md"}}',
             '  {"name": "search_codebase", "arguments": {"query": "точка входа приложения"}}',
             '  {"name": "get_weather", "arguments": {"city": "Москва"}}',
-            '  {"name": "web_search", "arguments": {"query": "последняя версия Python"}}',
             '  {"name": "get_current_datetime", "arguments": {}}',
+            "",
+            "ВАЖНО ПРО AGENTS.md:",
+            "  Если в проекте есть файл `AGENTS.md` — ПРОЧИТАЙ ЕГО ПЕРВЫМ. Это сводка от автора проекта.",
+            "  Если файла нет — не страшно, изучи проект сам.",
             "",
             "ЗАПРЕЩЕНО:",
             "  • Отвечать на вопросы про структуру, архитектуру, логику или код проекта,",
             "    прочитав ТОЛЬКО список файлов (list_directory).",
-            "  • Возвращать список файлов как финальный ответ на «изучи проект», «опиши",
-            "    архитектуру», «как устроено», «расскажи про проект» и т.п.",
             "  • Выдумывать содержимое файлов — их нужно читать через read_file.",
             "",
             "ПРАВИЛЬНЫЙ ПОРЯДОК для «изучи проект и нарисуй архитектуру»:",
             '  1. list_directory(path=".")             — обзор структуры',
-            '  2. read_file(path="README.md")           — что за проект',
-            '  3. read_file(path="<точка входа>")       — как запускается',
-            '  4. read_file(path="<главный модуль>")    — как устроен',
+            '  2. read_file(path="AGENTS.md")           — если есть (главный приоритет)',
+            '  3. read_file(path="README.md")           — что за проект',
+            '  4. read_file(path="<точка входа>")       — как запускается',
             '  5. read_file(path="<ещё 2-3 файла>")     — детали',
             "  6. Только теперь — финальный ответ текстом с ASCII-схемой.",
             "",
-            "Если задача — «объясни архитектуру» или «как устроено», после",
-            "list_directory ОБЯЗАТЕЛЬНО прочитай не менее 3-5 ключевых файлов.",
-            "Отвечать после одного list_directory — ЗАПРЕЩЕНО.",
+            "СОХРАНЕНИЕ ЗНАНИЙ:",
+            "  Если ты успешно изучил проект, но файла `AGENTS.md` не было —",
+            "  ОБЯЗАТЕЛЬНО вызови `write_file`, чтобы создать `AGENTS.md` и сохранить",
+            "  туда архитектуру, стек и основные компоненты проекта.",
             "",
             "ПРАВИЛА:",
             "- Вызывай инструменты САМ, а не советуй пользователю.",
             "- НЕ выдумывай содержимое файлов — читай их.",
-            "- Данных не хватает — вызови инструмент ещё раз.",
             "- Инструмент вернул ошибку — честно сообщи, не подменяй выдумкой.",
-            '- Общие знания ("Что такое SOLID?") — отвечай без инструментов.',
             "",
             "ДОСТУПНЫЕ ИНСТРУМЕНТЫ:",
         ]
@@ -494,12 +701,29 @@ class LocalLLMClient:
 
     # --- Конвертация сообщений ---
 
-    def _prepare_messages(self, messages: list[ChatMessage], tools: list[Any] | None) -> list[dict[str, Any]]:
+    def _prepare_messages(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Any] | None,
+        op_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         chat_messages = self._convert_messages(messages)
         if tools:
             chat_messages = self._prepend_system(chat_messages, self._build_tool_instruction(tools))
         chat_messages = self._prepend_system(chat_messages, _FORMAT_INSTRUCTION)
-        return self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
+        chat_messages = self._prepend_system(chat_messages, _LANGUAGE_INSTRUCTION)
+
+        # [UI-2025] Qwen 3 — гибридная: reasoning включается/выключается
+        # суффиксом в user-сообщении. Для tool_call / classify reasoning
+        # вреден (замедляет, ломает JSON) — ставим /no_think.
+        if self.is_thinking and op_type in ("tool_call", "classify", "plan"):
+            for msg in reversed(chat_messages):
+                if msg.get("role") == "user":
+                    content = str(msg.get("content") or "")
+                    if "/no_think" not in content and "/think" not in content:
+                        msg["content"] = content + "\n\n/no_think"
+                    break
+        return chat_messages
 
     @staticmethod
     def _prepend_system(chat_messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:

@@ -1,22 +1,19 @@
-"""Серый лог рассуждений агента в реальном времени.
+"""ReasoningPanel — сплошной лог рассуждений агента внутри пузыря.
 
-Виджет `ChatThoughtStream` создаётся при старте research-прогона и живёт
-до конца запроса. Он собирает:
+Заменяет прежний ChatThoughtStream. Встраивается в ChatMessageItem
+как первая секция пузыря ассистента, а не отдельным виджетом в ленте.
 
-* 💭 мысли модели (свободный текст, стримится в реальном времени);
-* 🔧 вызовы инструментов;
-* ✓/✗ результаты;
-* 💡 созданные гипотезы;
-* 🔬 обновления гипотез;
-* 🔁 нуджи и статусы фаз.
+Собирает в хронологическом порядке:
+  * 💭 токены reasoning_content модели (ReasoningPart);
+  * 💭 «мысли» — текст модели до tool-call (когда нет reasoning_content);
+  * 🤔 статусы AgentLoop («Анализирую запрос…», «Проверка ответа…»);
+  * 🔧 вызовы инструментов с аргументами;
+  * ✓/✗ результаты инструментов (компактное превью);
+  * 💡/🔬 гипотезы;
+  * 🔁 нуджи и 📌 фазы.
 
-По умолчанию **свёрнут** — видна только строка «💭 Рассуждение · N действий
-· …превью последней мысли». Кнопка «▲ Развернуть» открывает тело с
-ограниченной высотой (280px) и внутренним скроллом. При отмене прогона
-виджет получает `mark_interrupted()` и показывает курсивный комментарий.
-
-Заголовок обновляется **при каждом токене мысли** — иначе свёрнутый
-виджет выглядит «застывшим», и пользователь не видит, что модель работает.
+По умолчанию **развёрнут** (вы просили видеть ход мысли). Кнопка
+«▲ Свернуть» сворачивает тело, оставляя в заголовке счётчик действий.
 """
 
 from __future__ import annotations
@@ -33,7 +30,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Цвета сегментов (в стиле «серого лога»)
 _C_THOUGHT = "#9a9a9a"
 _C_ACTION = "#7a9ac8"
 _C_RESULT_OK = "#8aa87a"
@@ -49,36 +45,33 @@ _BODY_MAX_HEIGHT = 280
 _HEADER_PREVIEW_CHARS = 80
 
 
-class ChatThoughtStream(QWidget):
-    """Свёрнутый по умолчанию серый лог рассуждений агента."""
+class ReasoningPanel(QWidget):
+    """Развёрнутый по умолчанию лог рассуждений агента."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._actions_count = 0
         self._hypotheses_count = 0
-        self._expanded = False
+        self._expanded = True
 
-        # Буфер текущей незакрытой мысли (для превью в заголовке).
         self._current_thought_buffer = ""
         self._current_thought_open = False
 
         container = QFrame(self)
-        container.setObjectName("_thought_stream")
+        container.setObjectName("_reasoning_panel")
         container.setStyleSheet(
-            "QFrame#_thought_stream {"
+            "QFrame#_reasoning_panel {"
             " background: #1b1b22; border: 1px solid #2f2f3c;"
             " border-radius: 8px; padding: 8px 10px; }"
         )
-
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(container)
 
         root = QVBoxLayout(container)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
 
-        # --- Заголовок ---
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
@@ -88,7 +81,7 @@ class ChatThoughtStream(QWidget):
         self._header_label.setWordWrap(False)
         header.addWidget(self._header_label, stretch=1)
 
-        self._toggle_btn = QPushButton("▼ Развернуть")
+        self._toggle_btn = QPushButton("▲ Свернуть")
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._toggle_btn.setStyleSheet(
@@ -100,10 +93,8 @@ class ChatThoughtStream(QWidget):
         )
         self._toggle_btn.clicked.connect(self._toggle_body)
         header.addWidget(self._toggle_btn)
-
         root.addLayout(header)
 
-        # --- Тело ---
         self._body = QTextBrowser()
         self._body.setOpenExternalLinks(False)
         self._body.setReadOnly(True)
@@ -117,13 +108,13 @@ class ChatThoughtStream(QWidget):
             " font-family: 'Consolas','Cascadia Mono',monospace;"
             " font-size: 12px; padding: 2px 0; }"
         )
-        self._body.setVisible(False)
+        self._body.setVisible(True)
         root.addWidget(self._body)
 
         self._refresh_header()
 
     # ---------------------------------------------------------------
-    # Заголовок
+    # Заголовок / сворачивание
     # ---------------------------------------------------------------
 
     def _refresh_header(self) -> None:
@@ -136,23 +127,7 @@ class ChatThoughtStream(QWidget):
             parts.append(
                 f'<span style="color: #7a7a8a; font-size: 11px;">· {self._hypotheses_count} гипотез</span>'
             )
-
-        # Превью последней мысли — только когда виджет свёрнут
-        # (в развёрнутом состоянии текст и так виден в теле).
-        if not self._expanded and self._current_thought_buffer:
-            preview = self._current_thought_buffer.strip().replace("\n", " ")
-            if len(preview) > _HEADER_PREVIEW_CHARS:
-                preview = "…" + preview[-_HEADER_PREVIEW_CHARS:]
-            safe = _escape(preview)
-            parts.append(
-                f'<span style="color: #6a6a7a; font-size: 11px; font-style: italic;">· {safe}</span>'
-            )
-
         self._header_label.setText(" ".join(parts))
-
-    # ---------------------------------------------------------------
-    # Сворачивание / разворот
-    # ---------------------------------------------------------------
 
     def _toggle_body(self) -> None:
         self._expanded = not self._expanded
@@ -188,24 +163,16 @@ class ChatThoughtStream(QWidget):
         self._body.insertPlainText("\n")
 
     def append_thought_token(self, token: str) -> None:
-        """Добавляет токен мысли — продолжает текущий блок."""
         if not token:
             return
         if not self._current_thought_open:
             self._insert_html('<span style="color: #7a7a8a;">💭 </span>')
             self._current_thought_open = True
-
         safe = token.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         self._insert_html(f'<span style="color: {_C_THOUGHT}; font-style: italic;">{safe}</span>')
-
-        # Копим буфер для превью в заголовке (ограничиваем 500 символами —
-        # хватит для последних 80 в заголовке с запасом).
         self._current_thought_buffer += token
         if len(self._current_thought_buffer) > 500:
             self._current_thought_buffer = self._current_thought_buffer[-500:]
-
-        # Заголовок обновляем при каждом токене — пользователь видит,
-        # что модель работает, даже если плашка свёрнута.
         self._refresh_header()
 
     def append_thought_block(self, text: str) -> None:
@@ -322,9 +289,12 @@ class ChatThoughtStream(QWidget):
             f'<span style="color: {_C_INTERRUPT}; font-style: italic;">⏹ {_escape(text)}</span>'
         )
         self._insert_newline()
-        # Разворачиваем, чтобы пользователь увидел, где встал агент.
         if not self._expanded:
             self._toggle_body()
+
+    def to_plain_text(self) -> str:
+        """Полный текст панели — для копирования пузыря целиком."""
+        return self._body.document().toPlainText()
 
     @property
     def actions_count(self) -> int:
@@ -333,11 +303,6 @@ class ChatThoughtStream(QWidget):
     @property
     def hypotheses_count(self) -> int:
         return self._hypotheses_count
-
-
-# ---------------------------------------------------------------------------
-# Утилиты
-# ---------------------------------------------------------------------------
 
 
 def _escape(text: str) -> str:
@@ -350,3 +315,6 @@ def _short(value: object, limit: int = 60) -> str:
     if len(s) > limit:
         s = s[: limit - 1] + "…"
     return s
+
+
+__all__ = ["ReasoningPanel"]

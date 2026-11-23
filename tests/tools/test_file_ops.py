@@ -218,6 +218,7 @@ class TestWriteFile:
 
     def test_directory_target_is_rejected(self, temp_project: Path):
         result = write_file("src", "данные", project_root=str(temp_project))
+        assert isinstance(result, str)
         assert result.startswith("Ошибка:")
         assert "является директорией" in result
 

@@ -242,7 +242,9 @@ class FileTreeController(QObject):
             QMessageBox.critical(self.tree, "Ошибка", f"Не удалось создать файл:\n{e}")
             return
         self._git_delegate.refresh()
-        QTimer.singleShot(200, self._open_new_path, str(new_path))
+        # PySide6-обёртка не поддерживает extra-args, как C++. Захватываем
+        # путь через default-аргумент лямбды.
+        QTimer.singleShot(200, lambda p=str(new_path): self._open_new_path(p))
 
     def _open_new_path(self, path: str) -> None:
         self.reload()
@@ -440,6 +442,8 @@ class FileTreeController(QObject):
         if self._file_system_model is None:
             return
         index = self.tree.indexAt(pos)
+        # Явная аннотация: ветки дают Path и Path | None соответственно.
+        target_path: Path | None
         if index.isValid():
             self.tree.setCurrentIndex(index)
             target_path = Path(self._file_system_model.filePath(index))

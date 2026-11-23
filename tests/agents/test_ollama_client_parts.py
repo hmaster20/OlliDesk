@@ -71,7 +71,7 @@ class TestChatMessageBackwardCompat:
         m = ChatMessage(
             role="assistant",
             parts=[TextPart(text="из parts")],
-            content="из content",  # type: ignore[call-arg]
+            content="из content",
         )
         assert m.content == "из parts"
 
@@ -195,7 +195,7 @@ class TestChatChunkBackwardCompat:
     def test_explicit_part_priority(self) -> None:
         c = ChatChunk(
             part=TextPart(text="из parts"),
-            content="из content",  # type: ignore[call-arg]
+            content="из content",
             done=True,
         )
         assert c.content == "из parts"

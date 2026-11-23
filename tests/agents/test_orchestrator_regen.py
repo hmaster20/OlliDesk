@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from agents.critic import Critique
+from agents.model_pool import ModelPool
 from agents.orchestrator import Orchestrator
 from fs.intel.graph import DependencyGraph, GraphEdge, GraphNode
 
@@ -66,7 +68,13 @@ async def _ok_critique(answer: str, task: str, planner_client) -> Critique:
 
 @pytest.fixture
 def orch(tmp_path, monkeypatch) -> Orchestrator:
-    o = Orchestrator(pool=_FakePool(), intel_cache_dir=tmp_path / "intel")
+    # _FakePool структурно подменяет ModelPool в тестах (client/
+    # runtime_ctx/spec). Cast — чтобы не тащить настоящий ModelPool
+    # с загрузкой llama.cpp в unit-тест.
+    o = Orchestrator(
+        pool=cast(ModelPool, _FakePool()),
+        intel_cache_dir=tmp_path / "intel",
+    )
     fake_intel = _fake_intel()
 
     async def _classify(q: str):

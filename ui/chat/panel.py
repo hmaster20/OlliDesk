@@ -6,13 +6,26 @@ import json
 import os
 import re
 
+from core.services.memory_service import (
+    MemoryService,
+    Reflection,
+)
+
 os.environ.setdefault("LLAMA_LOG_LEVEL", "WARN")
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QKeyEvent,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -32,7 +45,16 @@ from agents.hypotheses import HypothesisStore
 from agents.investigation import is_research_question
 from agents.model_pool import Role
 from agents.model_router import BackendType, ModelRouter
-from agents.ollama_client import ChatMessage, OllamaClient
+from agents.ollama_client import (
+    ChatMessage,
+    MessagePart,
+    OllamaClient,
+    ReasoningPart,
+    TextPart,
+    ToolCall,
+    ToolCallPart,
+    ToolResultPart,
+)
 from agents.rule_based_fallback import RuleBasedFallback
 from agents.tool_registry import ToolRegistry
 from core.chat_commands import (
@@ -44,11 +66,16 @@ from core.chat_commands import (
 )
 from core.config import AgentMode, ToolPolicy, load_config
 from core.context_budget import attached_char_budget, rag_char_budget, truncate_to_chars
-from core.model_registry import ModelInfo, ModelRegistry
+from core.event_bus import emit_event
+from core.events import EventKind
+from core.model_registry import ModelRegistry
 from core.profiles import ProfileConfig, get_default_profile, get_profile_by_id
 from core.roles import RoleManager
+from core.security import SecurityPolicy
+from core.services.tool_service import ToolService
 from core.system_prompts import SystemPromptManager
 from fs.project_map import detect_query_scope, list_project_files, render_project_map
+from state.inbox import SessionInbox
 from tools.attached_files import AttachedFileStore
 from tools.weather import get_weather
 from ui.chat.backends import BackendsMixin
@@ -59,21 +86,22 @@ from ui.chat.message_item import (
     ChatMessageItem,
     ChatSourcesItem,
 )
+from ui.chat.ollama_models import OllamaModelsMixin
+from ui.chat.reasoning_panel import ReasoningPanel
 from ui.chat.research import ResearchMixin
 from ui.chat.research_passport import ChatResearchPassport
-from ui.chat.thought_stream import ChatThoughtStream
 from ui.chat.threads import (
     AgentChatThread,
     RagSearchThread,
     WebSearchThread,
     _ModelPoolLoadThread,
     _OllamaCheckThread,
-    _SLMDownloadThread,
     _SLMLoadThread,
 )
 from ui.widgets.auto_scroll import AutoScrollArea
 from ui.widgets.collapsed_placeholder import CollapsedPlaceholder
 from ui.widgets.command_completer import CommandCompleter
+from ui.widgets.live_events import LiveEventsPanel, QtEventBus
 from ui.widgets.pipeline_selectors import PipelineSelectors
 from ui.widgets.profiles_selector import ProfilesSelector
 
@@ -81,6 +109,14 @@ if TYPE_CHECKING:
     from agents.local_llm_client import LocalLLMClient
     from agents.model_pool import ModelPool
     from agents.orchestrator import Orchestrator
+    from ui.chat.message_item import ToolCallCard
+
+
+# Типы рефлексии. Должны ТОЧНО совпадать с Literal-полями `Reflection`
+# из core.services.memory_service (task_type / outcome) — иначе mypy
+# снова начнёт ругаться на arg-type в _build_reflection.
+TaskType = Literal["research", "code", "bug_fix", "refactor", "chat", "other"]
+Outcome = Literal["success", "partial", "failure"]
 
 # Инструменты, которые в Chat-режиме должны выполняться без подтверждения.
 # Основной список живёт в AppConfig.chat_auto_tools; эта константа — fallback,
@@ -111,16 +147,16 @@ _MIN_ATTACHED_BUDGET = 600
 # Сколько чанков запрашивать у векторного поиска перед дедупликацией по файлам.
 _RAG_N_RESULTS = 8
 
-# [9.10] Виртуализация: при каком числе «месседж-виджетов» в layout
+# Виртуализация: при каком числе «месседж-виджетов» в layout
 # старые начинают сворачиваться в placeholder. Значение подобрано так,
 # чтобы QScrollArea оставался отзывчивым при прокрутке (обычно —
 # порог, после которого начинаются просадки FPS).
 _MAX_VISIBLE_MESSAGE_WIDGETS = 80
 
-# [9.10] Сколько «самых свежих» свёрнутых разворачивать за один клик.
+# Сколько «самых свежих» свёрнутых разворачивать за один клик.
 _RESTORE_BATCH = 40
 
-# [9.10] Сколько старых свернуть за раз, когда порог превышен.
+# Сколько старых свернуть за раз, когда порог превышен.
 # Сворачиваем с запасом: следующий раз — только когда снова наберётся
 # _MAX_VISIBLE_MESSAGE_WIDGETS + _COLLAPSE_BUFFER.
 _COLLAPSE_BUFFER = 20
@@ -161,17 +197,15 @@ def read_project_rules(project_root: str | None) -> str:
     return ""
 
 
-class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
+class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     """Панель чата с сообщениями, вводом и управлением.
 
-    [2.4] Логика управления SLM/Ollama вынесена в `BackendsMixin`
-    (`ui/chat/backends.py`), research-режим и двухмодельный пайплайн —
-    в `ResearchMixin` (`ui/chat/research.py`). Все поля для миксинов
-    по-прежнему инициализируются здесь в `__init__`; миксины обращаются
-    к ним через `self`.
-
-    MRO: `ChatPanel → QWidget → BackendsMixin → ResearchMixin`.
-    Qt-класс должен идти первым — PySide6 этого требует.
+    Логика управления SLM/Ollama вынесена в `BackendsMixin` (`ui/chat/backends.py`),
+    Ollama-селектор моделей (combo/реестр/статусы/tools-guard) — в
+    `OllamaModelsMixin` (`ui/chat/ollama_models.py`), research-режим и
+    двухмодельный пайплайн — в `ResearchMixin` (`ui/chat/research.py`).
+    Все поля для миксинов по-прежнему инициализируются здесь, в `__init__`;
+    миксины обращаются к ним через `self`.
     """
 
     mode_changed = Signal(str)
@@ -180,18 +214,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     settings_changed = Signal(dict)
     backend_status_changed = Signal(str)
     pipeline_status_changed = Signal(str)
-
     directory_attach_requested = Signal(str)
     source_activated = Signal(str, int)
-
-    # [9.2] Дерево проекта (кнопка «📁» в верхней панели → MainWindow).
     project_tree_toggled = Signal(bool)
-    # [9.3] Открыть SLMModelsDialog из кнопки «⋯» в PipelineSelectors.
     slm_models_requested = Signal()
-    # [9.4] Смена профиля использования (MainWindow синхронизирует чекбокс).
+    wizard_requested = Signal()
     profile_changed = Signal(str)  # profile_id
-    # [9.8] Показать diff в Monaco DiffEditor (из карточки write_file).
-    # payload: {"path", "original", "modified", "language"}.
     diff_requested = Signal(object)
 
     def __init__(
@@ -213,6 +241,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._messages: list[ChatMessage] = []
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts: list[MessagePart] = []
+        self._current_assistant_text: str = ""
+        self._current_assistant_reasoning: str = ""
+
         self._agent_thread: AgentChatThread | None = None
         self._rag_thread: RagSearchThread | None = None
         self._rag_context: str | None = None
@@ -222,23 +254,35 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._project_scan_root: str | None = None
         self._project_scanned: bool = False
         self._attached_files = AttachedFileStore()
-
         self._hypotheses = HypothesisStore()
         self._hypothesis_widgets: dict[str, ChatHypothesisItem] = {}
+        self._memory_service: MemoryService | None = None
+        self._inbox: SessionInbox | None = None
+        self._current_inbox_id: str | None = None
+        from core.services.model_service import ModelService
+        from core.services.project_service import ProjectService
 
-        # --- Новые поля для серого потока и паспорта ---
+        self._project_service = ProjectService()
+        self._model_service = ModelService()
+        self._media_busy: bool = False
+        self._is_dark: bool = True
+        try:
+            from core.config import load_config as _load_cfg_theme
+
+            self._is_dark = _load_cfg_theme().theme != "light"
+        except Exception:
+            pass
+
         self._research_mode_active: bool = False
         self._research_cancelled: bool = False
         self._pending_final_answer: str = ""
         self._last_research_summary: dict | None = None
-        self._current_thought_stream: ChatThoughtStream | None = None
 
         self._generating = False
         self._last_run_params: dict | None = None  # для кнопки «Продолжить»
-        # Показывать reasoning_content модели в чате. Управляется чекбоксом
-        # в правой панели; сохраняется в ProjectSettings.show_reasoning.
         self._show_reasoning: bool = True
         self._last_assistant_widget: ChatMessageItem | None = None
+        self._suppress_model_save: bool = False
         self.tool_policies: dict[str, ToolPolicy] = {}
         self.registry: ModelRegistry | None = None
 
@@ -248,133 +292,124 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.prompt_manager: SystemPromptManager | None = None
 
         self._router = ModelRouter()
+        try:
+            from core.config import load_config as _load_cfg_backend
+
+            _cfg_backend = _load_cfg_backend()
+            base_url = _cfg_backend.backends.ollama_url or base_url
+        except Exception:
+            pass
         self._ollama_client = OllamaClient(base_url=base_url)
         self._router.set_ollama(self._ollama_client)
-
         self._rule_based = RuleBasedFallback(weather_tool=get_weather)
         self._router.set_rule_based(self._rule_based)
         self._apply_backend_config()
-
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
         self._slm_model_name = ""
+        self._slm_model_id = ""
         self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
-        # === двухмодельный пайплайн (Orchestrator) ===
-        # Загружается в фоне при первом открытии проекта. Пока не готов —
-        # ChatPanel работает через старый AgentLoop (без Orchestrator).
         self._model_pool: ModelPool | None = None
         self._orchestrator: Orchestrator | None = None
         self._pool_load_thread: _ModelPoolLoadThread | None = None
         self._pool_load_failed: bool = False
-        self._slm_download_thread: _SLMDownloadThread | None = None
         self._ollama_check_thread: _OllamaCheckThread | None = None
-
-        # [9.3] Селекторы Planner/Analyst в верхней панели.
         self._pipeline_selectors: PipelineSelectors | None = None
-        # [9.4] Селектор профиля использования (Разработка / Исследование / Обучение).
         self._profiles_selector: ProfilesSelector | None = None
-        # Активный профиль + его runtime-флаги.
         self._profile: ProfileConfig | None = None
         self._profile_rag_enabled: bool = True
         self._profile_agent_max_iters: int = 30
         self._profile_chat_max_iters: int = 7
-        # [9.7] Приборная панель в статус-баре (инжектится из MainWindow).
         self._dashboard = None
-
-        # [9.5.7] Активная tool-карточка: последняя созданная
-        # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
-        # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
-        # последовательны (start→result), поэтому одной ссылки достаточно.
-        self._active_tool_card = None
-        # [9.5.4] Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
+        self._qt_event_bus: QtEventBus | None = None
+        self.live_events_panel: LiveEventsPanel | None = None
+        self._active_tool_card: ToolCallCard | None = None
+        # Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
-
-        # [9.6.2] QCompleter для `@`-команд.
         self._command_completer: CommandCompleter | None = None
-        # Есть ли сейчас активное автодополнение (для перехвата Tab/Enter).
         self._command_popup_active: bool = False
-
-        # [9.10] Свёрнутые виджеты (placeholder'ы) в layout.
-        # Заполняется в `_maybe_collapse_old_messages`, очищается в `_clear_chat`.
-        # Раньше объявлялось только в MainWindow — из-за этого первый же
-        # `load_history` падал с AttributeError (ChatPanel — владелец layout,
-        # именно он должен хранить placeholder'ы).
         self._collapsed_placeholders: list[CollapsedPlaceholder] = []
-
-        # [9.10] Флаг: подавляет `_maybe_collapse_old_messages` на время
-        # массовой загрузки (`load_history`), чтобы не делать O(n²).
         self._suppress_collapse: bool = False
 
         self._setup_ui()
-        # [9.4] Применяем профиль по умолчанию на старте (после _setup_ui,
-        # чтобы _profiles_selector уже существовал).
         self._apply_initial_profile()
         self._update_model_selector_visibility()
         self._update_pipeline_status()
-        QTimer.singleShot(100, self._detect_backends)
+        self._detect_backends_timer = QTimer(self)
+        self._detect_backends_timer.setSingleShot(True)
+        self._detect_backends_timer.timeout.connect(self._detect_backends)
+        self._detect_backends_timer.start(100)
+        self._recover_inbox_on_startup()
+        self._mcp_init_thread: QThread | None = None
+        self._start_mcp_init()
 
-    # ---------------------------------------------------------
-    # Детект и загрузка бэкендов
-    # ---------------------------------------------------------
+        # 2M: синхронизация одно/двух-модельного режима
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.dual_model_changed.connect(self._on_dual_model_changed)
 
-    def _iteration_limit(self, mode: AgentMode, is_research: bool = False) -> int:
-        """Лимит итераций для текущего режима и типа задачи.
-
-        Логика:
-        * Agent-режим — всегда `agent_max_iterations` (полный доступ,
-            задача может быть длинной: рефакторинг, миграция и т. п.).
-        * Research-вопрос в Chat/Plan — повышенный потолок (не меньше 15
-            и не меньше половины от agent-лимита). Фазовая модель
-            (RECON → DEEP_DIVE → SELF_CHECK → SYNTHESIS) + работа с гипотезами
-            естественным образом требуют 12–20 шагов; 7 физически мало.
-        * Обычный вопрос в Chat/Plan — `chat_max_iterations` (по умолчанию 7).
-
-        Фазовая модель внутри `AgentLoop` — главный регулятор остановки;
-        лимит — только аварийный стоп-кран, чтобы модель не ушла в
-        бесконечность.
-        """
-        default_chat = 7
-        default_agent = 30
-        try:
-            from core.config import load_config
-
-            cfg = load_config()
-        except Exception:
-            cfg = None
-
-        if mode == AgentMode.AGENT:
-            return cfg.agent_max_iterations if cfg else default_agent
-
-        if cfg is None:
-            # Без конфига — эвристика: research требует больше итераций.
-            return 15 if is_research else default_chat
-
-        if is_research:
-            # Не меньше 15, и не меньше половины agent-лимита. Верхняя
-            # граница — сам agent-лимит, чтобы не превысить общий потолок.
-            return max(
-                15,
-                min(cfg.agent_max_iterations, cfg.agent_max_iterations // 2 + 8),
-            )
-
-        return cfg.chat_max_iterations
-
-    # ---------------------------------------------------------
-    # UI
-    # ---------------------------------------------------------
-
-    def _add_message(self, role: str, content: str, mode_name: str = "") -> ChatMessageItem:
-        widget = ChatMessageItem(role, content, mode_name=mode_name)
+    def _add_message(
+        self,
+        role: str,
+        content: str,
+        mode_name: str = "",
+        images: list[str] | None = None,
+    ) -> ChatMessageItem:
+        widget = ChatMessageItem(
+            role,
+            content,
+            mode_name=mode_name,
+            dark=self._is_dark,
+            images=images,
+        )
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10] Свернуть старые сообщения, если порог превышен.
-        # При массовой загрузке (`load_history`) сворачивание вызывается
-        # один раз в конце — флаг `_suppress_collapse` отключает
-        # промежуточные проходы O(n²).
         if not getattr(self, "_suppress_collapse", False):
             self._maybe_collapse_old_messages()
+        return widget
+
+    def _render_assistant_parts(self, msg: ChatMessage) -> ChatMessageItem:
+        """Восстанавливает композитный пузырь из ChatMessage.parts (0.1.3c).
+
+        Порядок частей — как их складывал `_on_chunk`/`_on_thinking`/
+        `_on_tool_started`/`_on_tool_executed`: reasoning → text → tool_call
+        → tool_result → tool_call → tool_result → …
+
+        `ToolResultPart` привязывается к последней «pending»-карточке с тем
+        же `name`. Порядок частей гарантирует, что к моменту прихода
+        результата карточка уже создана (start всегда идёт до executed).
+
+        Args:
+            msg: Сообщение ассистента с непустым `parts`.
+
+        Returns:
+            Собранный `ChatMessageItem`. Пустые части (`text=""`) пропускаются.
+        """
+        widget = ChatMessageItem(
+            msg.role,
+            content="",
+            mode_name=self._current_mode_name(),
+            dark=self._is_dark,
+        )
+        pending_cards: dict[str, list[ToolCallCard]] = {}
+        for part in msg.parts:
+            if isinstance(part, ReasoningPart) and part.text:
+                widget.reasoning_panel().append_thought_block(part.text)
+            elif isinstance(part, TextPart) and part.text:
+                widget.append_text(part.text)
+            elif isinstance(part, ToolCallPart):
+                for tc in part.calls:
+                    args_json = json.dumps(tc.arguments, ensure_ascii=False)
+                    card = widget.append_tool_call(tc.name, args_json)
+                    if card is not None:
+                        pending_cards.setdefault(tc.name, []).append(card)
+            elif isinstance(part, ToolResultPart):
+                queue = pending_cards.get(part.name) or []
+                if queue:
+                    card = queue.pop(0)
+                    card.set_result(part.content, part.is_error)
+        widget.finalize()
         return widget
 
     def _ensure_assistant_widget(self) -> ChatMessageItem:
@@ -386,7 +421,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         создаём его.
         """
         if self._last_assistant_widget is None:
-            widget = ChatMessageItem("assistant", "", mode_name=self._current_mode_name())
+            widget = ChatMessageItem(
+                "assistant",
+                "",
+                mode_name=self._current_mode_name(),
+                dark=self._is_dark,
+            )
             self._last_assistant_widget = widget
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
             self._update_bubble_width(widget)
@@ -394,13 +434,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._maybe_collapse_old_messages()
         return self._last_assistant_widget
 
+    def _reasoning_panel(self) -> ReasoningPanel | None:
+        """Панель рассуждений текущего пузыря ассистента."""
+        if self._last_assistant_widget is None:
+            return None
+        return self._last_assistant_widget.reasoning_panel()
+
     def _show_activity(self, text: str) -> None:
         if not text:
             return
         item = ChatActivityItem(text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10]
         self._maybe_collapse_old_messages()
 
     def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
@@ -410,17 +455,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         item.source_activated.connect(self._on_source_activated)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10]
         self._maybe_collapse_old_messages()
 
     def _on_source_activated(self, file_path: str, line: int) -> None:
         if self.project_root and not Path(file_path).is_absolute():
             file_path = str(Path(self.project_root) / file_path)
         self.source_activated.emit(file_path, line)
-
-    # ---------------------------------------------------------
-    # @dir / @file / @path — прикрепление путей
-    # ---------------------------------------------------------
 
     @staticmethod
     def _extract_path_command(text: str) -> tuple[str, str, str] | None:
@@ -444,8 +484,188 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         return None
 
+    @Slot()
+    def _on_attach_clicked(self) -> None:
+        """Открывает QFileDialog с фильтром по поддерживаемым типам."""
+        from PySide6.QtWidgets import QFileDialog
+
+        filters = [
+            "Все поддерживаемые (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tiff"
+            " *.mp3 *.wav *.ogg *.m4a *.flac *.mp4 *.mkv *.webm *.avi *.mov"
+            " *.pdf *.docx *.pptx *.xlsx *.rtf *.py *.js *.ts *.cs *.md *.txt)",
+            "Изображения (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tiff)",
+            "Аудио (*.mp3 *.wav *.ogg *.m4a *.flac)",
+            "Видео (*.mp4 *.mkv *.webm *.avi *.mov)",
+            "Документы (*.pdf *.docx *.pptx *.xlsx *.rtf)",
+            "Текст (*.py *.js *.ts *.cs *.md *.txt *.json *.yaml)",
+            "Все файлы (*.*)",
+        ]
+        path, _ = QFileDialog.getOpenFileName(self, "Прикрепить файл", "", ";;".join(filters))
+        if path:
+            self._attach_local_file(path)
+
+    def _attach_local_file(self, path: str) -> None:
+        """Единая точка прикрепления: определяет тип и запускает распознавание."""
+        from pathlib import Path as _Path
+
+        p = _Path(path).expanduser().resolve()
+        if not p.is_file():
+            self._add_message("system", f"❌ Не файл: {p}")
+            return
+        from fs.audio_extractors import is_audio
+        from fs.document_extractors import is_document
+        from fs.image_extractors import is_image
+        from fs.video_extractors import is_video
+
+        if is_image(p):
+            self._attach_image(p)
+        elif is_audio(p):
+            self._attach_audio(p)
+        elif is_video(p):
+            self._attach_video(p)
+        elif is_document(p):
+            # Существующий путь документа.
+            from fs.document_extractors import extract_document
+
+            self._attach_document(p, extract_document)
+        else:
+            self._attach_file(p)
+
+    def _attach_image(self, path) -> None:
+        """OCR изображения + миниатюра."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.image_extractors import extract_image, image_thumbnail_base64
+        from fs.media_cache import get_cached, set_cached
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ OCR {path.name}…")
+
+        try:
+            cached = get_cached(path, "image")
+            if cached is not None:
+                text = cached
+            else:
+                result = extract_image(path, use_ocr=True)
+                text = result.text
+                if text:
+                    set_cached(path, "image", text)
+
+            thumb = image_thumbnail_base64(path)
+            attached = self._attached_files.add_from_media(path, text, kind="image", thumbnail=thumb)
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "image",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🖼 Прикреплено изображение: {attached.name} ({len(text)} символов OCR)."
+                if text
+                else f"🖼 Изображение {attached.name} прикреплено (текст не распознан)."
+            )
+            # В user-пузыре с миниатюрой.
+            self._add_message(
+                "user",
+                f"[Прикреплено изображение: {attached.name}]",
+                images=[thumb] if thumb else None,
+            )
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
+
+    def _attach_audio(self, path) -> None:
+        """[9.7] STT аудио."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.audio_extractors import transcribe_audio
+        from fs.media_cache import get_cached, set_cached
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ Распознавание речи {path.name}…")
+        try:
+            cached = get_cached(path, "audio")
+            if cached is not None:
+                text = cached
+            else:
+                result = transcribe_audio(path)
+                text = result.text
+                if text:
+                    set_cached(path, "audio", text)
+
+            attached = self._attached_files.add_from_media(path, text, kind="audio")
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "audio",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🎵 Прикреплено аудио: {attached.name} ({len(text)} символов расшифровки)."
+                if text
+                else f"🎵 Аудио {attached.name} прикреплено (расшифровка пуста)."
+            )
+            self._add_message("user", f"[Прикреплено аудио: {attached.name}]")
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
+
+    def _attach_video(self, path) -> None:
+        """STT видео."""
+        if self._media_busy:
+            self._add_message("system", "⏳ Дождитесь завершения распознавания.")
+            return
+        from fs.media_cache import get_cached, set_cached
+        from fs.video_extractors import extract_transcript
+
+        self._media_busy = True
+        self.status_label.setText(f"⏳ Распознавание {path.name}…")
+        try:
+            cached = get_cached(path, "video")
+            if cached is not None:
+                text = cached
+            else:
+                result = extract_transcript(path)
+                text = result.text
+                if text:
+                    set_cached(path, "video", text)
+
+            attached = self._attached_files.add_from_media(path, text, kind="video")
+            emit_event(
+                EventKind.MEDIA_EXTRACTED.value,
+                {
+                    "path": str(path),
+                    "kind": "video",
+                    "chars": len(text),
+                    "duration_ms": 0.0,
+                    "cached": cached is not None,
+                },
+            )
+            summary = (
+                f"🎬 Прикреплено видео: {attached.name} ({len(text)} символов расшифровки)."
+                if text
+                else f"🎬 Видео {attached.name} прикреплено (расшифровка пуста)."
+            )
+            self._add_message("user", f"[Прикреплено видео: {attached.name}]")
+            self._add_message("system", summary)
+        finally:
+            self._media_busy = False
+            self.status_label.setText("Готов к работе")
+
     def _attach_file(self, path: Path) -> None:
-        """[9.4.8] Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
+        """Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
         from fs.document_extractors import extract_document, is_document
 
         # Документы (PDF/DOCX/PPTX/XLSX/RTF) — сначала извлечение,
@@ -472,10 +692,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
 
     def _attach_document(self, path: Path, extractor) -> None:
-        """[9.4.8] Извлекает документ, показывает предпросмотр, прикрепляет."""
+        """Извлекает документ, показывает предпросмотр, прикрепляет."""
         from ui.dialogs.document_preview_dialog import DocumentPreviewDialog
 
-        # OCR из конфига — если пользователь включил в AppConfig.
         try:
             from core.config import load_config
 
@@ -597,12 +816,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         }
 
     def _project_rules(self) -> str:
-        """Правила проекта + системный промпт профиля (9.4)."""
+        """Правила проекта + системный промпт профиля."""
         base = read_project_rules(self.project_root)
-        profile_prompt = (self._profile.system_prompt or "").strip() if self._profile else ""
-        if profile_prompt:
-            return "\n\n".join(filter(None, [base, f"[Профиль: {self._profile.name}]\n{profile_prompt}"]))
-        return base
+        profile = self._profile
+        if profile is None:
+            return base
+        profile_prompt = (profile.system_prompt or "").strip()
+        if not profile_prompt:
+            return base
+        return "\n\n".join(filter(None, [base, f"[Профиль: {profile.name}]\n{profile_prompt}"]))
 
     def _query_scope(self, text: str) -> tuple[str, list[str]] | None:
         self._ensure_project_scan()
@@ -661,19 +883,17 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                     if isinstance(w, ChatMessageItem):
                         apply_policy(w.bubble, w.role)
 
-    def _relayout_all_items(self) -> None:
-        for i in range(self.scroll_layout.count()):
-            item = self.scroll_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), ChatMessageItem):
-                self._update_bubble_width(item.widget())
-
     @Slot(str)
     def _on_thinking(self, token: str):
+        if not token:
+            return
+        self._current_assistant_reasoning += token
         if not self._show_reasoning:
             return
         self._current_thinking_content += token
+        # [UI-2024] reasoning идёт в ReasoningPanel пузыря.
         widget = self._ensure_assistant_widget()
-        widget.append_reasoning(token)
+        widget.reasoning_panel().append_thought_token(token)
         self.scroll_area.scroll_to_bottom_if_sticky()
 
     @Slot(str)
@@ -688,6 +908,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if self._activity_state != "streaming":
             self._set_activity_state("streaming")
         self._current_assistant_content += content
+        # 0.1.3b: копим текст отдельно — _build_assistant_message
+        # соберёт из него TextPart один раз при завершении.
+        self._current_assistant_text += content
         widget = self._ensure_assistant_widget()
         widget.append_text(content)
         # QTimer.singleShot(0, ...) НЕ нужен: AutoScrollArea.scroll_to_bottom_if_sticky
@@ -802,6 +1025,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._pipeline_selectors.planner_changed.connect(self._on_planner_changed)
             self._pipeline_selectors.analyst_changed.connect(self._on_analyst_changed)
             self._pipeline_selectors.open_slm_dialog_requested.connect(self.slm_models_requested.emit)
+            # [9.3.2] Инициализируем активный профиль в селекторах.
+            try:
+                self._pipeline_selectors.set_active_profile(_cfg_for_pipeline.active_profile)
+            except Exception:
+                logger.debug(
+                    "Не удалось установить активный профиль в PipelineSelectors",
+                    exc_info=True,
+                )
             top_bar.addWidget(self._pipeline_selectors, stretch=1)
 
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
@@ -874,6 +1105,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # 2.5: «живая» лента событий.
+        self.live_events_panel = LiveEventsPanel()
+        self._qt_event_bus = QtEventBus(self)
+        self._qt_event_bus.event_emitted.connect(self._on_bus_event)
+        layout.addWidget(self.live_events_panel)
+
         input_layout = QHBoxLayout()
 
         self.input_edit = QTextEdit()
@@ -884,15 +1121,32 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
         self.input_edit.setAcceptRichText(False)
         self.input_edit.installEventFilter(self)
+        self.input_edit.setAcceptDrops(True)
+        self.input_edit.textChanged.connect(self._on_input_text_changed)
+        # При скролле/фокусе — обновляем позицию popup.
+        self.input_edit.cursorPositionChanged.connect(self._update_command_placeholder)
+
         input_layout.addWidget(self.input_edit, stretch=1)
 
         # [9.6.2] Автодополнение `@`-команд.
         self._command_completer = CommandCompleter(self)
         self._command_completer.setWidget(self.input_edit)
         self._command_completer.command_activated.connect(self._on_command_completed)
-        self.input_edit.textChanged.connect(self._on_input_text_changed)
-        # При скролле/фокусе — обновляем позицию popup.
-        self.input_edit.cursorPositionChanged.connect(self._update_command_placeholder)
+
+        # [9.7] Кнопка «📎 Скрепка».
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setToolTip(
+            "Прикрепить файл: изображение (OCR), аудио/видео (STT), "
+            "PDF/DOCX (текст). Также можно перетащить файл в чат."
+        )
+        self.attach_btn.setStyleSheet(
+            "QPushButton { font-size: 16px; padding: 8px 12px;"
+            " background: transparent; border: none; }"
+            " QPushButton:hover { background: rgba(128,128,128,0.2);"
+            " border-radius: 4px; }"
+        )
+        self.attach_btn.clicked.connect(self._on_attach_clicked)
+        input_layout.addWidget(self.attach_btn)
 
         # Кнопка «Продолжить» показывается только при исчерпании лимита
         # итераций (см. _on_iteration_limit_exceeded / _continue_after_limit).
@@ -908,6 +1162,18 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.continue_btn.setVisible(False)
         self.continue_btn.clicked.connect(self._continue_after_limit)
         input_layout.addWidget(self.continue_btn)
+
+        self.continue_unlimited_btn = QPushButton("▶▶ До результата")
+        self.continue_unlimited_btn.setToolTip(
+            "Снять бюджеты по времени, токенам и итерациям. Остановить можно только кнопкой «■»."
+        )
+        self.continue_unlimited_btn.setStyleSheet(
+            "font-size: 13px; padding: 8px 12px; background: #7a3f12;"
+            " color: white; border: none; border-radius: 4px;"
+        )
+        self.continue_unlimited_btn.setVisible(False)
+        self.continue_unlimited_btn.clicked.connect(self._continue_unlimited)
+        input_layout.addWidget(self.continue_unlimited_btn)
 
         self.send_btn = QPushButton("▶ Отправить")
         self.send_btn.setStyleSheet(
@@ -995,7 +1261,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         try:
             self.input_edit.setPlainText(new_text)
             cursor = self.input_edit.textCursor()
-            cursor.movePosition(Qt.TextCursor.MoveOperation.End)
+            cursor.movePosition(QTextCursor.MoveOperation.End)
             self.input_edit.setTextCursor(cursor)
         finally:
             self.input_edit.blockSignals(False)
@@ -1032,33 +1298,27 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self.input_edit.setPlaceholderText(DEFAULT_PLACEHOLDER)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # [9.6.2] Tab / Enter при видимом popup — навигация и выбор в completer.
-        if (
-            obj is self.input_edit
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and self._command_popup_active
-            and self._command_completer is not None
-            and self._command_completer.is_popup_visible()
-        ):
-            popup = self._command_completer.popup()
-            key = event.key()
-            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
-                # Навигация по popup.
-                popup.keyPressEvent(event)
-                return True
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
-                # Выбор текущего элемента.
-                index = popup.currentIndex()
-                if index.isValid():
-                    tag = index.data(Qt.ItemDataRole.DisplayRole)
-                    self._on_command_completed(str(tag))
+        # Drag&drop файлов в поле ввода.
+        if obj is self.input_edit:
+            if event.type() == QEvent.Type.DragEnter:
+                mime = event.mimeData() if isinstance(event, QDragEnterEvent) else None
+                if isinstance(event, QDragEnterEvent) and mime is not None and mime.hasUrls():
+                    event.acceptProposedAction()
                     return True
-                # Если ничего не выделено — Tab/Enter ведут себя как обычно.
-            if key == Qt.Key.Key_Escape:
-                self._command_completer.hide_popup()
-                self._command_popup_active = False
-                return True
+
+            elif event.type() == QEvent.Type.Drop:
+                if isinstance(event, QDropEvent) and event.mimeData().hasUrls():
+                    for url in event.mimeData().urls():
+                        if url.isLocalFile():
+                            self._attach_local_file(url.toLocalFile())
+                    event.acceptProposedAction()
+                    return True
+            elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
+                if event.key() == Qt.Key.Key_Escape:
+                    if self._command_completer is not None:
+                        self._command_completer.hide_popup()
+                    self._command_popup_active = False
+                    return True
 
         if (
             obj is self.input_edit
@@ -1094,53 +1354,63 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         mapping = {0: "chat", 1: "plan", 2: "agent"}
         mode = mapping.get(index, "chat")
         self.mode_combo.setToolTip(_MODE_DESCRIPTIONS.get(index, ""))
-
-        if index > 0 and self.registry:
-            model_name = self.get_current_model()
-            cap = self.registry.get(model_name)
-
-            if cap and not cap.supports_tools:
-                self.mode_combo.blockSignals(True)
-                self.mode_combo.setCurrentIndex(0)
-                self.mode_combo.blockSignals(False)
-
-                QMessageBox.warning(
-                    self,
-                    "Режим недоступен",
-                    f"Модель '{model_name}' не поддерживает инструменты.\n"
-                    "Используйте модели с пометкой ✅ Agent/Plan.",
-                )
-                return
-
+        # Ollama-ограничение по tools живёт в OllamaModelsMixin.
+        if self._ollama_mode_guard(index):
+            return
         self.mode_changed.emit(mode)
         self._emit_settings_changed()
 
     def _emit_settings_changed(self):
+        """Эмитит ``settings_changed`` с актуальным payload."""
+        self.settings_changed.emit(self._settings_payload())
+
+    def _settings_payload(self) -> dict:
+        """Собирает актуальный payload для ``settings_changed`` (0.1.4)."""
         mode_map = {0: "chat", 1: "plan", 2: "agent"}
         payload: dict = {"mode": mode_map.get(self.mode_combo.currentIndex(), "chat")}
-        # Модель имеет смысл только когда активна Ollama. При SLM model_combo
-        # содержит «последнюю выбранную Ollama-модель» (например, 7B) и
-        # сохранять её в last_model при каждой смене режима бессмысленно —
-        # в итоге config.last_model остаётся 7B, хотя реально грузится 3B.
-        if self._router.active_backend == BackendType.OLLAMA:
-            payload["model"] = self.get_current_model()
-        self.settings_changed.emit(payload)
+
+        # Отдаем модель активного бэкенда (Ollama или SLM)
+        backend = self._router.active_backend
+        if backend in (BackendType.OLLAMA, BackendType.LOCAL_SLM):
+            payload["model"] = self.active_model_name()
+        return payload
+
+    def get_settings(self) -> dict:
+        payload = self._settings_payload()
+        payload.setdefault("model", "")  # RULE_BASED/None → пустая модель
+        payload["show_reasoning"] = self._show_reasoning
+        return payload
+
+    def apply_settings(self, settings: dict) -> None:
+        model = settings.get("model", "")
+        if model:
+            self.set_model(model)
+        mode = settings.get("mode", "chat")
+        mode_map = {"chat": 0, "plan": 1, "agent": 2}
+        idx = mode_map.get(mode, 0)
+        if 0 <= idx < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(idx)
+        self._show_reasoning = bool(settings.get("show_reasoning", True))
+
+        # Подхватываем сохраненный выбор моделей для этого проекта
+        if self._pipeline_selectors is not None:
+            if settings.get("planner_model_id"):
+                self._pipeline_selectors.set_planner(settings["planner_model_id"])
+            if settings.get("analyst_model_id"):
+                self._pipeline_selectors.set_analyst(settings["analyst_model_id"])
 
     def _toggle_agent_panel(self):
         self.agent_panel_toggle.emit(True)
 
     def _scroll_to_bottom(self):
-        """[9.5] Скроллит к нижней кромке, только если пользователь там."""
+        """Скроллит к нижней кромке, только если пользователь там."""
         self.scroll_area.scroll_to_bottom_if_sticky()
 
     def _scroll_to_bottom_force(self):
-        """[9.5] Принудительный скролл к нижней кромке (для Cmd+End)."""
+        """Принудительный скролл к нижней кромке (для Cmd+End)."""
         self.scroll_area.scroll_to_bottom_force()
 
     def _clear_chat(self, keep_session: bool = False):
-        # [9.10] Сначала удаляем свёрнутые виджеты внутри placeholder'ов,
-        # потом сами placeholder'ы (они тоже в layout — цикл ниже их
-        # обработает, но скрытые виджеты остались бы «сиротами» в памяти).
         for placeholder in self._collapsed_placeholders:
             try:
                 # Скроем и удалим содержимое placeholder'а.
@@ -1168,13 +1438,15 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._messages.clear()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._rag_context = None
         self._attached_files.clear()
         self._hypotheses.clear()
         self._hypothesis_widgets.clear()
         self._last_research_summary = None
         self._pending_final_answer = ""
-        self._current_thought_stream = None
         self._research_mode_active = False
         self._research_cancelled = False
         if not keep_session:
@@ -1185,6 +1457,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._command_popup_active = False
         self._last_assistant_widget = None
         self._last_run_params = None
+        # Сбрасываем ссылку на inbox-запись.
+        self._current_inbox_id = None
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
         self.status_label.setText("Чат очищен")
@@ -1203,11 +1477,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _stop_generation(self):
         """Останавливает генерацию с сохранением визуального лога.
 
-        Семантика (этап 4): Стоп = отмена, но информация НЕ теряется:
+        Семантика: Стоп = отмена, но информация НЕ теряется:
         * серый поток рассуждений остаётся видимым (с пометкой «прервано»);
         * виджеты гипотез остаются в ленте как визуальный архив;
-        * активный `HypothesisStore` очищается — в следующий запрос
-          гипотезы НЕ утекают;
+        * активный `HypothesisStore` очищается — в следующий запрос гипотезы НЕ утекают;
         * паспорт не строится;
         * внизу добавляется курсивный комментарий.
         """
@@ -1246,9 +1519,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 self._agent_thread.terminate()
                 self._agent_thread.wait(500)
 
-        # Помечаем серый поток как прерванный.
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted("Рассуждение прервано пользователем.")
+        if self._last_assistant_widget is not None:
+            self._last_assistant_widget.reasoning_panel().mark_interrupted(
+                "Рассуждение прервано пользователем."
+            )
 
         # [9.5.7] Активная карточка могла остаться «⏳» — прерываем.
         if self._active_tool_card is not None:
@@ -1274,9 +1548,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         )
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._research_mode_active = False
         self._research_cancelled = False
-        self._current_thought_stream = None
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
 
@@ -1288,6 +1564,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
         if hasattr(self, "continue_btn"):
             self.continue_btn.setVisible(False)
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self.input_edit.clear()
         self.input_edit.setFocus()
 
@@ -1307,11 +1586,29 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._create_session()
 
-        # [D9] идемпотентность: стабильный id = hash(role|content|session).
+        # Durable inbox: пишем запрос в pending ДО запуска.
+        # Если процесс упадёт — `recover()` при следующем старте
+        # покажет счётчик. `AgentChatThread` вызовет `claim()` в run().
+        inbox = self._ensure_inbox()
+        self._current_inbox_id = None
+        if inbox is not None and self._session_id:
+            try:
+                self._current_inbox_id = inbox.enqueue(
+                    self._session_id,
+                    text,
+                    mode=self._current_mode().value,
+                )
+                self._sync_inbox_indicator()
+            except Exception:
+                logger.warning(
+                    "inbox: не удалось поставить запрос в очередь",
+                    exc_info=True,
+                )
+                self._current_inbox_id = None
+
         import hashlib
 
         msg_id = hashlib.sha1(f"{self._session_id or ''}|user|{text}".encode()).hexdigest()[:16]
-
         if any(m.id == msg_id for m in self._messages):
             logger.debug(f"Повтор user-сообщения {msg_id!r} — пропускаем дубль")
             return
@@ -1349,7 +1646,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self._web_thread = WebSearchThread(
             router=self._router,
-            model=self.get_current_model(),
+            model=self.active_model_name(),
             query=query,
             messages_history=list(self._messages),
             search_cache=getattr(self, "search_cache", None),
@@ -1365,6 +1662,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._generating = True
         self._set_button_stop()
         self._set_activity_state("thinking", "поиск по кодовой базе")
+        # [2.5] Сброс бюджета на новом прогоне — старый snapshot
+        # не должен «висеть» в дашборде.
+        if self._dashboard is not None:
+            self._dashboard.set_budget(None)
         self._rag_context = None
         self._rag_scope = self._query_scope(text)
 
@@ -1425,6 +1726,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._generating = True
         self._set_button_stop()
         self._set_activity_state("thinking", "агент запущен")
+        # [2.5] Сброс бюджета на новом прогоне.
+        if self._dashboard is not None:
+            self._dashboard.set_budget(None)
         self._rag_scope = self._query_scope(text)
 
         # [9.4] Профиль «Обучение» выключает RAG полностью.
@@ -1461,51 +1765,124 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ---------------------------------------------------------
     # Универсальный вход в ReAct-цикл
     # ---------------------------------------------------------
+    def _project_size(self) -> tuple[int, int]:
+        """(file_count, total_bytes) для `_resolve_research_mode`.
 
-    def _do_chat(self, text: str, override_limit: int | None = None):
+        total_bytes считаем только при ≤100 файлов — иначе всё равно
+        medium/deep, и суммарный размер на решение не влияет.
+        """
+        self._ensure_project_scan()
+        file_count = len(self._project_files)
+        total_bytes = 0
+        if file_count <= 100:
+            for rel in self._project_files:
+                with contextlib.suppress(OSError):
+                    total_bytes += (Path(self.project_root) / rel).stat().st_size
+        return file_count, total_bytes
+
+    def _build_agent_context(self, mode: AgentMode, rag_context: str) -> AgentContext:
+        """Единая сборка AgentContext для Chat/Plan/Agent.
+
+        Раньше этот блок был дословно продублирован в _do_chat/_do_agent.
+        `app_config=self._safe_load_config()` эквивалентен прежнему
+        walrus-выражению `cfg if (cfg := ...) is not None else None`.
+        """
+        role_prompt = self.get_current_role_prompt()
+        p_root = Path(self.project_root) if self.project_root else None
+        mode_prompt = (
+            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
+            if self.prompt_manager
+            else ""
+        )
+        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
+        merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
+        # Политика безопасности — прокидывается в инструменты
+        # через AgentContext.security (run_shell_command, web_search).
+        try:
+            _cfg = load_config()
+            security = SecurityPolicy(
+                allow_arbitrary_shell=bool(getattr(_cfg, "allow_arbitrary_shell", False)),
+            )
+        except Exception:
+            security = SecurityPolicy()
+        return AgentContext(
+            system_prompt=combined,
+            rag_context=merged_rag,
+            agents_context=load_agents_context(self.project_root),
+            project_root=self.project_root,
+            project_name=self._project_name(),
+            project_map=self._project_map_text(),
+            vector_store=self.vector_store,
+            num_ctx=self._router.num_ctx,
+            mode=mode,
+            search_cache=getattr(self, "search_cache", None),
+            attached_files=self._attached_files if self._attached_files else None,
+            hypotheses=self._hypotheses,
+            extra_rules=self._project_rules(),
+            security=security,
+            memory_service=self._ensure_memory_service(),
+            profile=self._profile,
+            app_config=self._safe_load_config(),
+            git_context=self._build_git_context(),
+        )
+
+    def _launch_agent_thread(
+        self,
+        *,
+        client: Any,
+        model_name: str,
+        mode: AgentMode,
+        context: AgentContext,
+        max_iters: int,
+        override_budget=None,
+    ) -> None:
+        """Создаёт AgentChatThread (один реестр на запрос), подключает сигналы, стартует."""
+        registry = self._build_registry(mode)
+        self._current_assistant_content = ""
+        self._current_thinking_content = ""
+        self._agent_thread = AgentChatThread(
+            client=client,
+            registry=registry,
+            model=model_name,
+            context=context,
+            messages_history=list(self._messages),
+            agent_mode=mode,
+            max_iterations=max_iters,
+            orchestrator=self._orchestrator,
+            soft_budget=override_budget,
+            inbox_id=self._current_inbox_id,
+            inbox=self._inbox,
+            tool_service=ToolService(registry, project_root=self.project_root),
+        )
+        self._connect_agent_thread_signals()
+
+    def _do_chat(
+        self,
+        text: str,
+        override_limit: int | None = None,
+        override_budget=None,
+    ):
         """Запускает ReAct-цикл в режиме Chat.
 
-        Размер проекта определяет флоу:
-          • light (≤100 файлов / ≤300 КБ) — 3 итерации, без research-фаз;
-          • medium — research-вопрос идёт с 8 итерациями, без фаз;
-          • deep (>500 файлов) — 5 итераций с фазами/гипотезами.
-        Раньше research-вопрос всегда гонялся через full research (23 итерации),
-        и маленький 43-файловый проект тратил 15 минут.
+        Размер проекта определяет флоу (см. `_resolve_research_mode`):
+        light — 3 итерации без фаз; medium — research 8; deep — 5 с фазами.
+        Профиль ограничивает верхнюю границу для не-research вопросов.
         """
         logger.debug("_do_chat: запуск через AgentChatThread (ReAct)")
         self._reset_research_state()
 
-        # [D8] Определяем размер проекта и режим ДО запуска цикла.
-        # _ensure_project_scan() заполняет self._project_files (кэш на сессию),
-        # тот же вызов уже используется в _project_map_text().
+        client, model_name = self._client_and_model(AgentMode.CHAT)
+        if client is None:
+            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
+            self._reset_send_button()
+            return
 
-        self._ensure_project_scan()
-        file_count = len(self._project_files)
-        # total_bytes считаем только если файлов мало (≤100) — иначе всё
-        # равно deep/medium, а суммарный размер не влияет на решение.
-        if file_count <= 100:
-            total_bytes = 0
-            for rel in self._project_files:
-                with contextlib.suppress(OSError):
-                    total_bytes += (Path(self.project_root) / rel).stat().st_size
-        else:
-            total_bytes = 0  # не используется при file_count > 100
-
-        plan = self._resolve_research_mode(
-            text,
-            file_count=file_count,
-            total_bytes=total_bytes,
-        )
-
-        # [9.4] Профиль ограничивает верхнюю границу итераций для
-        # не-research вопросов. Research-лимит не трогаем — там фазовая
-        # машина сама регулирует.
+        file_count, total_bytes = self._project_size()
+        plan = self._resolve_research_mode(text, file_count=file_count, total_bytes=total_bytes)
         if override_limit is None and self._profile is not None and not plan["research"]:
             plan["max_iters"] = min(plan["max_iters"], self._profile_chat_max_iters)
-
         is_research = plan["research"] and is_research_question(text)
         max_iters = override_limit if override_limit is not None else plan["max_iters"]
-
         if is_research:
             logger.info(
                 f"Chat-режим, research-вопрос: лимит итераций {max_iters} "
@@ -1518,66 +1895,21 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 f"(файлов={file_count}, light={'да' if plan['phases'] == 'off' else 'нет'})"
             )
 
-        role_prompt = self.get_current_role_prompt()
-        p_root = Path(self.project_root) if self.project_root else None
-        mode_prompt = (
-            self.prompt_manager.get_prompt("chat", project_root=p_root, context=self._template_context())
-            if self.prompt_manager
-            else ""
-        )
-        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
-
-        raw_cache = getattr(self, "search_cache", None)
-        agents_context = load_agents_context(self.project_root)
-        merged_rag = "\n\n".join(filter(None, [self._attached_context(), self._rag_context or ""]))
-
-        context = AgentContext(
-            system_prompt=combined,
-            rag_context=merged_rag,
-            agents_context=agents_context,
-            project_root=self.project_root,
-            project_name=self._project_name(),
-            project_map=self._project_map_text(),
-            vector_store=self.vector_store,
-            num_ctx=self._router.num_ctx,
-            mode=AgentMode.CHAT,
-            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
-            search_cache=raw_cache,
-            attached_files=self._attached_files if self._attached_files else None,
-            hypotheses=self._hypotheses,
-            extra_rules=self._project_rules(),
-        )
-
-        client = self._router.active_client
-        if client is None:
-            self._add_message("system", "⚠️ Нет доступного LLM-бэкенда.")
-            self._reset_send_button()
-            return
-
-        registry = self._build_registry(AgentMode.CHAT)
-
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-
-        model_name = self.get_current_model()
-        self._agent_thread = AgentChatThread(
-            client=client,
-            registry=registry,
-            model=model_name,
-            context=context,
-            messages_history=list(self._messages),
-            agent_mode=AgentMode.CHAT,
-            max_iterations=max_iters,
-            orchestrator=self._orchestrator,
-        )
+        context = self._build_agent_context(AgentMode.CHAT, self._rag_context or "")
         self._last_run_params = {
             "kind": "chat",
             "text": text,
             "rag_context": self._rag_context or "",
             "max_iters": max_iters,
         }
-
-        self._connect_agent_thread_signals()
+        self._launch_agent_thread(
+            client=client,
+            model_name=model_name,
+            mode=AgentMode.CHAT,
+            context=context,
+            max_iters=max_iters,
+            override_budget=override_budget,
+        )
 
     def _do_agent(
         self,
@@ -1585,62 +1917,38 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         mode: AgentMode,
         rag_context: str,
         override_limit: int | None = None,
+        override_budget=None,
     ):
         """Запускает ReAct-цикл в режимах Plan / Agent.
 
-        Размер проекта определяет лимит итераций и наличие research-фаз:
-          • Agent-режим — всегда `agent_max_iterations` (полный доступ, задача
-            может быть длинной: рефакторинг, миграция), research не ограничиваем;
-          • Plan-режим — как Chat (light=3 / medium=8 / deep=5 итераций),
-            но с read-only инструментами.
+        Agent — всегда полный лимит (profile/config), research не ограничиваем;
+        Plan — как Chat (размер проекта), но с read-only инструментами.
         """
         self._reset_research_state()
 
-        client = self._router.active_client
+        client, model_name = self._client_and_model(mode)
         if client is None:
             self._add_message("system", "⚠️ Нет доступного LLM-бэкенда для агента.")
             self._reset_send_button()
             return
 
-        # Определяем режим по размеру проекта.
-
-        self._ensure_project_scan()
-        file_count = len(self._project_files)
-        if file_count <= 100:
-            total_bytes = 0
-            for rel in self._project_files:
-                with contextlib.suppress(OSError):
-                    total_bytes += (Path(self.project_root) / rel).stat().st_size
-        else:
-            total_bytes = 0
-
-        plan = self._resolve_research_mode(
-            text,
-            file_count=file_count,
-            total_bytes=total_bytes,
-        )
+        file_count, total_bytes = self._project_size()
+        plan = self._resolve_research_mode(text, file_count=file_count, total_bytes=total_bytes)
         is_research = plan["research"] and is_research_question(text)
 
-        # Agent-режим: полный лимит независимо от размера проекта (рефакторинг
-        # может быть длинным); research-фазы не ограничиваем.
         if mode == AgentMode.AGENT:
             if override_limit is not None:
                 max_iters = override_limit
             elif self._profile is not None:
                 max_iters = self._profile_agent_max_iters
             else:
-                try:
-                    from core.config import load_config
-
-                    max_iters = load_config().agent_max_iterations
-                except Exception:
-                    max_iters = 30
+                cfg = self._safe_load_config()
+                max_iters = cfg.agent_max_iterations if cfg is not None else 30
             logger.info(
                 f"Agent-режим, {max_iters} итераций "
                 f"(файлов={file_count}, research={'on' if is_research else 'off'})"
             )
         else:
-            # Plan-режим: как Chat — размер проекта важен.
             max_iters = override_limit if override_limit is not None else plan["max_iters"]
             if override_limit is None and self._profile is not None:
                 max_iters = min(max_iters, self._profile_agent_max_iters)
@@ -1652,51 +1960,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             else:
                 logger.info(f"Plan-режим, {max_iters} итераций (файлов={file_count})")
 
-        role_prompt = self.get_current_role_prompt()
-        p_root = Path(self.project_root) if self.project_root else None
-        mode_prompt = (
-            self.prompt_manager.get_prompt(mode.value, project_root=p_root, context=self._template_context())
-            if self.prompt_manager
-            else ""
-        )
-        combined = "\n\n".join(filter(None, [role_prompt, mode_prompt]))
-
-        raw_cache = getattr(self, "search_cache", None)
-        agents_context = load_agents_context(self.project_root)
-        merged_rag = "\n\n".join(filter(None, [self._attached_context(), rag_context]))
-
-        context = AgentContext(
-            system_prompt=combined,
-            rag_context=merged_rag,
-            agents_context=agents_context,
-            project_root=self.project_root,
-            project_name=self._project_name(),
-            project_map=self._project_map_text(),
-            vector_store=self.vector_store,
-            num_ctx=self._router.num_ctx,
-            mode=mode,
-            # 2.1: без cast(Any, ...) — SearchCache совместим с SearchCacheLike.
-            search_cache=raw_cache,
-            attached_files=self._attached_files if self._attached_files else None,
-            hypotheses=self._hypotheses,
-            extra_rules=self._project_rules(),
-        )
-
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-
-        model_name = self.get_current_model()
-        self._agent_thread = AgentChatThread(
-            client=client,
-            registry=self._build_registry(mode),
-            model=model_name,
-            context=context,
-            messages_history=list(self._messages),
-            agent_mode=mode,
-            max_iterations=max_iters,
-            orchestrator=self._orchestrator,
-        )
-
+        context = self._build_agent_context(mode, rag_context)
         self._last_run_params = {
             "kind": "agent",
             "text": text,
@@ -1704,8 +1968,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             "rag_context": rag_context,
             "max_iters": max_iters,
         }
-
-        self._connect_agent_thread_signals()
+        self._launch_agent_thread(
+            client=client,
+            model_name=model_name,
+            mode=mode,
+            context=context,
+            max_iters=max_iters,
+            override_budget=override_budget,
+        )
 
     def _connect_agent_thread_signals(self) -> None:
         """Подключает сигналы AgentChatThread к слотам панели."""
@@ -1734,14 +2004,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._agent_thread.tools_status_changed.connect(self._on_tools_status_changed)
         self._agent_thread.status_changed.connect(self._on_status_event)
 
-        # [4.8.E] Низкоуровневые delta-события. Пока только для диагностики:
-        # UI по-прежнему получает токены через _on_chunk/_on_thinking,
-        # чтобы не дублировать композитный пузырь. Будущие потребители —
-        # TTFT-метрики, раздельная подсветка reasoning-блоков.
+        # [4.8.E] Низкоуровневые delta-события.
         self._agent_thread.text_delta.connect(self._on_text_delta_event)
         self._agent_thread.reasoning_delta.connect(self._on_reasoning_delta_event)
         self._agent_thread.stream_started.connect(self._on_stream_started_event)
         self._agent_thread.stream_finished.connect(self._on_stream_finished_event)
+
+        # [2.10] Бюджет и причина остановки.
+        self._agent_thread.budget_warning.connect(self._on_budget_warning)
+        self._agent_thread.budget_exceeded.connect(self._on_budget_exceeded)
+        self._agent_thread.agent_finished.connect(self._on_agent_finished)
 
         self._agent_thread.start()
 
@@ -1750,15 +2022,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     # ---------------------------------------------------------
 
     def _build_registry(self, mode: AgentMode | None = None) -> ToolRegistry:
-        """Собирает реестр из декларативного ALL_TOOLS.
+        """Собирает реестр из декларативного ALL_TOOLS (2.7: без политик).
 
-        * `read_attached_file` регистрируется, только если есть прикреплённые
-          файлы (инструмент бесполезен без store).
-        * В CHAT-режиме политики инструментов из `cfg.chat_auto_tools`
-          принудительно ставятся в AUTO. Если конфиг не читается —
-          используется встроенный `_CHAT_AUTO_TOOLS`.
-        * `cfg.tool_policies` и явные `set_policy` из UI применяются
-          последними и могут переопределить AUTO/ASK_FIRST.
+        Политика per-tool больше не применяется через ``set_policy`` —
+        её считает `ToolRegistry.get_effective_policy` (единая точка
+        авторизации, `core/policy.py::effective_policy`). Здесь только
+        регистрация инструментов и фильтрация по доступности.
+
+        ``CHAT-режим``: ``chat_auto_tools`` из конфига прокидывается в
+        ``session_overrides`` (`ChatPanel._current_session_overrides`),
+        чтобы `effective_policy` их учитывал. Явные ``set_policy`` из UI
+        (`self.tool_policies`) сохраняются как последний слой —
+        используются как есть, если `effective_policy` не нашёл другого
+        override.
         """
         from tools.registry import ALL_TOOLS
 
@@ -1773,38 +2049,44 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 continue
             registry.register(tool_func)
 
-        if mode == AgentMode.CHAT:
-            try:
-                cfg = load_config()
-                auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
-            except Exception as e:
-                logger.debug(f"chat_auto_tools: fallback на встроенный список: {e}")
-                auto_tools = list(_CHAT_AUTO_TOOLS)
-            for name in auto_tools:
-                registry.set_policy(name, ToolPolicy.AUTO)
+        # `set_policy` больше не нужен для авторизации: `effective_policy`
+        # берёт profile/config/session. Оставляем только явные override
+        # из UI (`self.tool_policies`) — они попадают в `session_overrides`.
+        # CHAT-режим: `chat_auto_tools` из конфига также учитываются как
+        # session-override (см. `_current_session_overrides`).
+        # [7] MCP-инструменты (ленивая регистрация, если менеджер готов).
+        try:
+            from tools.mcp_ops import register_mcp_tools
 
-        self._apply_config_policies(registry)
-
-        for tool_name, policy in self.tool_policies.items():
-            registry.set_policy(tool_name, policy)
+            n_mcp = register_mcp_tools(registry)
+            if n_mcp:
+                logger.debug(f"MCP: {n_mcp} инструментов зарегистрировано")
+        except Exception:
+            logger.debug("MCP registration failed", exc_info=True)
 
         return registry
 
-    def _apply_config_policies(self, registry: ToolRegistry) -> None:
+    def _current_session_overrides(self) -> dict[str, ToolPolicy]:
+        """Возвращает per-session overrides для `effective_policy`.
+
+        Объединяет:
+          * `chat_auto_tools` из конфига, когда режим CHAT (2.7 + 9.6);
+          * `self.tool_policies` — явные `set_tool_policy` из UI;
+          * `config.session_overrides` — per-session из конфига.
+        """
+        overrides: dict[str, ToolPolicy] = dict(self.tool_policies)
         try:
-            from core.config import load_config
-
             cfg = load_config()
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать политики из конфига: {e}")
-            return
-
-        for tool_name, policy in cfg.tool_policies.items():
-            registry.set_policy(tool_name, policy)
-
-        confirm = cfg.confirm
-        if not (confirm.enabled or confirm.web_search):
-            registry.set_policy("web_search", ToolPolicy.AUTO)
+        except Exception:
+            cfg = None
+        if self._current_mode() == AgentMode.CHAT and cfg is not None:
+            auto_tools = list(cfg.chat_auto_tools) or list(_CHAT_AUTO_TOOLS)
+            for name in auto_tools:
+                overrides.setdefault(name, ToolPolicy.AUTO)
+        if cfg is not None:
+            for name, policy in cfg.session_overrides.items():
+                overrides[name] = policy
+        return overrides
 
     @Slot(str, str, str)
     def _on_tool_call_detected(self, name: str, description: str, arguments_json: str):
@@ -1832,6 +2114,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         }
         display_name = tool_labels.get(name, name)
         dialog = ToolConfirmationDialog(display_name, description, arguments, self)
+
+        # [2.7] Per-session override: «Разрешить на сессию» → пишем в
+        # `AppConfig.session_overrides`, следующий вызов этого инструмента
+        # в текущей сессии не спросит подтверждения.
+        dialog.session_allow_requested.connect(
+            lambda tool_name, _dlg=dialog: self._allow_tool_for_session(tool_name)
+        )
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             approved = dialog.is_approved()
             new_args = dialog.get_arguments()
@@ -1841,6 +2131,30 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             if self._agent_thread:
                 self._agent_thread.respond_to_tool(False)
 
+    def _allow_tool_for_session(self, tool_name: str) -> None:
+        """[2.7 + 9.10] Добавляет инструмент в `session_overrides`."""
+        try:
+            cfg = load_config()
+            cfg.session_overrides[tool_name] = ToolPolicy.AUTO
+            # Кладём в кэш ChatPanel на случай, если следующий прогон
+            # пересоздаст AgentContext.
+            self.tool_policies[tool_name] = ToolPolicy.AUTO
+            logger.info(f"Session override: {tool_name} = auto")
+            emit_event(
+                EventKind.POLICY_OVERRIDE.value,
+                {"tool": tool_name, "policy": "auto", "scope": "session"},
+            )
+            # 9.10: отдельное событие для Permissions Dashboard.
+            emit_event(
+                EventKind.PERMISSIONS_OVERRIDDEN.value,
+                {"tool": tool_name, "policy": "auto", "scope": "session"},
+            )
+        except Exception:
+            logger.warning(
+                f"Не удалось установить session override для {tool_name}",
+                exc_info=True,
+            )
+
     @Slot(str, str, bool, object)
     def _on_tool_executed(
         self,
@@ -1849,30 +2163,31 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         is_error: bool,
         metadata: dict | None = None,
     ):
-        """[9.5.7] Обновляет tool-карточку результатом (✓/✗ + preview).
-
-        [9.6.1] `metadata` (dict | None) — структурированные данные от
-        инструмента. Для `write_file` запускает diff-режим карточки.
-        """
+        """[UI-2024] Результат — в ReasoningPanel и в tool-карточку."""
         card_was_present = self._active_tool_card is not None
 
-        # [9.5.4] Возвращаемся в «думает» — модель обработает результат.
+        self._current_assistant_parts.append(
+            ToolResultPart(
+                call_id="",
+                name=name,
+                content=content or "",
+                is_error=bool(is_error),
+            )
+        )
+
         self._set_activity_state("thinking")
 
-        # 1. Обновляем активную карточку.
+        # [UI-2024] Результат — в ReasoningPanel (компактно) + в tool-карточку.
+        widget = self._last_assistant_widget
+        if widget is not None:
+            preview = (content or "").strip().replace("\n", " ")[:200]
+            widget.reasoning_panel().append_result(name, ok=not is_error, preview=preview)
+
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(content or "", is_error, metadata)
             self._active_tool_card = None
 
-        # 2. Серый трейс — компактная запись результата (research).
-        if self._current_thought_stream is not None and name not in (
-            "record_hypothesis",
-            "update_hypothesis",
-        ):
-            preview = (content or "").strip().replace("\n", " ")[:200]
-            self._current_thought_stream.append_result(name, ok=not is_error, preview=preview)
-
-        # 3. Гипотезы — отдельный виджет (как было).
+        # Гипотезы — отдельный виджет внутри пузыря (как раньше).
         if (
             name in ("record_hypothesis", "update_hypothesis")
             and not is_error
@@ -1880,7 +2195,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         ):
             return
 
-        # 4. Fallback: если карточки не было — отдельное сообщение.
         if not card_was_present and not self._research_mode_active:
             self._add_tool_message(name, content, is_error)
 
@@ -1912,11 +2226,11 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         Args:
             payload: {"path", "original_content", "is_new_file"} от карточки.
         """
-        from PySide6.QtWidgets import QMessageBox
 
         path = str(payload.get("path") or "")
         original = str(payload.get("original_content") or "")
         is_new_file = bool(payload.get("is_new_file"))
+        snapshot_id = str(payload.get("snapshot_id") or "")
         if not path:
             return
 
@@ -1938,6 +2252,21 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось удалить файл:\n{e}")
             return
 
+        # [UI-2024] Предпочитаем снапшот: он восстанавливает файл бинарно и
+        # корректно обрабатывает новые файлы.
+        if snapshot_id:
+            try:
+                from tools.git_ops import restore_snapshot
+
+                restored = restore_snapshot(snapshot_id)
+                self.status_label.setText(f"↩ Восстановлено из снапшота: {len(restored)} файл(ов)")
+                logger.info(f"revert write_file: snapshot {snapshot_id} → {restored}")
+                self.source_activated.emit(path, 0)
+                return
+            except Exception as e:
+                logger.warning(f"restore_snapshot({snapshot_id}) упал: {e}; fallback на write_text")
+                # продолжаем — fallback ниже
+
         reply = QMessageBox.question(
             self,
             "Откат изменений",
@@ -1951,10 +2280,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             target.write_text(original, encoding="utf-8")
             self.status_label.setText(f"↩ Откат: {target.name}")
             logger.info(f"revert write_file: восстановлен {path}")
-            # Обновляем git-статус.
-            if hasattr(self, "source_activated"):
-                # Файл мог быть открыт в редакторе — перечитать.
-                self.source_activated.emit(path, 0)
+            self.source_activated.emit(path, 0)
         except OSError as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось восстановить файл:\n{e}")
 
@@ -1986,110 +2312,53 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             evidence=str(h.get("evidence") or ""),
             verification_method=str(h.get("verification_method") or ""),
         )
-
-        # Дублируем в серый поток как компактную строку.
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.append_hypothesis(
-                hypothesis_id=hid,
-                status=str(h.get("status") or "open"),
-                statement=str(h.get("statement") or ""),
-                evidence=str(h.get("evidence") or ""),
-            )
-
-            # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
         self._scroll_to_bottom()
         return True
 
     @Slot(str, str)
     def _on_tool_started(self, name: str, arguments_json: str):
-        """[9.5.7] Карточка tool-call создаётся ДО выполнения инструмента.
-
-        В `AgentLoop` `on_tool_start` вызывается до `ask_first` (см. патч
-        `agents/agent_loop.py`), поэтому пользователь видит карточку с ⏳
-        одновременно с диалогом подтверждения. Результат придёт в ту же
-        карточку через `_on_tool_executed` → `set_result(...)`.
-
-        В research-режиме карточка тоже создаётся (в пузыре), а не только
-        в сером трейсе — это нужно для «▸ Показать полностью» на длинных
-        observation.
-        """
+        """[UI-2024] Всё в ОДИН пузырь: reasoning-панель + tool-карточка."""
         try:
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
             args = {}
-        arg_summary = ", ".join(f"{k}={v}" for k, v in args.items())
-        tool_labels = {
-            "read_file": "📖 Чтение файла",
-            "write_file": "✏️ Запись файла",
-            "list_directory": "📁 Просмотр директории",
-            "search_codebase": "🔍 Поиск в кодовой базе",
-            "web_search": "🌐 Поиск в интернете",
-            "get_weather": "🌤 Погода",
-            "get_current_datetime": "🕒 Дата/время",
-            "get_exchange_rate": "💱 Курс валюты",
-            "get_exchange_rates_multi": "💱 Курсы валют",
-            "get_git_status": "🔎 Проверка Git-статуса",
-            "create_snapshot": "📸 Создание снапшота Git",
-            "undo_last_snapshot": "⏪ Откат снапшота Git",
-            "read_attached_file": "📄 Дочитывание файла",
-            "record_hypothesis": "💡 Запись гипотезы",
-            "update_hypothesis": "🔬 Обновление гипотезы",
-            "list_hypotheses": "📋 Список гипотез",
-            "run_shell_command": "⚡ Shell-команда",
-        }
-        label = tool_labels.get(name, f"🛠️ {name}")
-        activity = f"{label}: {arg_summary}" if arg_summary else label
-
-        # [9.5.3] Создаём трейс в Agent/Plan (не в Chat), пишем action.
-        stream = self._ensure_thought_stream()
-        if stream is not None:
-            stream.append_action(name, args)
-
-        # [9.5.4] Статус: выполняет инструмент (без дубля иконки).
-        self._set_activity_state("tool", name)
-
-        # Activity-строка только в Chat-режиме (где трейса нет).
-        if stream is None and not self._research_mode_active:
-            self._show_activity(activity)
-
-        # [9.5.7] Карточка tool-call ВСЕГДА (и в research, и в обычном).
+        self._current_assistant_parts.append(ToolCallPart(calls=[ToolCall(name=name, arguments=args)]))
         widget = self._ensure_assistant_widget()
+        widget.reasoning_panel().append_action(name, args)
+        self._set_activity_state("tool", name)
         card = widget.append_tool_call(name, arguments_json)
         self._active_tool_card = card
-
-        # [9.6.1] Подключаем сигналы diff-режима (write_file).
         if card is not None:
             card.open_in_editor_requested.connect(self._on_open_tool_result_in_editor)
             card.revert_requested.connect(self._on_revert_write_file)
-            # [9.8] «Показать diff» — Monaco DiffEditor.
             card.show_diff_requested.connect(self._on_show_tool_diff)
+            card.snapshot_undo_requested.connect(self._on_undo_file_snapshot)
 
-        # Сбрасываем пузырь ТОЛЬКО если модель уже дала текст —
-        # следующий текст пойдёт в новый пузырь (это новый ответ модели).
-        # Если текста не было (multi-tool-call) — продолжаем в тот же пузырь.
-        if self._current_assistant_content or self._current_thinking_content:
-            self._last_assistant_widget = None
-            self._current_assistant_content = ""
-            self._current_thinking_content = ""
+    @Slot(str, dict)
+    def _on_bus_event(self, kind: str, payload: dict) -> None:
+        """Принимает событие из ``QtEventBus``.
+
+        Дублирует в ``LiveEventsPanel`` и (если дашборд есть) — в tooltip
+        индикатора активности.
+        """
+        if self.live_events_panel is not None:
+            self.live_events_panel.append_event(kind, payload)
+        if self._dashboard is not None:
+            self._dashboard.set_last_event_tooltip(kind, payload)
 
     @Slot(str)
     def _on_status_event(self, text: str):
-        """[9.5.3] Статус — в серый трейс (Agent/Plan/research) или activity (Chat)."""
+        """Статус — в ReasoningPanel пузыря ассистента."""
         if not text:
             return
-        stream = self._ensure_thought_stream()
-        if stream is not None:
-            if text.startswith("🔁") or text.startswith("🪞"):
-                stream.append_nudge(text)
-            elif text.startswith("📌"):
-                stream.append_phase(text)
-            else:
-                stream.append_status(text)
-        # Activity-строка только в Chat-режиме (где трейса нет).
-        if stream is None and not self._research_mode_active:
-            self._show_activity(text)
-        # В статус-строке — только если не перетёрто другим состоянием.
+        widget = self._ensure_assistant_widget()
+        panel = widget.reasoning_panel()
+        if text.startswith("🔁") or text.startswith("🪞"):
+            panel.append_nudge(text)
+        elif text.startswith("📌"):
+            panel.append_phase(text)
+        else:
+            panel.append_status(text)
         if self._activity_state == "idle":
             self.status_label.setText(text)
 
@@ -2126,56 +2395,204 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """[4.8.E] Reasoning-delta от AgentLoop. Аналогично, только лог."""
         logger.trace(f"reasoning_delta: {token[:40]!r}")
 
+    # ------------------------------------------------------------------
+    # [2.10] Бюджет агента
+    # ------------------------------------------------------------------
+
+    @Slot(dict)
+    def _on_budget_warning(self, snapshot: dict) -> None:
+        """Мягкое предупреждение: ≥80% по одной из осей бюджета."""
+        if self._dashboard is not None:
+            self._dashboard.set_budget(snapshot)
+        logger.info(
+            f"Бюджет warning: ит.={snapshot.get('iterations')}, "
+            f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
+        )
+
+    @Slot(dict)
+    def _on_budget_exceeded(self, snapshot: dict) -> None:
+        """Бюджет исчерпан (CHAT/PLAN — форсированный финал, AGENT — продолжаем)."""
+        if self._dashboard is not None:
+            self._dashboard.set_budget(snapshot)
+        logger.warning(
+            f"Бюджет exceeded: ит.={snapshot.get('iterations')}, "
+            f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
+        )
+
+    def _build_reflection(
+        self,
+        *,
+        outcome: Outcome,
+        summary_hint: str = "",
+    ) -> Reflection | None:
+        """Формирует Reflection для записи в память.
+
+        Источники:
+          * ``task_type`` — из режима: ``agent``→``code``, ``plan``→``research``,
+            ``chat``→``chat``;
+          * ``outcome`` — ``success`` при ``finish_reason=stop``,
+            ``partial`` при ``length``/``budget.exceeded``,
+            ``failure`` при ошибке;
+          * ``summary`` — краткий текст (из ``summary_hint`` или первого
+            сообщения пользователя, обрезанный до 500 символов);
+          * ``tags`` — из активного профиля (``development``/``research``/
+            ``learning``) и режима.
+
+        Возвращает ``None``, если нет смысла писать (пустой summary).
+        """
+        mode = self._current_mode()
+        task_type_by_mode: dict[AgentMode, TaskType] = {
+            AgentMode.AGENT: "code",
+            AgentMode.PLAN: "research",
+            AgentMode.CHAT: "chat",
+        }
+        task_type: TaskType = task_type_by_mode.get(mode, "other")
+
+        summary = (summary_hint or "").strip()
+        if not summary:
+            last_user = next(
+                (m for m in reversed(self._messages) if m.role == "user"),
+                None,
+            )
+            if last_user is not None:
+                summary = (last_user.content or "").strip()
+        if not summary:
+            return None
+
+        summary = " ".join(summary.split())[:500]
+
+        tags: list[str] = []
+        if self._profile is not None:
+            tags.append(self._profile.id)
+        tags.append(mode.value)
+
+        return Reflection(
+            id=None,
+            created_at="",  # MemoryService проставит текущее время
+            project_path=self.project_root or "",
+            task_type=task_type,
+            summary=summary,
+            outcome=outcome,
+            tags=tags,
+        )
+
+    def _remember_if_needed(
+        self,
+        *,
+        outcome: Outcome,
+        summary_hint: str = "",
+    ) -> None:
+        """Записывает рефлексию, если включён ``auto_remember``.
+
+        Вызывается из `_on_agent_finished`. ``auto_remember=False`` → ничего не пишет.
+
+        ``summary_hint`` — например, первые 300 символов финального
+        ответа, чтобы рефлексия была осмысленной.
+        """
+        try:
+            cfg = load_config()
+            if not cfg.memory.enabled or not cfg.memory.auto_remember:
+                return
+        except Exception:
+            return
+
+        svc = self._ensure_memory_service()
+        if svc is None:
+            return
+
+        reflection = self._build_reflection(outcome=outcome, summary_hint=summary_hint)
+        if reflection is None:
+            return
+        try:
+            svc.remember(reflection)
+            self._sync_dashboard()
+        except Exception:
+            logger.warning("не удалось записать рефлексию", exc_info=True)
+
+    @Slot(dict)
+    def _on_agent_finished(self, payload: dict) -> None:
+        """Завершение прогона: причина остановки + снимок бюджета + запись рефлексии в память + закрытие inbox-записи."""
+        reason = payload.get("finish_reason")
+        budget = payload.get("budget")
+
+        if self._dashboard is not None:
+            if budget:
+                self._dashboard.set_budget(budget)
+            if reason:
+                self._dashboard.set_finish_reason(reason)
+
+        logger.info(
+            f"Agent finished: reason={reason!r}, "
+            f"iterations={payload.get('iterations')}, "
+            f"elapsed={payload.get('elapsed_s')}с"
+        )
+
+        self._finalize_inbox(reason=reason)
+        if (
+            self._last_research_summary is not None
+            and self._last_assistant_widget is not None
+            and self._should_show_passport(self._last_research_summary)
+        ):
+            self._show_research_passport(self._last_research_summary)
+
+        if reason in (None, "stop", "length", "budget.exceeded"):
+            outcome_by_reason: dict[str, Outcome] = {
+                "stop": "success",
+                "length": "partial",
+                "budget.exceeded": "partial",
+            }
+            outcome: Outcome = outcome_by_reason.get(str(reason or "stop"), "success")
+            self._remember_if_needed(
+                outcome=outcome,
+                summary_hint=self._current_assistant_text[:300],
+            )
+
+    def _finalize_inbox(self, *, reason: str | None) -> None:
+        """Закрывает текущую inbox-запись по причине.
+
+        * ``stop`` / ``length`` / ``budget.exceeded`` → ``complete``
+          (запрос выполнен, результат в сессии);
+        * ``user_cancel`` / ``None`` / прочее → ``fail``
+          (запрос прерван; при следующем запуске pending не висит,
+          потому что запись в failed).
+
+        Args:
+            reason: ``finish_reason`` из `agent_finished`.
+        """
+        if not self._current_inbox_id or self._inbox is None:
+            return
+        try:
+            if reason in ("stop", "length", "budget.exceeded"):
+                self._inbox.complete(self._current_inbox_id)
+            else:
+                self._inbox.fail(self._current_inbox_id, reason or "unknown")
+        except Exception:
+            logger.debug("inbox: не удалось закрыть запись", exc_info=True)
+        finally:
+            self._current_inbox_id = None
+            self._sync_inbox_indicator()
+
     @Slot()
     def _on_stream_finished_event(self) -> None:
-        """[4.8.E] Конец стрима модели — обновляем tok/s в приборной панели."""
+        """Конец стрима: tok/s и prefix cache в плитке `perf`.
+
+        Сигнатура подтверждена:
+        `set_perf(tps: float, cache_reads: int, cache_writes: int) -> None`.
+        """
         logger.trace("stream_finished")
         if self._dashboard is None:
             return
-        client = self._router.active_client
-        stats = getattr(client, "last_stats", None) or {}
-        tps = stats.get("tokens_per_sec", 0.0)
-        with contextlib.suppress(TypeError, ValueError):
-            self._dashboard.set_tok_per_sec(float(tps))
-
-    # ------------------------------------------------------------------
-    # [9.5.3] Серый трейс в обычном Agent/Plan (не только research)
-    # ------------------------------------------------------------------
-
-    def _ensure_thought_stream(self) -> "ChatThoughtStream | None":
-        """Возвращает серый трейс для текущего прогона, создаёт при необходимости.
-
-        [9.5.3] В Agent/Plan (не research) трейс создаётся с первым
-        tool-call или статусом — до этого момента виджета нет.
-        В Chat-режиме (tools off, обычно одна итерация) трейс не нужен:
-        статусы идут плоскими `ChatActivityItem`.
-        В research `_current_thought_stream` уже создан в
-        `_on_thought_chunk` — просто возвращаем.
-        """
-        if self._current_thought_stream is not None:
-            return self._current_thought_stream
-        # Chat-режим: плоский activity, без трейса.
-        if self._current_mode() == AgentMode.CHAT and not self._research_mode_active:
-            return None
-        self._current_thought_stream = ChatThoughtStream()
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, self._current_thought_stream)
-        self.scroll_layout.setStretch(self.scroll_layout.indexOf(self._current_thought_stream), 0)
-        # [9.10]
-        self._maybe_collapse_old_messages()
-        return self._current_thought_stream
-
-    # ------------------------------------------------------------------
-    # [9.10] Виртуализация длинных чатов
-    # ------------------------------------------------------------------
+        stats = getattr(self._router.active_client, "last_stats", None) or {}
+        try:
+            tps = float(stats.get("tokens_per_sec", 0.0) or 0.0)
+            reads = int(stats.get("cache_reads", 0) or 0)
+            writes = int(stats.get("cache_writes", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        self._dashboard.set_perf(tps, reads, writes)
 
     def _is_message_widget(self, widget: QWidget | None) -> bool:
-        """True, если виджет — «сообщение» (можно сворачивать в placeholder).
-
-        Включает: ChatMessageItem, ChatActivityItem, ChatSourcesItem,
-        ChatThoughtStream, ChatResearchPassport, ChatDiagramItem,
-        ChatHypothesisItem. Stretch-элементы (layout-распорки) и
-        CollapsedPlaceholder — не считаются.
-        """
+        """True, если виджет — «сообщение» (можно сворачивать в placeholder)."""
         if widget is None:
             return False
         if isinstance(widget, CollapsedPlaceholder):
@@ -2186,7 +2603,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 ChatMessageItem,
                 ChatActivityItem,
                 ChatSourcesItem,
-                ChatThoughtStream,
                 ChatResearchPassport,
                 ChatDiagramItem,
                 ChatHypothesisItem,
@@ -2206,7 +2622,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         return out
 
     def _maybe_collapse_old_messages(self) -> None:
-        """[9.10] Сворачивает самые старые сообщения при превышении порога.
+        """Сворачивает самые старые сообщения при превышении порога.
 
         Вызывается после добавления нового виджета. Порог —
         `_MAX_VISIBLE_MESSAGE_WIDGETS`; сверху добавляется
@@ -2216,27 +2632,19 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         messages = self._message_widgets()
         if len(messages) <= _MAX_VISIBLE_MESSAGE_WIDGETS:
             return
-
-        # Сколько свернуть: всё, что превышает порог, + буфер.
         over = len(messages) - _MAX_VISIBLE_MESSAGE_WIDGETS
         to_collapse_count = over + _COLLAPSE_BUFFER
-
-        # Берём самые старые (в начале layout).
         to_collapse = messages[:to_collapse_count]
         if not to_collapse:
             return
 
-        # Индекс в layout, с которого начинается группа (первый из to_collapse).
         start_idx = to_collapse[0][0]
-
-        # Отсоединяем виджеты из layout и скрываем.
         collapsed_widgets: list[QWidget] = []
         for _idx, widget in to_collapse:
             self.scroll_layout.removeWidget(widget)
             widget.setVisible(False)
             collapsed_widgets.append(widget)
 
-        # Вставляем placeholder на место первого свёрнутого виджета.
         placeholder = CollapsedPlaceholder(collapsed_widgets, parent=self.scroll_content)
         placeholder.restore_requested.connect(self._on_restore_collapsed)
         self.scroll_layout.insertWidget(start_idx, placeholder)
@@ -2249,50 +2657,35 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot(object)
     def _on_restore_collapsed(self, placeholder) -> None:
-        """[9.10] Пользователь кликнул по placeholder — разворачиваем порцию."""
+        """Пользователь кликнул по placeholder — разворачиваем порцию."""
         if not isinstance(placeholder, CollapsedPlaceholder):
             return
         self._restore_placeholder_batch(placeholder)
 
     def _restore_placeholder_batch(self, placeholder: CollapsedPlaceholder) -> None:
-        """Разворачивает `_RESTORE_BATCH` последних свёрнутых виджетов.
-
-        Вставляет их в layout СРАЗУ ПОСЛЕ placeholder'а — так хронология
-        сохраняется: placeholder (более старые) → следующие за ним
-        (более свежие, которые только что развернули).
-
-        Если `placeholder.collapsed_count == 0` — placeholder удаляется.
-        """
-        # Позиция placeholder'а в layout.
+        """Разворачивает `_RESTORE_BATCH` последних свёрнутых виджетов."""
         try:
             idx = self.scroll_layout.indexOf(placeholder)
         except Exception:
             idx = -1
         if idx < 0:
-            logger.debug("[9.10] Placeholder не найден в layout — пропускаем")
+            logger.debug("Placeholder не найден в layout — пропускаем")
             return
 
         widgets = placeholder.pop_restore_batch(_RESTORE_BATCH)
         if not widgets:
-            # Нечего разворачивать — удаляем placeholder.
             self.scroll_layout.removeWidget(placeholder)
             placeholder.deleteLater()
             if placeholder in self._collapsed_placeholders:
                 self._collapsed_placeholders.remove(placeholder)
             return
 
-        # Вставляем виджеты после placeholder'а, сохраняя их хронологический
-        # порядок: widgets[0] — самый старый из порции, widgets[-1] — самый свежий.
         insert_at = idx + 1
         for offset, widget in enumerate(widgets):
             self.scroll_layout.insertWidget(insert_at + offset, widget)
             widget.setVisible(True)
-            # Обновляем максимальную ширину пузыря (на случай ресайза окна,
-            # пока виджет был скрыт).
             if isinstance(widget, ChatMessageItem):
                 self._update_bubble_width(widget)
-
-        # Если всё развернули — placeholder не нужен.
         if placeholder.collapsed_count == 0:
             self.scroll_layout.removeWidget(placeholder)
             placeholder.deleteLater()
@@ -2301,25 +2694,14 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
         self.scroll_area.scroll_to_bottom_if_sticky()
         logger.debug(
-            f"[9.10] Развёрнуто {len(widgets)} сообщений, осталось свёрнутых: {placeholder.collapsed_count}"
+            f"Развёрнуто {len(widgets)} сообщений, осталось свёрнутых: {placeholder.collapsed_count}"
         )
 
     def _expand_all_collapsed(self) -> None:
-        """[9.10] Разворачивает все placeholder'ы (для «Показать всё»).
-
-        Не используется в UI напрямую, но полезно для палитры команд /
-        отладки. Проходит по списку placeholder'ов и разворачивает
-        каждый до конца.
-        """
-        # Копируем список — `_restore_placeholder_batch` может удалять
-        # элементы из `_collapsed_placeholders` при полном развороте.
+        """Разворачивает все placeholder'ы (для «Показать всё»)."""
         for placeholder in list(self._collapsed_placeholders):
             while placeholder.collapsed_count > 0:
                 self._restore_placeholder_batch(placeholder)
-
-    # ------------------------------------------------------------------
-    # [9.5.4] Индикатор активности
-    # ------------------------------------------------------------------
 
     _ACTIVITY_ICONS = {
         "idle": "💤",
@@ -2337,8 +2719,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         "error": "Ошибка",
         "cancelled": "Остановлено",
     }
-    # [9.5.4] Цвет фона кнопки Stop по состоянию. Кнопка остаётся «■»
-    # (привычный Stop), но цвет фона подсказывает, что происходит.
     _STOP_BUTTON_BG = {
         "idle": "#d32f2f",  # обычный Stop
         "thinking": "#d4a373",  # янтарный — «думает»
@@ -2349,24 +2729,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     }
 
     def _set_activity_state(self, state: str, detail: str = "") -> None:
-        """[9.5.4] Единый индикатор активности.
-
-        Меняет:
-          * текст `status_label` (эмодзи + подпись + detail);
-          * tooltip кнопки Stop/Отправить;
-          * ЦВЕТ ФОНА кнопки Stop (текст остаётся «■» при генерации,
-            «▶ Отправить» — вне её).
-
-        Не дублирует эмодзи в `detail` (detail — чистый текст без иконок).
-        """
+        """Единый индикатор активности."""
         icon = self._ACTIVITY_ICONS.get(state, "●")
         label = self._ACTIVITY_LABELS.get(state, state)
         full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
         self._activity_state = state
         self.status_label.setText(full)
+        if self._dashboard is not None:
+            self._dashboard.set_activity_state(state)
 
         if self._generating:
-            # Кнопка Stop: ■ + фон по состоянию.
             self.send_btn.setText("■")
             bg = self._STOP_BUTTON_BG.get(state, "#d32f2f")
             self.send_btn.setStyleSheet(
@@ -2375,7 +2747,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
             self.send_btn.setToolTip(f"{full}\nНажмите, чтобы остановить")
         else:
-            # Вне генерации кнопка — «Отправить», фон синий.
             self.send_btn.setText("▶ Отправить")
             self.send_btn.setStyleSheet(
                 "font-size: 14px; padding: 8px 20px; background: #1976d2;"
@@ -2383,20 +2754,39 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
             self.send_btn.setToolTip("Отправить (Ctrl+Enter)")
 
+    def _build_assistant_message(self, *, fallback_text: str = "") -> ChatMessage:
+        """Собирает ChatMessage из накопленных частей текущего ответа.
+        Reasoning добавляется первым, чтобы модель и UI видели его до текста.
+        Tool-call/result-части идут в порядке реального выполнения.
+        Args:
+            fallback_text: Что подставить, если буферы пусты (например,
+                модель вернула только финальный текст без стрима — на
+                случай будущих бэкендов).
+
+        Returns:
+            ChatMessage с parts; пустой TextPart гарантирует, что сообщение
+            не окажется совсем без частей (pydantic-модель допускает parts=[]).
+        """
+        parts: list[MessagePart] = []
+        if self._current_assistant_reasoning:
+            parts.append(ReasoningPart(text=self._current_assistant_reasoning))
+        text = self._current_assistant_text or fallback_text
+        if text:
+            parts.append(TextPart(text=text))
+        parts.extend(self._current_assistant_parts)
+        if not parts:
+            parts.append(TextPart(text=""))
+        return ChatMessage(role="assistant", parts=parts)
+
     @Slot(str)
     def _on_agent_finish(self, result: str):
-        # 4.8.B: свернуть reasoning в последнем пузыре — модель закончила.
         if self._last_assistant_widget is not None:
             self._last_assistant_widget.finalize()
-
-        # --- Research-режим: паспорт с выводами, без обычного пузыря ---
         if self._research_mode_active and not self._research_cancelled:
             summary = self._last_research_summary
+            final_text = self._pending_final_answer
             if summary:
-                summary["final_answer"] = self._pending_final_answer
-                # Если финального текста нет — добавляем явную плашку.
-                # Раньше паспорт показывался с пустым разделом «Выводы»,
-                # и пользователь не понимал, что произошло.
+                summary["final_answer"] = final_text
                 if not (summary["final_answer"] or "").strip():
                     reason = (result or "").strip() or "финальный синтез не был сформирован"
                     summary["final_answer"] = (
@@ -2409,34 +2799,49 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
                 if self._should_show_passport(summary):
                     self._show_research_passport(summary)
 
+            if final_text and self._session_id:
+                assistant_message = self._build_assistant_message(fallback_text=final_text)
+                self._messages.append(assistant_message)
+                self.session_store.save_message(self._session_id, assistant_message)
+
+            if (
+                self._last_research_summary is not None
+                and self._last_assistant_widget is not None
+                and self._should_show_passport(self._last_research_summary)
+            ):
+                self._show_research_passport(self._last_research_summary)
+
             self._reset_send_button()
             self._current_assistant_content = ""
             self._current_thinking_content = ""
+            self._current_assistant_parts = []
+            self._current_assistant_text = ""
+            self._current_assistant_reasoning = ""
             self._last_assistant_widget = None
-            self._current_thought_stream = None
             self._pending_final_answer = ""
             self._last_research_summary = None
             self._research_mode_active = False
             return
 
-        # --- Обычный режим: как раньше ---
         if result and result != "Отменено":
-            assistant_message = ChatMessage(role="assistant", content=result)
+            assistant_message = self._build_assistant_message(fallback_text=result)
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
-            # [9.5.3] В Chat-режиме (без трейса) — плоский activity.
-            # В Agent/Plan трейс уже показывает ход; финальный статус
-            # выставит `_reset_send_button` → idle.
-            if self._current_thought_stream is None:
-                self._show_activity("✅ Готово")
+            self._show_activity("✅ Готово")
+        if (
+            self._last_research_summary is not None
+            and self._last_assistant_widget is not None
+            and self._should_show_passport(self._last_research_summary)
+        ):
+            self._show_research_passport(self._last_research_summary)
 
         self._reset_send_button()
         self._current_assistant_content = ""
         self._current_thinking_content = ""
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
         self._last_assistant_widget = None
-        # [9.5.3] Ссылку сбрасываем, но виджет трейса остаётся в ленте.
-        self._current_thought_stream = None
         self._pending_final_answer = ""
         self._last_research_summary = None
         self._research_mode_active = False
@@ -2444,9 +2849,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _reset_send_button(self):
         self._generating = False
         self.input_edit.setEnabled(True)
-        # [9.5.7] Сбрасываем ссылку на активную карточку.
         self._active_tool_card = None
-        # [9.5.4] Единая точка: idle ставит и текст, и фон, и tooltip.
         self._set_activity_state("idle")
 
     def _set_button_stop(self) -> None:
@@ -2461,35 +2864,26 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             " color: white; border: none; border-radius: 4px;"
         )
 
-    def _send_finished(self):
-        if self._last_assistant_widget is not None:
-            self._last_assistant_widget.finalize()
-
-        if self._current_assistant_content:
-            assistant_message = ChatMessage(role="assistant", content=self._current_assistant_content)
-            self._messages.append(assistant_message)
-            if self._session_id:
-                self.session_store.save_message(self._session_id, assistant_message)
-
-        self._reset_send_button()
-        self._current_assistant_content = ""
-        self._current_thinking_content = ""
-        self._last_assistant_widget = None
-
     @Slot(str)
     def _on_agent_error(self, error_msg: str):
-        # Помечаем серый поток как прерванный, если он был.
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
-        # [9.5.4] Индикатор: ошибка (короткий detail).
+        if self._inbox is not None and self._current_inbox_id:
+            try:
+                self._inbox.fail(self._current_inbox_id, error_msg[:500])
+            except Exception:
+                logger.debug("inbox.fail упал", exc_info=True)
+            finally:
+                self._current_inbox_id = None
+                self._sync_inbox_indicator()
         self._set_activity_state("error", error_msg[:60])
         if self._active_tool_card is not None:
             self._active_tool_card.set_result(f"Ошибка: {error_msg[:200]}", is_error=True)
             self._active_tool_card = None
         self._add_message("system", f"❌ Ошибка агента: {error_msg}")
         self._reset_send_button()
-        # _reset_send_button ставит idle — явно выставим error после.
         self._set_activity_state("error", error_msg[:60])
+        self._current_assistant_parts = []
+        self._current_assistant_text = ""
+        self._current_assistant_reasoning = ""
         self._research_mode_active = False
         self._research_cancelled = False
         self._pending_final_answer = ""
@@ -2497,16 +2891,66 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
-        """Прерываем возможный research-прогон..."""
+        """Hard ceiling достигнут (safety net, а не «лимит»)."""
         self._reset_research_state()
         self._reset_send_button()
+        if self._inbox is not None and self._current_inbox_id:
+            try:
+                self._inbox.fail(self._current_inbox_id, "iteration_limit")
+            except Exception:
+                logger.debug("inbox.fail упал", exc_info=True)
+            finally:
+                self._current_inbox_id = None
+                self._sync_inbox_indicator()
         self._show_activity(
-            "⏸ Достигнут лимит итераций. Нажмите «Продолжить», чтобы дать агенту больше шагов."
+            "⏸ Достигнут предел шагов. «Продолжить» — ещё шаги, «Продолжить до результата» — без бюджета."
         )
-        # [9.5.4] Индикатор: «лимит итераций» вместо общего idle.
-        self._set_activity_state("cancelled", "лимит итераций")
+        self._set_activity_state("cancelled", "предел шагов")
         self.continue_btn.setVisible(True)
         self.continue_btn.setEnabled(True)
+        if hasattr(self, "continue_unlimited_btn"):
+            self.continue_unlimited_btn.setVisible(True)
+            self.continue_unlimited_btn.setEnabled(True)
+
+    @Slot()
+    def _continue_unlimited(self) -> None:
+        """«Продолжить до результата»: time=∞, tok=∞, iterations=∞.
+
+        Единственная остановка — `user_cancel`. Если модель зациклилась
+        на повторных tool_calls, `AgentLoop` сам сделает финальный синтез
+        (защита от повторов не снимается).
+        """
+        if self._generating:
+            return
+        params = self._last_run_params
+        if not params:
+            self.continue_btn.setVisible(False)
+            return
+        self.continue_btn.setVisible(False)
+        self._add_message(
+            "system",
+            "▶ Продолжаю до результата: бюджеты по времени/токенам/итерациям "
+            "сняты. Остановить можно кнопкой «■».",
+        )
+        from agents.agent_loop import SoftBudget
+
+        unlimited = SoftBudget(
+            iterations=100_000,
+            tokens=10_000_000,
+            time_s=86_400.0,
+            warning_ratio=0.999,
+        )
+
+        if params["kind"] == "chat":
+            self._do_chat(params["text"], override_limit=100_000, override_budget=unlimited)
+        else:
+            self._do_agent(
+                params["text"],
+                params["mode"],
+                params["rag_context"],
+                override_limit=100_000,
+                override_budget=unlimited,
+            )
 
     @Slot()
     def _continue_after_limit(self) -> None:
@@ -2524,10 +2968,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return
 
         current = int(params.get("max_iters", 10))
-        # Удваиваем, но не меньше +10 и не больше 200 — иначе 7B на CPU
-        # будет считать часами.
         new_limit = min(max(current * 2, current + 10), 200)
-
         self.continue_btn.setVisible(False)
         self._add_message(
             "system",
@@ -2550,8 +2991,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
     def _on_tools_status_changed(self, active: bool):
         if self._dashboard is not None:
             self._dashboard.set_tools_active(active)
-        if hasattr(self, "_dashboard") and self._dashboard is not None:
-            self._dashboard.set_tools_active(active)
         if active:
             self.tool_status_label.setText("🔧 Инструменты активны")
             self.tool_status_label.setStyleSheet(
@@ -2570,86 +3009,31 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             )
         self.tool_status_label.setVisible(True)
 
-    def set_model(self, model: str):
-        idx = self.model_combo.findData(model)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-        else:
-            self.model_combo.addItem(model, model)
-            self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
-
     def set_tool_policy(self, tool_name: str, policy: Any) -> None:
         self.tool_policies[tool_name] = policy
 
     def set_show_reasoning(self, show: bool) -> None:
-        """Включает/выключает отображение reasoning_content в чате.
-
-        False — токены размышлений продолжают приходить и логируются, но
-        виджет сообщения не создаётся/не обновляется. Уже показанные блоки
-        reasoning не скрываются — это «тумблер для будущих токенов».
-        """
+        """Включает/выключает отображение reasoning_content в чате."""
         self._show_reasoning = bool(show)
         logger.debug(f"Показ размышлений: {'вкл' if show else 'выкл'}")
 
     def set_vector_store(self, vector_store):
         self.vector_store = vector_store
 
-    # ---------------------------------------------------------
-    # Публичный API для MainWindow (план 2.4)
-    #
-    # Раньше MainWindow обращался к приватным полям напрямую:
-    #   chat_panel._update_mode_tooltips()
-    #   chat_panel.mode_combo.setCurrentIndex(...)
-    #   chat_panel._show_reasoning
-    #   chat_panel._update_model_list()
-    #   chat_panel.refresh_models_btn.setText(...)
-    # Это связывало классы и делало невозможным вынести меню
-    # в отдельный модуль. Теперь — явные методы с понятным контрактом.
-    # ---------------------------------------------------------
-
     def update_mode_tooltips(self) -> None:
-        """Пересчитывает тултипы селектора режимов (из актуальных промптов).
-
-        Публичная замена `_update_mode_tooltips()` для MainWindow
-        (после сохранения промптов в редакторе).
-        """
+        """Пересчитывает тултипы селектора режимов (из актуальных промптов)."""
         self._update_mode_tooltips()
 
-    def update_model_list(self) -> None:
-        """Перерисовывает список моделей (после синхронизации с Ollama).
-
-        Публичная замена `_update_model_list()` для MainWindow
-        (в `_on_model_check_finished`).
-        """
-        self._update_model_list()
-
     def set_mode_by_name(self, mode: str) -> None:
-        """Переключает режим по имени: 'chat' | 'plan' | 'agent'.
-
-        Публичная замена прямому доступу к `mode_combo.setCurrentIndex(...)`
-        из MainWindow (после открытия проекта восстанавливаем сохранённый
-        режим из config / project_settings).
-        """
+        """Переключает режим по имени: 'chat' | 'plan' | 'agent'."""
         mode_map = {"chat": 0, "plan": 1, "agent": 2}
         idx = mode_map.get(mode, 2)
         if 0 <= idx < self.mode_combo.count():
             self.mode_combo.setCurrentIndex(idx)
 
     def get_show_reasoning(self) -> bool:
-        """Текущее состояние тумблера «Показывать размышления».
-
-        Публичная замена прямому чтению `_show_reasoning` из MainWindow
-        (синхронизация чекбокса в правой панели при `_do_open_project`).
-        """
+        """Текущее состояние тумблера «Показывать размышления»."""
         return self._show_reasoning
-
-    def set_refresh_button_text(self, text: str) -> None:
-        """Меняет текст кнопки обновления моделей (⏹ Стоп / 🔄 / ⏳).
-
-        Публичная замена прямому `refresh_models_btn.setText(...)` из
-        MainWindow (индикация процесса проверки поддержки tools).
-        """
-        self.refresh_models_btn.setText(text)
 
     @property
     def router(self) -> ModelRouter:
@@ -2660,33 +3044,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._project_scanned = False
         self._project_scan_root = None
         self._rag_scope = None
-
-        # полный сброс пайплайна вместо ручного обнуления
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.set_project_path(project_root)
         self.reset_pipeline()
-
-        # [9.4] Профиль «Обучение» не использует пайплайн — не триггерим загрузку.
         if project_root and (self._profile is None or self._profile.id != "learning"):
             QTimer.singleShot(1500, self._ensure_orchestrator)
         self._update_pipeline_status()
-
-    def get_settings(self) -> dict:
-        mode_map = {0: "chat", 1: "plan", 2: "agent"}
-        return {
-            "model": self.get_current_model(),
-            "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-            "show_reasoning": self._show_reasoning,
-        }
-
-    def apply_settings(self, settings: dict) -> None:
-        model = settings.get("model", "")
-        if model:
-            self.set_model(model)
-        mode = settings.get("mode", "chat")
-        mode_map = {"chat": 0, "plan": 1, "agent": 2}
-        idx = mode_map.get(mode, 0)
-        if 0 <= idx < self.mode_combo.count():
-            self.mode_combo.setCurrentIndex(idx)
-        self._show_reasoning = bool(settings.get("show_reasoning", True))
 
     def export_chat(self, parent: QWidget | None = None) -> None:
         """[9.6.3] Открывает диалог экспорта текущего чата."""
@@ -2702,7 +3065,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         dialog = ExportChatDialog(
             messages=list(self._messages),
             title="OlliDesk — чат",
-            model=self.get_current_model(),
+            model=self.active_model_name(),
             mode=self._current_mode().value,
             profile=profile_name,
             project=self._project_name(),
@@ -2712,7 +3075,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         dialog.exec()
 
     def set_project_open(self, is_open: bool):
-        """[9.6.2] Placeholder обновляется через `_update_command_placeholder`,
+        """Placeholder обновляется через `_update_command_placeholder`,
         но при отсутствии проекта — стандартный.
         """
         if not is_open:
@@ -2725,148 +3088,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._update_command_placeholder()
         self.send_btn.setVisible(True)
 
-    def set_registry(self, registry):
-        self.registry = registry
-        self._update_model_list()
-
-    def update_models(self, models: list[str]) -> None:
-        self._update_model_list()
-
-    def _update_model_list(self):
-        if not self.registry:
-            return
-        current = self.model_combo.currentData()
-        self.model_combo.blockSignals(True)
-        self.model_combo.clear()
-        all_models = self.registry.get_all_models()
-        sorted_names = sorted(
-            all_models.keys(),
-            key=lambda x: (not all_models[x].is_local, x.lower()),
-        )
-        for model_name in sorted_names:
-            info = all_models[model_name]
-            display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
-            idx = self.model_combo.count()
-            self.model_combo.addItem(display, model_name)
-            self.model_combo.setItemData(
-                idx,
-                self._build_registry_model_tooltip(info),
-                Qt.ItemDataRole.ToolTipRole,
-            )
-
-        if current and self.model_combo.findData(current) >= 0:
-            self.model_combo.setCurrentIndex(self.model_combo.findData(current))
-        else:
-            for i in range(self.model_combo.count()):
-                model_data = self.model_combo.itemData(i)
-                if not model_data:
-                    continue
-                found = self.registry.get(model_data)
-                if found is not None and found.is_local:
-                    self.model_combo.setCurrentIndex(i)
-                    break
-            else:
-                if self.model_combo.count() > 0:
-                    self.model_combo.setCurrentIndex(0)
-        self.model_combo.blockSignals(False)
-        self._update_model_status(self.model_combo.currentData())
-
-    def _update_model_selector_visibility(self) -> None:
-        """Скрывает выбор Ollama-модели, если Ollama не активна в конфиге.
-
-        Назначение: когда Ollama выключена (не в `cfg.backends.enabled`),
-        combo моделей Ollama, кнопка «🔄» (проверка tools) и иконка статуса
-        модели бесполезны — все записи в combo неактивны, `_start_model_check`
-        сразу отказывает. Оставлять их на виду — источник недоумения.
-
-        Безопасно вызывается в любой момент: если UI ещё не создан
-        (`model_combo` отсутствует), тихо выходит.
-        """
-        if not hasattr(self, "model_combo"):
-            return
-        try:
-            from core.config import load_config as _load_cfg
-
-            cfg = _load_cfg()
-            ollama_enabled = "ollama" in cfg.backends.enabled
-        except Exception:
-            ollama_enabled = False
-        for widget in (
-            getattr(self, "model_label", None),
-            self.model_combo,
-            self.refresh_models_btn,
-            self.model_status_label,
-        ):
-            if widget is not None:
-                widget.setVisible(ollama_enabled)
-
-    def _update_model_status(self, model_name: str):
-        if not self.registry:
-            self.model_status_label.setText("❓")
-            self.model_status_label.setToolTip("Реестр моделей не загружен")
-            return
-        info = self.registry.get(model_name)
-        if not info:
-            self.model_status_label.setText("❓")
-            self.model_status_label.setToolTip("Модель не найдена в реестре")
-            return
-        if info.is_local:
-            if info.supports_tools is True:
-                status_icon = "✅"
-                tooltip = "Поддерживает инструменты"
-            elif info.supports_tools is False:
-                status_icon = "⚠️"
-                tooltip = "Только чат (нет поддержки tools)"
-            else:
-                status_icon = "❓"
-                tooltip = "Поддержка tools не проверена"
-        else:
-            status_icon = "⬇️"
-            tooltip = "Модель не скачана локально"
-        if info.description:
-            tooltip += f"\n{info.description}"
-        self.model_status_label.setText(status_icon)
-        self.model_status_label.setToolTip(tooltip)
-
-    def _on_model_changed(self, index: int):
-        model_name = self.get_current_model()
-        if model_name:
-            self._update_model_status(model_name)
-            self._check_mode_compatibility()
-            self._save_current_settings()
-
-    def _save_current_settings(self):
-        try:
-            mode_map = {0: "chat", 1: "plan", 2: "agent"}
-            self.settings_changed.emit(
-                {
-                    "model": self.get_current_model(),
-                    "mode": mode_map.get(self.mode_combo.currentIndex(), "chat"),
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить настройки: {e}")
-
-    def set_checking_state(self, is_checking: bool):
-        self.refresh_models_btn.setText("⏳" if is_checking else "🔄")
-
-    def _check_mode_compatibility(self):
-        if not self.registry:
-            return
-        model_name = self.get_current_model()
-        cap = self.registry.get(model_name)
-
-        if cap and not cap.supports_tools:
-            current_mode = self._current_mode()
-            if current_mode in (AgentMode.PLAN, AgentMode.AGENT):
-                self.mode_combo.setCurrentIndex(0)
-                QMessageBox.warning(
-                    self,
-                    "Режим недоступен",
-                    f"Модель '{model_name}' не поддерживает инструменты.\n"
-                    "Режим автоматически переключен на 'Chat'.",
-                )
-
     def set_role_manager(self, manager: RoleManager):
         self.role_manager = manager
         self.role_combo.blockSignals(True)
@@ -2875,9 +3096,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         for role in manager.get_all_roles():
             idx = self.role_combo.count()
             self.role_combo.addItem(f"{role.icon} {role.name}", role.id)
-            # Per-item tooltip: описание роли из её frontmatter.
-            # Для default — «Универсальный AI-ассистент …»,
-            # для python_dev — «Senior Python разработчик (FastAPI, Django, Pydantic)» и т.д.
             tooltip = role.description.strip() if role.description else ""
             if not tooltip and role.id == "default":
                 tooltip = "Универсальный ассистент — подходит для большинства задач."
@@ -2900,30 +3118,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             return self.role_manager.get_role(self.current_role_id).system_prompt
         return ""
 
-    def update_model_status(self, model_name: str):
-        if not self.registry:
-            return
-        info = self.registry.get(model_name)
-        if not info:
-            return
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model_name:
-                display = f"✅ {model_name}" if info.is_local else f"⬇️ {model_name}"
-                self.model_combo.setItemText(i, display)
-                break
-        if self.model_combo.currentData() == model_name:
-            self._update_model_status(model_name)
-
-    def get_current_model(self) -> str:
-        model = self.model_combo.currentData()
-        if model is not None:
-            return str(model)
-        text = self.model_combo.currentText()
-        for prefix in ("✅ ", "⬇️ "):
-            if text.startswith(prefix):
-                return text[len(prefix) :]
-        return text or "llama3.2"
-
     @Slot()
     def _on_web_finish(self):
         self._reset_send_button()
@@ -2943,24 +3137,28 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         self._session_id = session_id
 
     def load_history(self, messages: list[ChatMessage]):
-        """[9.10] Загрузка истории с одним проходом сворачивания в конце."""
+        """Загрузка истории с одним проходом сворачивания в конце.
+
+        рендерим не только content, но и reasoning/tool_calls/
+        tool_results из `msg.parts`. Для старых сообщений без parts
+        (`content`-only) остаётся текстовый рендер — обратная совместимость
+        через `ChatMessage.parts`, собранный в `model_validator`.
+        """
         self._clear_chat(keep_session=True)
         self._suppress_collapse = True
         try:
             for msg in messages:
-                self._add_message(msg.role, msg.content)
+                if msg.role == "assistant" and msg.parts:
+                    widget = self._render_assistant_parts(msg)
+                    self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
+                    self._update_bubble_width(widget)
+                else:
+                    self._add_message(msg.role, msg.content)
                 self._messages.append(msg)
         finally:
             self._suppress_collapse = False
         # Один проход после загрузки всей истории.
         self._maybe_collapse_old_messages()
-
-    def keyPressEvent(self, event):
-        if self.input_edit.hasFocus():
-            key = event.key()
-            if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
-                pass
-        super().keyPressEvent(event)
 
     def set_search_cache(self, cache):
         self.search_cache = cache
@@ -2983,6 +3181,16 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         """
         light = file_count <= 100 and total_bytes <= 300_000
         if light:
+            q_low = question.lower()
+            # Если явно просят схему/архитектуру — включаем Orchestrator (7B Analyst)
+            if any(w in q_low for w in ("схем", "архитектур", "компонент", "структур", "изучи")):
+                return {
+                    "research": True,
+                    "max_iters": 10,
+                    "split_thoughts": True,
+                    "hypotheses": True,
+                    "phases": "full",
+                }
             return {
                 "research": False,
                 "max_iters": 3,
@@ -2999,27 +3207,63 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             "phases": "full" if deep else "light",
         }
 
-    # ------------------------------------------------------------------
-    # P3: Orchestrator lifecycle
-    # ------------------------------------------------------------------
-
     def shutdown(self) -> None:
         """Вызывается MainWindow.closeEvent — освобождает ресурсы."""
-        if self._orchestrator is not None:
+        if self._qt_event_bus is not None:
             with contextlib.suppress(Exception):
-                self._orchestrator = None
+                self._qt_event_bus.shutdown()
+            self._qt_event_bus = None
+        if self._memory_service is not None:
+            with contextlib.suppress(Exception):
+                self._memory_service.close()
+            self._memory_service = None
+        if self._inbox is not None:
+            with contextlib.suppress(Exception):
+                self._inbox.close()
+            self._inbox = None
+        try:
+            from tools.mcp_ops import MCPManager
+
+            MCPManager.instance().shutdown_sync()
+        except Exception:
+            logger.debug("MCP shutdown failed", exc_info=True)
+        if self._orchestrator is not None:
+            self._orchestrator = None
         if self._model_pool is not None:
+            pool = self._model_pool
+            self._model_pool = None
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._model_pool.aclose())
-                loop.close()
+                try:
+                    loop.run_until_complete(pool.aclose())
+                finally:
+                    loop.close()
             except Exception:
-                pass
-            self._model_pool = None
+                logger.debug("ModelPool.aclose failed", exc_info=True)
+        try:
+            from tools.browser_ops import shutdown_browser
 
-    # ------------------------------------------------------------------
-    # [9.3] Селекторы Planner/Analyst
-    # ------------------------------------------------------------------
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(shutdown_browser())
+            finally:
+                loop.close()
+        except Exception:
+            logger.debug("browser shutdown failed", exc_info=True)
+        threads_to_kill = [
+            getattr(self, "_slm_load_thread", None),
+            getattr(self, "_pool_load_thread", None),
+            getattr(self, "_ollama_check_thread", None),
+            getattr(self, "_mcp_init_thread", None),
+        ]
+        for thread in threads_to_kill:
+            if thread is not None and thread.isRunning():
+                logger.debug(f"Принудительная остановка потока {type(thread).__name__}")
+                thread.quit()
+                if not thread.wait(1000):  # Ждем 1 секунду
+                    logger.warning(f"Поток {type(thread).__name__} завис, terminate()")
+                    thread.terminate()
+                    thread.wait(500)
 
     @Slot(str)
     def _on_planner_changed(self, model_id: str) -> None:
@@ -3027,17 +3271,22 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         logger.info(f"Pipeline: planner={model_id or '(авто)'} — reset_pipeline")
         self.reset_pipeline()
         self._update_pipeline_status()
+        if self.project_root:
+            QTimer.singleShot(100, self._ensure_orchestrator)
 
     @Slot(str)
     def _on_analyst_changed(self, model_id: str) -> None:
-        """Пользователь сменил analyst — пересоздаём пайплайн."""
-        logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reset_pipeline")
-        self.reset_pipeline()
+        """Смена analyst = смена основной модели: перезагружаем всё."""
+        logger.info(f"Pipeline: analyst={model_id or '(авто)'} — reload_slm")
+        self.reload_slm()
         self._update_pipeline_status()
 
-    # ------------------------------------------------------------------
-    # [9.4] Профили использования
-    # ------------------------------------------------------------------
+    @Slot(bool)
+    def _on_dual_model_changed(self, dual: bool) -> None:
+        """Смена топологии моделей: полный сброс, пересборка по новому конфигу."""
+        logger.info(f"Pipeline: dual_model={dual} — reload_slm")
+        self.reload_slm()
+        self._update_pipeline_status()
 
     def _apply_initial_profile(self) -> None:
         """Применяет профиль из конфига при старте приложения."""
@@ -3058,7 +3307,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         *,
         emit_signal: bool = True,
     ) -> None:
-        """[9.4] Применяет профиль к ChatPanel.
+        """Применяет профиль к ChatPanel.
 
         Устанавливает режим, tool_policies, флаг RAG, show_reasoning,
         лимиты итераций. НЕ трогает `_pipeline_selectors` — planner/analyst
@@ -3105,10 +3354,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         # 5. Лимиты итераций.
         self._profile_agent_max_iters = int(profile.agent_max_iterations)
         self._profile_chat_max_iters = int(profile.chat_max_iterations)
-
-        # 5.5 [9.4] Рекомендованная модель — визуальная подсказка в селекторах.
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.set_recommended_model(profile.recommended_model, profile.name)
+        if self._pipeline_selectors is not None:
+            self._pipeline_selectors.set_active_profile(profile.id)
 
         # 6. Кнопка «Возврат в Разработку» — видна только для не-development.
         if hasattr(self, "back_to_development_btn"):
@@ -3124,14 +3373,13 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         if not isinstance(profile, ProfileConfig):
             return
         self._apply_profile(profile, emit_signal=True)
-        # Профиль влияет на pipeline (какие модели), пересобираем.
         self.reset_pipeline()
         self.status_label.setText(f"{profile.icon} Профиль: {profile.name}")
         logger.info(f"Профиль сменён: {profile.id} → reset_pipeline")
 
     @Slot()
     def _back_to_development(self) -> None:
-        """[9.4] Возврат в профиль «Разработка» одним кликом."""
+        """Возврат в профиль «Разработка» одним кликом."""
         if self._profiles_selector is None:
             return
         try:
@@ -3173,20 +3421,42 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
         except Exception as e:
             logger.warning(f"Не удалось обновить PipelineSelectors: {e}")
 
-    # ------------------------------------------------------------------
-    # [9.7] Приборная панель — инжектится из MainWindow
-    # ------------------------------------------------------------------
-
     def set_dashboard(self, dashboard) -> None:
         """MainWindow передаёт StatusDashboard после создания статус-бара."""
         self._dashboard = dashboard
         self._sync_dashboard()
+        if self._dashboard is not None:
+            self._dashboard.set_activity_state(self._activity_state)
+
+    def set_theme(self, theme: str) -> None:
+        """Переключает тему чата (light / dark)."""
+        self._is_dark = theme != "light"
+        self._apply_theme_to_messages()
+        logger.debug(f"ChatPanel theme={theme} (is_dark={self._is_dark})")
+
+    def _apply_theme_to_messages(self) -> None:
+        """Рекурсивно применяет тему ко всем виджетам в scroll-ленте."""
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is None:
+                continue
+            apply = getattr(widget, "apply_theme", None)
+            if callable(apply):
+                try:
+                    apply(self._is_dark)
+                except Exception:
+                    logger.debug(
+                        f"apply_theme упал на {type(widget).__name__}",
+                        exc_info=True,
+                    )
 
     def _sync_dashboard(self) -> None:
-        """Синхронизирует бэкенд/pipeline/tok/s с приборной панелью."""
+        """Синхронизирует backend/pipeline/coder/net/git/memory/mcp/freedom с приборной панелью."""
         if self._dashboard is None:
             return
-        # Бэкенд.
         backend = self._router.active_backend
         if backend == BackendType.OLLAMA:
             self._dashboard.set_backend("ollama", "Ollama", self.get_current_model())
@@ -3196,18 +3466,24 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._dashboard.set_backend("rule", "Резерв", "без LLM")
         else:
             self._dashboard.set_backend("none", "Нет", "—")
-
-        # Pipeline.
         if self._orchestrator is not None and self._model_pool is not None:
             try:
-                ps = self._model_pool.spec(Role.PLANNER)
-                an = self._model_pool.spec(Role.ANALYST)
-                self._dashboard.set_pipeline(
-                    "⚡",
-                    f"{ps.model_id} + {an.model_id}",
-                    f"planner={ps.model_id} (GPU, n_ctx={ps.n_ctx})\n"
-                    f"analyst={an.model_id} (CPU, n_ctx={an.n_ctx})",
-                )
+                roles = self._model_pool.loaded_roles()
+                if not roles:
+                    self._dashboard.set_pipeline("⏸", "пул пуст")
+                else:
+                    primary = [r.value for r in roles if r in (Role.ROUTER, Role.PLANNER, Role.CODER)]
+                    short = " + ".join(primary) if primary else roles[0].value
+                    tooltip_lines = []
+                    for r in roles:
+                        try:
+                            spec = self._model_pool.spec(r)
+                            tooltip_lines.append(
+                                f"{r.value}={spec.model_id} ({spec.device}, n_ctx={spec.n_ctx})"
+                            )
+                        except Exception:
+                            tooltip_lines.append(f"{r.value}=?")
+                    self._dashboard.set_pipeline("⚡", short, "\n".join(tooltip_lines))
             except Exception:
                 self._dashboard.set_pipeline("⚡", "готов")
         elif self._pool_load_thread is not None and self._pool_load_thread.isRunning():
@@ -3218,24 +3494,311 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin):
             self._dashboard.set_pipeline("💤", "не активирован")
         else:
             self._dashboard.set_pipeline("⏸", "ожидание")
+        try:
+            from agents.slm_selector import select_coder
+            from core.config import load_config as _load_cfg
 
-    @staticmethod
-    def _build_registry_model_tooltip(info: ModelInfo) -> str:
-        """HTML-tooltip для пункта главного селектора моделей (Ollama)."""
-        lines = [f"<b>{info.name}</b>", ""]
-        if info.description:
-            lines.append(info.description)
-            lines.append("")
-        if info.recommended_modes:
-            lines.append(f"Рекомендуемые режимы: {', '.join(info.recommended_modes)}")
-        if info.supports_tools is True:
-            lines.append("Инструменты: ✅ поддерживает")
-        elif info.supports_tools is False:
-            lines.append("Инструменты: ❌ только чат")
-        else:
-            lines.append("Инструменты: ❓ не проверено")
-        lines.append("Локально: ✅" if info.is_local else "Локально: ⬇️ не скачана")
-        return "<br>".join(lines)
+            _cfg = _load_cfg()
+            _profile_coders: list[str] = []
+            for _p in _cfg.profiles:
+                if _p.id == _cfg.active_profile:
+                    _profile_coders = list(_p.coder_models)
+                    break
+            coder_info = select_coder(profile_coder_models=_profile_coders)
+            if coder_info is not None:
+                is_coder = "coder" in coder_info.tags
+                icon = "⚡" if is_coder else "⚠️"
+                label = "coder" if is_coder else "coder (fallback)"
+                self._dashboard.set_coder(icon, label, coder_info.display_name)
+            else:
+                self._dashboard.set_coder("⚠️", "coder (нет модели)", "Скачайте coder-модель")
+        except Exception:
+            logger.debug("Не удалось обновить coder-индикатор", exc_info=True)
+        b_mode, b_avail = "isolated", False
+        try:
+            from agents.browser_client import is_playwright_available
 
+            cfg_b = load_config()
+            b_mode = cfg_b.browser.mode
+            if b_mode == "extension":
+                try:
+                    import websockets  # noqa: F401
 
-# ---
+                    b_avail = True
+                except ImportError:
+                    b_avail = False
+            else:
+                b_avail = is_playwright_available()
+        except Exception:
+            pass
+
+        self._sync_inbox_indicator()
+        s_prov, s_avail = "", False
+        try:
+            from agents.search_providers import build_chain
+
+            cfg_s = load_config()
+            chain = build_chain(cfg_s.search)
+            s_prov = chain[0].name if chain else ""
+            s_avail = bool(chain)
+        except Exception:
+            logger.debug("Не удалось обновить search-индикатор", exc_info=True)
+        self._dashboard.set_net(b_mode, b_avail, s_prov, s_avail)
+        try:
+            from pathlib import Path as _Path
+
+            from tools.git_ops import (
+                get_branch_hash,
+                get_current_branch,
+            )
+
+            if self.project_root:
+                root = _Path(self.project_root)
+                self._dashboard.set_git_branch(
+                    get_current_branch(root) or "",
+                    get_branch_hash(root) or "",
+                )
+            else:
+                self._dashboard.set_git_branch("", "")
+        except Exception:
+            logger.debug("Не удалось обновить git-индикатор", exc_info=True)
+        try:
+            svc = self._memory_service
+            count = 0
+            recent: list[str] = []
+            if svc is not None:
+                counts = svc.count()
+                count = int(counts.get("reflections", 0))
+                if count > 0:
+                    recent = [r.summary[:80] for r in svc.list_recent(limit=3)]
+            self._dashboard.set_memory(count, recent)
+        except Exception:
+            logger.debug("Не удалось обновить memory-индикатор", exc_info=True)
+        try:
+            from tools.mcp_ops import MCPManager
+
+            mgr = MCPManager.instance()
+            connected = len(mgr._clients)
+            servers = list(mgr._clients.keys())
+            self._dashboard.set_mcp(connected, servers)
+        except Exception:
+            logger.debug("Не удалось обновить MCP-индикатор", exc_info=True)
+        try:
+            if self._profile is not None:
+                self._dashboard.set_freedom(self._profile.freedom_level)
+            else:
+                self._dashboard.set_freedom("development")
+        except Exception:
+            logger.debug("Не удалось обновить freedom-индикатор", exc_info=True)
+
+    def _ensure_inbox(self) -> SessionInbox | None:
+        """Ленивое создание `SessionInbox`."""
+        if self._inbox is not None:
+            return self._inbox
+        try:
+            self._inbox = SessionInbox()
+            return self._inbox
+        except Exception:
+            logger.warning(
+                "SessionInbox не инициализирован — inbox отключён",
+                exc_info=True,
+            )
+            return None
+
+    def _recover_inbox_on_startup(self) -> None:
+        """восстанавливает «зависшие» running → pending при старте."""
+        inbox = self._ensure_inbox()
+        if inbox is None:
+            return
+        try:
+            try:
+                inbox.cleanup_old()
+            except Exception:
+                logger.debug("inbox.cleanup_old упал", exc_info=True)
+            recovered = inbox.recover()
+            if recovered:
+                logger.warning(f"inbox: восстановлено {recovered} незавершённых запросов")
+            self._sync_inbox_indicator()
+        except Exception:
+            logger.debug("inbox recover упал", exc_info=True)
+
+    def _sync_inbox_indicator(self) -> None:
+        """обновляет индикатор inbox в дашборде."""
+        if self._dashboard is None:
+            return
+        inbox = self._inbox
+        if inbox is None:
+            self._dashboard.set_inbox(0)
+            return
+        try:
+            pending = inbox.count_pending()
+        except Exception:
+            pending = 0
+        self._dashboard.set_inbox(pending)
+
+    def _build_git_context(self) -> str:
+        """Собирает git-контекст для system-промпта в режиме AGENT (2.8)."""
+        if not self.project_root:
+            return ""
+        return self._project_service.build_git_context(self.project_root, mode=self._current_mode())
+
+    def _ensure_memory_service(self) -> MemoryService | None:
+        """ленивое создание MemoryService."""
+        if self._memory_service is not None:
+            return self._memory_service
+        try:
+            cfg = load_config()
+            if not cfg.memory.enabled:
+                return None
+            self._memory_service = MemoryService()
+            return self._memory_service
+        except Exception:
+            logger.warning(
+                "4.3: MemoryService не инициализирован — память отключена",
+                exc_info=True,
+            )
+            return None
+
+    @Slot(str)
+    def _on_undo_file_snapshot(self, snapshot_id: str) -> None:
+        """Откатывает файл из снапшота."""
+
+        if not snapshot_id:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Откатить файл?",
+            f"Восстановить файл из снапшота {snapshot_id}?\n\nТекущее содержимое будет потеряно.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from tools.git_ops import restore_snapshot
+
+            restored = restore_snapshot(snapshot_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось откатить:\n{e}")
+            return
+        self.status_label.setText(f"↩ Восстановлено файлов: {len(restored)}")
+        logger.info(f"undo snapshot {snapshot_id}: {restored}")
+
+    def _safe_load_config(self):
+        """Возвращает `AppConfig` или ``None`` (не блокирует прогон)."""
+        try:
+            return load_config()
+        except Exception:
+            logger.debug(
+                "Не удалось прочитать конфиг для effective_policy",
+                exc_info=True,
+            )
+            return None
+
+    def _start_mcp_init(self) -> None:
+        """Запускает инициализацию MCP-серверов в фоне."""
+        try:
+            cfg = load_config()
+        except Exception:
+            return
+        if not cfg.mcp.enabled or not cfg.mcp.servers:
+            return
+
+        enabled = [s for s in cfg.mcp.servers if s.enabled]
+        if not enabled:
+            return
+
+        from PySide6.QtCore import QThread
+        from PySide6.QtCore import Signal as _Signal
+
+        class _MCPInitThread(QThread):
+            """Фоновый поток инициализации MCP (7).
+
+            Не блокирует GUI: `MCPManager.initialize_sync` создаёт свой
+            event loop, общается с subprocess'ами по stdio.
+            """
+
+            done = _Signal(int, int)  # connected, total
+            error = _Signal(str)
+
+            def __init__(self, configs):
+                super().__init__()
+                self._configs = configs
+
+            def run(self) -> None:
+                try:
+                    from tools.mcp_ops import MCPManager
+
+                    mgr = MCPManager.instance()
+                    mgr.initialize_sync(self._configs)
+                    total = len(self._configs)
+                    connected = len(mgr._clients)
+                    self.done.emit(connected, total)
+                except Exception as e:
+                    logger.exception("MCP init thread failed")
+                    self.error.emit(str(e))
+
+        thread = _MCPInitThread(enabled)
+        thread.done.connect(self._on_mcp_initialized)
+        thread.error.connect(lambda msg: logger.warning(f"MCP init error: {msg}"))
+        thread.start()
+        self._mcp_init_thread = thread
+
+    @Slot(int, int)
+    def _on_mcp_initialized(self, connected: int, total: int) -> None:
+        """Пост-обработка инициализации MCP в GUI-потоке (9.8)."""
+        self.status_label.setText(f"✅ MCP: подключено {connected}/{total} серверов")
+        logger.info(f"MCP: {connected}/{total} серверов готовы")
+        self._sync_dashboard()
+
+    def registry_for_permissions(self) -> ToolRegistry:
+        """Возвращает полный ToolRegistry для Permissions Dashboard.
+        Отличается от `_build_registry(mode)`:
+          * регистрирует ВСЕ инструменты, включая `read_attached_file`
+            (для отображения политики даже без прикреплённых файлов);
+          * не зависит от режима.
+        Returns:
+            Свежий реестр с полным набором инструментов.
+        """
+        from tools.registry import ALL_TOOLS
+
+        registry = ToolRegistry()
+        for tool_func in ALL_TOOLS:
+            meta = getattr(tool_func, "_tool_meta", None)
+            if meta is None:
+                continue
+            registry.register(tool_func)
+        # MCP — тоже, если готов.
+        try:
+            from tools.mcp_ops import register_mcp_tools
+
+            register_mcp_tools(registry)
+        except Exception:
+            logger.debug("MCP для permissions не зарегистрирован", exc_info=True)
+        return registry
+
+    def _role_for_mode(self, mode: AgentMode) -> Role:
+        """Какая роль пула обслуживает режим."""
+        return Role.PLANNER if mode == AgentMode.CHAT else Role.ANALYST
+
+    def active_model_name(self) -> str:
+        """Имя модели АКТИВНОГО бэкенда (для логов, событий, экспорта)."""
+        backend = self._router.active_backend
+        if backend == BackendType.LOCAL_SLM:
+            return self._slm_model_id or self._slm_model_name or "local-slm"
+        if backend == BackendType.OLLAMA:
+            return self.get_current_model()
+        return "rule-based"
+
+    def _client_and_model(self, mode: AgentMode) -> tuple[Any, str]:
+        """Клиент и имя модели, которые реально обслужат запрос.
+
+        Единый владелец моделей — ModelPool. Отдельный `_slm_client`
+        остаётся только fallback'ом, пока пул не поднят.
+        """
+        if self._router.active_backend == BackendType.LOCAL_SLM and self._model_pool is not None:
+            role = self._role_for_mode(mode)
+            try:
+                return self._model_pool.client(role), self._model_pool.spec(role).model_id
+            except RuntimeError:
+                logger.debug(f"Роль {role.value} не загружена — fallback на _slm_client")
+        return self._router.active_client, self.active_model_name()

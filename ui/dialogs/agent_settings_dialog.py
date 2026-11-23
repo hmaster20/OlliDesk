@@ -12,15 +12,17 @@ max iterations, чекбоксы инструментов и RAG. Теперь �
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -43,11 +45,12 @@ class AgentSettingsDialog(QDialog):
         show_reasoning: bool = True,
         rag_enabled: bool = True,
         tools_enabled: dict[str, bool] | None = None,
+        allow_arbitrary_shell: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройки агента")
-        self.setMinimumSize(440, 580)
+        self.setMinimumSize(440, 720)
         self._build_ui(
             temperature=temperature,
             max_tokens=max_tokens,
@@ -56,6 +59,7 @@ class AgentSettingsDialog(QDialog):
             show_reasoning=show_reasoning,
             rag_enabled=rag_enabled,
             tools_enabled=tools_enabled or {},
+            allow_arbitrary_shell=allow_arbitrary_shell,
         )
 
     def _build_ui(
@@ -68,6 +72,7 @@ class AgentSettingsDialog(QDialog):
         show_reasoning: bool,
         rag_enabled: bool,
         tools_enabled: dict[str, bool],
+        allow_arbitrary_shell: bool = False,
     ) -> None:
         layout = QVBoxLayout(self)
 
@@ -139,6 +144,131 @@ class AgentSettingsDialog(QDialog):
         self.rag_check.setChecked(rag_enabled)
         layout.addWidget(self.rag_check)
 
+        # --- 0.1.1: Безопасность ---
+        security_group = QGroupBox("Безопасность")
+        security_layout = QVBoxLayout(security_group)
+        self.allow_arbitrary_shell_check = QCheckBox("Разрешить произвольные shell-команды (dangerous mode)")
+        self.allow_arbitrary_shell_check.setChecked(allow_arbitrary_shell)
+        self.allow_arbitrary_shell_check.setToolTip(
+            "По умолчанию run_shell_command работает только по allowlist "
+            "(Test-Path, Get-Content, git status, python -m pytest, …). "
+            "Включение dangerous mode разрешает произвольные команды, "
+            "но разрушительные (rm -rf, format, shutdown, …) всё равно "
+            "блокируются. Каждый вызов пишется в ~/.ollidesk/audit.db."
+        )
+        security_layout.addWidget(self.allow_arbitrary_shell_check)
+        layout.addWidget(security_group)
+
+        # [7] MCP.
+        try:
+            from core.config import load_config as _load_cfg
+
+            _cfg = _load_cfg()
+        except Exception:
+            _cfg = None
+
+        mcp_group = QGroupBox("MCP-серверы")
+        mcp_layout = QVBoxLayout(mcp_group)
+
+        self._mcp_enabled_check = QCheckBox("Включить MCP (Model Context Protocol)")
+        self._mcp_enabled_check.setChecked(bool(_cfg and _cfg.mcp.enabled))
+        self._mcp_enabled_check.setToolTip(
+            "MCP-серверы дают доступ к внешним инструментам "
+            "(файлы, git, поиск, …) через единый протокол. "
+            "По умолчанию выключено."
+        )
+        mcp_layout.addWidget(self._mcp_enabled_check)
+
+        # Список серверов (простое текстовое представление).
+        servers_text = ""
+        if _cfg and _cfg.mcp.servers:
+            servers_text = "\n".join(
+                f"  • {s.name}: {s.command} {' '.join(s.args)} [{', '.join(s.capabilities)}]"
+                for s in _cfg.mcp.servers
+            )
+        servers_label = QLabel(
+            f"Серверы ({len(_cfg.mcp.servers) if _cfg else 0}):\n"
+            f"{servers_text or '  (нет — добавьте в config.yaml: mcp.servers)'}"
+        )
+        servers_label.setStyleSheet(
+            "color: #888; font-family: 'Consolas', monospace; font-size: 11px; padding: 4px 8px;"
+        )
+        servers_label.setWordWrap(True)
+        mcp_layout.addWidget(servers_label)
+
+        layout.addWidget(mcp_group)
+
+        # [2.11] browser_control.
+        browser_group = QGroupBox("Браузер (browser_control)")
+        browser_layout = QVBoxLayout(browser_group)
+
+        _cfg_b = None
+        try:
+            from core.config import load_config as _load_cfg_b
+
+            _cfg_b = _load_cfg_b()
+        except Exception:
+            pass
+
+        current_mode = _cfg_b.browser.mode if _cfg_b else "isolated"
+        current_ack = _cfg_b.browser.full_access_acknowledged if _cfg_b else False
+
+        self._browser_mode_combo = QComboBox()
+        self._browser_mode_combo.addItem("🔒 isolated — отдельный профиль (безопасно)", "isolated")
+        self._browser_mode_combo.addItem(
+            "🔗 extension — через расширение (вкладки с разрешения)", "extension"
+        )
+        self._browser_mode_combo.addItem("⚠️ full — доступ ко всем сессиям (опасно)", "full")
+        _idx = self._browser_mode_combo.findData(current_mode)
+        if _idx >= 0:
+            self._browser_mode_combo.setCurrentIndex(_idx)
+        self._browser_mode_combo.currentIndexChanged.connect(self._on_browser_mode_changed)
+        browser_layout.addWidget(self._browser_mode_combo)
+
+        hint = QLabel(
+            "isolated: публичные страницы без ваших куков. "
+            "extension: нужен Playwright MCP Bridge, вкладки — с разрешения. "
+            "full: CDP к копии реального профиля, все сессии; каждое действие "
+            "в audit log."
+        )
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setWordWrap(True)
+        browser_layout.addWidget(hint)
+
+        self._browser_full_ack_check = QCheckBox("Подтверждаю полный доступ (режим «full»)")
+        self._browser_full_ack_check.setChecked(bool(current_ack))
+        self._browser_full_ack_check.setVisible(current_mode == "full")
+        browser_layout.addWidget(self._browser_full_ack_check)
+
+        layout.addWidget(browser_group)
+
+        # [2.13] Цепочка поиска.
+        search_group = QGroupBox("Поиск в интернете (2.13)")
+        search_layout = QVBoxLayout(search_group)
+
+        _cfg_search = None
+        try:
+            from core.config import load_config as _load_cfg_s
+
+            _cfg_search = _load_cfg_s()
+        except Exception:
+            pass
+
+        current_providers = list(_cfg_search.search.providers) if _cfg_search else []
+
+        providers_hint = QLabel(
+            "Цепочка (сверху вниз):\n"
+            + "\n".join(f"  {i + 1}. {p}" for i, p in enumerate(current_providers))
+            + "\n\nНастройка — в config.yaml → search."
+        )
+        providers_hint.setStyleSheet(
+            "color: #888; font-family: 'Consolas', monospace; font-size: 11px; padding: 4px 8px;"
+        )
+        providers_hint.setWordWrap(True)
+        search_layout.addWidget(providers_hint)
+
+        layout.addWidget(search_group)
+
         layout.addStretch()
 
         # Кнопки.
@@ -163,6 +293,10 @@ class AgentSettingsDialog(QDialog):
             "show_reasoning": self.show_reasoning_check.isChecked(),
             "rag_enabled": self.rag_check.isChecked(),
             "tools": {k: cb.isChecked() for k, cb in self._tool_checkboxes.items()},
+            "allow_arbitrary_shell": self.allow_arbitrary_shell_check.isChecked(),
+            "mcp_enabled": self._mcp_enabled_check.isChecked(),
+            "browser_mode": self._browser_mode_combo.currentData(),
+            "browser_full_ack": self._browser_full_ack_check.isChecked(),
         }
 
     def _on_apply(self) -> None:
@@ -171,6 +305,22 @@ class AgentSettingsDialog(QDialog):
     def _on_accept(self) -> None:
         self._on_apply()
         self.accept()
+
+    @Slot(int)
+    def _on_browser_mode_changed(self, _index: int) -> None:
+        """[2.11] При выборе «full» — показать чекбокс согласия."""
+        mode = self._browser_mode_combo.currentData()
+        self._browser_full_ack_check.setVisible(mode == "full")
+        if mode == "full":
+            QMessageBox.warning(
+                self,
+                "Полный доступ к браузеру",
+                "Агент получит доступ ко всем вашим сессиям "
+                "(включая авторизованные сайты).\n\n"
+                "Защита: каждое действие пишется в audit log. "
+                "Для активации поставьте галочку ниже.",
+                QMessageBox.StandardButton.Ok,
+            )
 
 
 __all__ = ["AgentSettingsDialog"]

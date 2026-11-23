@@ -60,7 +60,7 @@ class TestProfileConfig:
 
     def test_tool_policies_validation(self) -> None:
         with pytest.raises(ValueError, match="literal_error|Input should be"):
-            ProfileToolPolicies(write_file="invalid")  # type: ignore[arg-type]
+            ProfileToolPolicies(write_file="invalid")
 
 
 class TestAppConfigProfiles:

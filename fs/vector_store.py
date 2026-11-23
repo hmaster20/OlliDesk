@@ -1,6 +1,7 @@
 """Векторное хранилище на основе ChromaDB."""
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -9,6 +10,8 @@ from chromadb.config import Settings
 from loguru import logger
 from pydantic import BaseModel
 
+from core.event_bus import emit_event
+from core.events import EventKind
 from core.exceptions import EmbedderError
 from fs.bm25 import BM25Index
 from fs.chroma_adapter import (
@@ -382,6 +385,13 @@ class VectorStore:
         multiplier = 3 if categories else 1
         candidate_n = max(n_results * multiplier, n_results * 3)
 
+        # 2.5: событие для «живого» UI.
+        started_at = time.perf_counter()
+        emit_event(
+            EventKind.RAG_SEARCH_STARTED.value,
+            {"query": query, "n_results": n_results},
+        )
+
         vector_lists = await self._vector_search_lists(
             query, candidate_n, file_filter, language, path_prefix, modified_after, modified_before
         )
@@ -407,6 +417,23 @@ class VectorStore:
             f"(векторы {vector_count}, BM25 {len(bm25_results)}, "
             f"категории {categories or 'все'})"
         )
+
+        # 2.5: результат RAG-поиска — в EventBus.
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        if results:
+            emit_event(
+                EventKind.RAG_SEARCH_FOUND.value,
+                {
+                    "query": query,
+                    "n_results": len(results),
+                    "duration_ms": duration_ms,
+                },
+            )
+        else:
+            emit_event(
+                EventKind.RAG_SEARCH_EMPTY.value,
+                {"query": query, "duration_ms": duration_ms},
+            )
         return results
 
     async def _maybe_rerank(

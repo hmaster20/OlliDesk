@@ -1,18 +1,27 @@
 """Реестр инструментов с автоматической генерацией JSON-схем."""
 
+import asyncio
 import inspect
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TypeVar, get_type_hints
+from typing import TYPE_CHECKING, Any, TypeVar, get_type_hints
 
 import httpx
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError, create_model
 
 from agents.ollama_client import ToolCall, ToolSchema
+from core import redaction
 from core.config import AgentMode, ToolPolicy
 from core.exceptions import ToolExecutionError
+
+if TYPE_CHECKING:
+    from core.config import AppConfig
+    from core.policy import EffectivePolicy
+    from core.profiles import ProfileConfig
+    from core.security import SecurityPolicy
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -113,6 +122,99 @@ def _build_arg_validator(func: Callable[..., Any]) -> type[BaseModel] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# 2.6: ToolSpec v2 и capabilities
+# ---------------------------------------------------------------------------
+
+# Допустимые capability-строки. Закрытый список — правило: capability
+# описывает класс доступа, а не конкретный инструмент. Новые добавляются
+# осознанно, потому что от них зависит Policy Engine (2.7).
+#
+# ВАЖНО: `_FREEDOM_MATRIX` в core/policy.py должен содержать ключ для
+# КАЖДОЙ capability из этого набора — иначе freedom-слой молча
+# дефолтит в "auto" (см. `per_cap = [matrix.get(cap, "auto") ...]`),
+# что для `browser` и `shell` было бы дырой в безопасности.
+_VALID_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "fs.read",  # чтение файлов проекта (read_file, list_directory, …)
+        "fs.write",  # запись файлов / изменение рабочей копии
+        "net",  # исходящий HTTP (web_search, get_weather, курсы)
+        "shell",  # выполнение shell-команд
+        "git",  # git-операции (status/diff/stash/commit)
+        "ui",  # внутреннее состояние агента (гипотезы, RAG-контекст)
+        "secrets",  # доступ к секретам (.env, *.pem, id_rsa*) — 2.7
+        "browser",  # browser_control (2.11): isolated / extension / full
+    }
+)
+
+# Дефолт для инструментов без явных capabilities. Менять его — ломать
+# совместимость: инструмент без `capabilities=` по умолчанию read-only.
+_DEFAULT_CAPABILITIES: frozenset[str] = frozenset({"fs.read"})
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Immutable контракт инструмента (2.6).
+
+    Раньше метаданные жили в `dict[str, Any]` и были изменяемы. `ToolSpec`
+    фиксирует форму, чтобы Policy Engine (2.7) и `ToolRegistry.execute`
+    могли опираться на гарантированные поля. Все поля — immutable.
+
+    Attributes:
+        name: Уникальное имя (то, что модель вызывает).
+        description: Описание для LLM.
+        schema: JSON Schema аргументов (без инжектируемых).
+        modes: frozenset разрешённых AgentMode.
+        policy: Политика по умолчанию (AUTO/ASK_FIRST/EXCLUDED).
+        capabilities: Классы доступа (``fs.read``, ``net``, …).
+        is_mutating: Меняет ли состояние (файлы / git / shell).
+        category: UI-подсказка (``filesystem`` | ``shell`` | …).
+        timeout_s: Таймаут выполнения в секундах (``0`` = без ограничения).
+        max_output_chars: Максимум символов результата (0 = без ограничения).
+            Пока не применяется в `execute`; поле для будущей обрезки в UI/логах.
+        idempotent: True — повторный вызов с теми же аргументами безопасен
+            (поле-подсказка для будущего кэша).
+    """
+
+    name: str
+    description: str
+    schema: dict[str, Any]
+    modes: frozenset[AgentMode]
+    policy: ToolPolicy
+    capabilities: frozenset[str]
+    is_mutating: bool
+    category: str
+    timeout_s: float = 30.0
+    max_output_chars: int = 5000
+    idempotent: bool = False
+
+
+def _normalize_capabilities(
+    caps: list[str] | tuple[str, ...] | frozenset[str] | None,
+) -> frozenset[str]:
+    """Приводит capabilities к frozenset и валидирует имена.
+
+    Args:
+        caps: Список/кортеж/frozenset имён capability. ``None`` — дефолт
+            (``{"fs.read"}``).
+
+    Returns:
+        frozenset валидных capability-строк.
+
+    Raises:
+        ValueError: Если передано неизвестное имя (опечатка / устаревшее).
+    """
+    if caps is None:
+        return _DEFAULT_CAPABILITIES
+    result = caps if isinstance(caps, frozenset) else frozenset(caps)
+    unknown = result - _VALID_CAPABILITIES
+    if unknown:
+        raise ValueError(
+            f"Неизвестные capabilities: {sorted(unknown)}. Допустимые: {sorted(_VALID_CAPABILITIES)}"
+        )
+    return result
+
+
 def _generate_schema(func: Callable[..., Any]) -> dict[str, Any]:
     """Генерирует JSON Schema для функции из type hints и докстринга.
 
@@ -168,8 +270,13 @@ def tool(
     modes: list[AgentMode] | None = None,
     is_mutating: bool = False,
     category: str = "filesystem",
+    *,
+    capabilities: list[str] | None = None,
+    timeout_s: float = 30.0,
+    max_output_chars: int = 5000,
+    idempotent: bool = False,
 ) -> Callable[[F], F]:
-    """Декоратор для регистрации функции как инструмента.
+    """Декоратор для регистрации функции как инструмента (2.6: ToolSpec v2).
 
     Args:
         name: Имя инструмента (уникальное)
@@ -180,7 +287,24 @@ def tool(
             shell). Используется UI для выбора иконки/цвета; дефолт False.
         category: ``filesystem`` | ``shell`` | ``network`` | ``git`` | ``info``.
             Тоже для UI-подсказок; дефолт ``filesystem``.
+        capabilities: Классы доступа (``fs.read``, ``fs.write``, ``net``,
+            ``shell``, ``git``, ``ui``, ``secrets``). ``None`` — дефолт
+            ``{"fs.read"}``. Проверка capabilities → Policy Engine (2.7).
+        timeout_s: Таймаут выполнения, секунды. ``0`` — без ограничения
+            (инструмент сам управляет временем). Применяется в
+            ``ToolRegistry.execute`` через ``asyncio.wait_for``.
+        max_output_chars: Максимум символов результата (0 = без ограничения).
+            Пока не применяется; задел под обрезку в UI/логах.
+        idempotent: True — повторный вызов безопасен (задел под кэш).
+
+    Raises:
+        ValueError: Неизвестная capability / отрицательный timeout.
     """
+    caps = _normalize_capabilities(capabilities)
+    if timeout_s < 0:
+        raise ValueError(f"timeout_s must be >= 0, got {timeout_s}")
+    if max_output_chars < 0:
+        raise ValueError(f"max_output_chars must be >= 0, got {max_output_chars}")
 
     def decorator(func: F) -> F:
         tool_meta: dict[str, Any] = {
@@ -190,6 +314,10 @@ def tool(
             "modes": modes or [AgentMode.PLAN, AgentMode.AGENT],
             "is_mutating": is_mutating,
             "category": category,
+            "capabilities": caps,
+            "timeout_s": timeout_s,
+            "max_output_chars": max_output_chars,
+            "idempotent": idempotent,
             "func": func,
         }
         func._tool_meta = tool_meta  # type: ignore[attr-defined]
@@ -203,6 +331,9 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, dict[str, Any]] = {}
+        # 2.6: immutable ToolSpec по имени. Единая точка доступа для
+        # Policy Engine (2.7), UI (tooltips) и тестов.
+        self._specs: dict[str, ToolSpec] = {}
 
     def register(self, func: Callable[..., Any]) -> None:
         """Регистрирует функцию, декорированную @tool."""
@@ -218,7 +349,102 @@ class ToolRegistry:
             "schema": schema,
             "validator": _build_arg_validator(func),
         }
-        logger.debug(f"Зарегистрирован инструмент: {meta['name']} (policy={meta['policy'].value})")
+
+        # 2.6: immutable ToolSpec.
+        self._specs[meta["name"]] = ToolSpec(
+            name=meta["name"],
+            description=meta["description"],
+            schema=schema,
+            modes=frozenset(meta["modes"]),
+            policy=meta["policy"],
+            capabilities=meta["capabilities"],
+            is_mutating=meta["is_mutating"],
+            category=meta["category"],
+            timeout_s=float(meta["timeout_s"]),
+            max_output_chars=int(meta["max_output_chars"]),
+            idempotent=bool(meta["idempotent"]),
+        )
+
+        logger.debug(
+            f"Зарегистрирован инструмент: {meta['name']} "
+            f"(policy={meta['policy'].value}, "
+            f"caps={sorted(meta['capabilities'])}, "
+            f"timeout={meta['timeout_s']}s)"
+        )
+
+    def register_spec(
+        self,
+        spec: ToolSpec,
+        func: Callable[..., Any],
+        *,
+        validator: type[BaseModel] | None = None,
+    ) -> None:
+        """Регистрирует готовый `ToolSpec` + callable (7: MCP-инструменты).
+
+        В отличие от `register`, здесь нет `@tool`-декоратора: спецификация
+        приходит извне (MCP-манифест сервера). `func` — async или sync
+        callable; сигнатура принимает **kwargs, соответствующие
+        `spec.schema["properties"]`.
+
+        Args:
+            spec: Immutable-контракт инструмента.
+            func: Callable. Для MCP — async-обёртка над `MCPClient.call_tool`.
+            validator: Pydantic-модель аргументов (опционально). Для MCP
+                не используется — валидация на стороне сервера.
+        """
+        self._specs[spec.name] = spec
+        self._tools[spec.name] = {
+            "name": spec.name,
+            "description": spec.description,
+            "policy": spec.policy,
+            "modes": list(spec.modes),
+            "is_mutating": spec.is_mutating,
+            "category": spec.category,
+            "capabilities": spec.capabilities,
+            "timeout_s": spec.timeout_s,
+            "max_output_chars": spec.max_output_chars,
+            "idempotent": spec.idempotent,
+            "func": func,
+            "schema": spec.schema,
+            "validator": validator,
+        }
+        logger.debug(
+            f"Зарегистрирован ToolSpec: {spec.name} "
+            f"(policy={spec.policy.value}, caps={sorted(spec.capabilities)})"
+        )
+
+    # ------------------------------------------------------------------
+    # 2.6: доступ к immutable ToolSpec
+    # ------------------------------------------------------------------
+
+    def get_spec(self, tool_name: str) -> ToolSpec:
+        """Возвращает immutable ``ToolSpec`` по имени.
+
+        Args:
+            tool_name: Имя зарегистрированного инструмента.
+
+        Returns:
+            ``ToolSpec`` для инструмента.
+
+        Raises:
+            KeyError: Если инструмент не зарегистрирован. Caller должен
+                либо знать имя (UI-таблица, Policy Engine после
+                ``execute``-валидации), либо использовать ``try_get_spec``.
+        """
+        spec = self._specs.get(tool_name)
+        if spec is None:
+            raise KeyError(
+                f"Инструмент '{tool_name}' не зарегистрирован. Доступные: {sorted(self._specs.keys())}"
+            )
+        return spec
+
+    def try_get_spec(self, tool_name: str) -> ToolSpec | None:
+        """То же, что :meth:`get_spec`, но ``None`` вместо ``KeyError``."""
+        return self._specs.get(tool_name)
+
+    def get_all_specs(self) -> list[ToolSpec]:
+        """Все зарегистрированные ``ToolSpec`` (для UI/диагностики)."""
+        return list(self._specs.values())
 
     def get_schemas(self, mode: AgentMode) -> list[ToolSchema]:
         """Возвращает схемы инструментов, разрешённых в данном режиме."""
@@ -240,6 +466,44 @@ class ToolRegistry:
         if isinstance(policy_val, ToolPolicy):
             return policy_val
         return ToolPolicy.AUTO
+
+    def get_effective_policy(
+        self,
+        tool_name: str,
+        *,
+        profile: "ProfileConfig | None" = None,
+        security: "SecurityPolicy | None" = None,
+        config: "AppConfig | None" = None,
+        session_overrides: dict[str, ToolPolicy] | None = None,
+        current_mode: AgentMode | None = None,
+    ) -> "EffectivePolicy":
+        """Возвращает `EffectivePolicy` с учётом всех слоёв (2.7).
+
+        Args:
+            tool_name: Имя инструмента.
+            profile: Активный профиль (``ProfileConfig``).
+            security: Политика безопасности (``SecurityPolicy``).
+            config: Глобальный конфиг (``AppConfig``).
+            session_overrides: Per-session override пользователя.
+            current_mode: Текущий режим (``AgentMode``).
+
+        Returns:
+            `EffectivePolicy`. Неизвестный инструмент → ``EXCLUDED``
+            с reason ``"unknown"``.
+        """
+        from core.policy import EffectivePolicy, effective_policy
+
+        spec = self.try_get_spec(tool_name)
+        if spec is None:
+            return EffectivePolicy(policy=ToolPolicy.EXCLUDED, allowed=False, reason="unknown")
+        return effective_policy(
+            spec,
+            profile=profile,
+            security=security,
+            config=config,
+            session_overrides=session_overrides,
+            current_mode=current_mode,
+        )
 
     def get_description(self, tool_name: str) -> str:
         """Возвращает описание инструмента."""
@@ -305,7 +569,9 @@ class ToolRegistry:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,
-                    content=f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
+                    content=redaction.redact_only(
+                        f"Ошибка аргументов инструмента '{tool_call.name}': {e}",
+                    ),
                     is_error=True,
                     error_category=ErrorCategory.FIX_ARGUMENTS,
                 )
@@ -314,16 +580,36 @@ class ToolRegistry:
             args_from_model = dict(tool_call.arguments)
 
         merged_args = {**args_from_model, **filtered_kwargs}
+        # 2.6: timeout_s из ToolSpec. ``timeout_s=0`` — без ограничения
+        # (run_shell_command сам управляет временем через свой параметр
+        # `timeout`, max 300с). Sync-инструменты уходят в отдельный поток
+        # через ``asyncio.to_thread`` — loop-поток не блокируется (важно
+        # для AgentChatThread: loop один, но и для будущего параллелизма
+        # инструментов).
+        spec = self._specs.get(tool_call.name)
+        timeout_s = spec.timeout_s if spec is not None else 0.0
+
         try:
             if inspect.iscoroutinefunction(func):
-                result_content = await func(**merged_args)
+                coro = func(**merged_args)
+                if timeout_s > 0:
+                    result_content = await asyncio.wait_for(coro, timeout=timeout_s)
+                else:
+                    result_content = await coro
             else:
-                result_content = func(**merged_args)
+                if timeout_s > 0:
+                    result_content = await asyncio.wait_for(
+                        asyncio.to_thread(func, **merged_args),
+                        timeout=timeout_s,
+                    )
+                else:
+                    result_content = await asyncio.to_thread(func, **merged_args)
 
             # [9.6.1] Инструмент может вернуть dict — тогда `_llm_text`
             # идёт в content (для LLM), остальные поля — в metadata (для UI).
-            # Строгий контракт: dict должен содержать `_llm_text` (str);
-            # если нет — JSON дампим в content, metadata = весь dict.
+            # 0.1.2: content проходит redaction (секреты не утекают в LLM/UI/сессию);
+            # metadata (diff, written_content, original_content) НЕ трогаем —
+            # это пользовательские файлы, third-party их не видит.
             if isinstance(result_content, dict):
                 llm_text = result_content.get("_llm_text")
                 if not isinstance(llm_text, str):
@@ -335,14 +621,27 @@ class ToolRegistry:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,
-                    content=llm_text,
+                    content=redaction.redact_only(llm_text),
                     metadata=metadata or None,
                 )
 
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=str(result_content),
+                content=redaction.redact_only(str(result_content)),
+            )
+        except TimeoutError:
+            logger.warning(f"Инструмент {tool_call.name}: таймаут {timeout_s:.1f}с (timeout_s из ToolSpec)")
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=redaction.redact_only(
+                    f"Ошибка: инструмент превысил таймаут "
+                    f"{timeout_s:.1f} с (timeout_s). "
+                    f"Сократи объём работы или используй другой инструмент."
+                ),
+                is_error=True,
+                error_category=ErrorCategory.RETRY_LATER,
             )
         except ToolExecutionError:
             raise
@@ -351,25 +650,28 @@ class ToolRegistry:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: файл не найден: {e}",
+                content=redaction.redact_only(f"Ошибка: файл не найден: {e}"),
                 is_error=True,
                 error_category=ErrorCategory.DIFFERENT_PATH,
             )
-        except (ConnectionError, TimeoutError, httpx.TransportError) as e:
+        except (ConnectionError, httpx.TransportError) as e:
             logger.warning(f"Инструмент {tool_call.name}: временная сетевая ошибка: {e}")
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: временная сетевая проблема: {e}",
+                content=redaction.redact_only(f"Ошибка: временная сетевая проблема: {e}"),
                 is_error=True,
                 error_category=ErrorCategory.RETRY_LATER,
             )
         except Exception as e:
-            logger.error(f"Ошибка выполнения инструмента {tool_call.name}: {e}")
+            # 0.1.2: redact_exc безопасно обрабатывает даже «битые» исключения
+            # (битый __str__), и редактирует секреты в тексте ошибки.
+            safe_error = redaction.redact_exc(e)
+            logger.error(f"Ошибка выполнения инструмента {tool_call.name}: {safe_error}")
             return ToolResult(
                 tool_call_id=tool_call.id,
                 name=tool_call.name,
-                content=f"Ошибка: {e}",
+                content=f"Ошибка: {safe_error}",
                 is_error=True,
                 error_category=ErrorCategory.REPORT_TO_USER,
             )
