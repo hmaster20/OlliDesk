@@ -272,8 +272,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception:
             pass
 
-        # --- Новые поля для серого потока и паспорта ---
-        self._current_thought_stream: Any = None  # legacy: мысли теперь в ReasoningPanel
         self._research_mode_active: bool = False
         self._research_cancelled: bool = False
         self._pending_final_answer: str = ""
@@ -2364,18 +2362,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             evidence=str(h.get("evidence") or ""),
             verification_method=str(h.get("verification_method") or ""),
         )
-
-        # Дублируем в серый поток как компактную строку.
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.append_hypothesis(
-                hypothesis_id=hid,
-                status=str(h.get("status") or "open"),
-                statement=str(h.get("statement") or ""),
-                evidence=str(h.get("evidence") or ""),
-            )
-
-            # Новый элемент появился — если пользователь «на дне», следуем за стримом.
-        # Если он листает вверх — не дёргаем (AutoScrollArea сама покажет «▼ Вниз»).
         self._scroll_to_bottom()
         return True
 
@@ -2386,16 +2372,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             args = json.loads(arguments_json)
         except json.JSONDecodeError:
             args = {}
-
-        # 0.1.3b: фиксируем вызов в буфере текущего ответа.
         self._current_assistant_parts.append(ToolCallPart(calls=[ToolCall(name=name, arguments=args)]))
-
-        # [UI-2024] Всё в ОДИН пузырь: reasoning-панель + tool-карточка.
         widget = self._ensure_assistant_widget()
         widget.reasoning_panel().append_action(name, args)
-
         self._set_activity_state("tool", name)
-
         card = widget.append_tool_call(name, arguments_json)
         self._active_tool_card = card
         if card is not None:
@@ -2404,12 +2384,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             card.show_diff_requested.connect(self._on_show_tool_diff)
             card.snapshot_undo_requested.connect(self._on_undo_file_snapshot)
 
-        # [UI-2024] НЕ сбрасываем _last_assistant_widget — иначе reasoning
-        # и текст обрываются и уходят в новый пузырь.
-
     @Slot(str, dict)
     def _on_bus_event(self, kind: str, payload: dict) -> None:
-        """Принимает событие из ``QtEventBus`` (2.5).
+        """Принимает событие из ``QtEventBus``.
 
         Дублирует в ``LiveEventsPanel`` и (если дашборд есть) — в tooltip
         индикатора активности.
@@ -2421,7 +2398,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
     @Slot(str)
     def _on_status_event(self, text: str):
-        """[UI-2024] Статус — в ReasoningPanel пузыря ассистента."""
+        """Статус — в ReasoningPanel пузыря ассистента."""
         if not text:
             return
         widget = self._ensure_assistant_widget()
@@ -2487,16 +2464,10 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         """Бюджет исчерпан (CHAT/PLAN — форсированный финал, AGENT — продолжаем)."""
         if self._dashboard is not None:
             self._dashboard.set_budget(snapshot)
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.append_nudge("⛔ Бюджет исчерпан")
         logger.warning(
             f"Бюджет exceeded: ит.={snapshot.get('iterations')}, "
             f"tok={snapshot.get('tokens')}, t={snapshot.get('time_s')}с"
         )
-
-    # ------------------------------------------------------------------
-    # [4.3] Память — запись рефлексии
-    # ------------------------------------------------------------------
 
     def _build_reflection(
         self,
@@ -2520,8 +2491,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         Возвращает ``None``, если нет смысла писать (пустой summary).
         """
         mode = self._current_mode()
-        # Аннотация нужна ИМЕННО на словаре: без неё mypy выводит
-        # dict[AgentMode, str], и .get() отдаёт str вместо Literal.
         task_type_by_mode: dict[AgentMode, TaskType] = {
             AgentMode.AGENT: "code",
             AgentMode.PLAN: "research",
@@ -2529,7 +2498,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         }
         task_type: TaskType = task_type_by_mode.get(mode, "other")
 
-        # Summary — из summary_hint или последнего user-сообщения.
         summary = (summary_hint or "").strip()
         if not summary:
             last_user = next(
@@ -2541,7 +2509,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         if not summary:
             return None
 
-        # Ограничиваем длину и убираем переносы строк.
         summary = " ".join(summary.split())[:500]
 
         tags: list[str] = []
@@ -2567,8 +2534,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     ) -> None:
         """Записывает рефлексию, если включён ``auto_remember``.
 
-        Вызывается из `_on_agent_finished` (2.10). ``auto_remember=False`` → ничего не пишет
-        (пользователь отключил в настройках).
+        Вызывается из `_on_agent_finished`. ``auto_remember=False`` → ничего не пишет.
 
         ``summary_hint`` — например, первые 300 символов финального
         ответа, чтобы рефлексия была осмысленной.
@@ -2595,9 +2561,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
     @Slot(dict)
     def _on_agent_finished(self, payload: dict) -> None:
-        """Завершение прогона: причина остановки + снимок бюджета (2.10)
-        + запись рефлексии в память (4.3)
-        + закрытие inbox-записи (2.12)."""
+        """Завершение прогона: причина остановки + снимок бюджета + запись рефлексии в память + закрытие inbox-записи."""
         reason = payload.get("finish_reason")
         budget = payload.get("budget")
 
@@ -2613,10 +2577,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             f"elapsed={payload.get('elapsed_s')}с"
         )
 
-        # [2.12] Закрытие inbox-записи.
         self._finalize_inbox(reason=reason)
-
-        # [UI-2024] Паспорт в Agent/Plan: показываем, если есть evidence.
         if (
             self._last_research_summary is not None
             and self._last_assistant_widget is not None
@@ -2624,7 +2585,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         ):
             self._show_research_passport(self._last_research_summary)
 
-        # [4.3] Автоматическая рефлексия при успешном/частичном завершении.
         if reason in (None, "stop", "length", "budget.exceeded"):
             outcome_by_reason: dict[str, Outcome] = {
                 "stop": "success",
@@ -2638,7 +2598,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             )
 
     def _finalize_inbox(self, *, reason: str | None) -> None:
-        """[2.12] Закрывает текущую inbox-запись по причине.
+        """Закрывает текущую inbox-запись по причине.
 
         * ``stop`` / ``length`` / ``budget.exceeded`` → ``complete``
           (запрос выполнен, результат в сессии);
@@ -2682,13 +2642,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._dashboard.set_perf(tps, reads, writes)
 
     def _is_message_widget(self, widget: QWidget | None) -> bool:
-        """True, если виджет — «сообщение» (можно сворачивать в placeholder).
-
-        Включает: ChatMessageItem, ChatActivityItem, ChatSourcesItem,
-        ChatThoughtStream, ChatResearchPassport, ChatDiagramItem,
-        ChatHypothesisItem. Stretch-элементы (layout-распорки) и
-        CollapsedPlaceholder — не считаются.
-        """
+        """True, если виджет — «сообщение» (можно сворачивать в placeholder)."""
         if widget is None:
             return False
         if isinstance(widget, CollapsedPlaceholder):
@@ -2782,8 +2736,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             widget.setVisible(True)
             if isinstance(widget, ChatMessageItem):
                 self._update_bubble_width(widget)
-
-        # Если всё развернули — placeholder не нужен.
         if placeholder.collapsed_count == 0:
             self.scroll_layout.removeWidget(placeholder)
             placeholder.deleteLater()
@@ -2796,12 +2748,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         )
 
     def _expand_all_collapsed(self) -> None:
-        """Разворачивает все placeholder'ы (для «Показать всё»).
-
-        Не используется в UI напрямую, но полезно для палитры команд /
-        отладки. Проходит по списку placeholder'ов и разворачивает
-        каждый до конца.
-        """
+        """Разворачивает все placeholder'ы (для «Показать всё»)."""
         for placeholder in list(self._collapsed_placeholders):
             while placeholder.collapsed_count > 0:
                 self._restore_placeholder_batch(placeholder)
@@ -2832,15 +2779,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
     }
 
     def _set_activity_state(self, state: str, detail: str = "") -> None:
-        """Единый индикатор активности.
-        Меняет:
-          * текст `status_label` (эмодзи + подпись + detail);
-          * tooltip кнопки Stop/Отправить;
-          * ЦВЕТ ФОНА кнопки Stop (текст остаётся «■» при генерации,
-            «▶ Отправить» — вне её).
-
-        Не дублирует эмодзи в `detail` (detail — чистый текст без иконок).
-        """
+        """Единый индикатор активности."""
         icon = self._ACTIVITY_ICONS.get(state, "●")
         label = self._ACTIVITY_LABELS.get(state, state)
         full = f"{icon} {label} {detail}".strip() if detail else f"{icon} {label}"
@@ -2929,7 +2868,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._current_assistant_text = ""
             self._current_assistant_reasoning = ""
             self._last_assistant_widget = None
-            self._current_thought_stream = None
             self._pending_final_answer = ""
             self._last_research_summary = None
             self._research_mode_active = False
@@ -2940,8 +2878,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._messages.append(assistant_message)
             if self._session_id:
                 self.session_store.save_message(self._session_id, assistant_message)
-            if self._current_thought_stream is None:
-                self._show_activity("✅ Готово")
+            self._show_activity("✅ Готово")
         if (
             self._last_research_summary is not None
             and self._last_assistant_widget is not None
@@ -2954,9 +2891,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._current_thinking_content = ""
         self._current_assistant_parts = []
         self._current_assistant_text = ""
-        self._current_assistant_reasoning = ""
         self._last_assistant_widget = None
-        self._current_thought_stream = None
         self._pending_final_answer = ""
         self._last_research_summary = None
         self._research_mode_active = False
@@ -2981,9 +2916,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
     @Slot(str)
     def _on_agent_error(self, error_msg: str):
-        if self._current_thought_stream is not None:
-            self._current_thought_stream.mark_interrupted(f"Ошибка: {error_msg[:120]}")
-        # [2.12] inbox: fail.
         if self._inbox is not None and self._current_inbox_id:
             try:
                 self._inbox.fail(self._current_inbox_id, error_msg[:500])
@@ -3009,7 +2941,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
     @Slot()
     def _on_iteration_limit_exceeded(self):
-        """[2.10] Hard ceiling достигнут (safety net, а не «лимит»)."""
+        """Hard ceiling достигнут (safety net, а не «лимит»)."""
         self._reset_research_state()
         self._reset_send_button()
         if self._inbox is not None and self._current_inbox_id:
@@ -3369,7 +3301,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception:
             logger.debug("browser shutdown failed", exc_info=True)
         threads_to_kill = [
-            getattr(self, "_slm_download_thread", None),
             getattr(self, "_slm_load_thread", None),
             getattr(self, "_pool_load_thread", None),
             getattr(self, "_ollama_check_thread", None),

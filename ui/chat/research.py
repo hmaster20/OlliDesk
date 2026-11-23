@@ -6,11 +6,6 @@
   * ленивую загрузку двухмодельного пайплайна (planner + analyst);
   * создание `Orchestrator` и обработку его событий/результата;
   * индикатор пайплайна (`_pipeline_status_label`, `_update_pipeline_status`).
-
-Поля объявлены в ChatPanel.__init__ (`_current_thought_stream`,
-`_research_mode_active`, `_pending_final_answer`, `_last_research_summary`,
-`_model_pool`, `_orchestrator`, `_pool_load_thread`, `_pool_load_failed`,
-`_pipeline_selectors`, `_dashboard` и др.). Миксин использует их через self.
 """
 
 from __future__ import annotations
@@ -35,10 +30,6 @@ if TYPE_CHECKING:
 class ResearchMixin:
     """Методы ChatPanel для research-режима и двухмодельного пайплайна."""
 
-    # ------------------------------------------------------------------
-    # Поля ChatPanel (class-level для mypy).
-    # ------------------------------------------------------------------
-    _current_thought_stream: Any  # ChatThoughtStream | None
     _research_mode_active: bool
     _research_cancelled: bool
     _pending_final_answer: str
@@ -459,9 +450,7 @@ class ResearchMixin:
                 )
                 if unsupported:
                     summary += f" · без доказательств: {unsupported}"
-            if unsupported:
-                summary += f" · без доказательств: {unsupported}"
-            self._add_message("system", summary)  # раньше summary терялся без coding_flow
+                self._add_message("system", summary)
 
             if result.coding_flow:
                 tests_ok = result.tests_failed == 0 and result.tests_errors == 0
