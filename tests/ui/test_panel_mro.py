@@ -1,4 +1,4 @@
-"""Тесты MRO ChatPanel после выноса миксинов (2.4).
+"""Тесты MRO ChatPanel после выноса миксинов.
 
 Без pytest-qt: проверяем только MRO — никакого QApplication не требуется.
 """
@@ -7,23 +7,22 @@ from __future__ import annotations
 
 import pytest
 
-
 def test_mro_order() -> None:
     """QWidget первым, миксины после. Иначе PySide6 не работает."""
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QWidget
 
+    pytest.importorskip("PySide6")
     from ui.chat.backends import BackendsMixin
+    from ui.chat.ollama_models import OllamaModelsMixin
     from ui.chat.panel import ChatPanel
     from ui.chat.research import ResearchMixin
+    from PySide6.QtWidgets import QWidget
 
     mro = ChatPanel.__mro__
-    # QWidget должен быть раньше миксинов (PySide6 требует).
     qwidget_idx = mro.index(QWidget)
     backends_idx = mro.index(BackendsMixin)
     research_idx = mro.index(ResearchMixin)
-    assert qwidget_idx < backends_idx < research_idx
-
+    ollama_idx = mro.index(OllamaModelsMixin)
+    assert qwidget_idx < backends_idx < research_idx < ollama_idx
 
 def test_methods_from_mixins() -> None:
     """Ключевые методы доступны на ChatPanel через миксины."""
@@ -47,6 +46,11 @@ def test_methods_from_mixins() -> None:
     assert hasattr(ChatPanel, "_show_research_passport")
     assert hasattr(ChatPanel, "_pipeline_status_label")
 
+    # Из OllamaModelsMixin.
+    assert hasattr(ChatPanel, "set_registry")
+    assert hasattr(ChatPanel, "get_current_model")
+    assert hasattr(ChatPanel, "_update_model_selector_visibility")
+    assert hasattr(ChatPanel, "_ollama_mode_guard")
 
 def test_panel_size_reduced() -> None:
     """panel.py не должен содержать определения вынесенных методов.
@@ -70,6 +74,13 @@ def test_panel_size_reduced() -> None:
         "def _pipeline_status_label",
         "def _ensure_orchestrator",
         "def reset_pipeline",
+        "def set_registry",
+        "def _update_model_list",
+        "def _update_model_selector_visibility",
+        "def _update_model_status",
+        "def get_current_model",
+        "def _build_registry_model_tooltip",
+        "def _ollama_mode_guard",
     ]
     for name in moved_defs:
         assert name not in source, f"{name} должен быть в backends.py/research.py, а не в panel.py"

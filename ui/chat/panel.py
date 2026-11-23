@@ -147,16 +147,16 @@ _MIN_ATTACHED_BUDGET = 600
 # Сколько чанков запрашивать у векторного поиска перед дедупликацией по файлам.
 _RAG_N_RESULTS = 8
 
-# [9.10] Виртуализация: при каком числе «месседж-виджетов» в layout
+# Виртуализация: при каком числе «месседж-виджетов» в layout
 # старые начинают сворачиваться в placeholder. Значение подобрано так,
 # чтобы QScrollArea оставался отзывчивым при прокрутке (обычно —
 # порог, после которого начинаются просадки FPS).
 _MAX_VISIBLE_MESSAGE_WIDGETS = 80
 
-# [9.10] Сколько «самых свежих» свёрнутых разворачивать за один клик.
+# Сколько «самых свежих» свёрнутых разворачивать за один клик.
 _RESTORE_BATCH = 40
 
-# [9.10] Сколько старых свернуть за раз, когда порог превышен.
+# Сколько старых свернуть за раз, когда порог превышен.
 # Сворачиваем с запасом: следующий раз — только когда снова наберётся
 # _MAX_VISIBLE_MESSAGE_WIDGETS + _COLLAPSE_BUFFER.
 _COLLAPSE_BUFFER = 20
@@ -279,14 +279,8 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
         self._generating = False
         self._last_run_params: dict | None = None  # для кнопки «Продолжить»
-        # Показывать reasoning_content модели в чате. Управляется чекбоксом
-        # в правой панели; сохраняется в ProjectSettings.show_reasoning.
         self._show_reasoning: bool = True
         self._last_assistant_widget: ChatMessageItem | None = None
-        # 0.1.4: программная установка модели (set_model из _do_open_project,
-        # восстановление last_model) не должна триггерить сохранение
-        # settings_changed — иначе при SLM-active это могло бы перетереть
-        # config.last_model именем модели Ollama, которая не используется.
         self._suppress_model_save: bool = False
         self.tool_policies: dict[str, ToolPolicy] = {}
         self.registry: ModelRegistry | None = None
@@ -297,8 +291,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self.prompt_manager: SystemPromptManager | None = None
 
         self._router = ModelRouter()
-        # URL Ollama: предпочитаем сохранённый в конфиге,
-        # иначе используем переданный параметр/дефолт.
         try:
             from core.config import load_config as _load_cfg_backend
 
@@ -308,26 +300,20 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             pass
         self._ollama_client = OllamaClient(base_url=base_url)
         self._router.set_ollama(self._ollama_client)
-
         self._rule_based = RuleBasedFallback(weather_tool=get_weather)
         self._router.set_rule_based(self._rule_based)
         self._apply_backend_config()
-
         self._slm_client: LocalLLMClient | None = None
         self._slm_loading = False
         self._slm_model_name = ""
-        self._slm_model_id = ""  # 2.5: id модели для событий slm.* (EventBus)
+        self._slm_model_id = ""
         self._slm_load_generation = 0
         self._slm_load_thread: _SLMLoadThread | None = None
-        # === двухмодельный пайплайн (Orchestrator) ===
-        # Загружается в фоне при первом открытии проекта. Пока не готов —
-        # ChatPanel работает через старый AgentLoop (без Orchestrator).
         self._model_pool: ModelPool | None = None
         self._orchestrator: Orchestrator | None = None
         self._pool_load_thread: _ModelPoolLoadThread | None = None
         self._pool_load_failed: bool = False
         self._ollama_check_thread: _OllamaCheckThread | None = None
-
         self._pipeline_selectors: PipelineSelectors | None = None
         self._profiles_selector: ProfilesSelector | None = None
         self._profile: ProfileConfig | None = None
@@ -335,21 +321,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self._profile_agent_max_iters: int = 30
         self._profile_chat_max_iters: int = 7
         self._dashboard = None
-        # QtEventBus + LiveEventsPanel (создаются в _setup_ui).
         self._qt_event_bus: QtEventBus | None = None
         self.live_events_panel: LiveEventsPanel | None = None
-
-        # Активная tool-карточка: последняя созданная
-        # в `_on_tool_started`; `_on_tool_executed` вызывает у неё
-        # `set_result(...)` и сбрасывает. В multi-tool-call все вызовы
-        # последовательны (start→result), поэтому одной ссылки достаточно.
         self._active_tool_card: ToolCallCard | None = None
         # Индикатор активности: idle | thinking | tool | streaming | error | cancelled.
         self._activity_state: str = "idle"
-
-        # QCompleter для `@`-команд.
         self._command_completer: CommandCompleter | None = None
-        # Есть ли сейчас активное автодополнение (для перехвата Tab/Enter).
         self._command_popup_active: bool = False
         self._collapsed_placeholders: list[CollapsedPlaceholder] = []
         self._suppress_collapse: bool = False
@@ -370,10 +347,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         if self._pipeline_selectors is not None:
             self._pipeline_selectors.dual_model_changed.connect(self._on_dual_model_changed)
 
-    # ---------------------------------------------------------
-    # UI
-    # ---------------------------------------------------------
-
     def _add_message(
         self,
         role: str,
@@ -391,10 +364,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
         self._update_bubble_width(widget)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10] Свернуть старые сообщения, если порог превышен.
-        # При массовой загрузке (`load_history`) сворачивание вызывается
-        # один раз в конце — флаг `_suppress_collapse` отключает
-        # промежуточные проходы O(n²).
         if not getattr(self, "_suppress_collapse", False):
             self._maybe_collapse_old_messages()
         return widget
@@ -422,12 +391,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             mode_name=self._current_mode_name(),
             dark=self._is_dark,
         )
-        # Очередь pending-карточек по имени инструмента. Список, потому что
-        # модель может вызвать один и тот же инструмент дважды подряд.
         pending_cards: dict[str, list[ToolCallCard]] = {}
         for part in msg.parts:
             if isinstance(part, ReasoningPart) and part.text:
-                # [UI-2024] reasoning идёт в панель, а не в старый ReasoningWidget.
                 widget.reasoning_panel().append_thought_block(part.text)
             elif isinstance(part, TextPart) and part.text:
                 widget.append_text(part.text)
@@ -468,7 +434,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         return self._last_assistant_widget
 
     def _reasoning_panel(self) -> ReasoningPanel | None:
-        """[UI-2024] Панель рассуждений текущего пузыря ассистента."""
+        """Панель рассуждений текущего пузыря ассистента."""
         if self._last_assistant_widget is None:
             return None
         return self._last_assistant_widget.reasoning_panel()
@@ -479,7 +445,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         item = ChatActivityItem(text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10]
         self._maybe_collapse_old_messages()
 
     def _show_sources(self, sources: list[tuple[str, int, int]]) -> None:
@@ -489,17 +454,12 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         item.source_activated.connect(self._on_source_activated)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, item)
         QTimer.singleShot(0, self._scroll_to_bottom)
-        # [9.10]
         self._maybe_collapse_old_messages()
 
     def _on_source_activated(self, file_path: str, line: int) -> None:
         if self.project_root and not Path(file_path).is_absolute():
             file_path = str(Path(self.project_root) / file_path)
         self.source_activated.emit(file_path, line)
-
-    # ---------------------------------------------------------
-    # @dir / @file / @path — прикрепление путей
-    # ---------------------------------------------------------
 
     @staticmethod
     def _extract_path_command(text: str) -> tuple[str, str, str] | None:
@@ -523,10 +483,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
 
         return None
 
-    # ------------------------------------------------------------------
-    # [9.7] Приём медиафайлов (drag&drop / кнопка 📎)
-    # ------------------------------------------------------------------
-
     @Slot()
     def _on_attach_clicked(self) -> None:
         """Открывает QFileDialog с фильтром по поддерживаемым типам."""
@@ -548,7 +504,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._attach_local_file(path)
 
     def _attach_local_file(self, path: str) -> None:
-        """[9.7] Единая точка прикрепления: определяет тип и запускает распознавание."""
+        """Единая точка прикрепления: определяет тип и запускает распознавание."""
         from pathlib import Path as _Path
 
         p = _Path(path).expanduser().resolve()
@@ -575,7 +531,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self._attach_file(p)
 
     def _attach_image(self, path) -> None:
-        """[9.7] OCR изображения + миниатюра."""
+        """OCR изображения + миниатюра."""
         if self._media_busy:
             self._add_message("system", "⏳ Дождитесь завершения распознавания.")
             return
@@ -666,7 +622,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self.status_label.setText("Готов к работе")
 
     def _attach_video(self, path) -> None:
-        """[9.7] STT видео."""
+        """STT видео."""
         if self._media_busy:
             self._add_message("system", "⏳ Дождитесь завершения распознавания.")
             return
@@ -708,7 +664,7 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
             self.status_label.setText("Готов к работе")
 
     def _attach_file(self, path: Path) -> None:
-        """[9.4.8] Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
+        """Прикрепляет файл: текст — сразу, документ — с предпросмотром."""
         from fs.document_extractors import extract_document, is_document
 
         # Документы (PDF/DOCX/PPTX/XLSX/RTF) — сначала извлечение,
@@ -735,10 +691,9 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         )
 
     def _attach_document(self, path: Path, extractor) -> None:
-        """[9.4.8] Извлекает документ, показывает предпросмотр, прикрепляет."""
+        """Извлекает документ, показывает предпросмотр, прикрепляет."""
         from ui.dialogs.document_preview_dialog import DocumentPreviewDialog
 
-        # OCR из конфига — если пользователь включил в AppConfig.
         try:
             from core.config import load_config
 
@@ -3826,20 +3781,6 @@ class ChatPanel(QWidget, BackendsMixin, ResearchMixin, OllamaModelsMixin):
         except Exception:
             logger.debug("MCP для permissions не зарегистрирован", exc_info=True)
         return registry
-
-    def _show_research_passport(self, summary: dict) -> None:
-        """Встраивает ChatResearchPassport в конец пузыря ассистента."""
-        if self._last_assistant_widget is None:
-            return
-        from ui.chat.research_passport import ChatResearchPassport
-
-        try:
-            widget = ChatResearchPassport(summary)
-        except Exception as e:
-            logger.warning(f"Не удалось построить паспорт исследования: {e}")
-            return
-        self._last_assistant_widget._parts_layout.addWidget(widget)
-        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _role_for_mode(self, mode: AgentMode) -> Role:
         """Какая роль пула обслуживает режим."""
